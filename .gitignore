@@ -1,3 +1,5 @@
 .zig-cache/
 zig-out/
 *.o
+check_existing
+main
