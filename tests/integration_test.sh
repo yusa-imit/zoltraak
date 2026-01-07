@@ -294,6 +294,110 @@ test_command "Workflow: LLEN after pops" "$REDIS_CLI LLEN workflow" "(integer) 3
 
 echo ""
 
+# ============================================================================
+# SET Command Tests
+# ============================================================================
+
+echo "=== SADD Command Tests ==="
+test_command "SADD single member" "$REDIS_CLI SADD myset hello" "(integer) 1"
+test_command "SADD multiple members" "$REDIS_CLI SADD myset2 one two three" "(integer) 3"
+test_command "SADD duplicate returns 0" "$REDIS_CLI SADD myset hello" "(integer) 0"
+$REDIS_CLI SADD myset3 a b > /dev/null
+test_command "SADD mixed new and existing" "$REDIS_CLI SADD myset3 b c d" "(integer) 2"
+$REDIS_CLI SET stringkey value > /dev/null
+test_command_contains "SADD on string key" "$REDIS_CLI SADD stringkey member" "WRONGTYPE"
+$REDIS_CLI LPUSH listkey elem > /dev/null
+test_command_contains "SADD on list key" "$REDIS_CLI SADD listkey member" "WRONGTYPE"
+test_command_contains "SADD wrong arguments" "$REDIS_CLI SADD onlykey" "ERR"
+echo ""
+
+echo "=== SREM Command Tests ==="
+$REDIS_CLI SADD remset one two three > /dev/null
+test_command "SREM single member" "$REDIS_CLI SREM remset one" "(integer) 1"
+$REDIS_CLI SADD remset2 a b c d > /dev/null
+test_command "SREM multiple members" "$REDIS_CLI SREM remset2 a c" "(integer) 2"
+$REDIS_CLI SADD remset3 x y > /dev/null
+test_command "SREM non-existent member" "$REDIS_CLI SREM remset3 z" "(integer) 0"
+test_command "SREM on non-existent key" "$REDIS_CLI SREM nosuchset member" "(integer) 0"
+$REDIS_CLI SADD remset4 single > /dev/null
+$REDIS_CLI SREM remset4 single > /dev/null
+test_command "SREM auto-deletion" "$REDIS_CLI EXISTS remset4" "(integer) 0"
+$REDIS_CLI SET stringkey2 value > /dev/null
+test_command_contains "SREM on string key" "$REDIS_CLI SREM stringkey2 member" "WRONGTYPE"
+test_command_contains "SREM wrong arguments" "$REDIS_CLI SREM onlykey" "ERR"
+echo ""
+
+echo "=== SISMEMBER Command Tests ==="
+$REDIS_CLI SADD checkset hello world > /dev/null
+test_command "SISMEMBER existing member" "$REDIS_CLI SISMEMBER checkset hello" "(integer) 1"
+test_command "SISMEMBER non-existent member" "$REDIS_CLI SISMEMBER checkset foo" "(integer) 0"
+test_command "SISMEMBER non-existent key" "$REDIS_CLI SISMEMBER nosuchset member" "(integer) 0"
+$REDIS_CLI SET stringkey3 value > /dev/null
+test_command_contains "SISMEMBER on string key" "$REDIS_CLI SISMEMBER stringkey3 member" "WRONGTYPE"
+test_command_contains "SISMEMBER wrong arguments" "$REDIS_CLI SISMEMBER onlykey" "ERR"
+echo ""
+
+echo "=== SMEMBERS Command Tests ==="
+$REDIS_CLI SADD membersset one two three > /dev/null
+# Count the number of lines returned (should be 3 members)
+test_command "SMEMBERS returns all members" "$REDIS_CLI SMEMBERS membersset | grep -E '^(one|two|three)$' | wc -l | tr -d ' '" "3"
+test_command "SMEMBERS non-existent key" "$REDIS_CLI SMEMBERS nosuchset" "(empty array)"
+$REDIS_CLI SET stringkey4 value > /dev/null
+test_command_contains "SMEMBERS on string key" "$REDIS_CLI SMEMBERS stringkey4" "WRONGTYPE"
+test_command_contains "SMEMBERS wrong arguments" "$REDIS_CLI SMEMBERS" "ERR"
+echo ""
+
+echo "=== SCARD Command Tests ==="
+$REDIS_CLI SADD cardset a b c d > /dev/null
+test_command "SCARD returns cardinality" "$REDIS_CLI SCARD cardset" "(integer) 4"
+test_command "SCARD non-existent key" "$REDIS_CLI SCARD nosuchset" "(integer) 0"
+$REDIS_CLI SET stringkey5 value > /dev/null
+test_command_contains "SCARD on string key" "$REDIS_CLI SCARD stringkey5" "WRONGTYPE"
+test_command_contains "SCARD wrong arguments" "$REDIS_CLI SCARD" "ERR"
+echo ""
+
+echo "=== Set Workflow Tests ==="
+
+# Tag system
+$REDIS_CLI SADD article:1:tags redis database nosql > /dev/null
+test_command "Tag system: Check tag membership" "$REDIS_CLI SISMEMBER article:1:tags redis" "(integer) 1"
+test_command "Tag system: Count tags" "$REDIS_CLI SCARD article:1:tags" "(integer) 3"
+test_command "Tag system: Non-existent tag" "$REDIS_CLI SISMEMBER article:1:tags sql" "(integer) 0"
+$REDIS_CLI SREM article:1:tags nosql > /dev/null
+test_command "Tag system: After remove" "$REDIS_CLI SCARD article:1:tags" "(integer) 2"
+
+# Unique visitors
+$REDIS_CLI SADD page:visitors user:123 > /dev/null
+$REDIS_CLI SADD page:visitors user:456 > /dev/null
+$REDIS_CLI SADD page:visitors user:123 > /dev/null
+test_command "Unique visitors: Count" "$REDIS_CLI SCARD page:visitors" "(integer) 2"
+test_command "Unique visitors: Check visitor" "$REDIS_CLI SISMEMBER page:visitors user:456" "(integer) 1"
+
+# Duplicate handling
+test_command "Duplicate handling in SADD" "$REDIS_CLI SADD dupset a b a c b d" "(integer) 4"
+test_command "Duplicate handling: Verify cardinality" "$REDIS_CLI SCARD dupset" "(integer) 4"
+
+# Auto-deletion after removing all members
+$REDIS_CLI SADD tempset one two three > /dev/null
+test_command "Before remove: Key exists" "$REDIS_CLI EXISTS tempset" "(integer) 1"
+$REDIS_CLI SREM tempset one two three > /dev/null
+test_command "After remove: Key deleted" "$REDIS_CLI EXISTS tempset" "(integer) 0"
+test_command "After remove: SCARD returns 0" "$REDIS_CLI SCARD tempset" "(integer) 0"
+test_command "After remove: SMEMBERS returns empty" "$REDIS_CLI SMEMBERS tempset" "(empty array)"
+
+# Multiple sets
+$REDIS_CLI SADD set1 a b c > /dev/null
+$REDIS_CLI SADD set2 c d e > /dev/null
+test_command "Multiple sets: set1 cardinality" "$REDIS_CLI SCARD set1" "(integer) 3"
+test_command "Multiple sets: set2 cardinality" "$REDIS_CLI SCARD set2" "(integer) 3"
+test_command "Multiple sets: Common element in set1" "$REDIS_CLI SISMEMBER set1 c" "(integer) 1"
+test_command "Multiple sets: Common element in set2" "$REDIS_CLI SISMEMBER set2 c" "(integer) 1"
+$REDIS_CLI SREM set1 c > /dev/null
+test_command "Multiple sets: After remove from set1" "$REDIS_CLI SISMEMBER set1 c" "(integer) 0"
+test_command "Multiple sets: Still in set2" "$REDIS_CLI SISMEMBER set2 c" "(integer) 1"
+
+echo ""
+
 # Clean up test keys
 echo "Cleaning up test keys..."
 $REDIS_CLI DEL mykey newkey emptykey existkey key1 key2 key3 dupkey casekey largekey > /dev/null 2>&1 || true
@@ -301,6 +405,9 @@ $REDIS_CLI DEL user:1:name user:1:email user:2:name session:abc123 > /dev/null 2
 $REDIS_CLI DEL testlist testlist2 testlist3 stringkey rlist rlist2 rlist3 stringkey2 > /dev/null 2>&1 || true
 $REDIS_CLI DEL poplist smalllist rpoplist rangelist lenlist lenstring > /dev/null 2>&1 || true
 $REDIS_CLI DEL stack queue combined templist workflow > /dev/null 2>&1 || true
+$REDIS_CLI DEL myset myset2 myset3 remset remset2 remset3 remset4 checkset membersset cardset > /dev/null 2>&1 || true
+$REDIS_CLI DEL stringkey stringkey2 stringkey3 stringkey4 stringkey5 listkey > /dev/null 2>&1 || true
+$REDIS_CLI DEL article:1:tags page:visitors dupset tempset set1 set2 > /dev/null 2>&1 || true
 for i in {1..10}; do
     $REDIS_CLI DEL concurrent:$i > /dev/null 2>&1 || true
 done

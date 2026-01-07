@@ -1533,3 +1533,726 @@ test "Lists - complex workflow with mixed operations" {
         try testing.expectEqualStrings(":3\r\n", response);
     }
 }
+
+// ============================================================================
+// SET Command Tests - SADD
+// ============================================================================
+
+test "SADD - single member to new set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "hello" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "SADD - multiple members to new set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two", "three" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "SADD - duplicate member returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add member first time
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "hello" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Add same member again
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "hello" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SADD - mixed new and existing members" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add initial members
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two" });
+        defer testing.allocator.free(response);
+    }
+
+    // Add mix of new and existing
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "two", "three", "four" });
+    defer testing.allocator.free(response);
+
+    // Should count only "three" and "four" as new
+    try testing.expectEqualStrings(":2\r\n", response);
+}
+
+test "SADD - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try SADD on string
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "stringkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "SADD - on list key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create list key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "listkey", "element" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try SADD on list
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "listkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "SADD - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+// ============================================================================
+// SET Command Tests - SREM
+// ============================================================================
+
+test "SREM - single member from set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove one member
+    const response = try client.sendCommand(&[_][]const u8{ "SREM", "myset", "two" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "SREM - multiple members from set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two", "three", "four" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove multiple members
+    const response = try client.sendCommand(&[_][]const u8{ "SREM", "myset", "one", "three" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":2\r\n", response);
+}
+
+test "SREM - non-existent member returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove non-existent member
+    const response = try client.sendCommand(&[_][]const u8{ "SREM", "myset", "three" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SREM - on non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SREM", "nosuchkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SREM - empty set auto-deletion" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup single member set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "single" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove the only member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SREM", "myset", "single" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify key no longer exists
+    const exists_response = try client.sendCommand(&[_][]const u8{ "EXISTS", "myset" });
+    defer testing.allocator.free(exists_response);
+
+    try testing.expectEqualStrings(":0\r\n", exists_response);
+}
+
+test "SREM - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try SREM on string
+    const response = try client.sendCommand(&[_][]const u8{ "SREM", "stringkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "SREM - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SREM", "myset" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+// ============================================================================
+// SET Command Tests - SISMEMBER
+// ============================================================================
+
+test "SISMEMBER - returns 1 for existing member" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "hello", "world" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "myset", "hello" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "SISMEMBER - returns 0 for non-existent member" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "hello" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "myset", "world" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SISMEMBER - returns 0 for non-existent key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "nosuchkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SISMEMBER - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try SISMEMBER on string
+    const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "stringkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "SISMEMBER - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "myset" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+// ============================================================================
+// SET Command Tests - SMEMBERS
+// ============================================================================
+
+test "SMEMBERS - returns all members" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "SMEMBERS", "myset" });
+    defer testing.allocator.free(response);
+
+    // Should return array with 3 elements
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "one") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "two") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "three") != null);
+}
+
+test "SMEMBERS - returns empty array for non-existent key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SMEMBERS", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "SMEMBERS - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try SMEMBERS on string
+    const response = try client.sendCommand(&[_][]const u8{ "SMEMBERS", "stringkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "SMEMBERS - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"SMEMBERS"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+// ============================================================================
+// SET Command Tests - SCARD
+// ============================================================================
+
+test "SCARD - returns cardinality of set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two", "three", "four" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "SCARD", "myset" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":4\r\n", response);
+}
+
+test "SCARD - returns 0 for non-existent key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SCARD", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SCARD - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try SCARD on string
+    const response = try client.sendCommand(&[_][]const u8{ "SCARD", "stringkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "SCARD - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"SCARD"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+// ============================================================================
+// SET Workflow Integration Tests
+// ============================================================================
+
+test "Sets - tag system workflow" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add tags to article
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "article:1:tags", "redis", "database", "nosql" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Check if article has "redis" tag
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "article:1:tags", "redis" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Check if article has "sql" tag
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "article:1:tags", "sql" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Get all tags
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SMEMBERS", "article:1:tags" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    }
+
+    // Count tags
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SCARD", "article:1:tags" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Remove a tag
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SREM", "article:1:tags", "nosql" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify tag count after removal
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SCARD", "article:1:tags" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "Sets - unique visitors tracking" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Track visitors
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "page:visitors", "user:123" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "page:visitors", "user:456" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Same user visits again - should not increment
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "page:visitors", "user:123" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Get unique visitor count
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SCARD", "page:visitors" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+
+    // Check if specific user visited
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "page:visitors", "user:456" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+}
+
+test "Sets - combined operations with multiple sets" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create first set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "set1", "a", "b", "c" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Create second set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "set2", "c", "d", "e" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Verify cardinalities
+    {
+        const r1 = try client.sendCommand(&[_][]const u8{ "SCARD", "set1" });
+        defer testing.allocator.free(r1);
+        try testing.expectEqualStrings(":3\r\n", r1);
+
+        const r2 = try client.sendCommand(&[_][]const u8{ "SCARD", "set2" });
+        defer testing.allocator.free(r2);
+        try testing.expectEqualStrings(":3\r\n", r2);
+    }
+
+    // Check common element
+    {
+        const r1 = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "set1", "c" });
+        defer testing.allocator.free(r1);
+        try testing.expectEqualStrings(":1\r\n", r1);
+
+        const r2 = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "set2", "c" });
+        defer testing.allocator.free(r2);
+        try testing.expectEqualStrings(":1\r\n", r2);
+    }
+
+    // Remove element from first set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SREM", "set1", "c" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify element still in second set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SISMEMBER", "set2", "c" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+}
+
+test "Sets - duplicate handling in SADD" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add members with duplicates in same command
+    const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "a", "b", "a", "c", "b", "d" });
+    defer testing.allocator.free(response);
+
+    // Should only count unique members added (a, b, c, d = 4)
+    try testing.expectEqualStrings(":4\r\n", response);
+
+    // Verify cardinality
+    const card_response = try client.sendCommand(&[_][]const u8{ "SCARD", "myset" });
+    defer testing.allocator.free(card_response);
+
+    try testing.expectEqualStrings(":4\r\n", card_response);
+}
+
+test "Sets - all members removed deletes key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "one", "two", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Verify it exists
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "myset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Remove all members at once
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SREM", "myset", "one", "two", "three" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Verify key no longer exists
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "myset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // SCARD should return 0
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SCARD", "myset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // SMEMBERS should return empty array
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SMEMBERS", "myset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*0\r\n", response);
+    }
+}
