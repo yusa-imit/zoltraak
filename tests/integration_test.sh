@@ -193,10 +193,114 @@ else
 fi
 echo ""
 
+# ============================================================================
+# LIST Command Tests
+# ============================================================================
+
+echo "=== LPUSH Command Tests ==="
+test_command "LPUSH single element" "$REDIS_CLI LPUSH testlist 'hello'" "(integer) 1"
+test_command "LPUSH multiple elements" "$REDIS_CLI LPUSH testlist2 a b c" "(integer) 3"
+$REDIS_CLI LPUSH testlist3 first > /dev/null
+test_command "LPUSH append to existing" "$REDIS_CLI LPUSH testlist3 second third" "(integer) 3"
+$REDIS_CLI SET stringkey value > /dev/null
+test_command_contains "LPUSH on string key" "$REDIS_CLI LPUSH stringkey elem" "WRONGTYPE"
+test_command_contains "LPUSH wrong arguments" "$REDIS_CLI LPUSH" "ERR"
+echo ""
+
+echo "=== RPUSH Command Tests ==="
+test_command "RPUSH single element" "$REDIS_CLI RPUSH rlist 'hello'" "(integer) 1"
+test_command "RPUSH multiple elements" "$REDIS_CLI RPUSH rlist2 a b c" "(integer) 3"
+$REDIS_CLI RPUSH rlist3 first > /dev/null
+test_command "RPUSH append to existing" "$REDIS_CLI RPUSH rlist3 second third" "(integer) 3"
+$REDIS_CLI SET stringkey2 value > /dev/null
+test_command_contains "RPUSH on string key" "$REDIS_CLI RPUSH stringkey2 elem" "WRONGTYPE"
+echo ""
+
+echo "=== LPOP Command Tests ==="
+$REDIS_CLI RPUSH poplist a b c d e > /dev/null
+test_command "LPOP without count" "$REDIS_CLI LPOP poplist" "a"
+test_command "LPOP with count parameter" "$REDIS_CLI LPOP poplist 2 | head -n1" "(empty array)"
+test_command "LPOP on non-existent key" "$REDIS_CLI LPOP nosuchlist" "(nil)"
+test_command "LPOP with count on non-existent" "$REDIS_CLI LPOP nosuchlist 5" "(empty array)"
+$REDIS_CLI RPUSH smalllist x y > /dev/null
+test_command "LPOP count > length" "$REDIS_CLI LPOP smalllist 10 | head -n1" "(empty array)"
+echo ""
+
+echo "=== RPOP Command Tests ==="
+$REDIS_CLI RPUSH rpoplist a b c d e > /dev/null
+test_command "RPOP without count" "$REDIS_CLI RPOP rpoplist" "e"
+test_command "RPOP with count parameter" "$REDIS_CLI RPOP rpoplist 2 | head -n1" "(empty array)"
+test_command "RPOP on non-existent key" "$REDIS_CLI RPOP nosuchlist" "(nil)"
+echo ""
+
+echo "=== LRANGE Command Tests ==="
+$REDIS_CLI RPUSH rangelist a b c d e > /dev/null
+test_command "LRANGE full list (0 -1)" "$REDIS_CLI LRANGE rangelist 0 -1 | wc -l | tr -d ' '" "5"
+test_command "LRANGE positive indices" "$REDIS_CLI LRANGE rangelist 1 3 | wc -l | tr -d ' '" "3"
+test_command "LRANGE negative indices" "$REDIS_CLI LRANGE rangelist -3 -1 | wc -l | tr -d ' '" "3"
+test_command "LRANGE out of bounds" "$REDIS_CLI LRANGE rangelist -100 100 | wc -l | tr -d ' '" "5"
+test_command "LRANGE invalid range" "$REDIS_CLI LRANGE rangelist 5 1" "(empty array)"
+test_command "LRANGE non-existent key" "$REDIS_CLI LRANGE nosuchlist 0 -1" "(empty array)"
+test_command "LRANGE single element" "$REDIS_CLI LRANGE rangelist 1 1" "b"
+echo ""
+
+echo "=== LLEN Command Tests ==="
+$REDIS_CLI RPUSH lenlist a b c d > /dev/null
+test_command "LLEN returns length" "$REDIS_CLI LLEN lenlist" "(integer) 4"
+test_command "LLEN non-existent key" "$REDIS_CLI LLEN nosuchlist" "(integer) 0"
+$REDIS_CLI SET lenstring value > /dev/null
+test_command_contains "LLEN on string key" "$REDIS_CLI LLEN lenstring" "WRONGTYPE"
+test_command_contains "LLEN wrong arguments" "$REDIS_CLI LLEN" "ERR"
+echo ""
+
+echo "=== List Workflow Tests ==="
+
+# Stack behavior (LPUSH + LPOP)
+$REDIS_CLI LPUSH stack first second third > /dev/null
+test_command "Stack: LPOP first element" "$REDIS_CLI LPOP stack" "third"
+test_command "Stack: LPOP second element" "$REDIS_CLI LPOP stack" "second"
+test_command "Stack: LPOP third element" "$REDIS_CLI LPOP stack" "first"
+test_command "Stack: LPOP empty list" "$REDIS_CLI LPOP stack" "(nil)"
+test_command "Stack: EXISTS after empty" "$REDIS_CLI EXISTS stack" "(integer) 0"
+
+# Queue behavior (RPUSH + LPOP)
+$REDIS_CLI RPUSH queue job1 job2 job3 > /dev/null
+test_command "Queue: LPOP first job" "$REDIS_CLI LPOP queue" "job1"
+test_command "Queue: LPOP second job" "$REDIS_CLI LPOP queue" "job2"
+test_command "Queue: LPOP third job" "$REDIS_CLI LPOP queue" "job3"
+
+# Combined operations
+$REDIS_CLI RPUSH combined a b > /dev/null
+$REDIS_CLI LPUSH combined x y > /dev/null
+test_command "Combined: LLEN after RPUSH+LPUSH" "$REDIS_CLI LLEN combined" "(integer) 4"
+test_command "Combined: First element is y" "$REDIS_CLI LRANGE combined 0 0" "y"
+test_command "Combined: Last element is b" "$REDIS_CLI LRANGE combined -1 -1" "b"
+
+# Auto-deletion test
+$REDIS_CLI RPUSH templist single > /dev/null
+test_command "Auto-delete: EXISTS before pop" "$REDIS_CLI EXISTS templist" "(integer) 1"
+$REDIS_CLI LPOP templist > /dev/null
+test_command "Auto-delete: EXISTS after pop" "$REDIS_CLI EXISTS templist" "(integer) 0"
+
+# Complex workflow
+$REDIS_CLI RPUSH workflow 1 2 3 > /dev/null
+$REDIS_CLI LPUSH workflow 0 > /dev/null
+$REDIS_CLI RPUSH workflow 4 5 > /dev/null
+test_command "Workflow: LLEN after mixed ops" "$REDIS_CLI LLEN workflow" "(integer) 6"
+test_command "Workflow: LRANGE middle" "$REDIS_CLI LRANGE workflow 1 4 | wc -l | tr -d ' '" "4"
+$REDIS_CLI LPOP workflow 2 > /dev/null
+$REDIS_CLI RPOP workflow > /dev/null
+test_command "Workflow: LLEN after pops" "$REDIS_CLI LLEN workflow" "(integer) 3"
+
+echo ""
+
 # Clean up test keys
 echo "Cleaning up test keys..."
 $REDIS_CLI DEL mykey newkey emptykey existkey key1 key2 key3 dupkey casekey largekey > /dev/null 2>&1 || true
 $REDIS_CLI DEL user:1:name user:1:email user:2:name session:abc123 > /dev/null 2>&1 || true
+$REDIS_CLI DEL testlist testlist2 testlist3 stringkey rlist rlist2 rlist3 stringkey2 > /dev/null 2>&1 || true
+$REDIS_CLI DEL poplist smalllist rpoplist rangelist lenlist lenstring > /dev/null 2>&1 || true
+$REDIS_CLI DEL stack queue combined templist workflow > /dev/null 2>&1 || true
 for i in {1..10}; do
     $REDIS_CLI DEL concurrent:$i > /dev/null 2>&1 || true
 done

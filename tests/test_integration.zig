@@ -795,3 +795,741 @@ test "Integration - large value storage and retrieval" {
         try testing.expect(std.mem.startsWith(u8, response, "$1024\r\n"));
     }
 }
+
+// ============================================================================
+// LIST Command Tests - LPUSH/RPUSH
+// ============================================================================
+
+test "LPUSH - single element to new list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "hello" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "LPUSH - multiple elements to new list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "a", "b", "c" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "LPUSH - appending to existing list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "first" });
+        defer testing.allocator.free(response);
+    }
+
+    // Add more elements
+    const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "second", "third" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "LPUSH - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try LPUSH on string
+    const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "stringkey", "element" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "LPUSH - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"LPUSH"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+test "RPUSH - single element to new list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "hello" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "RPUSH - multiple elements to new list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "RPUSH - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try RPUSH on string
+    const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "stringkey", "element" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+// ============================================================================
+// LIST Command Tests - LPOP/RPOP
+// ============================================================================
+
+test "LPOP - without count parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(response);
+    }
+
+    // Pop single element
+    const response = try client.sendCommand(&[_][]const u8{ "LPOP", "mylist" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$1\r\na\r\n", response);
+}
+
+test "LPOP - with count parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d", "e" });
+        defer testing.allocator.free(response);
+    }
+
+    // Pop 3 elements
+    const response = try client.sendCommand(&[_][]const u8{ "LPOP", "mylist", "3" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "a") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "b") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "c") != null);
+}
+
+test "LPOP - on non-existent key returns nil" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOP", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "LPOP - with count on non-existent key returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOP", "nosuchkey", "5" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "LPOP - count greater than list length" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup small list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try to pop more than available
+    const response = try client.sendCommand(&[_][]const u8{ "LPOP", "mylist", "10" });
+    defer testing.allocator.free(response);
+
+    // Should return only 2 elements
+    try testing.expect(std.mem.indexOf(u8, response, "*2\r\n") != null);
+}
+
+test "LPOP - empty list auto-deletion" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup single element list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "single" });
+        defer testing.allocator.free(response);
+    }
+
+    // Pop the only element
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "mylist" });
+        defer testing.allocator.free(response);
+    }
+
+    // Verify key no longer exists
+    const exists_response = try client.sendCommand(&[_][]const u8{ "EXISTS", "mylist" });
+    defer testing.allocator.free(exists_response);
+
+    try testing.expectEqualStrings(":0\r\n", exists_response);
+}
+
+test "RPOP - without count parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(response);
+    }
+
+    // Pop from tail
+    const response = try client.sendCommand(&[_][]const u8{ "RPOP", "mylist" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$1\r\nc\r\n", response);
+}
+
+test "RPOP - with count parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d", "e" });
+        defer testing.allocator.free(response);
+    }
+
+    // Pop 3 elements from tail
+    const response = try client.sendCommand(&[_][]const u8{ "RPOP", "mylist", "3" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "e") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "d") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "c") != null);
+}
+
+test "RPOP - on non-existent key returns nil" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPOP", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LRANGE
+// ============================================================================
+
+test "LRANGE - full list (0 -1)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d", "e" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get all elements
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "0", "-1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*5\r\n") != null);
+}
+
+test "LRANGE - with positive indices" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d", "e" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get range [1, 3] (b, c, d)
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "1", "3" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "b") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "c") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "d") != null);
+}
+
+test "LRANGE - with negative indices" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d", "e" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get last 3 elements
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "-3", "-1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "c") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "d") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "e") != null);
+}
+
+test "LRANGE - out of bounds returns clamped range" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(response);
+    }
+
+    // Request range far exceeding list size
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "-100", "100" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+}
+
+test "LRANGE - start greater than stop returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(response);
+    }
+
+    // Invalid range
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "5", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "LRANGE - on non-existent key returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "nosuchkey", "0", "-1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "LRANGE - single element (start == stop)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get single element at index 1
+    const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "1", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "*1\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "b") != null);
+}
+
+// ============================================================================
+// LIST Command Tests - LLEN
+// ============================================================================
+
+test "LLEN - returns list length" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup list
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LLEN", "mylist" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":4\r\n", response);
+}
+
+test "LLEN - on non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LLEN", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "LLEN - on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "stringkey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try LLEN on string
+    const response = try client.sendCommand(&[_][]const u8{ "LLEN", "stringkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "LLEN - wrong number of arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"LLEN"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+// ============================================================================
+// LIST Workflow Integration Tests
+// ============================================================================
+
+test "Lists - stack behavior (LPUSH + LPOP)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Push elements to head
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "stack", "first", "second", "third" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Pop from head (LIFO order)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "stack" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$5\r\nthird\r\n", response);
+    }
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "stack" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$6\r\nsecond\r\n", response);
+    }
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "stack" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$5\r\nfirst\r\n", response);
+    }
+}
+
+test "Lists - queue behavior (RPUSH + LPOP)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Enqueue at tail
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "queue", "job1", "job2", "job3" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Dequeue from head (FIFO order)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "queue" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$4\r\njob1\r\n", response);
+    }
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "queue" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$4\r\njob2\r\n", response);
+    }
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "queue" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$4\r\njob3\r\n", response);
+    }
+}
+
+test "Lists - combined LPUSH and RPUSH operations" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // RPUSH a b
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+
+    // LPUSH x y (prepends)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "x", "y" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":4\r\n", response);
+    }
+
+    // LRANGE should show [y, x, a, b]
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "0", "-1" });
+        defer testing.allocator.free(response);
+
+        try testing.expect(std.mem.indexOf(u8, response, "*4\r\n") != null);
+        // Just verify we got 4 elements with the expected values
+        try testing.expect(std.mem.indexOf(u8, response, "$1\r\ny\r\n") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "$1\r\nx\r\n") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "$1\r\na\r\n") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "$1\r\nb\r\n") != null);
+    }
+}
+
+test "Lists - empty list after all pops" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create list with 2 elements
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "templist", "a", "b" });
+        defer testing.allocator.free(response);
+    }
+
+    // Verify exists
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "templist" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Pop all elements
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "templist", "2" });
+        defer testing.allocator.free(response);
+    }
+
+    // Verify list is deleted
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "templist" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // LLEN should return 0
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LLEN", "templist" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+test "Lists - complex workflow with mixed operations" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Build list: RPUSH 1 2 3
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "workflow", "1", "2", "3" });
+        defer testing.allocator.free(response);
+    }
+
+    // LPUSH 0 (prepend)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPUSH", "workflow", "0" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":4\r\n", response);
+    }
+
+    // RPUSH 4 5 (append)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "workflow", "4", "5" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":6\r\n", response);
+    }
+
+    // Check length
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LLEN", "workflow" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":6\r\n", response);
+    }
+
+    // LRANGE middle section [1, 4] -> "1", "2", "3", "4"
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "workflow", "1", "4" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "*4\r\n") != null);
+    }
+
+    // LPOP 2 from head
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LPOP", "workflow", "2" });
+        defer testing.allocator.free(response);
+        // Should get "0" and "1"
+        try testing.expect(std.mem.indexOf(u8, response, "0") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "1") != null);
+    }
+
+    // RPOP 1 from tail
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPOP", "workflow" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$1\r\n5\r\n", response);
+    }
+
+    // Final LRANGE should show [2, 3, 4]
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LRANGE", "workflow", "0", "-1" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+    }
+
+    // Final length
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "LLEN", "workflow" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+}
