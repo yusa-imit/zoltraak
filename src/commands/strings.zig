@@ -3,6 +3,7 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const lists = @import("lists.zig");
+const sets = @import("sets.zig");
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -65,6 +66,18 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
         return lists.cmdLrange(allocator, storage, array);
     } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
         return lists.cmdLlen(allocator, storage, array);
+    }
+    // Set commands
+    else if (std.mem.eql(u8, cmd_upper, "SADD")) {
+        return sets.cmdSadd(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "SREM")) {
+        return sets.cmdSrem(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "SISMEMBER")) {
+        return sets.cmdSismember(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "SMEMBERS")) {
+        return sets.cmdSmembers(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
+        return sets.cmdScard(allocator, storage, array);
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();
