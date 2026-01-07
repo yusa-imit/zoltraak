@@ -65,7 +65,7 @@ redis-cli -p 6379
 
 ## Supported Commands
 
-### Iteration 1 (Implemented)
+### String Commands (Iteration 1)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -74,6 +74,17 @@ redis-cli -p 6379
 | GET | `GET key` | Get value by key |
 | DEL | `DEL key [key ...]` | Delete one or more keys |
 | EXISTS | `EXISTS key [key ...]` | Check if keys exist |
+
+### List Commands (Iteration 2)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| LPUSH | `LPUSH key element [element ...]` | Push elements to list head |
+| RPUSH | `RPUSH key element [element ...]` | Push elements to list tail |
+| LPOP | `LPOP key [count]` | Pop elements from list head |
+| RPOP | `RPOP key [count]` | Pop elements from list tail |
+| LRANGE | `LRANGE key start stop` | Get range of elements |
+| LLEN | `LLEN key` | Get list length |
 
 ## Example Session
 
@@ -90,11 +101,23 @@ OK
 (integer) 2
 127.0.0.1:6379> DEL mykey session
 (integer) 2
+
+# List operations
+127.0.0.1:6379> RPUSH tasks "task1" "task2" "task3"
+(integer) 3
+127.0.0.1:6379> LRANGE tasks 0 -1
+1) "task1"
+2) "task2"
+3) "task3"
+127.0.0.1:6379> LPOP tasks
+"task1"
+127.0.0.1:6379> LLEN tasks
+(integer) 2
 ```
 
 ## Project Status
 
-Iteration 1 is complete with a functional Redis-compatible server.
+Iteration 2 is complete with List data structure support.
 
 ### Roadmap
 
@@ -104,7 +127,7 @@ Iteration 1 is complete with a functional Redis-compatible server.
 - [x] Basic commands (GET, SET, DEL)
 - [x] String operations (PING, EXISTS)
 - [x] Key expiration (EX, PX options)
-- [ ] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE)
+- [x] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
 - [ ] Set operations (SADD, SREM, SMEMBERS, SISMEMBER)
 - [ ] Hash operations (HSET, HGET, HDEL, HGETALL)
 - [ ] Sorted set operations (ZADD, ZREM, ZRANGE)
