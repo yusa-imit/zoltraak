@@ -86,6 +86,16 @@ redis-cli -p 6379
 | LRANGE | `LRANGE key start stop` | Get range of elements |
 | LLEN | `LLEN key` | Get list length |
 
+### Set Commands (Iteration 3)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| SADD | `SADD key member [member ...]` | Add members to set |
+| SREM | `SREM key member [member ...]` | Remove members from set |
+| SISMEMBER | `SISMEMBER key member` | Check if member exists |
+| SMEMBERS | `SMEMBERS key` | Get all members |
+| SCARD | `SCARD key` | Get set cardinality |
+
 ## Example Session
 
 ```
@@ -113,11 +123,23 @@ OK
 "task1"
 127.0.0.1:6379> LLEN tasks
 (integer) 2
+
+# Set operations
+127.0.0.1:6379> SADD tags "redis" "zig" "database"
+(integer) 3
+127.0.0.1:6379> SISMEMBER tags "zig"
+(integer) 1
+127.0.0.1:6379> SMEMBERS tags
+1) "redis"
+2) "zig"
+3) "database"
+127.0.0.1:6379> SCARD tags
+(integer) 3
 ```
 
 ## Project Status
 
-Iteration 2 is complete with List data structure support.
+Iteration 3 is complete with Set data structure support.
 
 ### Roadmap
 
@@ -128,7 +150,7 @@ Iteration 2 is complete with List data structure support.
 - [x] String operations (PING, EXISTS)
 - [x] Key expiration (EX, PX options)
 - [x] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
-- [ ] Set operations (SADD, SREM, SMEMBERS, SISMEMBER)
+- [x] Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
 - [ ] Hash operations (HSET, HGET, HDEL, HGETALL)
 - [ ] Sorted set operations (ZADD, ZREM, ZRANGE)
 - [ ] Persistence (RDB)
