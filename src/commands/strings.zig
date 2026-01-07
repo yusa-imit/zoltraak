@@ -2,6 +2,7 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const lists = @import("lists.zig");
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -39,6 +40,7 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
 
+    // String commands
     if (std.mem.eql(u8, cmd_upper, "PING")) {
         return cmdPing(allocator, array);
     } else if (std.mem.eql(u8, cmd_upper, "SET")) {
@@ -49,6 +51,20 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
         return cmdDel(allocator, storage, array);
     } else if (std.mem.eql(u8, cmd_upper, "EXISTS")) {
         return cmdExists(allocator, storage, array);
+    }
+    // List commands
+    else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
+        return lists.cmdLpush(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "RPUSH")) {
+        return lists.cmdRpush(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "LPOP")) {
+        return lists.cmdLpop(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "RPOP")) {
+        return lists.cmdRpop(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "LRANGE")) {
+        return lists.cmdLrange(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
+        return lists.cmdLlen(allocator, storage, array);
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();
