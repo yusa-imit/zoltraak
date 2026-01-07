@@ -4,6 +4,7 @@ const std = @import("std");
 pub const ValueType = enum {
     string,
     list,
+    set,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -11,6 +12,7 @@ pub const ValueType = enum {
 pub const Value = union(ValueType) {
     string: StringValue,
     list: ListValue,
+    set: SetValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -37,11 +39,28 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// Set value with optional expiration
+    /// Uses hash map for O(1) membership testing
+    pub const SetValue = struct {
+        data: std.StringHashMap(void),
+        expires_at: ?i64,
+
+        pub fn deinit(self: *SetValue, allocator: std.mem.Allocator) void {
+            // Free all member strings (keys in the hash map)
+            var it = self.data.keyIterator();
+            while (it.next()) |key| {
+                allocator.free(key.*);
+            }
+            self.data.deinit();
+        }
+    };
+
     /// Deinitialize value and free all associated memory
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .string => |*s| s.deinit(allocator),
             .list => |*l| l.deinit(allocator),
+            .set => |*s| s.deinit(allocator),
         }
     }
 
@@ -50,6 +69,7 @@ pub const Value = union(ValueType) {
         return switch (self) {
             .string => |s| s.expires_at,
             .list => |l| l.expires_at,
+            .set => |s| s.expires_at,
         };
     }
 
@@ -505,6 +525,218 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .list => |list_val| return list_val.data.items.len,
+            else => return null,
+        }
+    }
+
+    // Set operations
+
+    /// Add members to a set
+    /// Returns count of members actually added (excluding duplicates)
+    /// Returns error.WrongType if key exists and is not a set
+    pub fn sadd(
+        self: *Storage,
+        key: []const u8,
+        members: []const []const u8,
+        expires_at: ?i64,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var added_count: usize = 0;
+
+        if (self.data.getEntry(key)) |entry| {
+            // Key exists - verify it's a set
+            switch (entry.value_ptr.*) {
+                .set => |*set_val| {
+                    // Add members to existing set
+                    for (members) |member| {
+                        // Check if member already exists
+                        if (!set_val.data.contains(member)) {
+                            // Duplicate the member string
+                            const owned_member = try self.allocator.dupe(u8, member);
+                            errdefer self.allocator.free(owned_member);
+
+                            try set_val.data.put(owned_member, {});
+                            added_count += 1;
+                        }
+                    }
+                    return added_count;
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            // Create new set
+            var set_map = std.StringHashMap(void).init(self.allocator);
+            errdefer {
+                var it = set_map.keyIterator();
+                while (it.next()) |k| {
+                    self.allocator.free(k.*);
+                }
+                set_map.deinit();
+            }
+
+            // Add all members
+            for (members) |member| {
+                const owned_member = try self.allocator.dupe(u8, member);
+                errdefer self.allocator.free(owned_member);
+
+                try set_map.put(owned_member, {});
+                added_count += 1;
+            }
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+
+            try self.data.put(owned_key, Value{
+                .set = .{
+                    .data = set_map,
+                    .expires_at = expires_at,
+                },
+            });
+
+            return added_count;
+        }
+    }
+
+    /// Remove members from a set
+    /// Returns count of members actually removed (non-existent members ignored)
+    /// Returns 0 if key doesn't exist (treated as empty set)
+    /// Auto-deletes key if set becomes empty
+    pub fn srem(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        members: []const []const u8,
+    ) !usize {
+        _ = allocator; // Not used in this function
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        switch (entry.value_ptr.*) {
+            .set => |*set_val| {
+                var removed_count: usize = 0;
+
+                for (members) |member| {
+                    if (set_val.data.fetchRemove(member)) |kv| {
+                        self.allocator.free(kv.key);
+                        removed_count += 1;
+                    }
+                }
+
+                // Auto-delete if set becomes empty
+                if (set_val.data.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return removed_count;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Check if member exists in set
+    /// Returns true if member is in set, false otherwise
+    /// Returns false if key doesn't exist
+    /// Returns error.WrongType if key is not a set
+    pub fn sismember(
+        self: *Storage,
+        key: []const u8,
+        member: []const u8,
+    ) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return false;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return false;
+        }
+
+        switch (entry.value_ptr.*) {
+            .set => |*set_val| {
+                return set_val.data.contains(member);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get all members of a set
+    /// Returns owned slice of members (caller must free outer slice, NOT member strings)
+    /// Returns null if key doesn't exist or is not a set
+    pub fn smembers(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+    ) !?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .set => |*set_val| {
+                const member_count = set_val.data.count();
+                var result = try allocator.alloc([]const u8, member_count);
+                errdefer allocator.free(result);
+
+                var it = set_val.data.keyIterator();
+                var i: usize = 0;
+                while (it.next()) |member_ptr| : (i += 1) {
+                    result[i] = member_ptr.*;
+                }
+
+                return result;
+            },
+            else => return null,
+        }
+    }
+
+    /// Get cardinality (size) of set
+    /// Returns null if key doesn't exist or is not a set
+    pub fn scard(
+        self: *Storage,
+        key: []const u8,
+    ) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .set => |set_val| return set_val.data.count(),
             else => return null,
         }
     }
@@ -1058,4 +1290,256 @@ test "storage - llen on string key returns null" {
     try storage.set("mykey", "value", null);
     const len = storage.llen("mykey");
     try std.testing.expect(len == null);
+}
+
+test "storage - sadd creates new set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{"hello"};
+    const added = try storage.sadd("myset", &members, null);
+    try std.testing.expectEqual(@as(usize, 1), added);
+}
+
+test "storage - sadd adds multiple members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two", "three" };
+    const added = try storage.sadd("myset", &members, null);
+    try std.testing.expectEqual(@as(usize, 3), added);
+}
+
+test "storage - sadd ignores duplicates" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members1 = [_][]const u8{ "one", "two" };
+    _ = try storage.sadd("myset", &members1, null);
+
+    const members2 = [_][]const u8{"two"};
+    const added = try storage.sadd("myset", &members2, null);
+    try std.testing.expectEqual(@as(usize, 0), added);
+}
+
+test "storage - sadd on existing string returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "string", null);
+    const members = [_][]const u8{"value"};
+    try std.testing.expectError(error.WrongType, storage.sadd("mykey", &members, null));
+}
+
+test "storage - sadd with mixed new and existing members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members1 = [_][]const u8{ "one", "two" };
+    _ = try storage.sadd("myset", &members1, null);
+
+    const members2 = [_][]const u8{ "two", "three", "four" };
+    const added = try storage.sadd("myset", &members2, null);
+    try std.testing.expectEqual(@as(usize, 2), added);
+}
+
+test "storage - srem removes members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.sadd("myset", &members, null);
+
+    const to_remove = [_][]const u8{"one"};
+    const removed = try storage.srem(allocator, "myset", &to_remove);
+    try std.testing.expectEqual(@as(usize, 1), removed);
+}
+
+test "storage - srem returns count of removed" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.sadd("myset", &members, null);
+
+    const to_remove = [_][]const u8{ "one", "three" };
+    const removed = try storage.srem(allocator, "myset", &to_remove);
+    try std.testing.expectEqual(@as(usize, 2), removed);
+}
+
+test "storage - srem auto-deletes empty set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{"one"};
+    _ = try storage.sadd("myset", &members, null);
+
+    const to_remove = [_][]const u8{"one"};
+    _ = try storage.srem(allocator, "myset", &to_remove);
+
+    try std.testing.expect(!storage.exists("myset"));
+}
+
+test "storage - srem on non-existent key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const to_remove = [_][]const u8{"one"};
+    const removed = try storage.srem(allocator, "nosuchkey", &to_remove);
+    try std.testing.expectEqual(@as(usize, 0), removed);
+}
+
+test "storage - srem on non-existent member returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{"one"};
+    _ = try storage.sadd("myset", &members, null);
+
+    const to_remove = [_][]const u8{"two"};
+    const removed = try storage.srem(allocator, "myset", &to_remove);
+    try std.testing.expectEqual(@as(usize, 0), removed);
+}
+
+test "storage - sismember returns true for member" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two" };
+    _ = try storage.sadd("myset", &members, null);
+
+    const is_member = try storage.sismember("myset", "one");
+    try std.testing.expect(is_member);
+}
+
+test "storage - sismember returns false for non-member" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two" };
+    _ = try storage.sadd("myset", &members, null);
+
+    const is_member = try storage.sismember("myset", "three");
+    try std.testing.expect(!is_member);
+}
+
+test "storage - sismember returns false for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const is_member = try storage.sismember("nosuchkey", "one");
+    try std.testing.expect(!is_member);
+}
+
+test "storage - sismember on string key returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "string", null);
+    try std.testing.expectError(error.WrongType, storage.sismember("mykey", "one"));
+}
+
+test "storage - smembers returns all members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.sadd("myset", &members, null);
+
+    const result = (try storage.smembers(allocator, "myset")).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+}
+
+test "storage - smembers returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const result = try storage.smembers(allocator, "nosuchkey");
+    try std.testing.expect(result == null);
+}
+
+test "storage - smembers returns null for string key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "string", null);
+    const result = try storage.smembers(allocator, "mykey");
+    try std.testing.expect(result == null);
+}
+
+test "storage - scard returns cardinality" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.sadd("myset", &members, null);
+
+    const cardinality = storage.scard("myset");
+    try std.testing.expectEqual(@as(usize, 3), cardinality.?);
+}
+
+test "storage - scard returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const cardinality = storage.scard("nosuchkey");
+    try std.testing.expect(cardinality == null);
+}
+
+test "storage - scard returns null for string key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "string", null);
+    const cardinality = storage.scard("mykey");
+    try std.testing.expect(cardinality == null);
+}
+
+test "storage - set respects expiration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const now = Storage.getCurrentTimestamp();
+    const expires_at = now - 1000; // Already expired
+
+    const members = [_][]const u8{"one"};
+    _ = try storage.sadd("myset", &members, expires_at);
+
+    // Should return false/null for expired set
+    const is_member = try storage.sismember("myset", "one");
+    try std.testing.expect(!is_member);
+}
+
+test "storage - getType returns set type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const members = [_][]const u8{"one"};
+    _ = try storage.sadd("myset", &members, null);
+
+    try std.testing.expectEqual(ValueType.set, storage.getType("myset").?);
 }
