@@ -18,6 +18,22 @@ This project can leverage Claude Team capabilities for enhanced collaboration:
 
 When working with Claude Code on this project, the AI will maintain awareness of project patterns, previous decisions, and team preferences to provide more contextual and consistent assistance.
 
+## Development Status
+
+**완료된 이터레이션**:
+- Iteration 1: String commands (PING, SET, GET, DEL, EXISTS) + key expiration
+- Iteration 2: List commands (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
+- Iteration 3: Set commands (SADD, SREM, SISMEMBER, SMEMBERS, SCARD)
+
+**남은 로드맵** (우선순위 순):
+1. Hash commands (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
+2. Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
+3. Persistence — RDB snapshots
+4. Persistence — AOF logging
+5. Pub/Sub messaging
+6. Transactions (MULTI/EXEC)
+7. Replication
+
 ## Build Commands
 
 ```bash
@@ -69,6 +85,12 @@ zoltraak/
 - Prefer `errdefer` for cleanup on error paths
 - Use `comptime` for compile-time computations where beneficial
 - Follow Zig's naming conventions: snake_case for functions and variables, PascalCase for types
+
+**Zig 0.15 API 참고사항**:
+- `ArrayListUnmanaged` 사용 — mutation 메서드가 allocator를 첫 번째 인자로 받음
+- `std.io.getStdOut().writer(&buf)` + `.interface.print()` — 종료 전 flush 필수
+- `std.builtin.Type` 태그는 소문자: `.int`, `.@"struct"` 등
+- `b.createModule()` 로 빌드 시스템 실행/테스트 타겟 생성
 
 ### Code Style
 - Keep functions focused and small
@@ -278,6 +300,66 @@ When working with agents:
 - Quality gates must pass - never skip reviews or validation
 - Unit tests are embedded, integration tests are separate
 - Always validate against Redis specifications
+
+## Autonomous Session Protocol
+
+자동화 세션(cron job 등)에서는 다음 프로토콜을 실행한다.
+
+**컨텍스트 복원** — 세션 시작 시 읽을 파일:
+1. `CLAUDE.md` — 프로젝트 규칙, 코딩 표준, 에이전트 아키텍처
+2. `ORCHESTRATOR.md` — 8단계 개발 사이클 오케스트레이션 프로토콜
+3. `README.md` — 현재 로드맵, 지원 명령어, 프로젝트 상태
+
+**작업 선택 규칙**:
+- 로드맵 순서를 엄격히 따름
+- 사이클당 하나의 데이터 구조 또는 기능만 구현
+- 이전 세션의 미완료 작업(빌드 실패, 테스트 실패)이 있으면 먼저 수정
+
+**8단계 실행 사이클**:
+
+| Phase | 내용 |
+|-------|------|
+| 1. 상태 파악 & 계획 | git log, `zig build test` 확인 → Redis 명령어 사양 분석 → 구현 계획 |
+| 2. 구현 + 유닛 테스트 | Storage layer → Command handlers → Command routing → 유닛 테스트 |
+| 3. 코드 품질 리뷰 | 메모리 안전성, 에러 처리, 아키텍처 일관성 검사 |
+| 4. 통합 테스트 | `tests/test_integration.zig`에 RESP 프로토콜 E2E 테스트 추가 |
+| 5. 호환성 검증 | RESP 응답 포맷·에러 메시지가 Redis와 일치하는지 확인 |
+| 6. 문서화 | README.md 지원 명령어 테이블 업데이트 |
+| 7. 정리 | 임시 파일 제거, 디버그 프린트·TODO 주석 정리 |
+| 8. 커밋 | `feat(<scope>): implement Redis <Type> commands` 형식으로 커밋 |
+
+**Redis 명령어 구현 패턴**:
+1. **Storage layer** (`src/storage/memory.zig`): `Value` tagged union에 새 데이터 타입 추가, 저장 연산 구현
+2. **Command handlers** (`src/commands/<type>.zig`): args 파싱 → 검증 → storage 실행 → RESP 응답 포맷
+3. **Command routing** (`src/server.zig`): 명령어 디스패치 테이블에 등록
+4. **WRONGTYPE 에러**: 타입 불일치 시 반드시 처리
+
+**안전 규칙**:
+- Force push 및 파괴적 git 명령어 금지
+- 모든 작업은 `main` 브랜치에서 (단일 브랜치 워크플로우)
+- 동일 에러 3회 시도 후 지속 시 문서화하고 다음 항목으로 이동
+- 스코프 크리프 금지: 사이클당 하나의 이터레이션만 구현
+- 기존 테스트가 반드시 계속 통과해야 함
+- 외부 의존성 없음: Zig 표준 라이브러리만 사용
+
+**세션 요약 템플릿**:
+
+    ## Session Summary
+    ### Iteration
+    - [완료한 이터레이션, 예: "Iteration 4: Hash Commands"]
+    ### Commands Implemented
+    - [추가된 Redis 명령어 목록]
+    ### Files Changed
+    - [생성/수정된 파일 목록]
+    ### Tests
+    - Unit tests: [수, 상태]
+    - Integration tests: [수, 상태]
+    ### Redis Compatibility
+    - [호환성 검증 결과]
+    ### Next Priority
+    - [다음 사이클에서 구현할 내용]
+    ### Issues / Blockers
+    - [발생한 문제 또는 미해결 이슈]
 
 ## Resources
 
