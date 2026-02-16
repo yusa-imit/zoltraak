@@ -1,10 +1,6 @@
 ---
 name: unit-test-writer
-description: Creates embedded unit tests in Zig source files following Zig conventions. This agent writes unit tests DURING implementation, embedding them directly in source files using Zig's built-in test framework. Use this agent when implementing new functions, data structures, or modules that require unit test coverage.
-
-Examples:
-
-<example>
+description: Creates embedded unit tests in Zig source files following Zig conventions. This agent writes unit tests DURING implementation, embedding them directly in source files using Zig's built-in test framework. Use this agent when implementing new functions, data structures, or modules that require unit test coverage.\n\nExamples:\n\n<example>
 Context: Developer is implementing a new Redis command handler.
 user: "Implement the INCR command with unit tests"
 assistant: "I'll use the unit-test-writer agent to implement INCR with embedded unit tests following Zig conventions."
