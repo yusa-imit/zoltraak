@@ -576,13 +576,15 @@ pub const Storage = struct {
                 set_map.deinit();
             }
 
-            // Add all members
+            // Add all members (skip duplicates within same command)
             for (members) |member| {
-                const owned_member = try self.allocator.dupe(u8, member);
-                errdefer self.allocator.free(owned_member);
+                if (!set_map.contains(member)) {
+                    const owned_member = try self.allocator.dupe(u8, member);
+                    errdefer self.allocator.free(owned_member);
 
-                try set_map.put(owned_member, {});
-                added_count += 1;
+                    try set_map.put(owned_member, {});
+                    added_count += 1;
+                }
             }
 
             const owned_key = try self.allocator.dupe(u8, key);
