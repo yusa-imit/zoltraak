@@ -5,6 +5,7 @@ pub const ValueType = enum {
     string,
     list,
     set,
+    hash,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -13,6 +14,7 @@ pub const Value = union(ValueType) {
     string: StringValue,
     list: ListValue,
     set: SetValue,
+    hash: HashValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -55,12 +57,30 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// Hash value with optional expiration
+    /// Maps field names to values
+    pub const HashValue = struct {
+        data: std.StringHashMap([]const u8),
+        expires_at: ?i64,
+
+        pub fn deinit(self: *HashValue, allocator: std.mem.Allocator) void {
+            // Free all field names (keys) and field values
+            var it = self.data.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            self.data.deinit();
+        }
+    };
+
     /// Deinitialize value and free all associated memory
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .string => |*s| s.deinit(allocator),
             .list => |*l| l.deinit(allocator),
             .set => |*s| s.deinit(allocator),
+            .hash => |*h| h.deinit(allocator),
         }
     }
 
@@ -70,6 +90,7 @@ pub const Value = union(ValueType) {
             .string => |s| s.expires_at,
             .list => |l| l.expires_at,
             .set => |s| s.expires_at,
+            .hash => |h| h.expires_at,
         };
     }
 
@@ -739,6 +760,347 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .set => |set_val| return set_val.data.count(),
+            else => return null,
+        }
+    }
+
+    // Hash operations
+
+    /// Set field-value pairs in a hash
+    /// Returns count of fields actually added (not updated)
+    /// Returns error.WrongType if key exists and is not a hash
+    pub fn hset(
+        self: *Storage,
+        key: []const u8,
+        fields: []const []const u8,
+        values: []const []const u8,
+        expires_at: ?i64,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var added_count: usize = 0;
+
+        if (self.data.getEntry(key)) |entry| {
+            // Key exists - verify it's a hash
+            switch (entry.value_ptr.*) {
+                .hash => |*hash_val| {
+                    // Set fields in existing hash
+                    for (fields, values) |field, value| {
+                        const is_new = !hash_val.data.contains(field);
+
+                        if (is_new) {
+                            // New field - duplicate both
+                            const owned_field = try self.allocator.dupe(u8, field);
+                            errdefer self.allocator.free(owned_field);
+
+                            const owned_value = try self.allocator.dupe(u8, value);
+                            errdefer self.allocator.free(owned_value);
+
+                            try hash_val.data.put(owned_field, owned_value);
+                            added_count += 1;
+                        } else {
+                            // Existing field - free old value, set new one
+                            const old_value = hash_val.data.get(field).?;
+                            self.allocator.free(old_value);
+
+                            const owned_value = try self.allocator.dupe(u8, value);
+                            errdefer self.allocator.free(owned_value);
+
+                            try hash_val.data.put(field, owned_value);
+                        }
+                    }
+                    return added_count;
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            // Create new hash
+            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            errdefer {
+                var it = hash_map.iterator();
+                while (it.next()) |entry| {
+                    self.allocator.free(entry.key_ptr.*);
+                    self.allocator.free(entry.value_ptr.*);
+                }
+                hash_map.deinit();
+            }
+
+            // Add all field-value pairs
+            for (fields, values) |field, value| {
+                const owned_field = try self.allocator.dupe(u8, field);
+                errdefer self.allocator.free(owned_field);
+
+                const owned_value = try self.allocator.dupe(u8, value);
+                errdefer self.allocator.free(owned_value);
+
+                try hash_map.put(owned_field, owned_value);
+                added_count += 1;
+            }
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+
+            try self.data.put(owned_key, Value{
+                .hash = .{
+                    .data = hash_map,
+                    .expires_at = expires_at,
+                },
+            });
+
+            return added_count;
+        }
+    }
+
+    /// Get value of a field in a hash
+    /// Returns null if key doesn't exist, field doesn't exist, or key is not a hash
+    pub fn hget(
+        self: *Storage,
+        key: []const u8,
+        field: []const u8,
+    ) ?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                return hash_val.data.get(field);
+            },
+            else => return null,
+        }
+    }
+
+    /// Delete fields from a hash
+    /// Returns count of fields actually deleted
+    /// Returns 0 if key doesn't exist
+    /// Auto-deletes key if hash becomes empty
+    pub fn hdel(
+        self: *Storage,
+        key: []const u8,
+        fields: []const []const u8,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                var deleted_count: usize = 0;
+
+                for (fields) |field| {
+                    if (hash_val.data.fetchRemove(field)) |kv| {
+                        self.allocator.free(kv.key);
+                        self.allocator.free(kv.value);
+                        deleted_count += 1;
+                    }
+                }
+
+                // Auto-delete if hash becomes empty
+                if (hash_val.data.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return deleted_count;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get all fields and values in a hash
+    /// Returns array where even indices are fields, odd indices are values
+    /// Returns null if key doesn't exist or is not a hash
+    pub fn hgetall(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+    ) !?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                const field_count = hash_val.data.count();
+                var result = try allocator.alloc([]const u8, field_count * 2);
+                errdefer allocator.free(result);
+
+                var it = hash_val.data.iterator();
+                var i: usize = 0;
+                while (it.next()) |pair| {
+                    result[i] = pair.key_ptr.*;
+                    result[i + 1] = pair.value_ptr.*;
+                    i += 2;
+                }
+
+                return result;
+            },
+            else => return null,
+        }
+    }
+
+    /// Get all field names in a hash
+    /// Returns null if key doesn't exist or is not a hash
+    pub fn hkeys(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+    ) !?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                const field_count = hash_val.data.count();
+                var result = try allocator.alloc([]const u8, field_count);
+                errdefer allocator.free(result);
+
+                var it = hash_val.data.keyIterator();
+                var i: usize = 0;
+                while (it.next()) |field_ptr| : (i += 1) {
+                    result[i] = field_ptr.*;
+                }
+
+                return result;
+            },
+            else => return null,
+        }
+    }
+
+    /// Get all values in a hash
+    /// Returns null if key doesn't exist or is not a hash
+    pub fn hvals(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+    ) !?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                const field_count = hash_val.data.count();
+                var result = try allocator.alloc([]const u8, field_count);
+                errdefer allocator.free(result);
+
+                var it = hash_val.data.valueIterator();
+                var i: usize = 0;
+                while (it.next()) |value_ptr| : (i += 1) {
+                    result[i] = value_ptr.*;
+                }
+
+                return result;
+            },
+            else => return null,
+        }
+    }
+
+    /// Check if field exists in hash
+    /// Returns true if field exists, false otherwise
+    /// Returns false if key doesn't exist
+    /// Returns error.WrongType if key is not a hash
+    pub fn hexists(
+        self: *Storage,
+        key: []const u8,
+        field: []const u8,
+    ) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return false;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return false;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                return hash_val.data.contains(field);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get number of fields in a hash
+    /// Returns null if key doesn't exist or is not a hash
+    pub fn hlen(
+        self: *Storage,
+        key: []const u8,
+    ) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |hash_val| return hash_val.data.count(),
             else => return null,
         }
     }

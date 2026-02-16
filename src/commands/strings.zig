@@ -4,6 +4,7 @@ const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
+const hashes = @import("hashes.zig");
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -78,6 +79,24 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
         return sets.cmdSmembers(allocator, storage, array);
     } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
         return sets.cmdScard(allocator, storage, array);
+    }
+    // Hash commands
+    else if (std.mem.eql(u8, cmd_upper, "HSET")) {
+        return hashes.cmdHset(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HGET")) {
+        return hashes.cmdHget(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HDEL")) {
+        return hashes.cmdHdel(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HGETALL")) {
+        return hashes.cmdHgetall(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HKEYS")) {
+        return hashes.cmdHkeys(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HVALS")) {
+        return hashes.cmdHvals(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HEXISTS")) {
+        return hashes.cmdHexists(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "HLEN")) {
+        return hashes.cmdHlen(allocator, storage, array);
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();

@@ -96,6 +96,19 @@ redis-cli -p 6379
 | SMEMBERS | `SMEMBERS key` | Get all members |
 | SCARD | `SCARD key` | Get set cardinality |
 
+### Hash Commands (Iteration 4)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| HSET | `HSET key field value [field value ...]` | Set field values in hash |
+| HGET | `HGET key field` | Get value of field |
+| HDEL | `HDEL key field [field ...]` | Delete fields from hash |
+| HGETALL | `HGETALL key` | Get all fields and values |
+| HKEYS | `HKEYS key` | Get all field names |
+| HVALS | `HVALS key` | Get all values |
+| HEXISTS | `HEXISTS key field` | Check if field exists |
+| HLEN | `HLEN key` | Get number of fields |
+
 ## Example Session
 
 ```
@@ -135,11 +148,30 @@ OK
 3) "database"
 127.0.0.1:6379> SCARD tags
 (integer) 3
+
+# Hash operations
+127.0.0.1:6379> HSET user:1 name "Alice" email "alice@example.com" age "30"
+(integer) 3
+127.0.0.1:6379> HGET user:1 name
+"Alice"
+127.0.0.1:6379> HGETALL user:1
+1) "name"
+2) "Alice"
+3) "email"
+4) "alice@example.com"
+5) "age"
+6) "30"
+127.0.0.1:6379> HLEN user:1
+(integer) 3
+127.0.0.1:6379> HDEL user:1 email
+(integer) 1
+127.0.0.1:6379> HEXISTS user:1 email
+(integer) 0
 ```
 
 ## Project Status
 
-Iteration 3 is complete with Set data structure support.
+Iteration 4 is complete with Hash data structure support.
 
 ### Roadmap
 
@@ -151,7 +183,7 @@ Iteration 3 is complete with Set data structure support.
 - [x] Key expiration (EX, PX options)
 - [x] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
 - [x] Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
-- [ ] Hash operations (HSET, HGET, HDEL, HGETALL)
+- [x] Hash operations (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
 - [ ] Sorted set operations (ZADD, ZREM, ZRANGE)
 - [ ] Persistence (RDB)
 - [ ] Persistence (AOF)

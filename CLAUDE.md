@@ -24,9 +24,10 @@ When working with Claude Code on this project, the AI will maintain awareness of
 - Iteration 1: String commands (PING, SET, GET, DEL, EXISTS) + key expiration
 - Iteration 2: List commands (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
 - Iteration 3: Set commands (SADD, SREM, SISMEMBER, SMEMBERS, SCARD)
+- Iteration 4: Hash commands (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
 
 **남은 로드맵** (우선순위 순):
-1. Hash commands (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
+1. Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
 2. Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
 3. Persistence — RDB snapshots
 4. Persistence — AOF logging

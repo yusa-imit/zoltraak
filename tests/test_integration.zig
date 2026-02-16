@@ -2256,3 +2256,436 @@ test "Sets - all members removed deletes key" {
         try testing.expectEqualStrings("*0\r\n", response);
     }
 }
+
+// ============================================================================
+// Hash Commands Tests
+// ============================================================================
+
+test "Hash - HSET creates new hash and field" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "Hash - HSET with multiple field-value pairs" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1", "field2", "value2", "field3", "value3" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "Hash - HSET update existing field returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Update same field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "newvalue" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+test "Hash - HGET retrieves field value" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "Hello World" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HGET", "myhash", "field1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$11\r\nHello World\r\n", response);
+    }
+}
+
+test "Hash - HGET non-existent field returns null" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HGET", "myhash", "nosuchfield" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "Hash - HGET non-existent key returns null" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HGET", "nosuchkey", "field1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "Hash - HDEL deletes field" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set multiple fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1", "field2", "value2" });
+        defer testing.allocator.free(response);
+    }
+
+    // Delete one field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HDEL", "myhash", "field1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify field is gone
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HGET", "myhash", "field1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$-1\r\n", response);
+    }
+
+    // Verify other field still exists
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HGET", "myhash", "field2" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$6\r\nvalue2\r\n", response);
+    }
+}
+
+test "Hash - HDEL multiple fields" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "f1", "v1", "f2", "v2", "f3", "v3" });
+        defer testing.allocator.free(response);
+    }
+
+    // Delete multiple
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HDEL", "myhash", "f1", "f3" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "Hash - HGETALL returns all fields and values" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1", "field2", "value2" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get all
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HGETALL", "myhash" });
+        defer testing.allocator.free(response);
+        
+        // Response should be array with 4 elements (field1, value1, field2, value2)
+        try testing.expect(std.mem.startsWith(u8, response, "*4\r\n"));
+    }
+}
+
+test "Hash - HGETALL on non-existent key returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HGETALL", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "Hash - HKEYS returns all field names" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1", "field2", "value2" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get keys
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HKEYS", "myhash" });
+        defer testing.allocator.free(response);
+        
+        // Response should be array with 2 elements
+        try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    }
+}
+
+test "Hash - HVALS returns all values" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1", "field2", "value2" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get values
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HVALS", "myhash" });
+        defer testing.allocator.free(response);
+        
+        // Response should be array with 2 elements
+        try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    }
+}
+
+test "Hash - HEXISTS checks field existence" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1" });
+        defer testing.allocator.free(response);
+    }
+
+    // Check existing field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HEXISTS", "myhash", "field1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Check non-existent field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HEXISTS", "myhash", "field2" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Check non-existent key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HEXISTS", "nosuchkey", "field1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+test "Hash - HLEN returns field count" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "f1", "v1", "f2", "v2", "f3", "v3" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get length
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HLEN", "myhash" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+}
+
+test "Hash - HLEN on non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HLEN", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "Hash - HSET on string key returns WRONGTYPE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "mykey", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Try HSET on string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "mykey", "field", "value" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
+    }
+}
+
+test "Hash - deleting all fields deletes key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create hash
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field1", "value1" });
+        defer testing.allocator.free(response);
+    }
+
+    // Verify it exists
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "myhash" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Delete all fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HDEL", "myhash", "field1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify key no longer exists
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "myhash" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+test "Hash - comprehensive workflow" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create user profile
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "user:1", "name", "Alice", "email", "alice@example.com", "age", "30" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Get name
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HGET", "user:1", "name" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$5\r\nAlice\r\n", response);
+    }
+
+    // Update age
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "user:1", "age", "31" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Verify updated age
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HGET", "user:1", "age" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$2\r\n31\r\n", response);
+    }
+
+    // Get all fields
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HKEYS", "user:1" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+    }
+
+    // Check field count
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HLEN", "user:1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Delete email field
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HDEL", "user:1", "email" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify field count decreased
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HLEN", "user:1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+
+    // Email field should not exist
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HEXISTS", "user:1", "email" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
