@@ -326,7 +326,7 @@ When working with agents:
 | 5. 호환성 검증 | RESP 응답 포맷·에러 메시지가 Redis와 일치하는지 확인 |
 | 6. 문서화 | README.md 지원 명령어 테이블 업데이트 |
 | 7. 정리 | 임시 파일 제거, 디버그 프린트·TODO 주석 정리 |
-| 8. 커밋 | `feat(<scope>): implement Redis <Type> commands` 형식으로 커밋 |
+| 8. 커밋 & 푸시 | `feat(<scope>): implement Redis <Type> commands` 형식으로 커밋 후 `git push` 실행 |
 
 **Redis 명령어 구현 패턴**:
 1. **Storage layer** (`src/storage/memory.zig`): `Value` tagged union에 새 데이터 타입 추가, 저장 연산 구현
