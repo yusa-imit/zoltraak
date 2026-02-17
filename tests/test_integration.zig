@@ -54,6 +54,10 @@ const TestServer = struct {
     allocator: std.mem.Allocator,
 
     pub fn start(allocator: std.mem.Allocator) !TestServer {
+        // Clean up persistence files so each test starts with fresh state
+        std.fs.cwd().deleteFile("dump.rdb") catch {};
+        std.fs.cwd().deleteFile("appendonly.aof") catch {};
+
         var process = std.process.Child.init(&[_][]const u8{"./zig-out/bin/zoltraak"}, allocator);
         process.stdout_behavior = .Ignore;
         process.stderr_behavior = .Ignore;
@@ -72,6 +76,9 @@ const TestServer = struct {
     pub fn stop(self: *TestServer) void {
         _ = self.process.kill() catch {};
         _ = self.process.wait() catch {};
+        // Clean up persistence files after test
+        std.fs.cwd().deleteFile("dump.rdb") catch {};
+        std.fs.cwd().deleteFile("appendonly.aof") catch {};
     }
 };
 
@@ -3815,5 +3822,110 @@ test "Sorted Set - score ordering is consistent with ZRANGE and ZRANGEBYSCORE" {
         const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "(10", "+inf" });
         defer testing.allocator.free(response);
         try testing.expectEqualStrings("*2\r\n$1\r\nb\r\n$1\r\nc\r\n", response);
+    }
+}
+
+// ============================================================================
+// AOF Persistence Tests
+// ============================================================================
+
+test "AOF - BGREWRITEAOF command responds with simple string" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Write some data first
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "aof_key1", "aof_value1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("+OK\r\n", response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "aof_set", "member1", "member2" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+
+    // BGREWRITEAOF should return a simple string starting with '+'
+    {
+        const response = try client.sendCommand(&[_][]const u8{"BGREWRITEAOF"});
+        defer testing.allocator.free(response);
+        try testing.expect(response.len > 0 and response[0] == '+');
+    }
+}
+
+test "AOF - write commands are logged to appendonly.aof file" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Write several commands
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "log_key", "log_val" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "log_list", "a", "b", "c" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":3\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SADD", "log_set", "x", "y" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":2\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "HSET", "log_hash", "field1", "val1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":1\r\n", r);
+    }
+
+    // Give time for AOF to flush
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    // Verify appendonly.aof was created and is non-empty
+    const aof_file = std.fs.cwd().openFile("appendonly.aof", .{}) catch |err| {
+        std.debug.print("AOF file not found: {any}\n", .{err});
+        return error.AofFileNotFound;
+    };
+    defer aof_file.close();
+
+    const stat = try aof_file.stat();
+    try testing.expect(stat.size > 0);
+}
+
+test "AOF - FLUSHALL is logged to AOF" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "flush_key", "flush_val" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{"FLUSHALL"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    // After FLUSHALL, key should be gone
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "flush_key" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$-1\r\n", r);
+    }
+    // DBSIZE should be 0
+    {
+        const r = try client.sendCommand(&[_][]const u8{"DBSIZE"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":0\r\n", r);
     }
 }

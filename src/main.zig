@@ -8,6 +8,7 @@ pub const storage = @import("storage/memory.zig");
 pub const commands = @import("commands/strings.zig");
 pub const sorted_sets = @import("commands/sorted_sets.zig");
 pub const persistence = @import("storage/persistence.zig");
+pub const aof = @import("storage/aof.zig");
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;
@@ -95,6 +96,27 @@ pub fn main() !void {
         if (loaded > 0) {
             std.debug.print("Loaded {d} keys from dump.rdb\n", .{loaded});
         }
+    }
+
+    // Replay AOF if it exists (applied on top of RDB)
+    {
+        const Aof = aof.Aof;
+        const replayed = Aof.replay(server.storage, "appendonly.aof", allocator) catch |err| blk: {
+            std.debug.print("Warning: could not replay appendonly.aof: {any}\n", .{err});
+            break :blk 0;
+        };
+        if (replayed > 0) {
+            std.debug.print("Replayed {d} commands from appendonly.aof\n", .{replayed});
+        }
+    }
+
+    // Open AOF for appending (creates file if not present)
+    {
+        const Aof = aof.Aof;
+        server.aof = Aof.open("appendonly.aof") catch |err| blk: {
+            std.debug.print("Warning: could not open appendonly.aof for writing: {any}\n", .{err});
+            break :blk null;
+        };
     }
 
     // Set up signal handler for graceful shutdown

@@ -109,12 +109,13 @@ redis-cli -p 6379
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
 
-### Server / Persistence Commands (Iteration 6)
+### Server / Persistence Commands (Iterations 6–7)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
 | SAVE | `SAVE` | Save snapshot to dump.rdb (synchronous) |
 | BGSAVE | `BGSAVE` | Save snapshot to dump.rdb (reports as background) |
+| BGREWRITEAOF | `BGREWRITEAOF` | Rewrite the AOF file from current storage state |
 | DBSIZE | `DBSIZE` | Return number of keys in the database |
 | FLUSHDB | `FLUSHDB` | Remove all keys from the database |
 | FLUSHALL | `FLUSHALL` | Remove all keys from all databases |
@@ -192,7 +193,7 @@ OK
 
 ## Project Status
 
-Iteration 6 is complete with RDB persistence (snapshots) and server utility commands.
+Iterations 1–7 are complete. AOF persistence (append-only log) is now fully implemented.
 
 ### Roadmap
 
@@ -207,7 +208,7 @@ Iteration 6 is complete with RDB persistence (snapshots) and server utility comm
 - [x] Hash operations (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
 - [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
 - [x] Persistence (RDB snapshots — SAVE, BGSAVE, auto-load on startup)
-- [ ] Persistence (AOF)
+- [x] Persistence (AOF — append-only log, replay on startup, BGREWRITEAOF)
 - [ ] Pub/Sub
 - [ ] Transactions
 - [ ] Replication

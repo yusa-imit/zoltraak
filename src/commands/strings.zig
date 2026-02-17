@@ -3,6 +3,7 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const persistence_mod = @import("../storage/persistence.zig");
+const aof_mod = @import("../storage/aof.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
@@ -13,13 +14,17 @@ const RespType = protocol.RespType;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const Persistence = persistence_mod.Persistence;
+pub const Aof = aof_mod.Aof;
 
 /// Default RDB file path
 const DEFAULT_RDB_PATH = "dump.rdb";
+/// Default AOF file path
+const DEFAULT_AOF_PATH = "appendonly.aof";
 
-/// Execute a RESP command and return the serialized response
-/// Caller owns returned memory and must free it
-pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: RespValue) ![]const u8 {
+/// Execute a RESP command and return the serialized response.
+/// Caller owns returned memory and must free it.
+/// If `aof` is non-null, write commands are appended to it after successful execution.
+pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: RespValue, aof: ?*Aof) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
         else => {
@@ -48,92 +53,136 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
 
-    // String commands
-    if (std.mem.eql(u8, cmd_upper, "PING")) {
-        return cmdPing(allocator, array);
-    } else if (std.mem.eql(u8, cmd_upper, "SET")) {
-        return cmdSet(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "GET")) {
-        return cmdGet(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "DEL")) {
-        return cmdDel(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "EXISTS")) {
-        return cmdExists(allocator, storage, array);
+    // Determine if this is a write command that should be AOF-logged
+    const is_write_cmd = blk: {
+        const write_cmds = [_][]const u8{
+            "SET", "DEL",
+            "LPUSH", "RPUSH", "LPOP", "RPOP",
+            "SADD", "SREM",
+            "HSET", "HDEL",
+            "ZADD", "ZREM",
+            "FLUSHDB", "FLUSHALL",
+        };
+        for (write_cmds) |wc| {
+            if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
+        }
+        break :blk false;
+    };
+
+    // Execute command
+    const response = blk: {
+        // String commands
+        if (std.mem.eql(u8, cmd_upper, "PING")) {
+            break :blk try cmdPing(allocator, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SET")) {
+            break :blk try cmdSet(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GET")) {
+            break :blk try cmdGet(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "DEL")) {
+            break :blk try cmdDel(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "EXISTS")) {
+            break :blk try cmdExists(allocator, storage, array);
+        }
+        // List commands
+        else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
+            break :blk try lists.cmdLpush(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RPUSH")) {
+            break :blk try lists.cmdRpush(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LPOP")) {
+            break :blk try lists.cmdLpop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RPOP")) {
+            break :blk try lists.cmdRpop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LRANGE")) {
+            break :blk try lists.cmdLrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
+            break :blk try lists.cmdLlen(allocator, storage, array);
+        }
+        // Set commands
+        else if (std.mem.eql(u8, cmd_upper, "SADD")) {
+            break :blk try sets.cmdSadd(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SREM")) {
+            break :blk try sets.cmdSrem(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SISMEMBER")) {
+            break :blk try sets.cmdSismember(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SMEMBERS")) {
+            break :blk try sets.cmdSmembers(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
+            break :blk try sets.cmdScard(allocator, storage, array);
+        }
+        // Hash commands
+        else if (std.mem.eql(u8, cmd_upper, "HSET")) {
+            break :blk try hashes.cmdHset(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HGET")) {
+            break :blk try hashes.cmdHget(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HDEL")) {
+            break :blk try hashes.cmdHdel(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HGETALL")) {
+            break :blk try hashes.cmdHgetall(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HKEYS")) {
+            break :blk try hashes.cmdHkeys(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HVALS")) {
+            break :blk try hashes.cmdHvals(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HEXISTS")) {
+            break :blk try hashes.cmdHexists(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HLEN")) {
+            break :blk try hashes.cmdHlen(allocator, storage, array);
+        }
+        // Sorted set commands
+        else if (std.mem.eql(u8, cmd_upper, "ZADD")) {
+            break :blk try sorted_sets.cmdZadd(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREM")) {
+            break :blk try sorted_sets.cmdZrem(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZRANGE")) {
+            break :blk try sorted_sets.cmdZrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYSCORE")) {
+            break :blk try sorted_sets.cmdZrangebyscore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZSCORE")) {
+            break :blk try sorted_sets.cmdZscore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
+            break :blk try sorted_sets.cmdZcard(allocator, storage, array);
+        }
+        // Server / persistence commands
+        else if (std.mem.eql(u8, cmd_upper, "SAVE")) {
+            break :blk try cmdSave(allocator, storage);
+        } else if (std.mem.eql(u8, cmd_upper, "BGSAVE")) {
+            break :blk try cmdBgsave(allocator, storage);
+        } else if (std.mem.eql(u8, cmd_upper, "BGREWRITEAOF")) {
+            break :blk try cmdBgrewriteaof(allocator, storage);
+        } else if (std.mem.eql(u8, cmd_upper, "DBSIZE")) {
+            break :blk try cmdDbsize(allocator, storage);
+        } else if (std.mem.eql(u8, cmd_upper, "FLUSHDB") or std.mem.eql(u8, cmd_upper, "FLUSHALL")) {
+            break :blk try cmdFlushall(allocator, storage);
+        } else {
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            var buf: [256]u8 = undefined;
+            const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_name});
+            return w.writeError(err_msg);
+        }
+    };
+
+    // Log write commands to AOF (best-effort, skip on error)
+    if (is_write_cmd) {
+        if (aof) |a| {
+            // Build string slice from the RespValue array
+            var aof_args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(aof_args);
+            var valid = true;
+            for (array, 0..) |arg, i| {
+                aof_args[i] = switch (arg) {
+                    .bulk_string => |s| s,
+                    else => { valid = false; break; },
+                };
+            }
+            if (valid) {
+                a.appendCommand(aof_args) catch |err| {
+                    std.debug.print("AOF write warning: {any}\n", .{err});
+                };
+            }
+        }
     }
-    // List commands
-    else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
-        return lists.cmdLpush(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "RPUSH")) {
-        return lists.cmdRpush(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "LPOP")) {
-        return lists.cmdLpop(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "RPOP")) {
-        return lists.cmdRpop(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "LRANGE")) {
-        return lists.cmdLrange(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
-        return lists.cmdLlen(allocator, storage, array);
-    }
-    // Set commands
-    else if (std.mem.eql(u8, cmd_upper, "SADD")) {
-        return sets.cmdSadd(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "SREM")) {
-        return sets.cmdSrem(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "SISMEMBER")) {
-        return sets.cmdSismember(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "SMEMBERS")) {
-        return sets.cmdSmembers(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
-        return sets.cmdScard(allocator, storage, array);
-    }
-    // Hash commands
-    else if (std.mem.eql(u8, cmd_upper, "HSET")) {
-        return hashes.cmdHset(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HGET")) {
-        return hashes.cmdHget(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HDEL")) {
-        return hashes.cmdHdel(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HGETALL")) {
-        return hashes.cmdHgetall(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HKEYS")) {
-        return hashes.cmdHkeys(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HVALS")) {
-        return hashes.cmdHvals(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HEXISTS")) {
-        return hashes.cmdHexists(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "HLEN")) {
-        return hashes.cmdHlen(allocator, storage, array);
-    }
-    // Sorted set commands
-    else if (std.mem.eql(u8, cmd_upper, "ZADD")) {
-        return sorted_sets.cmdZadd(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "ZREM")) {
-        return sorted_sets.cmdZrem(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "ZRANGE")) {
-        return sorted_sets.cmdZrange(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYSCORE")) {
-        return sorted_sets.cmdZrangebyscore(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "ZSCORE")) {
-        return sorted_sets.cmdZscore(allocator, storage, array);
-    } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
-        return sorted_sets.cmdZcard(allocator, storage, array);
-    }
-    // Server / persistence commands
-    else if (std.mem.eql(u8, cmd_upper, "SAVE")) {
-        return cmdSave(allocator, storage);
-    } else if (std.mem.eql(u8, cmd_upper, "BGSAVE")) {
-        return cmdBgsave(allocator, storage);
-    } else if (std.mem.eql(u8, cmd_upper, "DBSIZE")) {
-        return cmdDbsize(allocator, storage);
-    } else if (std.mem.eql(u8, cmd_upper, "FLUSHDB") or std.mem.eql(u8, cmd_upper, "FLUSHALL")) {
-        return cmdFlushall(allocator, storage);
-    } else {
-        var w = Writer.init(allocator);
-        defer w.deinit();
-        var buf: [256]u8 = undefined;
-        const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_name});
-        return w.writeError(err_msg);
-    }
+
+    return response;
 }
 
 /// PING [message]
@@ -350,6 +399,20 @@ fn cmdBgsave(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
     };
 
     return w.writeSimpleString("Background saving started");
+}
+
+/// BGREWRITEAOF — rewrite the AOF from current storage state
+fn cmdBgrewriteaof(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    Aof.rewrite(storage, DEFAULT_AOF_PATH, allocator) catch |err| {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "ERR BGREWRITEAOF failed: {any}", .{err}) catch "ERR BGREWRITEAOF failed";
+        return w.writeError(msg);
+    };
+
+    return w.writeSimpleString("Background append only file rewriting started");
 }
 
 /// DBSIZE — return number of keys in current database
@@ -789,7 +852,7 @@ test "commands - executeCommand dispatches PING" {
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd);
+    const result = try executeCommand(allocator, storage, cmd, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -805,7 +868,7 @@ test "commands - executeCommand case insensitive" {
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd);
+    const result = try executeCommand(allocator, storage, cmd, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -821,7 +884,7 @@ test "commands - executeCommand unknown command" {
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd);
+    const result = try executeCommand(allocator, storage, cmd, null);
     defer allocator.free(result);
 
     const expected = "-ERR unknown command 'UNKNOWN'\r\n";

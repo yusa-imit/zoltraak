@@ -3,10 +3,12 @@ const protocol = @import("protocol/parser.zig");
 const writer_mod = @import("protocol/writer.zig");
 const commands = @import("commands/strings.zig");
 const storage_mod = @import("storage/memory.zig");
+const aof_mod = @import("storage/aof.zig");
 
 const Parser = protocol.Parser;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const Aof = aof_mod.Aof;
 
 /// Server configuration
 pub const Config = struct {
@@ -21,6 +23,7 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     config: Config,
     storage: *Storage,
+    aof: ?*Aof,
     running: std.atomic.Value(bool),
 
     /// Initialize a new server instance
@@ -35,6 +38,7 @@ pub const Server = struct {
             .allocator = allocator,
             .config = config,
             .storage = storage,
+            .aof = null,
             .running = std.atomic.Value(bool).init(false),
         };
 
@@ -43,6 +47,7 @@ pub const Server = struct {
 
     /// Deinitialize the server and free resources
     pub fn deinit(self: *Server) void {
+        if (self.aof) |a| a.close();
         self.storage.deinit();
         const allocator = self.allocator;
         allocator.destroy(self);
@@ -124,7 +129,7 @@ pub const Server = struct {
             };
 
             // Execute command
-            const response = commands.executeCommand(arena_allocator, self.storage, cmd) catch |err| {
+            const response = commands.executeCommand(arena_allocator, self.storage, cmd, self.aof) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";
                 _ = connection.stream.write(error_response) catch break;
