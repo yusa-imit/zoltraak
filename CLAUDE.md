@@ -25,15 +25,14 @@ When working with Claude Code on this project, the AI will maintain awareness of
 - Iteration 2: List commands (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
 - Iteration 3: Set commands (SADD, SREM, SISMEMBER, SMEMBERS, SCARD)
 - Iteration 4: Hash commands (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
+- Iteration 5: Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
 
 **남은 로드맵** (우선순위 순):
-1. Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
-2. Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
-3. Persistence — RDB snapshots
-4. Persistence — AOF logging
-5. Pub/Sub messaging
-6. Transactions (MULTI/EXEC)
-7. Replication
+1. Persistence — RDB snapshots
+2. Persistence — AOF logging
+3. Pub/Sub messaging
+4. Transactions (MULTI/EXEC)
+5. Replication
 
 ## Build Commands
 

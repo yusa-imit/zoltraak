@@ -6,6 +6,7 @@ pub const protocol = @import("protocol/parser.zig");
 pub const writer = @import("protocol/writer.zig");
 pub const storage = @import("storage/memory.zig");
 pub const commands = @import("commands/strings.zig");
+pub const sorted_sets = @import("commands/sorted_sets.zig");
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;

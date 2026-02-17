@@ -109,6 +109,17 @@ redis-cli -p 6379
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
 
+### Sorted Set Commands (Iteration 5)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| ZADD | `ZADD key [NX\|XX] [CH] score member [score member ...]` | Add members with scores |
+| ZREM | `ZREM key member [member ...]` | Remove members from sorted set |
+| ZRANGE | `ZRANGE key start stop [WITHSCORES]` | Get range of members by rank |
+| ZRANGEBYSCORE | `ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]` | Get members by score range |
+| ZSCORE | `ZSCORE key member` | Get score of member |
+| ZCARD | `ZCARD key` | Get number of members |
+
 ## Example Session
 
 ```
@@ -171,7 +182,7 @@ OK
 
 ## Project Status
 
-Iteration 4 is complete with Hash data structure support.
+Iteration 5 is complete with Sorted Set data structure support.
 
 ### Roadmap
 
@@ -184,7 +195,7 @@ Iteration 4 is complete with Hash data structure support.
 - [x] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
 - [x] Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
 - [x] Hash operations (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
-- [ ] Sorted set operations (ZADD, ZREM, ZRANGE)
+- [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
 - [ ] Persistence (RDB)
 - [ ] Persistence (AOF)
 - [ ] Pub/Sub

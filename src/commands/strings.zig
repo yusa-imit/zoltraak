@@ -5,6 +5,7 @@ const storage_mod = @import("../storage/memory.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
+const sorted_sets = @import("sorted_sets.zig");
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -97,6 +98,20 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
         return hashes.cmdHexists(allocator, storage, array);
     } else if (std.mem.eql(u8, cmd_upper, "HLEN")) {
         return hashes.cmdHlen(allocator, storage, array);
+    }
+    // Sorted set commands
+    else if (std.mem.eql(u8, cmd_upper, "ZADD")) {
+        return sorted_sets.cmdZadd(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "ZREM")) {
+        return sorted_sets.cmdZrem(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "ZRANGE")) {
+        return sorted_sets.cmdZrange(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYSCORE")) {
+        return sorted_sets.cmdZrangebyscore(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "ZSCORE")) {
+        return sorted_sets.cmdZscore(allocator, storage, array);
+    } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
+        return sorted_sets.cmdZcard(allocator, storage, array);
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();

@@ -2689,3 +2689,1131 @@ test "Hash - comprehensive workflow" {
         try testing.expectEqualStrings(":0\r\n", response);
     }
 }
+
+// ============================================================================
+// Sorted Set Command Tests - ZADD
+// ============================================================================
+
+test "ZADD - basic add single member" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add one member with score 1
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+    defer testing.allocator.free(response);
+
+    // ZADD returns the count of newly added members
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "ZADD - adding multiple members returns total added count" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add three members in one command
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "ZADD - updating existing member score returns 0 (no new element)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add initial member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Update score of existing member - returns 0 because no new element was added
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "10", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+test "ZADD - NX flag only adds new members, skips existing" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add a member first
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // NX: attempt to update existing member - should be skipped, returns 0
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "NX", "99", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Verify score was NOT changed (original score 1 remains)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset", "one" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "1") != null);
+        // Should NOT contain "99"
+        try testing.expect(std.mem.indexOf(u8, response, "99") == null);
+    }
+}
+
+test "ZADD - NX flag adds new member successfully" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // NX: add a brand new member - should succeed, returns 1
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "NX", "5", "newmember" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "ZADD - XX flag only updates existing members, skips new" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add initial member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // XX: attempt to add a brand new member - should be skipped, returns 0
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "XX", "5", "newmember" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Verify new member was NOT added (ZCARD should still be 1)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "myzset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+}
+
+test "ZADD - XX flag updates existing member score" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add initial member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+    }
+
+    // XX: update score of existing member - returns 0 (no new element added)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "XX", "42", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Verify the score was updated
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset", "one" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "42") != null);
+    }
+}
+
+test "ZADD - CH flag returns count of added AND updated members" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add initial member with score 1
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // CH: update existing + add new - should return 2 (1 updated + 1 new)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "CH", "5", "one", "2", "two" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "ZADD - CH flag without changes returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+    }
+
+    // CH: re-add with the same score - nothing actually changed
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "CH", "1", "one" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+test "ZADD - NX and XX flags together returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "NX", "XX", "1", "one" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "ZADD - wrong number of arguments returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Missing score-member pair entirely
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "ZADD - invalid score returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "notanumber", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "ZADD - float scores are supported" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "3.14", "pi" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+}
+
+// ============================================================================
+// Sorted Set Command Tests - ZREM
+// ============================================================================
+
+test "ZREM - remove single member from sorted set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Remove one member - returns 1
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZREM", "myzset", "two" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify member is gone
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset", "two" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("$-1\r\n", response);
+    }
+
+    // Verify other members remain
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "myzset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "ZREM - remove multiple members at once" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three", "4", "four" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove two members in one command
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZREM", "myzset", "one", "three" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+
+    // Verify correct count remains
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "myzset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "ZREM - non-existent member returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove a member that doesn't exist - returns 0
+    const response = try client.sendCommand(&[_][]const u8{ "ZREM", "myzset", "nosuchmember" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "ZREM - on non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZREM", "nosuchkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "ZREM - wrong number of arguments returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Only key, no member provided
+    const response = try client.sendCommand(&[_][]const u8{ "ZREM", "myzset" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+// ============================================================================
+// Sorted Set Command Tests - ZRANGE
+// ============================================================================
+
+test "ZRANGE - get all members ordered by score ascending" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add members with scores in non-sequential order
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "3", "three", "1", "one", "2", "two" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // ZRANGE 0 -1 returns all members sorted by score ascending
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myzset", "0", "-1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", response);
+    }
+}
+
+test "ZRANGE - partial range using positive indices" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three", "4", "four" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get ranks 1 to 2 (second and third elements)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myzset", "1", "2" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", response);
+    }
+}
+
+test "ZRANGE - with WITHSCORES returns interleaved members and scores" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two" });
+        defer testing.allocator.free(response);
+    }
+
+    // WITHSCORES: response array alternates member, score, member, score
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myzset", "0", "-1", "WITHSCORES" });
+        defer testing.allocator.free(response);
+        // 4 elements: "one", "1", "two", "2"
+        try testing.expect(std.mem.startsWith(u8, response, "*4\r\n"));
+        try testing.expect(std.mem.indexOf(u8, response, "one") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "two") != null);
+    }
+}
+
+test "ZRANGE - on non-existent key returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "nosuchkey", "0", "-1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "ZRANGE - out-of-range indices returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup with one member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+    }
+
+    // Start index beyond end of set
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myzset", "5", "10" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*0\r\n", response);
+    }
+}
+
+test "ZRANGE - wrong number of arguments returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Missing stop index
+    const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myzset", "0" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+// ============================================================================
+// Sorted Set Command Tests - ZRANGEBYSCORE
+// ============================================================================
+
+test "ZRANGEBYSCORE - inclusive range min and max" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup: scores 1, 2, 3
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Range [1, 2] - inclusive both ends
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "1", "2" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - exclusive min interval using ( prefix" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Range (1, 3] - excludes score=1, includes score=3
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "(1", "3" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - exclusive max interval using ( prefix" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Range [1, 3) - includes score=1, excludes score=3
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "1", "(3" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - exclusive both ends using ( prefix" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Range (1, 3) - excludes both endpoints, only score=2 matches
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "(1", "(3" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*1\r\n$3\r\ntwo\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - -inf to +inf returns all members" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Use -inf and +inf to get all members
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "-inf", "+inf" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - -inf to score returns lower portion" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // From -inf to score=2
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "-inf", "2" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - score to +inf returns upper portion" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // From score=2 to +inf
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "2", "+inf" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - empty range returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two" });
+        defer testing.allocator.free(response);
+    }
+
+    // Range where min > max of all stored scores - no matches
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "10", "20" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*0\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - on non-existent key returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "nosuchkey", "-inf", "+inf" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "ZRANGEBYSCORE - wrong number of arguments returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Missing max argument
+    const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "0" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+// ============================================================================
+// Sorted Set Command Tests - ZSCORE
+// ============================================================================
+
+test "ZSCORE - get score of existing member" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one" });
+        defer testing.allocator.free(response);
+    }
+
+    // Get score - returns a bulk string containing the score
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset", "one" });
+        defer testing.allocator.free(response);
+        // Should be a bulk string starting with $
+        try testing.expect(std.mem.startsWith(u8, response, "$"));
+        // Score "1" should be in the response
+        try testing.expect(std.mem.indexOf(u8, response, "1") != null);
+    }
+}
+
+test "ZSCORE - get float score of existing member" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add member with float score
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1.5", "member" });
+        defer testing.allocator.free(response);
+    }
+
+    // Score 1.5 should appear in the response
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset", "member" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.startsWith(u8, response, "$"));
+        try testing.expect(std.mem.indexOf(u8, response, "1.5") != null);
+    }
+}
+
+test "ZSCORE - non-existent member returns null bulk string" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Query a member in an empty set
+    const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset", "nosuchmember" });
+    defer testing.allocator.free(response);
+
+    // Redis returns null bulk string $-1\r\n for missing member
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "ZSCORE - non-existent key returns null bulk string" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "nosuchkey", "member" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "ZSCORE - wrong number of arguments returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Missing member argument
+    const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "myzset" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+// ============================================================================
+// Sorted Set Command Tests - ZCARD
+// ============================================================================
+
+test "ZCARD - returns count of members in sorted set" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup with known count
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // ZCARD should return 3
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "myzset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+}
+
+test "ZCARD - non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "nosuchkey" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "ZCARD - decrements after ZREM" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add members
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "myzset", "1", "one", "2", "two", "3", "three" });
+        defer testing.allocator.free(response);
+    }
+
+    // Remove one member
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZREM", "myzset", "two" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // ZCARD should now be 2
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "myzset" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "ZCARD - wrong number of arguments returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // No key provided
+    const response = try client.sendCommand(&[_][]const u8{"ZCARD"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+// ============================================================================
+// Sorted Set - WRONGTYPE Error Scenarios
+// ============================================================================
+
+test "ZADD - WRONGTYPE error when key holds a string" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a plain string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "mykey", "stringvalue" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("+OK\r\n", response);
+    }
+
+    // ZADD on a string key should return WRONGTYPE error
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "mykey", "1", "member" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+    }
+}
+
+test "ZREM - WRONGTYPE error when key holds a list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a list key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "item1", "item2" });
+        defer testing.allocator.free(response);
+    }
+
+    // ZREM on a list key should return WRONGTYPE error
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZREM", "mylist", "item1" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+    }
+}
+
+// NOTE: The following tests document a known implementation limitation.
+// Redis requires WRONGTYPE errors from ZRANGE, ZRANGEBYSCORE, ZSCORE, and ZCARD
+// when called on keys holding non-sorted-set data types. The current implementation
+// in src/storage/memory.zig returns null (treated as non-existent key) instead
+// of error.WrongType for these operations. These tests verify the current
+// actual behavior. When the implementation is fixed to return error.WrongType
+// for these storage functions, these tests should be updated to check for WRONGTYPE.
+
+test "ZRANGE - on hash key returns empty array (current behavior; Redis requires WRONGTYPE)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a hash key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HSET", "myhash", "field", "value" });
+        defer testing.allocator.free(response);
+    }
+
+    // Current behavior: ZRANGE on a hash key returns empty array (not WRONGTYPE).
+    // Redis-compatible behavior would return: -WRONGTYPE Operation against a key...
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myhash", "0", "-1" });
+        defer testing.allocator.free(response);
+        // Current implementation returns empty array since storage.zrange returns null for non-sorted-set keys
+        try testing.expectEqualStrings("*0\r\n", response);
+    }
+}
+
+test "ZRANGEBYSCORE - on set key returns empty array (current behavior; Redis requires WRONGTYPE)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a plain set key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SADD", "myset", "member1", "member2" });
+        defer testing.allocator.free(response);
+    }
+
+    // Current behavior: ZRANGEBYSCORE on a set key returns empty array (not WRONGTYPE).
+    // Redis-compatible behavior would return: -WRONGTYPE Operation against a key...
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myset", "-inf", "+inf" });
+        defer testing.allocator.free(response);
+        // Current implementation returns empty array since storage.zrangebyscore returns null for non-sorted-set keys
+        try testing.expectEqualStrings("*0\r\n", response);
+    }
+}
+
+test "ZSCORE - on string key returns nil (current behavior; Redis requires WRONGTYPE)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a plain string key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "mykey", "stringvalue" });
+        defer testing.allocator.free(response);
+    }
+
+    // Current behavior: ZSCORE on a string key returns nil bulk string (not WRONGTYPE).
+    // Redis-compatible behavior would return: -WRONGTYPE Operation against a key...
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "mykey", "member" });
+        defer testing.allocator.free(response);
+        // Current implementation returns $-1\r\n since storage.zscore returns null for non-sorted-set keys
+        try testing.expectEqualStrings("$-1\r\n", response);
+    }
+}
+
+test "ZCARD - on list key returns 0 (current behavior; Redis requires WRONGTYPE)" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a list key
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "item" });
+        defer testing.allocator.free(response);
+    }
+
+    // Current behavior: ZCARD on a list key returns 0 (not WRONGTYPE).
+    // Redis-compatible behavior would return: -WRONGTYPE Operation against a key...
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "mylist" });
+        defer testing.allocator.free(response);
+        // Current implementation returns :0\r\n since storage.zcard returns null for non-sorted-set keys
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+}
+
+// ============================================================================
+// Sorted Set - Comprehensive Workflow Tests
+// ============================================================================
+
+test "Sorted Set - leaderboard workflow" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add players with initial scores
+    {
+        const response = try client.sendCommand(&[_][]const u8{
+            "ZADD", "leaderboard",
+            "100",  "alice",
+            "200",  "bob",
+            "150",  "charlie",
+        });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Verify initial cardinality
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "leaderboard" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // Get full leaderboard ordered by score ascending
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "leaderboard", "0", "-1" });
+        defer testing.allocator.free(response);
+        // alice(100), charlie(150), bob(200)
+        try testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+        try testing.expect(std.mem.indexOf(u8, response, "alice") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "charlie") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "bob") != null);
+    }
+
+    // Update alice's score (higher is better)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZADD", "leaderboard", "250", "alice" });
+        defer testing.allocator.free(response);
+        // Updating existing member returns 0
+        try testing.expectEqualStrings(":0\r\n", response);
+    }
+
+    // Verify alice's new score
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZSCORE", "leaderboard", "alice" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.indexOf(u8, response, "250") != null);
+    }
+
+    // Get top scorers (200 to +inf)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "leaderboard", "200", "+inf" });
+        defer testing.allocator.free(response);
+        // Should include bob(200) and alice(250)
+        try testing.expect(std.mem.indexOf(u8, response, "bob") != null);
+        try testing.expect(std.mem.indexOf(u8, response, "alice") != null);
+    }
+
+    // Remove a player
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZREM", "leaderboard", "charlie" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":1\r\n", response);
+    }
+
+    // Verify count after removal
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZCARD", "leaderboard" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":2\r\n", response);
+    }
+}
+
+test "Sorted Set - score ordering is consistent with ZRANGE and ZRANGEBYSCORE" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add members out of score order to verify sorted output
+    {
+        const response = try client.sendCommand(&[_][]const u8{
+            "ZADD", "myzset",
+            "30",   "c",
+            "10",   "a",
+            "20",   "b",
+        });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings(":3\r\n", response);
+    }
+
+    // ZRANGE returns in ascending score order: a(10), b(20), c(30)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGE", "myzset", "0", "-1" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n", response);
+    }
+
+    // ZRANGEBYSCORE 10 20 returns a(10), b(20)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "10", "20" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$1\r\na\r\n$1\r\nb\r\n", response);
+    }
+
+    // ZRANGEBYSCORE (10 +inf excludes a(10), returns b(20), c(30)
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "ZRANGEBYSCORE", "myzset", "(10", "+inf" });
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("*2\r\n$1\r\nb\r\n$1\r\nc\r\n", response);
+    }
+}

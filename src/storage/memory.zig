@@ -6,6 +6,7 @@ pub const ValueType = enum {
     list,
     set,
     hash,
+    sorted_set,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -15,6 +16,7 @@ pub const Value = union(ValueType) {
     list: ListValue,
     set: SetValue,
     hash: HashValue,
+    sorted_set: SortedSetValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -74,6 +76,33 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// A single scored member in a sorted set
+    pub const ScoredMember = struct {
+        score: f64,
+        member: []const u8,
+    };
+
+    /// Sorted set value with optional expiration
+    /// Uses dual-structure: hash map for O(1) member lookups, sorted list for range queries
+    pub const SortedSetValue = struct {
+        /// Member -> Score mapping for O(1) lookups
+        members: std.StringHashMap(f64),
+        /// Sorted list of (score, member) pairs, ordered by score then lexicographically
+        sorted_list: std.ArrayList(ScoredMember),
+        expires_at: ?i64,
+
+        pub fn deinit(self: *SortedSetValue, allocator: std.mem.Allocator) void {
+            // Free all member strings (keys in the hash map)
+            var it = self.members.keyIterator();
+            while (it.next()) |key| {
+                allocator.free(key.*);
+            }
+            self.members.deinit();
+            // sorted_list items are owned by the hash map, just free the list
+            self.sorted_list.deinit(allocator);
+        }
+    };
+
     /// Deinitialize value and free all associated memory
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -81,6 +110,7 @@ pub const Value = union(ValueType) {
             .list => |*l| l.deinit(allocator),
             .set => |*s| s.deinit(allocator),
             .hash => |*h| h.deinit(allocator),
+            .sorted_set => |*z| z.deinit(allocator),
         }
     }
 
@@ -91,6 +121,7 @@ pub const Value = union(ValueType) {
             .list => |l| l.expires_at,
             .set => |s| s.expires_at,
             .hash => |h| h.expires_at,
+            .sorted_set => |z| z.expires_at,
         };
     }
 
@@ -1105,6 +1136,442 @@ pub const Storage = struct {
         }
     }
 
+    // Sorted set operations
+
+    /// Insert a scored member into a sorted list at the correct position
+    /// Sorted by score ascending, then lexicographically for equal scores
+    fn insertSortedMember(list: *std.ArrayList(Value.ScoredMember), score: f64, member: []const u8, allocator: std.mem.Allocator) !void {
+        var low: usize = 0;
+        var high: usize = list.items.len;
+
+        while (low < high) {
+            const mid = low + (high - low) / 2;
+            const mid_score = list.items[mid].score;
+
+            if (score < mid_score) {
+                high = mid;
+            } else if (score > mid_score) {
+                low = mid + 1;
+            } else {
+                // Same score - compare lexicographically
+                if (std.mem.lessThan(u8, member, list.items[mid].member)) {
+                    high = mid;
+                } else {
+                    low = mid + 1;
+                }
+            }
+        }
+
+        try list.insert(allocator, low, .{ .score = score, .member = member });
+    }
+
+    /// Add members with scores to a sorted set
+    /// options: bit flags (NX=1, XX=2, CH=4)
+    /// Returns count of new elements added (or changed elements if CH flag set)
+    /// Returns error.WrongType if key exists and is not a sorted set
+    pub fn zadd(
+        self: *Storage,
+        key: []const u8,
+        scores: []const f64,
+        members: []const []const u8,
+        options: u8,
+        expires_at: ?i64,
+    ) !struct { added: usize, changed: usize } {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const nx_flag = (options & 1) != 0;
+        const xx_flag = (options & 2) != 0;
+        var added_count: usize = 0;
+        var changed_count: usize = 0;
+
+        if (self.data.getEntry(key)) |entry| {
+            // Key exists - verify it's a sorted set
+            switch (entry.value_ptr.*) {
+                .sorted_set => |*zset| {
+                    for (scores, members) |score, member| {
+                        if (zset.members.get(member)) |old_score| {
+                            // Member exists
+                            if (nx_flag) continue; // NX: skip existing
+
+                            if (old_score != score) {
+                                // Remove old entry from sorted list
+                                for (zset.sorted_list.items, 0..) |item, idx| {
+                                    if (std.mem.eql(u8, item.member, member)) {
+                                        _ = zset.sorted_list.orderedRemove(idx);
+                                        break;
+                                    }
+                                }
+                                // Update score in map
+                                try zset.members.put(member, score);
+                                // Re-insert at correct sorted position
+                                // The member ptr now comes from the hashmap key
+                                const stored_key = zset.members.getKey(member).?;
+                                try insertSortedMember(&zset.sorted_list, score, stored_key, self.allocator);
+                                changed_count += 1;
+                            }
+                        } else {
+                            // Member does not exist
+                            if (xx_flag) continue; // XX: skip new
+
+                            const owned_member = try self.allocator.dupe(u8, member);
+                            errdefer self.allocator.free(owned_member);
+
+                            try zset.members.put(owned_member, score);
+                            // Use the stored key pointer for the sorted list
+                            const stored_key = zset.members.getKey(member).?;
+                            try insertSortedMember(&zset.sorted_list, score, stored_key, self.allocator);
+                            added_count += 1;
+                            changed_count += 1;
+                        }
+                    }
+                    return .{ .added = added_count, .changed = changed_count };
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            // Create new sorted set (unless XX flag)
+            if (xx_flag) return .{ .added = 0, .changed = 0 };
+
+            var member_map = std.StringHashMap(f64).init(self.allocator);
+            errdefer {
+                var it = member_map.keyIterator();
+                while (it.next()) |k| self.allocator.free(k.*);
+                member_map.deinit();
+            }
+
+            var sorted: std.ArrayList(Value.ScoredMember) = .{
+                .items = &.{},
+                .capacity = 0,
+            };
+            errdefer sorted.deinit(self.allocator);
+
+            for (scores, members) |score, member| {
+                if (member_map.contains(member)) {
+                    // Duplicate in same command: update score
+                    // Remove old entry from sorted list
+                    for (sorted.items, 0..) |item, idx| {
+                        if (std.mem.eql(u8, item.member, member)) {
+                            _ = sorted.orderedRemove(idx);
+                            break;
+                        }
+                    }
+                    try member_map.put(member, score);
+                    const stored_key = member_map.getKey(member).?;
+                    try insertSortedMember(&sorted, score, stored_key, self.allocator);
+                } else {
+                    const owned_member = try self.allocator.dupe(u8, member);
+                    errdefer self.allocator.free(owned_member);
+
+                    try member_map.put(owned_member, score);
+                    const stored_key = member_map.getKey(member).?;
+                    try insertSortedMember(&sorted, score, stored_key, self.allocator);
+                    added_count += 1;
+                    changed_count += 1;
+                }
+            }
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+
+            try self.data.put(owned_key, Value{
+                .sorted_set = .{
+                    .members = member_map,
+                    .sorted_list = sorted,
+                    .expires_at = expires_at,
+                },
+            });
+
+            return .{ .added = added_count, .changed = changed_count };
+        }
+    }
+
+    /// Remove members from a sorted set
+    /// Returns count of members actually removed
+    /// Returns 0 if key doesn't exist
+    /// Returns error.WrongType if key is not a sorted set
+    pub fn zrem(
+        self: *Storage,
+        key: []const u8,
+        members: []const []const u8,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                var removed_count: usize = 0;
+
+                for (members) |member| {
+                    if (zset.members.contains(member)) {
+                        // Remove from sorted list first
+                        for (zset.sorted_list.items, 0..) |item, idx| {
+                            if (std.mem.eql(u8, item.member, member)) {
+                                _ = zset.sorted_list.orderedRemove(idx);
+                                break;
+                            }
+                        }
+                        // Remove from hash map (frees the key)
+                        if (zset.members.fetchRemove(member)) |kv| {
+                            self.allocator.free(kv.key);
+                        }
+                        removed_count += 1;
+                    }
+                }
+
+                // Auto-delete if sorted set becomes empty
+                if (zset.members.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return removed_count;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get members in sorted set by rank range [start, stop]
+    /// Supports negative indices (-1 = last element)
+    /// If with_scores is true, returns interleaved [member, score, member, score, ...]
+    /// Returns null if key doesn't exist or is not a sorted set
+    pub fn zrange(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    ) !?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const len = zset.sorted_list.items.len;
+                if (len == 0) {
+                    return try allocator.alloc([]const u8, 0);
+                }
+
+                // Normalize indices
+                const norm_start: i64 = if (start < 0)
+                    @max(0, @as(i64, @intCast(len)) + start)
+                else
+                    @min(start, @as(i64, @intCast(len)));
+
+                const norm_stop: i64 = if (stop < 0)
+                    @max(-1, @as(i64, @intCast(len)) + stop)
+                else
+                    @min(stop, @as(i64, @intCast(len)) - 1);
+
+                if (norm_start > norm_stop or norm_start >= @as(i64, @intCast(len))) {
+                    return try allocator.alloc([]const u8, 0);
+                }
+
+                const u_start: usize = @intCast(norm_start);
+                const u_stop: usize = @intCast(norm_stop);
+                const range_len = u_stop - u_start + 1;
+                const result_len = if (with_scores) range_len * 2 else range_len;
+
+                var result = try allocator.alloc([]const u8, result_len);
+                errdefer allocator.free(result);
+
+                if (with_scores) {
+                    var i: usize = 0;
+                    for (u_start..u_stop + 1) |idx| {
+                        const item = zset.sorted_list.items[idx];
+                        result[i] = item.member;
+                        i += 1;
+                        // Format score as string
+                        var score_buf: [64]u8 = undefined;
+                        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{item.score});
+                        const owned_score = try allocator.dupe(u8, score_str);
+                        result[i] = owned_score;
+                        i += 1;
+                    }
+                } else {
+                    for (0..range_len) |i| {
+                        result[i] = zset.sorted_list.items[u_start + i].member;
+                    }
+                }
+
+                return result;
+            },
+            else => return null,
+        }
+    }
+
+    /// Get members in sorted set with scores in range [min_score, max_score]
+    /// Supports exclusive intervals via min_exclusive/max_exclusive flags
+    /// If with_scores is true, returns interleaved [member, score, member, score, ...]
+    /// LIMIT offset/count for pagination (null = no limit)
+    /// Returns null if key doesn't exist or is not a sorted set
+    pub fn zrangebyscore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        min_score: f64,
+        max_score: f64,
+        min_exclusive: bool,
+        max_exclusive: bool,
+        with_scores: bool,
+        limit_offset: ?usize,
+        limit_count: ?usize,
+    ) !?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                var result_members: std.ArrayList(Value.ScoredMember) = .{
+                    .items = &.{},
+                    .capacity = 0,
+                };
+                defer result_members.deinit(allocator);
+
+                for (zset.sorted_list.items) |item| {
+                    // Check lower bound
+                    const above_min = if (min_exclusive)
+                        item.score > min_score
+                    else
+                        item.score >= min_score;
+
+                    // Check upper bound
+                    const below_max = if (max_exclusive)
+                        item.score < max_score
+                    else
+                        item.score <= max_score;
+
+                    if (above_min and below_max) {
+                        try result_members.append(allocator, item);
+                    } else if (item.score > max_score) {
+                        break; // List is sorted, no need to continue
+                    }
+                }
+
+                // Apply LIMIT
+                var start_idx: usize = 0;
+                var end_idx: usize = result_members.items.len;
+
+                if (limit_offset) |offset| {
+                    start_idx = @min(offset, end_idx);
+                }
+                if (limit_count) |count| {
+                    end_idx = @min(start_idx + count, end_idx);
+                }
+
+                const effective_len = end_idx - start_idx;
+                const result_len = if (with_scores) effective_len * 2 else effective_len;
+                var result = try allocator.alloc([]const u8, result_len);
+                errdefer allocator.free(result);
+
+                if (with_scores) {
+                    var i: usize = 0;
+                    for (result_members.items[start_idx..end_idx]) |item| {
+                        result[i] = item.member;
+                        i += 1;
+                        var score_buf: [64]u8 = undefined;
+                        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{item.score});
+                        const owned_score = try allocator.dupe(u8, score_str);
+                        result[i] = owned_score;
+                        i += 1;
+                    }
+                } else {
+                    for (result_members.items[start_idx..end_idx], 0..) |item, i| {
+                        result[i] = item.member;
+                    }
+                }
+
+                return result;
+            },
+            else => return null,
+        }
+    }
+
+    /// Get score of a member in a sorted set
+    /// Returns null if key doesn't exist or member doesn't exist
+    pub fn zscore(
+        self: *Storage,
+        key: []const u8,
+        member: []const u8,
+    ) ?f64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| return zset.members.get(member),
+            else => return null,
+        }
+    }
+
+    /// Get cardinality (number of members) of a sorted set
+    /// Returns null if key doesn't exist or is not a sorted set
+    pub fn zcard(
+        self: *Storage,
+        key: []const u8,
+    ) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        // Check expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| return zset.members.count(),
+            else => return null,
+        }
+    }
+
     /// Get current Unix timestamp in milliseconds
     pub fn getCurrentTimestamp() i64 {
         return std.time.milliTimestamp();
@@ -1906,4 +2373,363 @@ test "storage - getType returns set type" {
     _ = try storage.sadd("myset", &members, null);
 
     try std.testing.expectEqual(ValueType.set, storage.getType("myset").?);
+}
+
+// Sorted set unit tests
+
+test "storage - zadd creates new sorted set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"alpha"};
+    const result = try storage.zadd("myzset", &scores, &members, 0, null);
+    try std.testing.expectEqual(@as(usize, 1), result.added);
+    try std.testing.expectEqual(@as(usize, 1), result.changed);
+}
+
+test "storage - zadd multiple members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0 };
+    const members = [_][]const u8{ "one", "two", "three" };
+    const result = try storage.zadd("myzset", &scores, &members, 0, null);
+    try std.testing.expectEqual(@as(usize, 3), result.added);
+}
+
+test "storage - zadd updates existing member score" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores1 = [_]f64{1.0};
+    const members1 = [_][]const u8{"one"};
+    _ = try storage.zadd("myzset", &scores1, &members1, 0, null);
+
+    const scores2 = [_]f64{5.0};
+    const members2 = [_][]const u8{"one"};
+    const result = try storage.zadd("myzset", &scores2, &members2, 0, null);
+    try std.testing.expectEqual(@as(usize, 0), result.added);
+    try std.testing.expectEqual(@as(usize, 1), result.changed);
+
+    const score = storage.zscore("myzset", "one");
+    try std.testing.expect(score != null);
+    try std.testing.expectEqual(@as(f64, 5.0), score.?);
+}
+
+test "storage - zadd with NX flag skips existing members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores1 = [_]f64{1.0};
+    const members1 = [_][]const u8{"one"};
+    _ = try storage.zadd("myzset", &scores1, &members1, 0, null);
+
+    // NX = 1: only add new
+    const scores2 = [_]f64{5.0};
+    const members2 = [_][]const u8{"one"};
+    const result = try storage.zadd("myzset", &scores2, &members2, 1, null);
+    try std.testing.expectEqual(@as(usize, 0), result.added);
+
+    // Score should remain 1.0
+    const score = storage.zscore("myzset", "one");
+    try std.testing.expectEqual(@as(f64, 1.0), score.?);
+}
+
+test "storage - zadd with XX flag skips new members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // XX = 2: only update existing, don't create new
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"one"};
+    const result = try storage.zadd("myzset", &scores, &members, 2, null);
+    try std.testing.expectEqual(@as(usize, 0), result.added);
+
+    // Key should not exist
+    try std.testing.expect(storage.zcard("myzset") == null);
+}
+
+test "storage - zadd on non-sorted-set returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "string", null);
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"one"};
+    try std.testing.expectError(error.WrongType, storage.zadd("mykey", &scores, &members, 0, null));
+}
+
+test "storage - zrem removes members" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0 };
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const to_remove = [_][]const u8{"one"};
+    const removed = try storage.zrem("myzset", &to_remove);
+    try std.testing.expectEqual(@as(usize, 1), removed);
+    try std.testing.expectEqual(@as(usize, 2), storage.zcard("myzset").?);
+}
+
+test "storage - zrem non-existent member returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"one"};
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const to_remove = [_][]const u8{"nosuchmember"};
+    const removed = try storage.zrem("myzset", &to_remove);
+    try std.testing.expectEqual(@as(usize, 0), removed);
+}
+
+test "storage - zrem auto-deletes empty sorted set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"one"};
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const to_remove = [_][]const u8{"one"};
+    _ = try storage.zrem("myzset", &to_remove);
+
+    try std.testing.expect(storage.zcard("myzset") == null);
+}
+
+test "storage - zrem non-existent key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const to_remove = [_][]const u8{"one"};
+    const removed = try storage.zrem("nosuchkey", &to_remove);
+    try std.testing.expectEqual(@as(usize, 0), removed);
+}
+
+test "storage - zscore returns score for existing member" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{3.14};
+    const members = [_][]const u8{"pi"};
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const score = storage.zscore("myzset", "pi");
+    try std.testing.expect(score != null);
+    try std.testing.expectEqual(@as(f64, 3.14), score.?);
+}
+
+test "storage - zscore returns null for non-existent member" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"one"};
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const score = storage.zscore("myzset", "nosuchmember");
+    try std.testing.expect(score == null);
+}
+
+test "storage - zscore returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const score = storage.zscore("nosuchkey", "member");
+    try std.testing.expect(score == null);
+}
+
+test "storage - zcard returns count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0 };
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    try std.testing.expectEqual(@as(usize, 3), storage.zcard("myzset").?);
+}
+
+test "storage - zcard returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try std.testing.expect(storage.zcard("nosuchkey") == null);
+}
+
+test "storage - zrange returns members in order" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 3.0, 1.0, 2.0 };
+    const members = [_][]const u8{ "three", "one", "two" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const result = (try storage.zrange(allocator, "myzset", 0, -1, false)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("one", result[0]);
+    try std.testing.expectEqualStrings("two", result[1]);
+    try std.testing.expectEqualStrings("three", result[2]);
+}
+
+test "storage - zrange with WITHSCORES" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0 };
+    const members = [_][]const u8{ "one", "two" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const result = (try storage.zrange(allocator, "myzset", 0, -1, true)).?;
+    defer {
+        // Only free score strings (even indices are member refs, odd are owned scores)
+        var i: usize = 1;
+        while (i < result.len) : (i += 2) {
+            allocator.free(result[i]);
+        }
+        allocator.free(result);
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), result.len);
+    try std.testing.expectEqualStrings("one", result[0]);
+    try std.testing.expectEqualStrings("two", result[2]);
+}
+
+test "storage - zrange with negative indices" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const members = [_][]const u8{ "one", "two", "three", "four", "five" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const result = (try storage.zrange(allocator, "myzset", -3, -1, false)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("three", result[0]);
+    try std.testing.expectEqualStrings("four", result[1]);
+    try std.testing.expectEqualStrings("five", result[2]);
+}
+
+test "storage - zrange out of bounds returns empty" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0 };
+    const members = [_][]const u8{ "one", "two" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const result = (try storage.zrange(allocator, "myzset", 5, 10, false)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "storage - zrangebyscore returns members in score range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const members = [_][]const u8{ "one", "two", "three", "four", "five" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const result = (try storage.zrangebyscore(allocator, "myzset", 2.0, 4.0, false, false, false, null, null)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("two", result[0]);
+    try std.testing.expectEqualStrings("three", result[1]);
+    try std.testing.expectEqualStrings("four", result[2]);
+}
+
+test "storage - zrangebyscore with exclusive intervals" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0 };
+    const members = [_][]const u8{ "one", "two", "three" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    // Exclusive min and max: (1 to (3 = score > 1 and score < 3
+    const result = (try storage.zrangebyscore(allocator, "myzset", 1.0, 3.0, true, true, false, null, null)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("two", result[0]);
+}
+
+test "storage - zrangebyscore with LIMIT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const members = [_][]const u8{ "one", "two", "three", "four", "five" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    // LIMIT 1 2: skip 1, take 2
+    const result = (try storage.zrangebyscore(allocator, "myzset", 1.0, 5.0, false, false, false, 1, 2)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("two", result[0]);
+    try std.testing.expectEqualStrings("three", result[1]);
+}
+
+test "storage - sorted set lexicographic ordering for equal scores" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{ 1.0, 1.0, 1.0 };
+    const members = [_][]const u8{ "charlie", "alpha", "beta" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const result = (try storage.zrange(allocator, "myzset", 0, -1, false)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("alpha", result[0]);
+    try std.testing.expectEqualStrings("beta", result[1]);
+    try std.testing.expectEqualStrings("charlie", result[2]);
+}
+
+test "storage - getType returns sorted_set type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"one"};
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    try std.testing.expectEqual(ValueType.sorted_set, storage.getType("myzset").?);
 }
