@@ -2,6 +2,7 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const persistence_mod = @import("../storage/persistence.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
@@ -11,6 +12,10 @@ const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const Persistence = persistence_mod.Persistence;
+
+/// Default RDB file path
+const DEFAULT_RDB_PATH = "dump.rdb";
 
 /// Execute a RESP command and return the serialized response
 /// Caller owns returned memory and must free it
@@ -112,6 +117,16 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
         return sorted_sets.cmdZscore(allocator, storage, array);
     } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
         return sorted_sets.cmdZcard(allocator, storage, array);
+    }
+    // Server / persistence commands
+    else if (std.mem.eql(u8, cmd_upper, "SAVE")) {
+        return cmdSave(allocator, storage);
+    } else if (std.mem.eql(u8, cmd_upper, "BGSAVE")) {
+        return cmdBgsave(allocator, storage);
+    } else if (std.mem.eql(u8, cmd_upper, "DBSIZE")) {
+        return cmdDbsize(allocator, storage);
+    } else if (std.mem.eql(u8, cmd_upper, "FLUSHDB") or std.mem.eql(u8, cmd_upper, "FLUSHALL")) {
+        return cmdFlushall(allocator, storage);
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();
@@ -306,6 +321,53 @@ fn cmdExists(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     }
 
     return w.writeInteger(count);
+}
+
+/// SAVE — synchronous RDB snapshot to dump.rdb
+/// Returns +OK on success, -ERR on failure
+fn cmdSave(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    Persistence.save(storage, DEFAULT_RDB_PATH, allocator) catch |err| {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "ERR SAVE failed: {any}", .{err}) catch "ERR SAVE failed";
+        return w.writeError(msg);
+    };
+
+    return w.writeSimpleString("OK");
+}
+
+/// BGSAVE — same as SAVE for now (no background fork on Zig)
+fn cmdBgsave(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    Persistence.save(storage, DEFAULT_RDB_PATH, allocator) catch |err| {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "ERR BGSAVE failed: {any}", .{err}) catch "ERR BGSAVE failed";
+        return w.writeError(msg);
+    };
+
+    return w.writeSimpleString("Background saving started");
+}
+
+/// DBSIZE — return number of keys in current database
+fn cmdDbsize(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const size: i64 = @intCast(storage.dbSize());
+    return w.writeInteger(size);
+}
+
+/// FLUSHDB / FLUSHALL — remove all keys
+fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    storage.flushAll();
+    return w.writeSimpleString("OK");
 }
 
 // Helper functions

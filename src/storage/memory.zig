@@ -1573,6 +1573,34 @@ pub const Storage = struct {
     }
 
     /// Get current Unix timestamp in milliseconds
+    /// Return the number of keys in storage (excluding expired)
+    pub fn dbSize(self: *Storage) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+        var count: usize = 0;
+        var it = self.data.iterator();
+        while (it.next()) |entry| {
+            if (!entry.value_ptr.isExpired(now)) count += 1;
+        }
+        return count;
+    }
+
+    /// Remove all keys from storage
+    pub fn flushAll(self: *Storage) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var it = self.data.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            var value = entry.value_ptr.*;
+            value.deinit(self.allocator);
+        }
+        self.data.clearRetainingCapacity();
+    }
+
     pub fn getCurrentTimestamp() i64 {
         return std.time.milliTimestamp();
     }

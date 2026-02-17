@@ -7,6 +7,7 @@ pub const writer = @import("protocol/writer.zig");
 pub const storage = @import("storage/memory.zig");
 pub const commands = @import("commands/strings.zig");
 pub const sorted_sets = @import("commands/sorted_sets.zig");
+pub const persistence = @import("storage/persistence.zig");
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;
@@ -83,6 +84,18 @@ pub fn main() !void {
     // Initialize server
     const server = try Server.init(allocator, config);
     defer server.deinit();
+
+    // Load RDB snapshot if it exists
+    {
+        const Persistence = persistence.Persistence;
+        const loaded = Persistence.load(server.storage, "dump.rdb", allocator) catch |err| blk: {
+            std.debug.print("Warning: could not load dump.rdb: {any}\n", .{err});
+            break :blk 0;
+        };
+        if (loaded > 0) {
+            std.debug.print("Loaded {d} keys from dump.rdb\n", .{loaded});
+        }
+    }
 
     // Set up signal handler for graceful shutdown
     const sigint_handler = struct {

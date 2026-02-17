@@ -26,10 +26,11 @@ When working with Claude Code on this project, the AI will maintain awareness of
 - Iteration 3: Set commands (SADD, SREM, SISMEMBER, SMEMBERS, SCARD)
 - Iteration 4: Hash commands (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
 - Iteration 5: Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
+- Iteration 6: Persistence — RDB snapshots (SAVE, BGSAVE, DBSIZE, FLUSHDB, FLUSHALL) + auto-load on startup
 
 **남은 로드맵** (우선순위 순):
-1. Persistence — RDB snapshots
-2. Persistence — AOF logging
+1. Persistence — AOF logging
+2. Pub/Sub messaging
 3. Pub/Sub messaging
 4. Transactions (MULTI/EXEC)
 5. Replication

@@ -109,6 +109,16 @@ redis-cli -p 6379
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
 
+### Server / Persistence Commands (Iteration 6)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| SAVE | `SAVE` | Save snapshot to dump.rdb (synchronous) |
+| BGSAVE | `BGSAVE` | Save snapshot to dump.rdb (reports as background) |
+| DBSIZE | `DBSIZE` | Return number of keys in the database |
+| FLUSHDB | `FLUSHDB` | Remove all keys from the database |
+| FLUSHALL | `FLUSHALL` | Remove all keys from all databases |
+
 ### Sorted Set Commands (Iteration 5)
 
 | Command | Syntax | Description |
@@ -182,7 +192,7 @@ OK
 
 ## Project Status
 
-Iteration 5 is complete with Sorted Set data structure support.
+Iteration 6 is complete with RDB persistence (snapshots) and server utility commands.
 
 ### Roadmap
 
@@ -196,7 +206,7 @@ Iteration 5 is complete with Sorted Set data structure support.
 - [x] Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
 - [x] Hash operations (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
 - [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
-- [ ] Persistence (RDB)
+- [x] Persistence (RDB snapshots — SAVE, BGSAVE, auto-load on startup)
 - [ ] Persistence (AOF)
 - [ ] Pub/Sub
 - [ ] Transactions
