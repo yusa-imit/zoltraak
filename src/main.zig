@@ -9,6 +9,8 @@ pub const commands = @import("commands/strings.zig");
 pub const sorted_sets = @import("commands/sorted_sets.zig");
 pub const persistence = @import("storage/persistence.zig");
 pub const aof = @import("storage/aof.zig");
+pub const pubsub = @import("storage/pubsub.zig");
+pub const pubsub_commands = @import("commands/pubsub.zig");
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;

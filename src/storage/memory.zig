@@ -155,7 +155,6 @@ pub const Storage = struct {
     /// Deinitialize storage and free all keys and values
     pub fn deinit(self: *Storage) void {
         self.mutex.lock();
-        defer self.mutex.unlock();
 
         // Free all keys and values
         var it = self.data.iterator();
@@ -167,6 +166,7 @@ pub const Storage = struct {
         self.data.deinit();
 
         const allocator = self.allocator;
+        self.mutex.unlock();
         allocator.destroy(self);
     }
 

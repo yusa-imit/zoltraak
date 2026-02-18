@@ -109,6 +109,16 @@ redis-cli -p 6379
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
 
+### Pub/Sub Commands (Iteration 8)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| SUBSCRIBE | `SUBSCRIBE channel [channel ...]` | Subscribe to channels |
+| UNSUBSCRIBE | `UNSUBSCRIBE [channel ...]` | Unsubscribe from channels |
+| PUBLISH | `PUBLISH channel message` | Publish a message to a channel |
+| PUBSUB CHANNELS | `PUBSUB CHANNELS [pattern]` | List active channels |
+| PUBSUB NUMSUB | `PUBSUB NUMSUB [channel ...]` | Number of subscribers per channel |
+
 ### Server / Persistence Commands (Iterations 6–7)
 
 | Command | Syntax | Description |
@@ -193,7 +203,7 @@ OK
 
 ## Project Status
 
-Iterations 1–7 are complete. AOF persistence (append-only log) is now fully implemented.
+Iterations 1–8 are complete. Pub/Sub messaging is now fully implemented.
 
 ### Roadmap
 
@@ -209,7 +219,7 @@ Iterations 1–7 are complete. AOF persistence (append-only log) is now fully im
 - [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
 - [x] Persistence (RDB snapshots — SAVE, BGSAVE, auto-load on startup)
 - [x] Persistence (AOF — append-only log, replay on startup, BGREWRITEAOF)
-- [ ] Pub/Sub
+- [x] Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB CHANNELS/NUMSUB)
 - [ ] Transactions
 - [ ] Replication
 

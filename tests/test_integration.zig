@@ -3929,3 +3929,174 @@ test "AOF - FLUSHALL is logged to AOF" {
         try testing.expectEqualStrings(":0\r\n", r);
     }
 }
+
+// ============================================================================
+// Pub/Sub Command Tests (Iteration 8)
+// ============================================================================
+
+test "PUBLISH - returns 0 when no subscribers" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "PUBLISH", "news", "hello" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "SUBSCRIBE - returns subscribe confirmation frame" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SUBSCRIBE", "news" });
+    defer testing.allocator.free(response);
+
+    // Frame: *3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n
+    const expected = "*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n";
+    try testing.expectEqualStrings(expected, response);
+}
+
+test "SUBSCRIBE - multiple channels returns concatenated frames" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "SUBSCRIBE", "ch1", "ch2" });
+    defer testing.allocator.free(response);
+
+    // Should contain two subscribe frames
+    try testing.expect(std.mem.count(u8, response, "$9\r\nsubscribe\r\n") == 2);
+}
+
+test "PUBLISH - subscriber receives message" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    // Subscriber client
+    var sub_client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer sub_client.deinit();
+
+    // Publisher client
+    var pub_client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer pub_client.deinit();
+
+    // Subscribe to "news"
+    {
+        const r = try sub_client.sendCommand(&[_][]const u8{ "SUBSCRIBE", "news" });
+        defer testing.allocator.free(r);
+        try testing.expect(std.mem.indexOf(u8, r, "subscribe") != null);
+    }
+
+    // Publish returns subscriber count = 1
+    {
+        const r = try pub_client.sendCommand(&[_][]const u8{ "PUBLISH", "news", "breaking" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":1\r\n", r);
+    }
+}
+
+test "UNSUBSCRIBE - confirmation frame returned" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Subscribe first
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SUBSCRIBE", "news" });
+        defer testing.allocator.free(r);
+        try testing.expect(r.len > 0);
+    }
+
+    // Unsubscribe
+    const response = try client.sendCommand(&[_][]const u8{ "UNSUBSCRIBE", "news" });
+    defer testing.allocator.free(response);
+
+    // Frame: *3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n
+    const expected = "*3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n";
+    try testing.expectEqualStrings(expected, response);
+}
+
+test "UNSUBSCRIBE - without args when not subscribed returns nil frame" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"UNSUBSCRIBE"});
+    defer testing.allocator.free(response);
+
+    const expected = "*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n";
+    try testing.expectEqualStrings(expected, response);
+}
+
+test "PUBSUB CHANNELS - empty when no subscribers" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "PUBSUB", "CHANNELS" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "PUBSUB CHANNELS - lists active channels" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var sub_client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer sub_client.deinit();
+
+    var admin_client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer admin_client.deinit();
+
+    // Subscribe to "news"
+    {
+        const r = try sub_client.sendCommand(&[_][]const u8{ "SUBSCRIBE", "news" });
+        defer testing.allocator.free(r);
+        try testing.expect(r.len > 0);
+    }
+
+    const response = try admin_client.sendCommand(&[_][]const u8{ "PUBSUB", "CHANNELS" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "news") != null);
+}
+
+test "PUBSUB NUMSUB - returns subscriber counts" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var sub_client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer sub_client.deinit();
+
+    var admin_client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer admin_client.deinit();
+
+    // Subscribe to "news"
+    {
+        const r = try sub_client.sendCommand(&[_][]const u8{ "SUBSCRIBE", "news" });
+        defer testing.allocator.free(r);
+        try testing.expect(r.len > 0);
+    }
+
+    const response = try admin_client.sendCommand(&[_][]const u8{ "PUBSUB", "NUMSUB", "news", "sports" });
+    defer testing.allocator.free(response);
+
+    // *4\r\n (2 pairs), news -> :1, sports -> :0
+    try testing.expect(std.mem.startsWith(u8, response, "*4\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "news") != null);
+}

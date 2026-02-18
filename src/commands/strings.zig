@@ -4,10 +4,12 @@ const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const persistence_mod = @import("../storage/persistence.zig");
 const aof_mod = @import("../storage/aof.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
 const sorted_sets = @import("sorted_sets.zig");
+const pubsub_cmds = @import("pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -15,6 +17,7 @@ const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const Persistence = persistence_mod.Persistence;
 pub const Aof = aof_mod.Aof;
+pub const PubSub = pubsub_mod.PubSub;
 
 /// Default RDB file path
 const DEFAULT_RDB_PATH = "dump.rdb";
@@ -24,7 +27,15 @@ const DEFAULT_AOF_PATH = "appendonly.aof";
 /// Execute a RESP command and return the serialized response.
 /// Caller owns returned memory and must free it.
 /// If `aof` is non-null, write commands are appended to it after successful execution.
-pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: RespValue, aof: ?*Aof) ![]const u8 {
+/// `ps` and `subscriber_id` are used for SUBSCRIBE / UNSUBSCRIBE / PUBLISH / PUBSUB commands.
+pub fn executeCommand(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    cmd: RespValue,
+    aof: ?*Aof,
+    ps: *PubSub,
+    subscriber_id: u64,
+) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
         else => {
@@ -140,6 +151,16 @@ pub fn executeCommand(allocator: std.mem.Allocator, storage: *Storage, cmd: Resp
             break :blk try sorted_sets.cmdZscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
             break :blk try sorted_sets.cmdZcard(allocator, storage, array);
+        }
+        // Pub/Sub commands
+        else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {
+            break :blk try pubsub_cmds.cmdSubscribe(allocator, ps, array, subscriber_id);
+        } else if (std.mem.eql(u8, cmd_upper, "UNSUBSCRIBE")) {
+            break :blk try pubsub_cmds.cmdUnsubscribe(allocator, ps, array, subscriber_id);
+        } else if (std.mem.eql(u8, cmd_upper, "PUBLISH")) {
+            break :blk try pubsub_cmds.cmdPublish(allocator, ps, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PUBSUB")) {
+            break :blk try cmdPubsub(allocator, ps, array);
         }
         // Server / persistence commands
         else if (std.mem.eql(u8, cmd_upper, "SAVE")) {
@@ -431,6 +452,35 @@ fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
 
     storage.flushAll();
     return w.writeSimpleString("OK");
+}
+
+/// PUBSUB subcommand [args...]
+/// Routes to CHANNELS or NUMSUB sub-commands.
+fn cmdPubsub(allocator: std.mem.Allocator, ps: *PubSub, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'pubsub' command");
+    }
+
+    const sub_name = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid subcommand"),
+    };
+
+    const sub_upper = try std.ascii.allocUpperString(allocator, sub_name);
+    defer allocator.free(sub_upper);
+
+    if (std.mem.eql(u8, sub_upper, "CHANNELS")) {
+        return pubsub_cmds.cmdPubsubChannels(allocator, ps, args);
+    } else if (std.mem.eql(u8, sub_upper, "NUMSUB")) {
+        return pubsub_cmds.cmdPubsubNumsub(allocator, ps, args);
+    } else {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "ERR unknown subcommand '{s}'", .{sub_name}) catch "ERR unknown subcommand";
+        return w.writeError(msg);
+    }
 }
 
 // Helper functions
@@ -846,13 +896,15 @@ test "commands - executeCommand dispatches PING" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "PING" },
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -862,13 +914,15 @@ test "commands - executeCommand case insensitive" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ping" },
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -878,13 +932,15 @@ test "commands - executeCommand unknown command" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "UNKNOWN" },
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0);
     defer allocator.free(result);
 
     const expected = "-ERR unknown command 'UNKNOWN'\r\n";

@@ -4,11 +4,13 @@ const writer_mod = @import("protocol/writer.zig");
 const commands = @import("commands/strings.zig");
 const storage_mod = @import("storage/memory.zig");
 const aof_mod = @import("storage/aof.zig");
+const pubsub_mod = @import("storage/pubsub.zig");
 
 const Parser = protocol.Parser;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const Aof = aof_mod.Aof;
+const PubSub = pubsub_mod.PubSub;
 
 /// Server configuration
 pub const Config = struct {
@@ -24,6 +26,9 @@ pub const Server = struct {
     config: Config,
     storage: *Storage,
     aof: ?*Aof,
+    pubsub: PubSub,
+    /// Monotonically increasing connection ID used as subscriber_id.
+    next_subscriber_id: u64,
     running: std.atomic.Value(bool),
 
     /// Initialize a new server instance
@@ -39,6 +44,8 @@ pub const Server = struct {
             .config = config,
             .storage = storage,
             .aof = null,
+            .pubsub = PubSub.init(allocator),
+            .next_subscriber_id = 1,
             .running = std.atomic.Value(bool).init(false),
         };
 
@@ -49,6 +56,7 @@ pub const Server = struct {
     pub fn deinit(self: *Server) void {
         if (self.aof) |a| a.close();
         self.storage.deinit();
+        self.pubsub.deinit();
         const allocator = self.allocator;
         allocator.destroy(self);
     }
@@ -70,7 +78,7 @@ pub const Server = struct {
         std.debug.print("Listening on {s}:{d}\n", .{ self.config.host, self.config.port });
         std.debug.print("Ready to accept connections.\n", .{});
 
-        // Accept connections (single-threaded for Iteration 1)
+        // Accept connections (single-threaded)
         while (self.running.load(.monotonic)) {
             // Accept connection with timeout to allow checking running flag
             const connection = listener.accept() catch |err| {
@@ -96,6 +104,13 @@ pub const Server = struct {
         defer connection.stream.close();
 
         std.debug.print("Client connected from {any}\n", .{connection.address});
+
+        // Assign a unique subscriber ID for this connection
+        const subscriber_id = self.next_subscriber_id;
+        self.next_subscriber_id += 1;
+
+        // Ensure subscriber state is cleaned up when client disconnects
+        defer self.pubsub.unsubscribeAll(subscriber_id) catch {};
 
         // Create arena allocator for this connection
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -129,18 +144,41 @@ pub const Server = struct {
             };
 
             // Execute command
-            const response = commands.executeCommand(arena_allocator, self.storage, cmd, self.aof) catch |err| {
+            const response = commands.executeCommand(
+                arena_allocator,
+                self.storage,
+                cmd,
+                self.aof,
+                &self.pubsub,
+                subscriber_id,
+            ) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";
                 _ = connection.stream.write(error_response) catch break;
                 continue;
             };
 
-            // Write response
+            // Write command response
             _ = connection.stream.write(response) catch |err| {
                 std.debug.print("Write error: {any}\n", .{err});
                 break;
             };
+
+            // Deliver any pending pub/sub messages that were queued during
+            // this command (e.g., a PUBLISH from another connection's cycle
+            // that this subscriber is waiting for). In our single-threaded
+            // model, pending messages accumulate and are drained here.
+            const pending = self.pubsub.pendingMessages(subscriber_id);
+            if (pending.len > 0) {
+                // Write all pending message frames back-to-back
+                for (pending) |msg_frame| {
+                    _ = connection.stream.write(msg_frame) catch |err| {
+                        std.debug.print("Pub/Sub write error: {any}\n", .{err});
+                        break;
+                    };
+                }
+                self.pubsub.drainMessages(subscriber_id);
+            }
 
             // Reset arena for next command
             _ = arena.reset(.retain_capacity);
@@ -150,5 +188,5 @@ pub const Server = struct {
     }
 };
 
-// Note: Server tests would require integration testing with actual TCP connections
-// Unit tests are provided for the individual components (parser, writer, storage, commands)
+// Note: Server tests would require integration testing with actual TCP connections.
+// Unit tests are provided for the individual components (parser, writer, storage, commands).
