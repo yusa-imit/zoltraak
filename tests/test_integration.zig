@@ -4100,3 +4100,345 @@ test "PUBSUB NUMSUB - returns subscriber counts" {
     try testing.expect(std.mem.startsWith(u8, response, "*4\r\n"));
     try testing.expect(std.mem.indexOf(u8, response, "news") != null);
 }
+
+// ============================================================================
+// Transaction Tests (MULTI/EXEC/DISCARD/WATCH)
+// ============================================================================
+
+test "MULTI - returns OK" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"MULTI"});
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "MULTI - nested returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{"MULTI"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-"));
+}
+
+test "DISCARD - without MULTI returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"DISCARD"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-"));
+}
+
+test "DISCARD - aborts transaction" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "txkey", "value" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+QUEUED\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{"DISCARD"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // Key should not exist since we discarded
+    const get_response = try client.sendCommand(&[_][]const u8{ "GET", "txkey" });
+    defer testing.allocator.free(get_response);
+    try testing.expectEqualStrings("$-1\r\n", get_response);
+}
+
+test "EXEC - without MULTI returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"EXEC"});
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-"));
+}
+
+test "MULTI/EXEC - commands return QUEUED and execute atomically" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Clean up
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "DEL", "tx_a" });
+        defer testing.allocator.free(r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "DEL", "tx_b" });
+        defer testing.allocator.free(r);
+    }
+
+    // MULTI
+    {
+        const r = try client.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // Queue SET tx_a hello
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "tx_a", "hello" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+QUEUED\r\n", r);
+    }
+
+    // Queue SET tx_b world
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "tx_b", "world" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+QUEUED\r\n", r);
+    }
+
+    // EXEC — should return array with 2 results
+    {
+        const r = try client.sendCommand(&[_][]const u8{"EXEC"});
+        defer testing.allocator.free(r);
+        // *2\r\n+OK\r\n+OK\r\n
+        try testing.expect(std.mem.startsWith(u8, r, "*2\r\n"));
+        try testing.expect(std.mem.indexOf(u8, r, "+OK\r\n") != null);
+    }
+
+    // Verify keys were set
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "tx_a" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$5\r\nhello\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "tx_b" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$5\r\nworld\r\n", r);
+    }
+}
+
+test "MULTI/EXEC - empty transaction returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{"EXEC"});
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "WATCH - unmodified key allows transaction to proceed" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "wkey", "original" });
+        defer testing.allocator.free(r);
+    }
+
+    // WATCH the key
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "WATCH", "wkey" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // MULTI
+    {
+        const r = try client.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // Queue GET wkey
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "wkey" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+QUEUED\r\n", r);
+    }
+
+    // EXEC — key not modified, should succeed with the GET result
+    const exec_response = try client.sendCommand(&[_][]const u8{"EXEC"});
+    defer testing.allocator.free(exec_response);
+
+    // Should be *1\r\n$8\r\noriginal\r\n
+    try testing.expect(std.mem.startsWith(u8, exec_response, "*1\r\n"));
+    try testing.expect(std.mem.indexOf(u8, exec_response, "original") != null);
+}
+
+test "WATCH - modified key causes EXEC to return null array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client1 = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client1.deinit();
+
+    var client2 = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client2.deinit();
+
+    {
+        const r = try client1.sendCommand(&[_][]const u8{ "SET", "watched", "v1" });
+        defer testing.allocator.free(r);
+    }
+
+    // Client1 watches the key
+    {
+        const r = try client1.sendCommand(&[_][]const u8{ "WATCH", "watched" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // Client2 modifies the key
+    {
+        const r = try client2.sendCommand(&[_][]const u8{ "SET", "watched", "v2" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // Client1: MULTI, queue SET, EXEC — should abort (null array)
+    {
+        const r = try client1.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    {
+        const r = try client1.sendCommand(&[_][]const u8{ "SET", "watched", "v3" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+QUEUED\r\n", r);
+    }
+
+    const exec_response = try client1.sendCommand(&[_][]const u8{"EXEC"});
+    defer testing.allocator.free(exec_response);
+
+    // *-1\r\n (null array) because watched key was modified
+    try testing.expectEqualStrings("*-1\r\n", exec_response);
+
+    // Key should still be v2 (client1's SET was aborted)
+    const get_response = try client2.sendCommand(&[_][]const u8{ "GET", "watched" });
+    defer testing.allocator.free(get_response);
+    try testing.expectEqualStrings("$2\r\nv2\r\n", get_response);
+}
+
+test "UNWATCH - clears watches so transaction proceeds normally" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client1 = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client1.deinit();
+
+    var client2 = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client2.deinit();
+
+    {
+        const r = try client1.sendCommand(&[_][]const u8{ "SET", "ukey", "v1" });
+        defer testing.allocator.free(r);
+    }
+
+    // Client1 watches, then unwatches
+    {
+        const r = try client1.sendCommand(&[_][]const u8{ "WATCH", "ukey" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    {
+        const r = try client1.sendCommand(&[_][]const u8{"UNWATCH"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    // Client2 modifies ukey (should no longer affect client1's tx)
+    {
+        const r = try client2.sendCommand(&[_][]const u8{ "SET", "ukey", "v2" });
+        defer testing.allocator.free(r);
+    }
+
+    // Client1: MULTI, queue SET, EXEC — should succeed despite modification
+    {
+        const r = try client1.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+    {
+        const r = try client1.sendCommand(&[_][]const u8{ "SET", "ukey", "v3" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+QUEUED\r\n", r);
+    }
+
+    const exec_response = try client1.sendCommand(&[_][]const u8{"EXEC"});
+    defer testing.allocator.free(exec_response);
+
+    // Transaction should succeed
+    try testing.expect(std.mem.startsWith(u8, exec_response, "*1\r\n"));
+    try testing.expect(std.mem.indexOf(u8, exec_response, "+OK\r\n") != null);
+
+    // Key should now be v3
+    const get_response = try client2.sendCommand(&[_][]const u8{ "GET", "ukey" });
+    defer testing.allocator.free(get_response);
+    try testing.expectEqualStrings("$2\r\nv3\r\n", get_response);
+}
+
+test "WATCH - inside MULTI returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{"MULTI"});
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "WATCH", "anykey" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-"));
+}

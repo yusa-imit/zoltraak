@@ -26,7 +26,7 @@ Zoltraak is a modern alternative to Redis, built from the ground up using the Zi
 ### Core Functionality
 - Key expiration (TTL)
 - Pub/Sub messaging
-- Transactions (MULTI/EXEC)
+- Transactions (MULTI/EXEC/DISCARD/WATCH/UNWATCH)
 - Persistence (RDB snapshots, AOF logging)
 - Replication
 
@@ -108,6 +108,16 @@ redis-cli -p 6379
 | HVALS | `HVALS key` | Get all values |
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
+
+### Transaction Commands (Iteration 9)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| MULTI | `MULTI` | Begin a transaction block |
+| EXEC | `EXEC` | Execute all queued commands |
+| DISCARD | `DISCARD` | Abort the transaction |
+| WATCH | `WATCH key [key ...]` | Watch keys for optimistic locking |
+| UNWATCH | `UNWATCH` | Unwatch all watched keys |
 
 ### Pub/Sub Commands (Iteration 8)
 
@@ -220,7 +230,7 @@ Iterations 1–8 are complete. Pub/Sub messaging is now fully implemented.
 - [x] Persistence (RDB snapshots — SAVE, BGSAVE, auto-load on startup)
 - [x] Persistence (AOF — append-only log, replay on startup, BGREWRITEAOF)
 - [x] Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB CHANNELS/NUMSUB)
-- [ ] Transactions
+- [x] Transactions (MULTI/EXEC/DISCARD/WATCH/UNWATCH — optimistic locking)
 - [ ] Replication
 
 ## Contributing

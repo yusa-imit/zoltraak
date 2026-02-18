@@ -10,6 +10,8 @@ const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
 const sorted_sets = @import("sorted_sets.zig");
 const pubsub_cmds = @import("pubsub.zig");
+const tx_mod = @import("transactions.zig");
+pub const TxState = tx_mod.TxState;
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -28,6 +30,7 @@ const DEFAULT_AOF_PATH = "appendonly.aof";
 /// Caller owns returned memory and must free it.
 /// If `aof` is non-null, write commands are appended to it after successful execution.
 /// `ps` and `subscriber_id` are used for SUBSCRIBE / UNSUBSCRIBE / PUBLISH / PUBSUB commands.
+/// `tx` holds per-connection transaction state for MULTI/EXEC/DISCARD/WATCH.
 pub fn executeCommand(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -35,6 +38,7 @@ pub fn executeCommand(
     aof: ?*Aof,
     ps: *PubSub,
     subscriber_id: u64,
+    tx: *TxState,
 ) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
@@ -63,6 +67,34 @@ pub fn executeCommand(
     // Command dispatch (case-insensitive)
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
+
+    // ── Transaction command handling ──────────────────────────────────────────
+    // MULTI, EXEC, DISCARD, WATCH, UNWATCH are always handled immediately,
+    // even inside a MULTI block.
+    if (std.mem.eql(u8, cmd_upper, "MULTI")) {
+        return tx_mod.cmdMulti(allocator, tx, array);
+    } else if (std.mem.eql(u8, cmd_upper, "DISCARD")) {
+        return tx_mod.cmdDiscard(allocator, tx, array);
+    } else if (std.mem.eql(u8, cmd_upper, "WATCH")) {
+        return tx_mod.cmdWatch(allocator, tx, array);
+    } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
+        return tx_mod.cmdUnwatch(allocator, tx, array);
+    } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
+        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx);
+    }
+
+    // When inside a MULTI block, queue all other commands and return +QUEUED.
+    if (tx.active) {
+        // We need to re-encode the parsed command back to RESP bytes for queuing.
+        // Use the raw input: we store the RESP bytes via the parser's raw slice trick.
+        // Since we don't have the raw bytes here, serialize the RespValue instead.
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        const encoded = try w.serialize(cmd);
+        errdefer allocator.free(encoded);
+        try tx.enqueue(encoded);
+        return w.writeSimpleString("QUEUED");
+    }
 
     // Determine if this is a write command that should be AOF-logged
     const is_write_cmd = blk: {
@@ -183,7 +215,20 @@ pub fn executeCommand(
     };
 
     // Log write commands to AOF (best-effort, skip on error)
+    // Also mark any watched keys dirty so EXEC can detect conflicts.
     if (is_write_cmd) {
+        // Mark watched keys dirty if the written key is being watched.
+        // The key is always args[1] for single-key write commands.
+        if (array.len >= 2) {
+            const written_key = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => "",
+            };
+            if (written_key.len > 0) {
+                tx_mod.markWatchedDirty(tx, written_key);
+            }
+        }
+
         if (aof) |a| {
             // Build string slice from the RespValue array
             var aof_args = try allocator.alloc([]const u8, array.len);
@@ -204,6 +249,88 @@ pub fn executeCommand(
     }
 
     return response;
+}
+
+/// EXEC — execute all queued commands in the transaction.
+/// Returns a null array if WATCH detected a dirty key, otherwise
+/// returns an array of results for each queued command.
+fn cmdExec(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    aof: ?*Aof,
+    ps: *PubSub,
+    subscriber_id: u64,
+    tx: *TxState,
+) anyerror![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (!tx.active) {
+        return w.writeError("ERR EXEC without MULTI");
+    }
+
+    // If a watched key was modified, abort the transaction.
+    if (tx.dirty) {
+        tx.reset();
+        return w.writeArray(null);
+    }
+
+    // Execute each queued command.
+    const parser_mod = @import("../protocol/parser.zig");
+    const queue_len = tx.queue.items.len;
+    var results = try allocator.alloc([]const u8, queue_len);
+    defer {
+        for (results) |r| allocator.free(r);
+        allocator.free(results);
+    }
+
+    // We need a fresh TxState for recursive execution (EXEC cannot be nested)
+    var inner_tx = TxState.init(allocator);
+    defer inner_tx.deinit();
+
+    var executed: usize = 0;
+    for (tx.queue.items, 0..) |qc, i| {
+        var p = parser_mod.Parser.init(allocator);
+        defer p.deinit();
+
+        const parsed_cmd = p.parse(qc.data) catch {
+            results[i] = try w.writeError("ERR command parse error during EXEC");
+            executed += 1;
+            continue;
+        };
+        defer p.freeValue(parsed_cmd);
+
+        results[i] = executeCommand(
+            allocator,
+            storage,
+            parsed_cmd,
+            aof,
+            ps,
+            subscriber_id,
+            &inner_tx,
+        ) catch |err| blk: {
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "ERR command error: {any}", .{err}) catch "ERR internal error";
+            break :blk try w.writeError(msg);
+        };
+        executed += 1;
+    }
+
+    // Build the response array from raw RESP bytes.
+    // We concatenate all individual result bytes into one array response.
+    var out = std.ArrayList(u8){};
+    defer out.deinit(allocator);
+
+    const count_str = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{executed});
+    defer allocator.free(count_str);
+    try out.appendSlice(allocator, count_str);
+
+    for (results[0..executed]) |r| {
+        try out.appendSlice(allocator, r);
+    }
+
+    tx.reset();
+    return out.toOwnedSlice(allocator);
 }
 
 /// PING [message]
@@ -898,13 +1025,15 @@ test "commands - executeCommand dispatches PING" {
     defer storage.deinit();
     var ps = PubSub.init(allocator);
     defer ps.deinit();
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "PING" },
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -916,13 +1045,15 @@ test "commands - executeCommand case insensitive" {
     defer storage.deinit();
     var ps = PubSub.init(allocator);
     defer ps.deinit();
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ping" },
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -934,13 +1065,15 @@ test "commands - executeCommand unknown command" {
     defer storage.deinit();
     var ps = PubSub.init(allocator);
     defer ps.deinit();
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "UNKNOWN" },
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx);
     defer allocator.free(result);
 
     const expected = "-ERR unknown command 'UNKNOWN'\r\n";

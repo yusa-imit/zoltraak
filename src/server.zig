@@ -112,6 +112,10 @@ pub const Server = struct {
         // Ensure subscriber state is cleaned up when client disconnects
         defer self.pubsub.unsubscribeAll(subscriber_id) catch {};
 
+        // Per-connection transaction state (MULTI/EXEC/DISCARD/WATCH)
+        var tx = commands.TxState.init(self.allocator);
+        defer tx.deinit();
+
         // Create arena allocator for this connection
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -151,6 +155,7 @@ pub const Server = struct {
                 self.aof,
                 &self.pubsub,
                 subscriber_id,
+                &tx,
             ) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";
