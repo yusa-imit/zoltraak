@@ -1572,6 +1572,645 @@ pub const Storage = struct {
         }
     }
 
+    /// Increment integer field in hash by increment
+    /// Creates field with value 0 if it does not exist
+    /// Returns new integer value after increment
+    /// Returns error.WrongType if key is not a hash
+    /// Returns error.InvalidValue if field value is not an integer
+    pub fn hincrby(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        field: []const u8,
+        increment: i64,
+    ) !i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Get or create the hash entry
+        if (self.data.getEntry(key)) |entry| {
+            switch (entry.value_ptr.*) {
+                .hash => |*hash_val| {
+                    const current_str = hash_val.data.get(field) orelse "0";
+                    const current = std.fmt.parseInt(i64, current_str, 10) catch return error.InvalidValue;
+                    const new_value = current + increment;
+
+                    // Format new value as string
+                    var buf: [32]u8 = undefined;
+                    const new_str = std.fmt.bufPrint(&buf, "{d}", .{new_value}) catch return error.InvalidValue;
+                    const owned_new = try allocator.dupe(u8, new_str);
+                    errdefer allocator.free(owned_new);
+
+                    if (hash_val.data.contains(field)) {
+                        // Free old value string
+                        const old_val = hash_val.data.get(field).?;
+                        self.allocator.free(old_val);
+                        try hash_val.data.put(field, owned_new);
+                    } else {
+                        // New field: duplicate key
+                        const owned_field = try allocator.dupe(u8, field);
+                        errdefer allocator.free(owned_field);
+                        try hash_val.data.put(owned_field, owned_new);
+                    }
+                    return new_value;
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            // Create new hash with single field
+            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            errdefer {
+                var it = hash_map.iterator();
+                while (it.next()) |e| {
+                    self.allocator.free(e.key_ptr.*);
+                    self.allocator.free(e.value_ptr.*);
+                }
+                hash_map.deinit();
+            }
+
+            var buf: [32]u8 = undefined;
+            const new_str = std.fmt.bufPrint(&buf, "{d}", .{increment}) catch return error.InvalidValue;
+            const owned_field = try self.allocator.dupe(u8, field);
+            errdefer self.allocator.free(owned_field);
+            const owned_value = try self.allocator.dupe(u8, new_str);
+            errdefer self.allocator.free(owned_value);
+            try hash_map.put(owned_field, owned_value);
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.data.put(owned_key, Value{
+                .hash = .{ .data = hash_map, .expires_at = null },
+            });
+            return increment;
+        }
+    }
+
+    /// Increment float field in hash by increment
+    /// Creates field with value 0 if it does not exist
+    /// Returns new float value after increment
+    /// Returns error.WrongType if key is not a hash
+    /// Returns error.InvalidValue if field value is not a float
+    pub fn hincrbyfloat(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        field: []const u8,
+        increment: f64,
+    ) !f64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.data.getEntry(key)) |entry| {
+            switch (entry.value_ptr.*) {
+                .hash => |*hash_val| {
+                    const current_str = hash_val.data.get(field) orelse "0";
+                    const current = std.fmt.parseFloat(f64, current_str) catch return error.InvalidValue;
+                    const new_value = current + increment;
+
+                    // Format with enough precision, trim trailing zeros
+                    var buf: [64]u8 = undefined;
+                    const new_str = formatFloat(&buf, new_value);
+                    const owned_new = try allocator.dupe(u8, new_str);
+                    errdefer allocator.free(owned_new);
+
+                    if (hash_val.data.contains(field)) {
+                        const old_val = hash_val.data.get(field).?;
+                        self.allocator.free(old_val);
+                        try hash_val.data.put(field, owned_new);
+                    } else {
+                        const owned_field = try allocator.dupe(u8, field);
+                        errdefer allocator.free(owned_field);
+                        try hash_val.data.put(owned_field, owned_new);
+                    }
+                    return new_value;
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            errdefer {
+                var it = hash_map.iterator();
+                while (it.next()) |e| {
+                    self.allocator.free(e.key_ptr.*);
+                    self.allocator.free(e.value_ptr.*);
+                }
+                hash_map.deinit();
+            }
+
+            var buf: [64]u8 = undefined;
+            const new_str = formatFloat(&buf, increment);
+            const owned_field = try self.allocator.dupe(u8, field);
+            errdefer self.allocator.free(owned_field);
+            const owned_value = try self.allocator.dupe(u8, new_str);
+            errdefer self.allocator.free(owned_value);
+            try hash_map.put(owned_field, owned_value);
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.data.put(owned_key, Value{
+                .hash = .{ .data = hash_map, .expires_at = null },
+            });
+            return increment;
+        }
+    }
+
+    /// Set field in hash only if field does not exist
+    /// Returns true if the field was set, false if it already existed
+    /// Returns error.WrongType if key is not a hash
+    pub fn hsetnx(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        field: []const u8,
+        value: []const u8,
+    ) !bool {
+        _ = allocator;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.data.getEntry(key)) |entry| {
+            switch (entry.value_ptr.*) {
+                .hash => |*hash_val| {
+                    if (hash_val.data.contains(field)) return false;
+                    const owned_field = try self.allocator.dupe(u8, field);
+                    errdefer self.allocator.free(owned_field);
+                    const owned_value = try self.allocator.dupe(u8, value);
+                    errdefer self.allocator.free(owned_value);
+                    try hash_val.data.put(owned_field, owned_value);
+                    return true;
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            errdefer {
+                var it = hash_map.iterator();
+                while (it.next()) |e| {
+                    self.allocator.free(e.key_ptr.*);
+                    self.allocator.free(e.value_ptr.*);
+                }
+                hash_map.deinit();
+            }
+            const owned_field = try self.allocator.dupe(u8, field);
+            errdefer self.allocator.free(owned_field);
+            const owned_value = try self.allocator.dupe(u8, value);
+            errdefer self.allocator.free(owned_value);
+            try hash_map.put(owned_field, owned_value);
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.data.put(owned_key, Value{
+                .hash = .{ .data = hash_map, .expires_at = null },
+            });
+            return true;
+        }
+    }
+
+    /// Get rank (0-based index) of member in sorted set
+    /// If reverse is true, return rank from end (ZREVRANK)
+    /// Returns null if key or member does not exist
+    pub fn zrank(
+        self: *Storage,
+        key: []const u8,
+        member: []const u8,
+        reverse: bool,
+    ) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                for (zset.sorted_list.items, 0..) |item, idx| {
+                    if (std.mem.eql(u8, item.member, member)) {
+                        if (reverse) {
+                            return zset.sorted_list.items.len - 1 - idx;
+                        }
+                        return idx;
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// Get score of member in sorted set for ZRANK WITHSCORE variant
+    /// Returns null if key or member does not exist
+    pub fn zrankScore(
+        self: *Storage,
+        key: []const u8,
+        member: []const u8,
+    ) ?f64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| return zset.members.get(member),
+            else => return null,
+        }
+    }
+
+    /// Increment score of member in sorted set by increment
+    /// Creates member with score=increment if it does not exist
+    /// Returns new score after increment
+    /// Returns error.WrongType if key is not a sorted set
+    pub fn zincrby(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        increment: f64,
+        member: []const u8,
+    ) !f64 {
+        _ = allocator;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.data.getEntry(key)) |entry| {
+            switch (entry.value_ptr.*) {
+                .sorted_set => |*zset| {
+                    if (zset.members.get(member)) |old_score| {
+                        const new_score = old_score + increment;
+                        // Remove from sorted list
+                        for (zset.sorted_list.items, 0..) |item, idx| {
+                            if (std.mem.eql(u8, item.member, member)) {
+                                _ = zset.sorted_list.orderedRemove(idx);
+                                break;
+                            }
+                        }
+                        // Update score in map
+                        try zset.members.put(member, new_score);
+                        // Re-insert at correct position
+                        const stored_key = zset.members.getKey(member).?;
+                        try insertSortedMember(&zset.sorted_list, new_score, stored_key, self.allocator);
+                        return new_score;
+                    } else {
+                        // New member
+                        const owned_member = try self.allocator.dupe(u8, member);
+                        errdefer self.allocator.free(owned_member);
+                        try zset.members.put(owned_member, increment);
+                        const stored_key = zset.members.getKey(member).?;
+                        try insertSortedMember(&zset.sorted_list, increment, stored_key, self.allocator);
+                        return increment;
+                    }
+                },
+                else => return error.WrongType,
+            }
+        } else {
+            // Create new sorted set
+            var member_map = std.StringHashMap(f64).init(self.allocator);
+            errdefer {
+                var it = member_map.keyIterator();
+                while (it.next()) |k| self.allocator.free(k.*);
+                member_map.deinit();
+            }
+
+            var sorted: std.ArrayList(Value.ScoredMember) = .{
+                .items = &.{},
+                .capacity = 0,
+            };
+            errdefer sorted.deinit(self.allocator);
+
+            const owned_member = try self.allocator.dupe(u8, member);
+            errdefer self.allocator.free(owned_member);
+            try member_map.put(owned_member, increment);
+            const stored_key = member_map.getKey(member).?;
+            try insertSortedMember(&sorted, increment, stored_key, self.allocator);
+
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.data.put(owned_key, Value{
+                .sorted_set = .{
+                    .members = member_map,
+                    .sorted_list = sorted,
+                    .expires_at = null,
+                },
+            });
+            return increment;
+        }
+    }
+
+    /// Count members in sorted set with scores in [min, max]
+    /// Supports exclusive bounds via min_excl/max_excl flags
+    /// Returns 0 if key does not exist
+    pub fn zcount(
+        self: *Storage,
+        key: []const u8,
+        min: f64,
+        max: f64,
+        min_excl: bool,
+        max_excl: bool,
+    ) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                var count: usize = 0;
+                for (zset.sorted_list.items) |item| {
+                    const score = item.score;
+                    const above_min = if (min_excl) score > min else score >= min;
+                    const below_max = if (max_excl) score < max else score <= max;
+                    if (above_min and below_max) count += 1;
+                }
+                return count;
+            },
+            else => return 0,
+        }
+    }
+
+    /// Compute union of sets at keys
+    /// Returns owned slice of unique member strings (caller frees outer slice; NOT member strings)
+    /// Non-existent keys are treated as empty sets
+    /// Returns error.WrongType if any key is not a set
+    pub fn sunion(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+    ) ![][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Accumulate unique members using a temporary string set
+        var accum = std.StringHashMap(void).init(allocator);
+        defer accum.deinit();
+
+        for (keys) |key| {
+            const entry = self.data.getEntry(key) orelse continue;
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+            switch (entry.value_ptr.*) {
+                .set => |*set_val| {
+                    var it = set_val.data.keyIterator();
+                    while (it.next()) |member_ptr| {
+                        try accum.put(member_ptr.*, {});
+                    }
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        var result = try allocator.alloc([]const u8, accum.count());
+        var it = accum.keyIterator();
+        var i: usize = 0;
+        while (it.next()) |k| : (i += 1) {
+            result[i] = k.*;
+        }
+        return result;
+    }
+
+    /// Compute intersection of sets at keys
+    /// Returns owned slice of member strings present in all sets
+    /// Non-existent keys are treated as empty sets (result is empty)
+    /// Returns error.WrongType if any key is not a set
+    pub fn sinter(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+    ) ![][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (keys.len == 0) return try allocator.alloc([]const u8, 0);
+
+        // Find the first set to seed candidates
+        var candidates: ?*Value.SetValue = null;
+        for (keys) |key| {
+            const entry = self.data.getEntry(key) orelse {
+                // Key missing = empty set, intersection is empty
+                return try allocator.alloc([]const u8, 0);
+            };
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                return try allocator.alloc([]const u8, 0);
+            }
+            switch (entry.value_ptr.*) {
+                .set => |*sv| {
+                    candidates = sv;
+                    break;
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        const first_set = candidates orelse return try allocator.alloc([]const u8, 0);
+
+        // For each candidate in first set, check membership in all other sets
+        var result_list = std.ArrayList([]const u8){
+            .items = &.{},
+            .capacity = 0,
+        };
+        defer result_list.deinit(allocator);
+
+        var it = first_set.data.keyIterator();
+        outer: while (it.next()) |member_ptr| {
+            const member = member_ptr.*;
+            // Check in all keys (skip index 0 = already seeded)
+            for (keys[1..]) |key| {
+                const entry = self.data.getEntry(key) orelse continue :outer;
+                if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue :outer;
+                switch (entry.value_ptr.*) {
+                    .set => |*sv| {
+                        if (!sv.data.contains(member)) continue :outer;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+            try result_list.append(allocator, member);
+        }
+
+        const result = try allocator.dupe([]const u8, result_list.items);
+        return result;
+    }
+
+    /// Compute difference: members in keys[0] not in any of keys[1..]
+    /// Returns owned slice of member strings
+    /// Non-existent keys are treated as empty sets
+    /// Returns error.WrongType if any key is not a set
+    pub fn sdiff(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+    ) ![][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (keys.len == 0) return try allocator.alloc([]const u8, 0);
+
+        // Get the first set
+        const first_entry = self.data.getEntry(keys[0]) orelse {
+            return try allocator.alloc([]const u8, 0);
+        };
+        if (first_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return try allocator.alloc([]const u8, 0);
+        }
+
+        const first_set = switch (first_entry.value_ptr.*) {
+            .set => |*sv| sv,
+            else => return error.WrongType,
+        };
+
+        // Validate remaining keys are sets
+        for (keys[1..]) |key| {
+            const entry = self.data.getEntry(key) orelse continue;
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+            switch (entry.value_ptr.*) {
+                .set => {},
+                else => return error.WrongType,
+            }
+        }
+
+        var result_list = std.ArrayList([]const u8){
+            .items = &.{},
+            .capacity = 0,
+        };
+        defer result_list.deinit(allocator);
+
+        var it = first_set.data.keyIterator();
+        outer: while (it.next()) |member_ptr| {
+            const member = member_ptr.*;
+            for (keys[1..]) |key| {
+                const entry = self.data.getEntry(key) orelse continue;
+                if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+                switch (entry.value_ptr.*) {
+                    .set => |*sv| {
+                        if (sv.data.contains(member)) continue :outer;
+                    },
+                    else => {},
+                }
+            }
+            try result_list.append(allocator, member);
+        }
+
+        const result = try allocator.dupe([]const u8, result_list.items);
+        return result;
+    }
+
+    /// Store union of sets at keys into destination
+    /// Overwrites destination. Returns count of members in result.
+    pub fn sunionstore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        keys: []const []const u8,
+    ) !usize {
+        const members = try self.sunion(allocator, keys);
+        defer allocator.free(members);
+        return self.storeSetMembers(allocator, dest, members);
+    }
+
+    /// Store intersection of sets at keys into destination
+    /// Overwrites destination. Returns count of members in result.
+    pub fn sinterstore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        keys: []const []const u8,
+    ) !usize {
+        const members = try self.sinter(allocator, keys);
+        defer allocator.free(members);
+        return self.storeSetMembers(allocator, dest, members);
+    }
+
+    /// Store difference of sets (keys[0] minus keys[1..]) into destination
+    /// Overwrites destination. Returns count of members in result.
+    pub fn sdiffstore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        keys: []const []const u8,
+    ) !usize {
+        const members = try self.sdiff(allocator, keys);
+        defer allocator.free(members);
+        return self.storeSetMembers(allocator, dest, members);
+    }
+
+    /// Internal helper: create/overwrite a set at dest with the given member strings
+    /// Member strings are NOT owned by this function (they point into other sets)
+    fn storeSetMembers(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        members: []const []const u8,
+    ) !usize {
+        _ = allocator;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Remove existing key at dest (if any)
+        if (self.data.fetchRemove(dest)) |kv| {
+            self.allocator.free(kv.key);
+            var old_value = kv.value;
+            old_value.deinit(self.allocator);
+        }
+
+        var set_map = std.StringHashMap(void).init(self.allocator);
+        errdefer {
+            var it = set_map.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            set_map.deinit();
+        }
+
+        for (members) |member| {
+            if (!set_map.contains(member)) {
+                const owned = try self.allocator.dupe(u8, member);
+                errdefer self.allocator.free(owned);
+                try set_map.put(owned, {});
+            }
+        }
+
+        const count = set_map.count();
+        const owned_key = try self.allocator.dupe(u8, dest);
+        errdefer self.allocator.free(owned_key);
+        try self.data.put(owned_key, Value{
+            .set = .{ .data = set_map, .expires_at = null },
+        });
+        return count;
+    }
+
+    /// Format a float as a string without trailing zeros
+    fn formatFloat(buf: []u8, value: f64) []const u8 {
+        // Use standard formatting then trim trailing zeros after decimal
+        const s = std.fmt.bufPrint(buf, "{d}", .{value}) catch return "0";
+        // If no decimal point, return as-is
+        if (std.mem.indexOf(u8, s, ".") == null) return s;
+        // Trim trailing zeros
+        var end = s.len;
+        while (end > 0 and s[end - 1] == '0') end -= 1;
+        if (end > 0 and s[end - 1] == '.') end -= 1;
+        return s[0..end];
+    }
+
     /// Get current Unix timestamp in milliseconds
     /// Return the number of keys in storage (excluding expired)
     pub fn dbSize(self: *Storage) usize {

@@ -402,6 +402,212 @@ pub fn cmdZcard(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     return w.writeInteger(@intCast(count orelse 0));
 }
 
+/// ZRANK key member [WITHSCORE]
+/// Returns rank (0-based) of member in sorted set (ascending order)
+/// Returns null bulk string if member not found
+/// If WITHSCORE is given, returns two-element array [rank, score]
+pub fn cmdZrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zrank' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const member = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid member"),
+    };
+
+    var with_score = false;
+    if (args.len >= 4) {
+        const opt_str = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_opt = try std.ascii.allocUpperString(allocator, opt_str);
+        defer allocator.free(upper_opt);
+        if (std.mem.eql(u8, upper_opt, "WITHSCORE")) {
+            with_score = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const rank = storage.zrank(key, member, false);
+    if (rank == null) {
+        return w.writeNull();
+    }
+
+    if (with_score) {
+        const score = storage.zrankScore(key, member) orelse return w.writeNull();
+        var score_buf: [64]u8 = undefined;
+        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{score});
+        const owned_score = try allocator.dupe(u8, score_str);
+        defer allocator.free(owned_score);
+        const items = [_]RespValue{
+            .{ .integer = @intCast(rank.?) },
+            .{ .bulk_string = owned_score },
+        };
+        return w.writeArray(&items);
+    }
+
+    return w.writeInteger(@intCast(rank.?));
+}
+
+/// ZREVRANK key member [WITHSCORE]
+/// Returns rank (0-based) of member in sorted set (descending order)
+/// Returns null bulk string if member not found
+pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zrevrank' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const member = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid member"),
+    };
+
+    var with_score = false;
+    if (args.len >= 4) {
+        const opt_str = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_opt = try std.ascii.allocUpperString(allocator, opt_str);
+        defer allocator.free(upper_opt);
+        if (std.mem.eql(u8, upper_opt, "WITHSCORE")) {
+            with_score = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const rank = storage.zrank(key, member, true);
+    if (rank == null) {
+        return w.writeNull();
+    }
+
+    if (with_score) {
+        const score = storage.zrankScore(key, member) orelse return w.writeNull();
+        var score_buf: [64]u8 = undefined;
+        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{score});
+        const owned_score = try allocator.dupe(u8, score_str);
+        defer allocator.free(owned_score);
+        const items = [_]RespValue{
+            .{ .integer = @intCast(rank.?) },
+            .{ .bulk_string = owned_score },
+        };
+        return w.writeArray(&items);
+    }
+
+    return w.writeInteger(@intCast(rank.?));
+}
+
+/// ZINCRBY key increment member
+/// Increment score of member in sorted set by increment
+/// Returns new score as bulk string
+pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'zincrby' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const incr_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not a valid float"),
+    };
+
+    const increment = parseScore(incr_str) catch {
+        return w.writeError("ERR value is not a valid float");
+    };
+
+    const member = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid member"),
+    };
+
+    const new_score = storage.zincrby(allocator, key, increment, member) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    var score_buf: [64]u8 = undefined;
+    const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{new_score});
+    return w.writeBulkString(score_str);
+}
+
+/// ZCOUNT key min max
+/// Count members in sorted set with scores in [min, max]
+/// Supports exclusive bounds with ( prefix, and -inf/+inf
+/// Returns integer count
+pub fn cmdZcount(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'zcount' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const min_arg = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR min is not a valid float"),
+    };
+    var min_excl = false;
+    var min_str = min_arg;
+    if (min_str.len > 0 and min_str[0] == '(') {
+        min_excl = true;
+        min_str = min_str[1..];
+    }
+    const min_score = parseScore(min_str) catch {
+        return w.writeError("ERR min is not a valid float");
+    };
+
+    const max_arg = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR max is not a valid float"),
+    };
+    var max_excl = false;
+    var max_str = max_arg;
+    if (max_str.len > 0 and max_str[0] == '(') {
+        max_excl = true;
+        max_str = max_str[1..];
+    }
+    const max_score = parseScore(max_str) catch {
+        return w.writeError("ERR max is not a valid float");
+    };
+
+    const count = storage.zcount(key, min_score, max_score, min_excl, max_excl);
+    return w.writeInteger(@intCast(count));
+}
+
 // Embedded unit tests
 
 test "cmdZadd - basic add" {
@@ -761,4 +967,206 @@ test "cmdZcard - non-existent key returns 0" {
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "cmdZrank - get rank ascending" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const zadd_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "two" },
+        .{ .bulk_string = "3" },
+        .{ .bulk_string = "three" },
+    };
+    _ = try cmdZadd(allocator, storage, &zadd_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZRANK" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "two" },
+    };
+    const response = try cmdZrank(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "cmdZrank - non-existent member returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZRANK" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "nosuch" },
+    };
+    const response = try cmdZrank(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "cmdZrevrank - get rank descending" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const zadd_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "two" },
+        .{ .bulk_string = "3" },
+        .{ .bulk_string = "three" },
+    };
+    _ = try cmdZadd(allocator, storage, &zadd_args);
+
+    // "three" has score 3, so in descending order it's rank 0
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZREVRANK" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "three" },
+    };
+    const response = try cmdZrevrank(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "cmdZincrby - increment new member" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZINCRBY" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "2.5" },
+        .{ .bulk_string = "member" },
+    };
+    const response = try cmdZincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "$"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "2.5") != null);
+}
+
+test "cmdZincrby - increment existing member" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const zadd_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "one" },
+    };
+    _ = try cmdZadd(allocator, storage, &zadd_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZINCRBY" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "4" },
+        .{ .bulk_string = "one" },
+    };
+    const response = try cmdZincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "5") != null);
+}
+
+test "cmdZcount - count members in range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const zadd_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "two" },
+        .{ .bulk_string = "3" },
+        .{ .bulk_string = "three" },
+    };
+    _ = try cmdZadd(allocator, storage, &zadd_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZCOUNT" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "2" },
+    };
+    const response = try cmdZcount(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":2\r\n", response);
+}
+
+test "cmdZcount - with -inf and +inf" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const zadd_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "two" },
+    };
+    _ = try cmdZadd(allocator, storage, &zadd_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZCOUNT" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "-inf" },
+        .{ .bulk_string = "+inf" },
+    };
+    const response = try cmdZcount(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":2\r\n", response);
+}
+
+test "cmdZcount - exclusive bounds" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const zadd_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "one" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "two" },
+        .{ .bulk_string = "3" },
+        .{ .bulk_string = "three" },
+    };
+    _ = try cmdZadd(allocator, storage, &zadd_args);
+
+    // (1, 3] -> scores >1 and <=3, should be two and three
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZCOUNT" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "(1" },
+        .{ .bulk_string = "3" },
+    };
+    const response = try cmdZcount(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":2\r\n", response);
 }

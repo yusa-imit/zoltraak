@@ -104,6 +104,8 @@ pub fn executeCommand(
                 "APPEND",     "GETSET",     "GETDEL",     "GETEX",
                 "SETNX",      "SETEX",      "PSETEX",
                 "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
+                "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
+                "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -159,6 +161,8 @@ pub fn executeCommand(
             "APPEND",     "GETSET",     "GETDEL",     "GETEX",
             "SETNX",      "SETEX",      "PSETEX",
             "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
+            "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
+            "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -277,6 +281,18 @@ pub fn executeCommand(
             break :blk try sets.cmdSmembers(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
             break :blk try sets.cmdScard(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SUNION")) {
+            break :blk try sets.cmdSunion(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SINTER")) {
+            break :blk try sets.cmdSinter(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SDIFF")) {
+            break :blk try sets.cmdSdiff(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SUNIONSTORE")) {
+            break :blk try sets.cmdSunionstore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SINTERSTORE")) {
+            break :blk try sets.cmdSinterstore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SDIFFSTORE")) {
+            break :blk try sets.cmdSdiffstore(allocator, storage, array);
         }
         // Hash commands
         else if (std.mem.eql(u8, cmd_upper, "HSET")) {
@@ -295,6 +311,14 @@ pub fn executeCommand(
             break :blk try hashes.cmdHexists(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HLEN")) {
             break :blk try hashes.cmdHlen(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HMGET")) {
+            break :blk try hashes.cmdHmget(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HINCRBY")) {
+            break :blk try hashes.cmdHincrby(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HINCRBYFLOAT")) {
+            break :blk try hashes.cmdHincrbyfloat(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HSETNX")) {
+            break :blk try hashes.cmdHsetnx(allocator, storage, array);
         }
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {
@@ -309,6 +333,14 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
             break :blk try sorted_sets.cmdZcard(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZRANK")) {
+            break :blk try sorted_sets.cmdZrank(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREVRANK")) {
+            break :blk try sorted_sets.cmdZrevrank(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZINCRBY")) {
+            break :blk try sorted_sets.cmdZincrby(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZCOUNT")) {
+            break :blk try sorted_sets.cmdZcount(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {

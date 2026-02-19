@@ -291,6 +291,167 @@ pub fn cmdHlen(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     return w.writeInteger(@intCast(len orelse 0));
 }
 
+/// HMGET key field [field ...]
+/// Get values of multiple fields in a hash
+/// Returns array where each element is a bulk string or null for missing fields
+pub fn cmdHmget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'hmget' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const fields = args[2..];
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
+    defer resp_values.deinit(allocator);
+
+    for (fields) |field_arg| {
+        const field = switch (field_arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        const value = storage.hget(key, field);
+        if (value) |v| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = v });
+        } else {
+            try resp_values.append(allocator, RespValue{ .null_bulk_string = {} });
+        }
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HINCRBY key field increment
+/// Increment integer field in a hash by increment
+/// Returns new value as integer
+pub fn cmdHincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'hincrby' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const field = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid field"),
+    };
+
+    const incr_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+
+    const increment = std.fmt.parseInt(i64, incr_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    const new_value = storage.hincrby(allocator, key, field, increment) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.InvalidValue => return w.writeError("ERR hash value is not an integer"),
+        else => return err,
+    };
+
+    return w.writeInteger(new_value);
+}
+
+/// HINCRBYFLOAT key field increment
+/// Increment float field in a hash by increment
+/// Returns new value as bulk string
+pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'hincrbyfloat' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const field = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid field"),
+    };
+
+    const incr_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not a valid float"),
+    };
+
+    const increment = std.fmt.parseFloat(f64, incr_str) catch {
+        return w.writeError("ERR value is not a valid float");
+    };
+
+    const new_value = storage.hincrbyfloat(allocator, key, field, increment) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.InvalidValue => return w.writeError("ERR hash value is not a valid float"),
+        else => return err,
+    };
+
+    // Format result as bulk string with no trailing zeros
+    var buf: [64]u8 = undefined;
+    const raw = std.fmt.bufPrint(&buf, "{d}", .{new_value}) catch "0";
+    // Trim trailing zeros after decimal point
+    const result_str = blk: {
+        if (std.mem.indexOf(u8, raw, ".") != null) {
+            var end = raw.len;
+            while (end > 0 and raw[end - 1] == '0') end -= 1;
+            if (end > 0 and raw[end - 1] == '.') end -= 1;
+            break :blk raw[0..end];
+        }
+        break :blk raw;
+    };
+    return w.writeBulkString(result_str);
+}
+
+/// HSETNX key field value
+/// Set field in hash only if field does not exist
+/// Returns 1 if field was set, 0 if field already existed
+pub fn cmdHsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'hsetnx' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const field = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid field"),
+    };
+
+    const value = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    const was_set = storage.hsetnx(allocator, key, field, value) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+
+    return w.writeInteger(if (was_set) 1 else 0);
+}
+
 // Embedded unit tests
 
 test "cmdHset - basic set" {
@@ -591,6 +752,157 @@ test "cmdHlen - non-existent key returns 0" {
         .{ .bulk_string = "nosuchkey" },
     };
     const response = try cmdHlen(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "cmdHmget - get multiple fields" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "f1" },
+        .{ .bulk_string = "v1" },
+        .{ .bulk_string = "f2" },
+        .{ .bulk_string = "v2" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HMGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "f1" },
+        .{ .bulk_string = "nosuch" },
+        .{ .bulk_string = "f2" },
+    };
+    const response = try cmdHmget(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should be *3 array with v1, nil, v2
+    try std.testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "$2\r\nv1\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "$-1\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "$2\r\nv2\r\n") != null);
+}
+
+test "cmdHincrby - increment new field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "5" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":5\r\n", response);
+}
+
+test "cmdHincrby - increment existing field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "10" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "3" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":13\r\n", response);
+}
+
+test "cmdHincrby - negative increment" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "-3" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":-3\r\n", response);
+}
+
+test "cmdHincrbyfloat - increment float field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBYFLOAT" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "score" },
+        .{ .bulk_string = "1.5" },
+    };
+    const response = try cmdHincrbyfloat(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "$"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "1.5") != null);
+}
+
+test "cmdHsetnx - set new field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETNX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field" },
+        .{ .bulk_string = "value" },
+    };
+    const response = try cmdHsetnx(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "cmdHsetnx - field already exists returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field" },
+        .{ .bulk_string = "original" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETNX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field" },
+        .{ .bulk_string = "newvalue" },
+    };
+    const response = try cmdHsetnx(allocator, storage, &args);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings(":0\r\n", response);

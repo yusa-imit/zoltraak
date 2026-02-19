@@ -188,6 +188,234 @@ pub fn cmdScard(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     return w.writeInteger(@intCast(cardinality));
 }
 
+/// SUNION key [key ...]
+/// Returns the members of the set resulting from the union of all the given sets
+/// Non-existent keys are treated as empty sets
+pub fn cmdSunion(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'sunion' command");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 1);
+    defer keys.deinit(allocator);
+
+    for (args[1..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const members = storage.sunion(allocator, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer allocator.free(members);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+    defer resp_values.deinit(allocator);
+
+    for (members) |member| {
+        try resp_values.append(allocator, RespValue{ .bulk_string = member });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// SINTER key [key ...]
+/// Returns the members of the set resulting from the intersection of all the given sets
+/// Non-existent keys are treated as empty sets
+pub fn cmdSinter(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'sinter' command");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 1);
+    defer keys.deinit(allocator);
+
+    for (args[1..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const members = storage.sinter(allocator, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer allocator.free(members);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+    defer resp_values.deinit(allocator);
+
+    for (members) |member| {
+        try resp_values.append(allocator, RespValue{ .bulk_string = member });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// SDIFF key [key ...]
+/// Returns the members of the set resulting from the difference between the first set and all successive sets
+/// Non-existent keys are treated as empty sets
+pub fn cmdSdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'sdiff' command");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 1);
+    defer keys.deinit(allocator);
+
+    for (args[1..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const members = storage.sdiff(allocator, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer allocator.free(members);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+    defer resp_values.deinit(allocator);
+
+    for (members) |member| {
+        try resp_values.append(allocator, RespValue{ .bulk_string = member });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// SUNIONSTORE destination key [key ...]
+/// Store the union of sets in destination. Returns count of members in result.
+pub fn cmdSunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'sunionstore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 2);
+    defer keys.deinit(allocator);
+
+    for (args[2..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.sunionstore(allocator, dest, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
+/// SINTERSTORE destination key [key ...]
+/// Store the intersection of sets in destination. Returns count of members in result.
+pub fn cmdSinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'sinterstore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 2);
+    defer keys.deinit(allocator);
+
+    for (args[2..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.sinterstore(allocator, dest, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
+/// SDIFFSTORE destination key [key ...]
+/// Store the difference of sets in destination. Returns count of members in result.
+pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'sdiffstore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 2);
+    defer keys.deinit(allocator);
+
+    for (args[2..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.sdiffstore(allocator, dest, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
 // Embedded unit tests
 
 test "sets - SADD single member" {
@@ -582,4 +810,230 @@ test "sets - integration test: SADD SCARD SMEMBERS SISMEMBER SREM" {
     const scard2_result = try cmdScard(allocator, storage, &scard_args);
     defer allocator.free(scard2_result);
     try std.testing.expectEqualStrings(":2\r\n", scard2_result);
+}
+
+test "sets - SUNION basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up two sets
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const sadd2_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd2_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUNION" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "s2" },
+    };
+    const result = try cmdSunion(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should contain 3 unique members: a, b, c
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n"));
+}
+
+test "sets - SINTER basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const sadd2_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+        RespValue{ .bulk_string = "d" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd2_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SINTER" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "s2" },
+    };
+    const result = try cmdSinter(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should contain 2 members: b and c
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+}
+
+test "sets - SINTER with non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SINTER" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdSinter(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Empty intersection with non-existent key
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "sets - SDIFF basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const sadd2_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "d" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd2_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SDIFF" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "s2" },
+    };
+    const result = try cmdSdiff(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should contain a and c (in s1 but not s2)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+}
+
+test "sets - SUNIONSTORE" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const sadd2_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd2_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUNIONSTORE" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "s2" },
+    };
+    const result = try cmdSunionstore(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":3\r\n", result);
+}
+
+test "sets - SINTERSTORE" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const sadd2_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd2_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SINTERSTORE" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "s2" },
+    };
+    const result = try cmdSinterstore(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+}
+
+test "sets - SDIFFSTORE" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const sadd1_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd1_args);
+
+    const sadd2_args = [_]RespValue{
+        RespValue{ .bulk_string = "SADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "b" },
+    };
+    _ = try cmdSadd(allocator, storage, &sadd2_args);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SDIFFSTORE" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "s1" },
+        RespValue{ .bulk_string = "s2" },
+    };
+    const result = try cmdSdiffstore(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // a and c are in s1 but not s2
+    try std.testing.expectEqualStrings(":2\r\n", result);
 }
