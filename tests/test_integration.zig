@@ -1542,6 +1542,677 @@ test "Lists - complex workflow with mixed operations" {
 }
 
 // ============================================================================
+// LIST Command Tests - LINDEX
+// ============================================================================
+
+test "LINDEX - get element at positive index" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "1" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\nb\r\n", response);
+}
+
+test "LINDEX - get element at negative index" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "-1" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\nc\r\n", response);
+}
+
+test "LINDEX - out of range returns null bulk" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "10" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "LINDEX - non-existent key returns null bulk" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINDEX", "nosuchkey", "0" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LSET
+// ============================================================================
+
+test "LSET - set element at index" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LSET", "mylist", "1", "z" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("+OK\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nz\r\n", r);
+    }
+}
+
+test "LSET - out of range returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LSET", "mylist", "5", "z" });
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "ERR") != null);
+}
+
+test "LSET - no such key returns error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LSET", "nosuchkey", "0", "z" });
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.indexOf(u8, response, "ERR") != null);
+}
+
+// ============================================================================
+// LIST Command Tests - LTRIM
+// ============================================================================
+
+test "LTRIM - trims to specified range" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c", "d", "e" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LTRIM", "mylist", "1", "3" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("+OK\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LLEN", "mylist" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":3\r\n", r);
+    }
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nb\r\n", r);
+    }
+}
+
+test "LTRIM - start greater than stop deletes key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LTRIM", "mylist", "5", "1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("+OK\r\n", r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "EXISTS", "mylist" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "LTRIM - non-existent key returns OK" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LTRIM", "nosuchkey", "0", "1" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("+OK\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LREM
+// ============================================================================
+
+test "LREM - removes from head with positive count" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "a", "c", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LREM", "mylist", "2", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":2\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LLEN", "mylist" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":3\r\n", r);
+    }
+}
+
+test "LREM - removes all with count 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "a", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LREM", "mylist", "0", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "LREM - removes from tail with negative count" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "a", "c", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LREM", "mylist", "-1", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    // Last "a" should be removed; first "a" at index 0 should remain
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\na\r\n", r);
+    }
+}
+
+test "LREM - non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LREM", "nosuchkey", "1", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LPUSHX / RPUSHX
+// ============================================================================
+
+test "LPUSHX - pushes to existing list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPUSHX", "mylist", "b" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":2\r\n", response);
+}
+
+test "LPUSHX - does not create new list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPUSHX", "nosuchkey", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "EXISTS", "nosuchkey" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":0\r\n", r);
+    }
+}
+
+test "RPUSHX - pushes to existing list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPUSHX", "mylist", "b" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":2\r\n", response);
+}
+
+test "RPUSHX - does not create new list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPUSHX", "nosuchkey", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LINSERT
+// ============================================================================
+
+test "LINSERT - insert before pivot" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINSERT", "mylist", "BEFORE", "b", "x" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":4\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nx\r\n", r);
+    }
+}
+
+test "LINSERT - insert after pivot" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINSERT", "mylist", "AFTER", "b", "x" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":4\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "2" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nx\r\n", r);
+    }
+}
+
+test "LINSERT - pivot not found returns -1" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINSERT", "mylist", "BEFORE", "z", "x" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":-1\r\n", response);
+}
+
+test "LINSERT - non-existent key returns 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LINSERT", "nosuchkey", "BEFORE", "pivot", "elem" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LPOS
+// ============================================================================
+
+test "LPOS - returns first position" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "a", "c", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOS", "mylist", "a" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "LPOS - no match returns null bulk" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOS", "mylist", "z" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "LPOS - with COUNT 0 returns all positions" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "a", "c", "a" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOS", "mylist", "a", "COUNT", "0" });
+    defer testing.allocator.free(response);
+    // Should be array of 3 positions: 0, 2, 4
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+}
+
+test "LPOS - with COUNT and no match returns empty array" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOS", "mylist", "z", "COUNT", "0" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "LPOS - with RANK 2 skips first occurrence" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "a", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LPOS", "mylist", "a", "RANK", "2" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":2\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - LMOVE
+// ============================================================================
+
+test "LMOVE - LEFT RIGHT moves head of source to tail of dest" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "src", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LMOVE", "src", "dst", "LEFT", "RIGHT" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\na\r\n", response);
+
+    // src should now have b, c
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LLEN", "src" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings(":2\r\n", r);
+    }
+
+    // dst should have a
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "dst", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\na\r\n", r);
+    }
+}
+
+test "LMOVE - RIGHT LEFT moves tail of source to head of dest" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "src", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LMOVE", "src", "dst", "RIGHT", "LEFT" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\nc\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "dst", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nc\r\n", r);
+    }
+}
+
+test "LMOVE - source same as dest rotates list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    // Rotate: move head to tail; list becomes b, c, a
+    const response = try client.sendCommand(&[_][]const u8{ "LMOVE", "mylist", "mylist", "LEFT", "RIGHT" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\na\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LRANGE", "mylist", "0", "-1" });
+        defer testing.allocator.free(r);
+        try testing.expect(std.mem.indexOf(u8, r, "*3\r\n") != null);
+    }
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nb\r\n", r);
+    }
+}
+
+test "LMOVE - non-existent source returns null bulk" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "LMOVE", "nosrc", "dst", "LEFT", "RIGHT" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+// ============================================================================
+// LIST Command Tests - RPOPLPUSH
+// ============================================================================
+
+test "RPOPLPUSH - pops tail of source, pushes to head of dest" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "src", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPOPLPUSH", "src", "dst" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\nc\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "dst", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nc\r\n", r);
+    }
+}
+
+test "RPOPLPUSH - non-existent source returns null bulk" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "RPOPLPUSH", "nosrc", "dst" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "RPOPLPUSH - same source and dest rotates" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        defer testing.allocator.free(r);
+    }
+
+    // Rotate: move tail (c) to head -> list becomes c, a, b
+    const response = try client.sendCommand(&[_][]const u8{ "RPOPLPUSH", "mylist", "mylist" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("$1\r\nc\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "LINDEX", "mylist", "0" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$1\r\nc\r\n", r);
+    }
+}
+
+// ============================================================================
 // SET Command Tests - SADD
 // ============================================================================
 

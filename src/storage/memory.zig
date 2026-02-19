@@ -328,6 +328,19 @@ pub const Storage = struct {
 
     // List operations
 
+    /// Resolve a potentially-negative list index to a concrete usize.
+    /// Returns null if the index is out of bounds.
+    inline fn resolveListIndex(list_len: usize, index: i64) ?usize {
+        if (index >= 0) {
+            const u: usize = @intCast(index);
+            return if (u >= list_len) null else u;
+        } else {
+            const adjusted = @as(i64, @intCast(list_len)) + index;
+            if (adjusted < 0) return null;
+            return @intCast(adjusted);
+        }
+    }
+
     /// Push elements to the head of a list
     /// Creates list if it doesn't exist
     /// Returns length of list after push, or error if key exists and is not a list
@@ -577,6 +590,481 @@ pub const Storage = struct {
             .list => |list_val| return list_val.data.items.len,
             else => return null,
         }
+    }
+
+    /// Get element at index in list (negative = from tail)
+    /// Returns null if key doesn't exist or index is out of range
+    /// Returns error.WrongType if key exists but is not a list
+    pub fn lindex(self: *Storage, key: []const u8, index: i64) error{WrongType}!?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                const len = list_val.data.items.len;
+                if (len == 0) return null;
+                const resolved = resolveListIndex(len, index) orelse return null;
+                return list_val.data.items[resolved];
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Set element at index in list (negative = from tail)
+    /// Returns error.WrongType if not a list, error.NoSuchKey if missing,
+    /// error.IndexOutOfRange if index is out of bounds
+    pub fn lset(self: *Storage, key: []const u8, index: i64, element: []const u8) error{ WrongType, NoSuchKey, IndexOutOfRange, OutOfMemory }!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                const len = list_val.data.items.len;
+                const resolved = resolveListIndex(len, index) orelse return error.IndexOutOfRange;
+                const owned = try self.allocator.dupe(u8, element);
+                self.allocator.free(list_val.data.items[resolved]);
+                list_val.data.items[resolved] = owned;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Trim list to range [start, stop] in-place, removing elements outside
+    /// Negative indices supported. Out-of-range indices are clamped.
+    /// If result range is empty, deletes the key.
+    /// Returns error.WrongType if key exists but is not a list; OK for missing key.
+    pub fn ltrim(self: *Storage, key: []const u8, start: i64, stop: i64) error{WrongType}!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return; // missing key is OK
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                const len = list_val.data.items.len;
+
+                // Normalize start/stop the same way lrange does
+                const norm_start: usize = blk: {
+                    if (start < 0) {
+                        const s = @as(i64, @intCast(len)) + start;
+                        break :blk if (s < 0) 0 else @as(usize, @intCast(s));
+                    } else {
+                        break :blk @min(@as(usize, @intCast(start)), len);
+                    }
+                };
+
+                const norm_stop: usize = blk: {
+                    if (stop < 0) {
+                        const s = @as(i64, @intCast(len)) + stop;
+                        if (s < 0) {
+                            // Entire list should be deleted
+                            break :blk 0;
+                        }
+                        break :blk @as(usize, @intCast(s));
+                    } else {
+                        break :blk @min(@as(usize, @intCast(stop)), len -| 1);
+                    }
+                };
+
+                // If range is invalid (start > stop or start >= len), delete whole list
+                if (norm_start > norm_stop or norm_start >= len) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                    return;
+                }
+
+                // Free elements before norm_start
+                for (0..norm_start) |i| {
+                    self.allocator.free(list_val.data.items[i]);
+                }
+
+                // Free elements after norm_stop
+                for (norm_stop + 1..len) |i| {
+                    self.allocator.free(list_val.data.items[i]);
+                }
+
+                // Shift kept elements to front
+                const keep_len = norm_stop - norm_start + 1;
+                for (0..keep_len) |i| {
+                    list_val.data.items[i] = list_val.data.items[norm_start + i];
+                }
+                list_val.data.items.len = keep_len;
+
+                // If list is now empty, delete the key
+                if (list_val.data.items.len == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Remove `count` occurrences of `element` from list.
+    /// count > 0: remove from head; count < 0: remove from tail; count == 0: remove all
+    /// Returns number of elements removed.
+    /// Returns error.WrongType if key exists but is not a list.
+    pub fn lrem(self: *Storage, key: []const u8, count: i64, element: []const u8) error{WrongType}!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                const items = list_val.data.items;
+                const limit: usize = if (count == 0) items.len else @as(usize, @intCast(if (count < 0) -count else count));
+                var removed: usize = 0;
+
+                if (count >= 0) {
+                    // Remove from head
+                    var i: usize = 0;
+                    while (i < list_val.data.items.len and (count == 0 or removed < limit)) {
+                        if (std.mem.eql(u8, list_val.data.items[i], element)) {
+                            const elem = list_val.data.orderedRemove(i);
+                            self.allocator.free(elem);
+                            removed += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                } else {
+                    // Remove from tail
+                    var i: usize = list_val.data.items.len;
+                    while (i > 0 and removed < limit) {
+                        i -= 1;
+                        if (std.mem.eql(u8, list_val.data.items[i], element)) {
+                            const elem = list_val.data.orderedRemove(i);
+                            self.allocator.free(elem);
+                            removed += 1;
+                        }
+                    }
+                }
+
+                // Auto-delete if empty
+                if (list_val.data.items.len == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return removed;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Push elements to head only if key already exists as a list.
+    /// Returns null if key doesn't exist, new length otherwise.
+    /// Returns error.WrongType if key exists but is not a list.
+    pub fn lpushx(self: *Storage, key: []const u8, elements: []const []const u8) error{ WrongType, OutOfMemory }!?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                // Pre-duplicate all elements before inserting to make the operation atomic:
+                // if any dupe or insert fails, previously-duped elements are freed and the
+                // list remains unmodified.
+                var owned_buf: std.ArrayList([]const u8) = .{};
+                defer owned_buf.deinit(self.allocator);
+                // On error, free any successfully duped elements not yet inserted
+                errdefer for (owned_buf.items) |o| self.allocator.free(o);
+
+                for (elements) |elem| {
+                    const owned_elem = try self.allocator.dupe(u8, elem);
+                    try owned_buf.append(self.allocator, owned_elem);
+                }
+                // All dupes succeeded; now insert (list takes ownership)
+                for (owned_buf.items) |o| {
+                    try list_val.data.insert(self.allocator, 0, o);
+                }
+                // Clear owned_buf so errdefer does not double-free now-owned elements
+                owned_buf.items.len = 0;
+                return list_val.data.items.len;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Push elements to tail only if key already exists as a list.
+    /// Returns null if key doesn't exist, new length otherwise.
+    /// Returns error.WrongType if key exists but is not a list.
+    pub fn rpushx(self: *Storage, key: []const u8, elements: []const []const u8) error{ WrongType, OutOfMemory }!?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                // Pre-duplicate all elements before appending for atomicity
+                var owned_buf: std.ArrayList([]const u8) = .{};
+                defer owned_buf.deinit(self.allocator);
+                errdefer for (owned_buf.items) |o| self.allocator.free(o);
+
+                for (elements) |elem| {
+                    const owned_elem = try self.allocator.dupe(u8, elem);
+                    try owned_buf.append(self.allocator, owned_elem);
+                }
+                for (owned_buf.items) |o| {
+                    try list_val.data.append(self.allocator, o);
+                }
+                owned_buf.items.len = 0;
+                return list_val.data.items.len;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Insert `element` BEFORE or AFTER the first occurrence of `pivot` in list.
+    /// Returns new list length, -1 if pivot not found, 0 if key doesn't exist.
+    /// Returns error.WrongType if key exists but is not a list.
+    pub fn linsert(
+        self: *Storage,
+        key: []const u8,
+        before: bool,
+        pivot: []const u8,
+        element: []const u8,
+    ) error{ WrongType, OutOfMemory }!i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                // Find pivot
+                var pivot_idx: ?usize = null;
+                for (list_val.data.items, 0..) |item, i| {
+                    if (std.mem.eql(u8, item, pivot)) {
+                        pivot_idx = i;
+                        break;
+                    }
+                }
+
+                const idx = pivot_idx orelse return -1;
+                const insert_at = if (before) idx else idx + 1;
+
+                const owned_elem = try self.allocator.dupe(u8, element);
+                errdefer self.allocator.free(owned_elem);
+                try list_val.data.insert(self.allocator, insert_at, owned_elem);
+
+                return @intCast(list_val.data.items.len);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Find positions of `element` in list.
+    /// rank: 1-based (negative = search from tail); count: 0 = all; maxlen: 0 = no limit.
+    /// Returns owned slice of positions (caller must free). Slice is empty if no matches.
+    /// Returns error.WrongType if key exists but is not a list.
+    pub fn lpos(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        element: []const u8,
+        rank: i64,
+        count: usize,
+        maxlen: usize,
+    ) error{ WrongType, OutOfMemory }![]usize {
+        // rank is 1-based; 0 is invalid and must be rejected before calling this function
+        std.debug.assert(rank != 0);
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse {
+            return try allocator.alloc(usize, 0);
+        };
+
+        switch (entry.value_ptr.*) {
+            .list => |*list_val| {
+                const items = list_val.data.items;
+                const len = items.len;
+                var results = std.ArrayList(usize){};
+                errdefer results.deinit(allocator);
+
+                const abs_rank: usize = if (rank < 0) @as(usize, @intCast(-rank)) else @as(usize, @intCast(rank));
+                const search_limit = if (maxlen == 0) len else @min(maxlen, len);
+
+                if (rank >= 0) {
+                    // Forward search (rank >= 1 means 1-based skip from head)
+                    var matched: usize = 0;
+                    for (0..search_limit) |i| {
+                        if (std.mem.eql(u8, items[i], element)) {
+                            matched += 1;
+                            if (matched >= abs_rank) {
+                                try results.append(allocator, i);
+                                if (count != 0 and results.items.len >= count) break;
+                            }
+                        }
+                    }
+                } else {
+                    // Backward search
+                    var matched: usize = 0;
+                    var i: usize = len;
+                    const search_from = len -| search_limit;
+                    while (i > search_from) {
+                        i -= 1;
+                        if (std.mem.eql(u8, items[i], element)) {
+                            matched += 1;
+                            if (matched >= abs_rank) {
+                                try results.append(allocator, i);
+                                if (count != 0 and results.items.len >= count) break;
+                            }
+                        }
+                    }
+                    // Reverse to return positions in ascending order
+                    std.mem.reverse(usize, results.items);
+                }
+
+                return try results.toOwnedSlice(allocator);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Atomically pop from source and push to destination.
+    /// src_from_left=true means pop from head; dst_to_left=true means push to head.
+    /// Returns owned copy of the moved element, or null if source is empty/missing.
+    /// Returns error.WrongType if source or destination exists but is not a list.
+    pub fn lmove(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        src: []const u8,
+        dst: []const u8,
+        src_from_left: bool,
+        dst_to_left: bool,
+    ) error{ WrongType, OutOfMemory }!?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Get source list
+        const src_entry = self.data.getEntry(src) orelse return null;
+
+        const popped: []const u8 = popped_blk: {
+            switch (src_entry.value_ptr.*) {
+                .list => |*src_list| {
+                    if (src_list.data.items.len == 0) return null;
+                    if (src_from_left) {
+                        break :popped_blk src_list.data.orderedRemove(0);
+                    } else {
+                        break :popped_blk src_list.data.pop().?;
+                    }
+                },
+                else => return error.WrongType,
+            }
+        };
+        // popped is the actual string owned by the storage (was in the list)
+
+        // Return copy to caller; storage manages inserting the original into dst
+        const result_copy = try allocator.dupe(u8, popped);
+        errdefer allocator.free(result_copy);
+
+        // Now handle source auto-delete and destination push.
+        // We have the popped element (owned by storage), need to push it to dst.
+        // Special case: src == dst (rotation)
+        const same_list = std.mem.eql(u8, src, dst);
+
+        if (same_list) {
+            // Re-insert into the same list.
+            // Safe: same-list rotation pops then re-inserts without auto-deleting the key
+            // (auto-delete only happens on the cross-list path below).
+            const src_entry2 = self.data.getEntry(src) orelse unreachable;
+            const list2 = &src_entry2.value_ptr.list;
+            if (dst_to_left) {
+                list2.data.insert(self.allocator, 0, popped) catch |err| {
+                    self.allocator.free(popped);
+                    return err;
+                };
+            } else {
+                list2.data.append(self.allocator, popped) catch |err| {
+                    self.allocator.free(popped);
+                    return err;
+                };
+            }
+            return result_copy;
+        }
+
+        // Check if source should be deleted (now empty)
+        // Re-fetch since the remove may have happened above
+        if (self.data.getEntry(src)) |src_entry2| {
+            if (src_entry2.value_ptr.list.data.items.len == 0) {
+                const owned_key = src_entry2.key_ptr.*;
+                var value = src_entry2.value_ptr.*;
+                _ = self.data.remove(src);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+            }
+        }
+
+        // Push popped element to destination
+        if (self.data.getEntry(dst)) |dst_entry| {
+            switch (dst_entry.value_ptr.*) {
+                .list => |*dst_list| {
+                    if (dst_to_left) {
+                        dst_list.data.insert(self.allocator, 0, popped) catch |err| {
+                            self.allocator.free(popped);
+                            return err;
+                        };
+                    } else {
+                        dst_list.data.append(self.allocator, popped) catch |err| {
+                            self.allocator.free(popped);
+                            return err;
+                        };
+                    }
+                },
+                else => {
+                    self.allocator.free(popped);
+                    return error.WrongType;
+                },
+            }
+        } else {
+            // Create new destination list
+            var new_list: std.ArrayList([]const u8) = .{
+                .items = &.{},
+                .capacity = 0,
+            };
+            new_list.append(self.allocator, popped) catch |err| {
+                self.allocator.free(popped);
+                return err;
+            };
+
+            const owned_key = self.allocator.dupe(u8, dst) catch |err| {
+                // new_list.deinit frees popped (which was appended into new_list above)
+                new_list.deinit(self.allocator);
+                return err;
+            };
+            errdefer self.allocator.free(owned_key);
+
+            self.data.put(owned_key, Value{
+                .list = .{
+                    .data = new_list,
+                    .expires_at = null,
+                },
+            }) catch |err| {
+                new_list.deinit(self.allocator);
+                return err;
+            };
+        }
+
+        return result_copy;
     }
 
     // Set operations
@@ -3187,6 +3675,331 @@ test "storage - llen on string key returns null" {
     try storage.set("mykey", "value", null);
     const len = storage.llen("mykey");
     try std.testing.expect(len == null);
+}
+
+test "storage - lindex returns element at positive index" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const result = try storage.lindex("mylist", 1);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("b", result.?);
+}
+
+test "storage - lindex returns element at negative index" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const result = try storage.lindex("mylist", -1);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("c", result.?);
+}
+
+test "storage - lindex out of range returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    try std.testing.expect((try storage.lindex("mylist", 5)) == null);
+    try std.testing.expect((try storage.lindex("mylist", -5)) == null);
+}
+
+test "storage - lindex on non-existent key returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try std.testing.expect((try storage.lindex("nosuchkey", 0)) == null);
+}
+
+test "storage - lindex wrong type returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "value", null);
+    try std.testing.expectError(error.WrongType, storage.lindex("mykey", 0));
+}
+
+test "storage - lset updates element" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    try storage.lset("mylist", 1, "z");
+    const result = try storage.lindex("mylist", 1);
+    try std.testing.expectEqualStrings("z", result.?);
+}
+
+test "storage - lset negative index" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    try storage.lset("mylist", -1, "z");
+    const result = try storage.lindex("mylist", 2);
+    try std.testing.expectEqualStrings("z", result.?);
+}
+
+test "storage - lset out of range returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{"a"};
+    _ = try storage.rpush("mylist", &elements, null);
+
+    try std.testing.expectError(error.IndexOutOfRange, storage.lset("mylist", 5, "z"));
+}
+
+test "storage - ltrim basic range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c", "d", "e" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    try storage.ltrim("mylist", 1, 3);
+    const result = (try storage.lrange(allocator, "mylist", 0, -1)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("b", result[0]);
+    try std.testing.expectEqualStrings("d", result[2]);
+}
+
+test "storage - ltrim start greater than stop deletes key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    try storage.ltrim("mylist", 5, 1);
+    try std.testing.expect(!storage.exists("mylist"));
+}
+
+test "storage - lrem removes from head" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "a", "c", "a" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const removed = try storage.lrem("mylist", 2, "a");
+    try std.testing.expectEqual(@as(usize, 2), removed);
+
+    const result = (try storage.lrange(allocator, "mylist", 0, -1)).?;
+    defer allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqualStrings("b", result[0]);
+    try std.testing.expectEqualStrings("c", result[1]);
+    try std.testing.expectEqualStrings("a", result[2]);
+}
+
+test "storage - lrem count zero removes all" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "a", "a" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const removed = try storage.lrem("mylist", 0, "a");
+    try std.testing.expectEqual(@as(usize, 3), removed);
+
+    const result = (try storage.lrange(allocator, "mylist", 0, -1)).?;
+    defer allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("b", result[0]);
+}
+
+test "storage - lpushx on existing list" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const init_elems = [_][]const u8{"a"};
+    _ = try storage.rpush("mylist", &init_elems, null);
+
+    const new_elems = [_][]const u8{"b"};
+    const len = try storage.lpushx("mylist", &new_elems);
+    try std.testing.expect(len != null);
+    try std.testing.expectEqual(@as(usize, 2), len.?);
+}
+
+test "storage - lpushx on missing key returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elems = [_][]const u8{"a"};
+    const len = try storage.lpushx("nosuchkey", &elems);
+    try std.testing.expect(len == null);
+    try std.testing.expect(!storage.exists("nosuchkey"));
+}
+
+test "storage - rpushx on existing list" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const init_elems = [_][]const u8{"a"};
+    _ = try storage.rpush("mylist", &init_elems, null);
+
+    const new_elems = [_][]const u8{"b"};
+    const len = try storage.rpushx("mylist", &new_elems);
+    try std.testing.expect(len != null);
+    try std.testing.expectEqual(@as(usize, 2), len.?);
+}
+
+test "storage - rpushx on missing key returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elems = [_][]const u8{"a"};
+    const len = try storage.rpushx("nosuchkey", &elems);
+    try std.testing.expect(len == null);
+}
+
+test "storage - linsert before pivot" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const new_len = try storage.linsert("mylist", true, "b", "x");
+    try std.testing.expectEqual(@as(i64, 4), new_len);
+
+    const result = (try storage.lrange(allocator, "mylist", 0, -1)).?;
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("x", result[1]);
+    try std.testing.expectEqualStrings("b", result[2]);
+}
+
+test "storage - linsert after pivot" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const new_len = try storage.linsert("mylist", false, "b", "x");
+    try std.testing.expectEqual(@as(i64, 4), new_len);
+
+    const result = (try storage.lrange(allocator, "mylist", 0, -1)).?;
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("b", result[1]);
+    try std.testing.expectEqualStrings("x", result[2]);
+}
+
+test "storage - linsert pivot not found returns -1" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const result = try storage.linsert("mylist", true, "z", "x");
+    try std.testing.expectEqual(@as(i64, -1), result);
+}
+
+test "storage - linsert on missing key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const result = try storage.linsert("nosuchkey", true, "pivot", "elem");
+    try std.testing.expectEqual(@as(i64, 0), result);
+}
+
+test "storage - lpos finds first occurrence" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "a", "c", "a" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const result = try storage.lpos(allocator, "mylist", "a", 1, 1, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(@as(usize, 0), result[0]);
+}
+
+test "storage - lpos count 0 finds all" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "a", "c", "a" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const result = try storage.lpos(allocator, "mylist", "a", 1, 0, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    try std.testing.expectEqual(@as(usize, 0), result[0]);
+    try std.testing.expectEqual(@as(usize, 2), result[1]);
+    try std.testing.expectEqual(@as(usize, 4), result[2]);
+}
+
+test "storage - lmove left to right" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const src_elems = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("src", &src_elems, null);
+
+    const dst_elems = [_][]const u8{"x"};
+    _ = try storage.rpush("dst", &dst_elems, null);
+
+    // LMOVE src dst LEFT RIGHT: pop from src head, push to dst tail
+    const moved = try storage.lmove(allocator, "src", "dst", true, false);
+    defer if (moved) |m| allocator.free(m);
+
+    try std.testing.expect(moved != null);
+    try std.testing.expectEqualStrings("a", moved.?);
+
+    const dst_range = (try storage.lrange(allocator, "dst", 0, -1)).?;
+    defer allocator.free(dst_range);
+    try std.testing.expectEqual(@as(usize, 2), dst_range.len);
+    try std.testing.expectEqualStrings("x", dst_range[0]);
+    try std.testing.expectEqualStrings("a", dst_range[1]);
+}
+
+test "storage - lmove on empty source returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const result = try storage.lmove(allocator, "nosuchkey", "dst", true, true);
+    try std.testing.expect(result == null);
 }
 
 test "storage - sadd creates new set" {

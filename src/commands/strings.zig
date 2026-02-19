@@ -106,6 +106,8 @@ pub fn executeCommand(
                 "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
                 "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
+                "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
+                "LINSERT",    "LMOVE",      "RPOPLPUSH",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -163,6 +165,8 @@ pub fn executeCommand(
             "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
             "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
+            "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
+            "LINSERT",    "LMOVE",      "RPOPLPUSH",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -269,6 +273,26 @@ pub fn executeCommand(
             break :blk try lists.cmdLrange(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
             break :blk try lists.cmdLlen(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LINDEX")) {
+            break :blk try lists.cmdLindex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LSET")) {
+            break :blk try lists.cmdLset(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LTRIM")) {
+            break :blk try lists.cmdLtrim(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LREM")) {
+            break :blk try lists.cmdLrem(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LPUSHX")) {
+            break :blk try lists.cmdLpushx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RPUSHX")) {
+            break :blk try lists.cmdRpushx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LINSERT")) {
+            break :blk try lists.cmdLinsert(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LPOS")) {
+            break :blk try lists.cmdLpos(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LMOVE")) {
+            break :blk try lists.cmdLmove(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RPOPLPUSH")) {
+            break :blk try lists.cmdRpoplpush(allocator, storage, array);
         }
         // Set commands
         else if (std.mem.eql(u8, cmd_upper, "SADD")) {
