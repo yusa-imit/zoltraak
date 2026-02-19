@@ -26,12 +26,12 @@ test_command() {
 
     if [[ "$result" == "$expected" ]]; then
         echo -e "${GREEN}PASS${NC}"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
         echo -e "${RED}FAIL${NC}"
         echo "  Expected: $expected"
         echo "  Got:      $result"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 }
 
@@ -47,12 +47,12 @@ test_command_contains() {
 
     if [[ "$result" == *"$expected_substring"* ]]; then
         echo -e "${GREEN}PASS${NC}"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
         echo -e "${RED}FAIL${NC}"
         echo "  Expected to contain: $expected_substring"
         echo "  Got:                 $result"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 }
 
@@ -162,10 +162,10 @@ test_command "SET large value" "$REDIS_CLI SET largekey '$large_value'" "OK"
 result=$($REDIS_CLI GET largekey)
 if [[ "$result" == "$large_value" ]]; then
     echo -e "Testing: GET large value... ${GREEN}PASS${NC}"
-    ((PASSED++))
+    PASSED=$((PASSED + 1))
 else
     echo -e "Testing: GET large value... ${RED}FAIL${NC}"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 fi
 echo ""
 
@@ -186,10 +186,10 @@ for i in {1..10}; do
 done
 if [ "$all_exist" = true ]; then
     echo -e "${GREEN}PASS${NC}"
-    ((PASSED++))
+    PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 fi
 echo ""
 
