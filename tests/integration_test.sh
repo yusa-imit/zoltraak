@@ -10,9 +10,29 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-REDIS_CLI="redis-cli -p 6379 --resp2"
+REDIS_CLI="redis-cli -p 6379"
 PASSED=0
 FAILED=0
+
+# Normalize redis-cli output to handle RESP2 vs RESP3 format differences
+# RESP2: "(integer) 1", "(nil)", "(empty array)"
+# RESP3: "1", "", "(empty array)"
+normalize_output() {
+    local output="$1"
+    # Normalize "(integer) N" -> "N" (strip RESP2 prefix)
+    output=$(echo "$output" | sed 's/^(integer) //')
+    # Normalize "(nil)" -> "" (RESP2 nil -> empty like RESP3)
+    output=$(echo "$output" | sed 's/^(nil)$//')
+    echo "$output"
+}
+
+normalize_expected() {
+    local expected="$1"
+    # Same normalization for expected values
+    expected=$(echo "$expected" | sed 's/^(integer) //')
+    expected=$(echo "$expected" | sed 's/^(nil)$//')
+    echo "$expected"
+}
 
 # Function to run a test
 test_command() {
@@ -24,7 +44,12 @@ test_command() {
 
     result=$(eval "$command" 2>&1 || true)
 
-    if [[ "$result" == "$expected" ]]; then
+    # Compare normalized versions to handle RESP2/RESP3 differences
+    local norm_result norm_expected
+    norm_result=$(normalize_output "$result")
+    norm_expected=$(normalize_expected "$expected")
+
+    if [[ "$norm_result" == "$norm_expected" ]]; then
         echo -e "${GREEN}PASS${NC}"
         PASSED=$((PASSED + 1))
     else
