@@ -320,13 +320,13 @@ When working with agents:
 
 | Phase | 내용 |
 |-------|------|
-| 1. 상태 파악 & 계획 | git log, `zig build test` 확인 → Redis 명령어 사양 분석 → 구현 계획 |
+| 1. 상태 파악 & 계획 | git log, `zig build` 확인 → Redis 명령어 사양 분석 → 구현 계획 |
 | 2. 구현 + 유닛 테스트 | Storage layer → Command handlers → Command routing → 유닛 테스트 |
 | 3. 코드 품질 리뷰 | 메모리 안전성, 에러 처리, 아키텍처 일관성 검사 |
 | 4. 통합 테스트 | `tests/test_integration.zig`에 RESP 프로토콜 E2E 테스트 추가 |
 | 5. 호환성 검증 | RESP 응답 포맷·에러 메시지가 Redis와 일치하는지 확인 |
 | 6. 문서화 | README.md 지원 명령어 테이블 업데이트 |
-| 7. 정리 | 임시 파일 제거, 디버그 프린트·TODO 주석 정리 |
+| 7. 정리 | 임시 파일 제거, 디버그 프린트·TODO 주석 정리, **모든 백그라운드 프로세스 종료** (`pkill -f zoltraak; lsof -ti :6379 \| xargs kill`) |
 | 8. 커밋 & 푸시 | `feat(<scope>): implement Redis <Type> commands` 형식으로 커밋 후 `git push` 실행 |
 
 **Redis 명령어 구현 패턴**:
@@ -335,6 +335,13 @@ When working with agents:
 3. **Command routing** (`src/server.zig`): 명령어 디스패치 테이블에 등록
 4. **WRONGTYPE 에러**: 타입 불일치 시 반드시 처리
 
+**프로세스 정리 규칙** (필수):
+- 사이클 중 시작한 모든 백그라운드 프로세스(서버, 테스트 러너 등)는 사이클 종료 전에 반드시 종료해야 함
+- 서버를 시작한 경우 (`./zig-out/bin/zoltraak &` 등), 테스트 완료 후 `kill` 또는 `pkill`로 반드시 정리
+- `zig build test` 실행 시 통합 테스트가 서버를 spawn할 수 있으므로, 테스트가 끝나면 `pkill -f 'zig-out/bin/zoltraak'`로 잔여 프로세스 정리
+- 포트 6379에 바인딩된 프로세스가 남아있지 않도록 `lsof -ti :6379 | xargs kill` 로 확인
+- **사이클의 마지막 단계(커밋 전)에서 반드시 실행**: `pkill -f zoltraak 2>/dev/null; sleep 1`
+
 **안전 규칙**:
 - Force push 및 파괴적 git 명령어 금지
 - 모든 작업은 `main` 브랜치에서 (단일 브랜치 워크플로우)
@@ -342,6 +349,7 @@ When working with agents:
 - 스코프 크리프 금지: 사이클당 하나의 이터레이션만 구현
 - 기존 테스트가 반드시 계속 통과해야 함
 - 외부 의존성 없음: Zig 표준 라이브러리만 사용
+- `zig build test`가 60초 이상 걸리면 hang으로 간주하고 강제 종료 후 `zig build`(컴파일만)으로 대체
 
 **세션 요약 템플릿**:
 
