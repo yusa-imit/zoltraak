@@ -339,6 +339,216 @@ pub const Persistence = struct {
             else => return error.InvalidRdbFile,
         }
     }
+
+    /// Save storage to an in-memory byte buffer.
+    /// The caller owns the returned slice and must free it with `allocator`.
+    pub fn saveToBytes(storage: *Storage, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+
+        const w = buf.writer(allocator);
+
+        try w.writeAll(RDB_MAGIC);
+        try w.writeByte(RDB_VERSION);
+
+        storage.mutex.lock();
+        defer storage.mutex.unlock();
+
+        var it = storage.data.iterator();
+        const now = Storage.getCurrentTimestamp();
+
+        while (it.next()) |entry| {
+            if (entry.value_ptr.isExpired(now)) continue;
+
+            const key = entry.key_ptr.*;
+            const value = entry.value_ptr.*;
+
+            const type_byte: u8 = switch (value) {
+                .string => RDB_TYPE_STRING,
+                .list => RDB_TYPE_LIST,
+                .set => RDB_TYPE_SET,
+                .hash => RDB_TYPE_HASH,
+                .sorted_set => RDB_TYPE_SORTED_SET,
+            };
+            try w.writeByte(type_byte);
+
+            const expires_at = value.getExpiration();
+            if (expires_at) |exp| {
+                try w.writeByte(1);
+                try w.writeInt(i64, exp, .little);
+            } else {
+                try w.writeByte(0);
+            }
+
+            try writeBlob(w, key);
+
+            switch (value) {
+                .string => |s| try writeBlob(w, s.data),
+                .list => |l| {
+                    try w.writeInt(u32, @intCast(l.data.items.len), .little);
+                    for (l.data.items) |elem| try writeBlob(w, elem);
+                },
+                .set => |s| {
+                    try w.writeInt(u32, @intCast(s.data.count()), .little);
+                    var kit = s.data.keyIterator();
+                    while (kit.next()) |k| try writeBlob(w, k.*);
+                },
+                .hash => |h| {
+                    try w.writeInt(u32, @intCast(h.data.count()), .little);
+                    var hit = h.data.iterator();
+                    while (hit.next()) |e| {
+                        try writeBlob(w, e.key_ptr.*);
+                        try writeBlob(w, e.value_ptr.*);
+                    }
+                },
+                .sorted_set => |z| {
+                    try w.writeInt(u32, @intCast(z.sorted_list.items.len), .little);
+                    for (z.sorted_list.items) |scored| {
+                        const score_bits = @as(u64, @bitCast(scored.score));
+                        try w.writeInt(u64, score_bits, .little);
+                        try writeBlob(w, scored.member);
+                    }
+                },
+            }
+        }
+
+        try w.writeByte(RDB_TYPE_EOF);
+
+        const crc = std.hash.Crc32.hash(buf.items);
+        var crc_bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &crc_bytes, crc, .little);
+        try buf.appendSlice(allocator, &crc_bytes);
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Load a snapshot from raw bytes into storage.
+    /// Returns number of keys loaded.
+    pub fn loadFromBytes(storage: *Storage, data: []const u8, allocator: std.mem.Allocator) !usize {
+        if (data.len < RDB_MAGIC.len + 1 + 4) return error.InvalidRdbFile;
+
+        // Verify checksum (last 4 bytes)
+        const payload = data[0 .. data.len - 4];
+        const stored_crc = std.mem.readInt(u32, data[data.len - 4 ..][0..4], .little);
+        const computed_crc = std.hash.Crc32.hash(payload);
+        if (stored_crc != computed_crc) return error.RdbChecksumMismatch;
+
+        var pos: usize = 0;
+
+        if (!std.mem.eql(u8, payload[pos .. pos + RDB_MAGIC.len], RDB_MAGIC)) {
+            return error.InvalidRdbFile;
+        }
+        pos += RDB_MAGIC.len;
+
+        const version = payload[pos];
+        pos += 1;
+        if (version != RDB_VERSION) return error.UnsupportedRdbVersion;
+
+        const now = Storage.getCurrentTimestamp();
+        var keys_loaded: usize = 0;
+
+        while (pos < payload.len) {
+            if (pos >= payload.len) break;
+            const type_byte = payload[pos];
+            pos += 1;
+
+            if (type_byte == RDB_TYPE_EOF) break;
+
+            if (pos >= payload.len) return error.InvalidRdbFile;
+            const expires_flag = payload[pos];
+            pos += 1;
+            var expires_at: ?i64 = null;
+            if (expires_flag == 1) {
+                if (pos + 8 > payload.len) return error.InvalidRdbFile;
+                const exp = std.mem.readInt(i64, payload[pos..][0..8], .little);
+                pos += 8;
+                if (exp <= now) {
+                    if (pos + 4 > payload.len) return error.InvalidRdbFile;
+                    const key_len = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                    pos += 4 + key_len;
+                    try skipValue(payload, &pos, type_byte);
+                    continue;
+                }
+                expires_at = exp;
+            }
+
+            const key = try readBlob(payload, &pos, allocator);
+            defer allocator.free(key);
+
+            switch (type_byte) {
+                RDB_TYPE_STRING => {
+                    const val = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(val);
+                    try storage.set(key, val, expires_at);
+                },
+                RDB_TYPE_LIST => {
+                    if (pos + 4 > payload.len) return error.InvalidRdbFile;
+                    const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                    pos += 4;
+                    var elems = try allocator.alloc([]const u8, count);
+                    defer {
+                        for (elems) |e| allocator.free(e);
+                        allocator.free(elems);
+                    }
+                    for (0..count) |i| {
+                        elems[i] = try readBlob(payload, &pos, allocator);
+                    }
+                    _ = try storage.rpush(key, elems, expires_at);
+                },
+                RDB_TYPE_SET => {
+                    if (pos + 4 > payload.len) return error.InvalidRdbFile;
+                    const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                    pos += 4;
+                    var members = try allocator.alloc([]const u8, count);
+                    defer {
+                        for (members) |m| allocator.free(m);
+                        allocator.free(members);
+                    }
+                    for (0..count) |i| {
+                        members[i] = try readBlob(payload, &pos, allocator);
+                    }
+                    _ = try storage.sadd(key, members, expires_at);
+                },
+                RDB_TYPE_HASH => {
+                    if (pos + 4 > payload.len) return error.InvalidRdbFile;
+                    const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                    pos += 4;
+                    var i: u32 = 0;
+                    while (i < count) : (i += 1) {
+                        const field = try readBlob(payload, &pos, allocator);
+                        defer allocator.free(field);
+                        const hval = try readBlob(payload, &pos, allocator);
+                        defer allocator.free(hval);
+                        var fields_arr = [_][]const u8{field};
+                        var values_arr = [_][]const u8{hval};
+                        _ = try storage.hset(key, &fields_arr, &values_arr, expires_at);
+                    }
+                },
+                RDB_TYPE_SORTED_SET => {
+                    if (pos + 4 > payload.len) return error.InvalidRdbFile;
+                    const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                    pos += 4;
+                    var i: u32 = 0;
+                    while (i < count) : (i += 1) {
+                        if (pos + 8 > payload.len) return error.InvalidRdbFile;
+                        const score_bits = std.mem.readInt(u64, payload[pos..][0..8], .little);
+                        const score: f64 = @bitCast(score_bits);
+                        pos += 8;
+                        const member = try readBlob(payload, &pos, allocator);
+                        defer allocator.free(member);
+                        var scores_arr = [_]f64{score};
+                        var members_arr = [_][]const u8{member};
+                        _ = try storage.zadd(key, &scores_arr, &members_arr, 0, expires_at);
+                    }
+                },
+                else => return error.InvalidRdbFile,
+            }
+
+            keys_loaded += 1;
+        }
+
+        return keys_loaded;
+    }
 };
 
 // ============================================================

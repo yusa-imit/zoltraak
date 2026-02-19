@@ -5,6 +5,8 @@ const storage_mod = @import("../storage/memory.zig");
 const persistence_mod = @import("../storage/persistence.zig");
 const aof_mod = @import("../storage/aof.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
+const repl_mod = @import("../storage/replication.zig");
+const repl_cmds = @import("replication.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
@@ -12,6 +14,7 @@ const sorted_sets = @import("sorted_sets.zig");
 const pubsub_cmds = @import("pubsub.zig");
 const tx_mod = @import("transactions.zig");
 pub const TxState = tx_mod.TxState;
+pub const ReplicationState = repl_mod.ReplicationState;
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -31,6 +34,10 @@ const DEFAULT_AOF_PATH = "appendonly.aof";
 /// If `aof` is non-null, write commands are appended to it after successful execution.
 /// `ps` and `subscriber_id` are used for SUBSCRIBE / UNSUBSCRIBE / PUBLISH / PUBSUB commands.
 /// `tx` holds per-connection transaction state for MULTI/EXEC/DISCARD/WATCH.
+/// `repl` holds the replication state; write commands are propagated to replicas.
+///   Pass null to disable replication (e.g., during AOF replay or internal use).
+/// `my_port` is this server's listen port, sent to primary during REPLCONF handshake.
+/// `replica_stream` is set when this connection is from a replica performing PSYNC.
 pub fn executeCommand(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -39,6 +46,10 @@ pub fn executeCommand(
     ps: *PubSub,
     subscriber_id: u64,
     tx: *TxState,
+    repl: ?*ReplicationState,
+    my_port: u16,
+    replica_stream: ?std.net.Stream,
+    replica_idx: ?usize,
 ) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
@@ -68,6 +79,41 @@ pub fn executeCommand(
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
 
+    // ── Replication: read-only guard ──────────────────────────────────────────
+    // When this instance is a replica, reject write commands.
+    // Replication protocol commands (REPLCONF, PSYNC) are always allowed.
+    if (repl) |r| {
+        if (r.role == .replica) {
+            const replication_cmds = [_][]const u8{
+                "REPLCONF", "PSYNC", "PING", "INFO", "REPLICAOF", "WAIT",
+            };
+            var is_repl_cmd = false;
+            for (replication_cmds) |rc| {
+                if (std.mem.eql(u8, cmd_upper, rc)) {
+                    is_repl_cmd = true;
+                    break;
+                }
+            }
+            const write_cmds = [_][]const u8{
+                "SET",   "DEL",     "LPUSH",   "RPUSH",   "LPOP",
+                "RPOP",  "SADD",    "SREM",    "HSET",    "HDEL",
+                "ZADD",  "ZREM",    "FLUSHDB", "FLUSHALL",
+            };
+            var is_write = false;
+            for (write_cmds) |wc| {
+                if (std.mem.eql(u8, cmd_upper, wc)) {
+                    is_write = true;
+                    break;
+                }
+            }
+            if (is_write and !is_repl_cmd) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                return w.writeError("READONLY You can't write against a read only replica.");
+            }
+        }
+    }
+
     // ── Transaction command handling ──────────────────────────────────────────
     // MULTI, EXEC, DISCARD, WATCH, UNWATCH are always handled immediately,
     // even inside a MULTI block.
@@ -80,7 +126,7 @@ pub fn executeCommand(
     } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
         return tx_mod.cmdUnwatch(allocator, tx, array);
     } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
-        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx);
+        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port);
     }
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
@@ -205,6 +251,55 @@ pub fn executeCommand(
             break :blk try cmdDbsize(allocator, storage);
         } else if (std.mem.eql(u8, cmd_upper, "FLUSHDB") or std.mem.eql(u8, cmd_upper, "FLUSHALL")) {
             break :blk try cmdFlushall(allocator, storage);
+        }
+        // Replication commands
+        else if (std.mem.eql(u8, cmd_upper, "REPLICAOF")) {
+            if (repl) |r| {
+                const str_args = try arrayToStrings(allocator, array);
+                defer allocator.free(str_args);
+                break :blk try repl_cmds.cmdReplicaof(allocator, storage, r, str_args, my_port);
+            }
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeError("ERR replication not initialized");
+        } else if (std.mem.eql(u8, cmd_upper, "REPLCONF")) {
+            if (repl) |r| {
+                const str_args = try arrayToStrings(allocator, array);
+                defer allocator.free(str_args);
+                break :blk try repl_cmds.cmdReplconf(allocator, r, str_args, replica_idx);
+            }
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeSimpleString("OK");
+        } else if (std.mem.eql(u8, cmd_upper, "PSYNC")) {
+            if (repl) |r| {
+                if (replica_stream) |rs| {
+                    const idx = replica_idx orelse 0;
+                    break :blk try repl_cmds.cmdPsync(allocator, storage, r, idx, rs);
+                }
+            }
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeError("ERR PSYNC not supported in this context");
+        } else if (std.mem.eql(u8, cmd_upper, "WAIT")) {
+            if (repl) |r| {
+                const str_args = try arrayToStrings(allocator, array);
+                defer allocator.free(str_args);
+                break :blk try repl_cmds.cmdWait(allocator, r, str_args);
+            }
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeInteger(0);
+        } else if (std.mem.eql(u8, cmd_upper, "INFO")) {
+            if (repl) |r| {
+                const str_args = try arrayToStrings(allocator, array);
+                defer allocator.free(str_args);
+                break :blk try repl_cmds.cmdInfo(allocator, r, str_args);
+            }
+            // Fallback info with no replication state
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeBulkString("# Replication\r\nrole:master\r\n");
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -246,6 +341,20 @@ pub fn executeCommand(
                 };
             }
         }
+
+        // Propagate write command to all online replicas
+        if (repl) |r| {
+            if (r.role == .primary and r.replicas.items.len > 0) {
+                // Re-serialize the command as RESP for propagation
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                const resp_bytes = w.serialize(cmd) catch null;
+                if (resp_bytes) |bytes| {
+                    defer allocator.free(bytes);
+                    r.propagate(bytes);
+                }
+            }
+        }
     }
 
     return response;
@@ -261,6 +370,8 @@ fn cmdExec(
     ps: *PubSub,
     subscriber_id: u64,
     tx: *TxState,
+    repl: ?*ReplicationState,
+    my_port: u16,
 ) anyerror![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -308,6 +419,10 @@ fn cmdExec(
             ps,
             subscriber_id,
             &inner_tx,
+            repl,
+            my_port,
+            null,
+            null,
         ) catch |err| blk: {
             var buf: [64]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "ERR command error: {any}", .{err}) catch "ERR internal error";
@@ -611,6 +726,20 @@ fn cmdPubsub(allocator: std.mem.Allocator, ps: *PubSub, args: []const RespValue)
 }
 
 // Helper functions
+
+/// Convert a slice of RespValue to a slice of string slices.
+/// Caller must free the returned slice with `allocator.free`.
+/// Note: the strings themselves point into the original RespValues and are not copied.
+fn arrayToStrings(allocator: std.mem.Allocator, args: []const RespValue) ![]const []const u8 {
+    var result = try allocator.alloc([]const u8, args.len);
+    for (args, 0..) |arg, i| {
+        result[i] = switch (arg) {
+            .bulk_string => |s| s,
+            else => "",
+        };
+    }
+    return result;
+}
 
 fn parseInteger(value: RespValue) !i64 {
     const str = switch (value) {
@@ -1033,7 +1162,7 @@ test "commands - executeCommand dispatches PING" {
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx, null, 6379, null, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -1053,7 +1182,7 @@ test "commands - executeCommand case insensitive" {
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx, null, 6379, null, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+PONG\r\n", result);
@@ -1073,7 +1202,7 @@ test "commands - executeCommand unknown command" {
     };
     const cmd = RespValue{ .array = &args };
 
-    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx);
+    const result = try executeCommand(allocator, storage, cmd, null, &ps, 0, &tx, null, 6379, null, null);
     defer allocator.free(result);
 
     const expected = "-ERR unknown command 'UNKNOWN'\r\n";

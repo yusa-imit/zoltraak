@@ -109,6 +109,17 @@ redis-cli -p 6379
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
 
+### Replication Commands (Iteration 10)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| REPLICAOF | `REPLICAOF host port` | Become a replica of the given primary |
+| REPLICAOF NO ONE | `REPLICAOF NO ONE` | Stop replication and promote to primary |
+| REPLCONF | `REPLCONF subcommand [args...]` | Replica configuration (used during handshake) |
+| PSYNC | `PSYNC replid offset` | Request partial/full synchronization |
+| WAIT | `WAIT numreplicas timeout_ms` | Wait for replicas to acknowledge writes |
+| INFO | `INFO [section]` | Return server information (replication section supported) |
+
 ### Transaction Commands (Iteration 9)
 
 | Command | Syntax | Description |
@@ -213,7 +224,7 @@ OK
 
 ## Project Status
 
-Iterations 1–8 are complete. Pub/Sub messaging is now fully implemented.
+Iterations 1–10 are complete. Replication (primary/replica mode) is now fully implemented.
 
 ### Roadmap
 
@@ -231,7 +242,7 @@ Iterations 1–8 are complete. Pub/Sub messaging is now fully implemented.
 - [x] Persistence (AOF — append-only log, replay on startup, BGREWRITEAOF)
 - [x] Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB CHANNELS/NUMSUB)
 - [x] Transactions (MULTI/EXEC/DISCARD/WATCH/UNWATCH — optimistic locking)
-- [ ] Replication
+- [x] Replication (REPLICAOF, REPLCONF, PSYNC, WAIT, INFO — primary/replica mode)
 
 ## Contributing
 
