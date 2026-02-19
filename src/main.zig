@@ -174,7 +174,7 @@ pub fn main() !void {
     // Register signal handler (POSIX systems)
     const act = std.posix.Sigaction{
         .handler = .{ .handler = sigint_handler.handle },
-        .mask = 0,
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
     _ = std.posix.sigaction(std.posix.SIG.INT, &act, null);
