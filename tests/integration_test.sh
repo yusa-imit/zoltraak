@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-REDIS_CLI="redis-cli -p 6379"
+REDIS_CLI="redis-cli -p 6379 --resp2"
 PASSED=0
 FAILED=0
 
