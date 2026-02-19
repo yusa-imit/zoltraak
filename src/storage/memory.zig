@@ -1587,6 +1587,407 @@ pub const Storage = struct {
         return count;
     }
 
+    // ── Keyspace / TTL operations ─────────────────────────────────────────────
+
+    /// Set expiry on an existing key.
+    /// Returns false if key doesn't exist or is already expired.
+    /// Pass null expires_at to remove expiry (PERSIST behavior).
+    /// options bitmask: 1=NX (only if no expiry), 2=XX (only if has expiry),
+    ///                  4=GT (only if new > current), 8=LT (only if new < current)
+    pub fn setExpiry(self: *Storage, key: []const u8, expires_at: ?i64, options: u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return false;
+
+        // Lazily delete expired key
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return false;
+        }
+
+        const current_exp = entry.value_ptr.getExpiration();
+
+        // NX: only set if no current expiry
+        if (options & 1 != 0 and current_exp != null) return false;
+        // XX: only set if has current expiry
+        if (options & 2 != 0 and current_exp == null) return false;
+        // GT: only set if new expiry > current
+        if (options & 4 != 0) {
+            if (expires_at == null) return false;
+            if (current_exp) |cur| {
+                if (expires_at.? <= cur) return false;
+            }
+        }
+        // LT: only set if new expiry < current
+        if (options & 8 != 0) {
+            if (expires_at == null) return false;
+            if (current_exp) |cur| {
+                if (expires_at.? >= cur) return false;
+            }
+        }
+
+        // Apply expiry to the value
+        switch (entry.value_ptr.*) {
+            .string => |*v| v.expires_at = expires_at,
+            .list => |*v| v.expires_at = expires_at,
+            .set => |*v| v.expires_at = expires_at,
+            .hash => |*v| v.expires_at = expires_at,
+            .sorted_set => |*v| v.expires_at = expires_at,
+        }
+        return true;
+    }
+
+    /// Get TTL of key in milliseconds.
+    /// Returns -2 if key does not exist (or is expired).
+    /// Returns -1 if key has no expiry.
+    /// Otherwise returns remaining milliseconds.
+    pub fn getTtlMs(self: *Storage, key: []const u8) i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return -2;
+        const now = getCurrentTimestamp();
+
+        if (entry.value_ptr.isExpired(now)) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return -2;
+        }
+
+        const exp = entry.value_ptr.getExpiration() orelse return -1;
+        return exp - now;
+    }
+
+    // ── String counter operations ─────────────────────────────────────────────
+
+    /// Increment a string value by delta. Creates key at "0" if missing.
+    /// Returns the new value, or error.WrongType if not a string,
+    /// or error.NotInteger if the value is not a parseable integer,
+    /// or error.Overflow if the operation would overflow.
+    pub fn incrby(self: *Storage, key: []const u8, delta: i64) !i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var current: i64 = 0;
+        var current_exp: ?i64 = null;
+
+        if (self.data.getEntry(key)) |entry| {
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = entry.key_ptr.*;
+                var value = entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+            } else {
+                switch (entry.value_ptr.*) {
+                    .string => |*sv| {
+                        current = std.fmt.parseInt(i64, sv.data, 10) catch return error.NotInteger;
+                        current_exp = sv.expires_at;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        const new_val = std.math.add(i64, current, delta) catch return error.Overflow;
+
+        // Format new value as string
+        var buf: [32]u8 = undefined;
+        const new_str = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch unreachable;
+        const owned_str = try self.allocator.dupe(u8, new_str);
+        errdefer self.allocator.free(owned_str);
+
+        if (self.data.getEntry(key)) |entry| {
+            var old_value = entry.value_ptr.*;
+            old_value.deinit(self.allocator);
+            entry.value_ptr.* = Value{ .string = .{ .data = owned_str, .expires_at = current_exp } };
+        } else {
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.data.put(owned_key, Value{ .string = .{ .data = owned_str, .expires_at = current_exp } });
+        }
+
+        return new_val;
+    }
+
+    /// Increment a string value by a float delta. Creates key at "0" if missing.
+    /// Returns the new value, or error.WrongType / error.NotFloat.
+    pub fn incrbyfloat(self: *Storage, key: []const u8, delta: f64) !f64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var current: f64 = 0.0;
+        var current_exp: ?i64 = null;
+
+        if (self.data.getEntry(key)) |entry| {
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = entry.key_ptr.*;
+                var value = entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+            } else {
+                switch (entry.value_ptr.*) {
+                    .string => |*sv| {
+                        current = std.fmt.parseFloat(f64, sv.data) catch return error.NotFloat;
+                        current_exp = sv.expires_at;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        const new_val = current + delta;
+
+        // Format new value (trim trailing zeros like Redis)
+        var buf: [64]u8 = undefined;
+        const new_str = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch unreachable;
+        const owned_str = try self.allocator.dupe(u8, new_str);
+        errdefer self.allocator.free(owned_str);
+
+        if (self.data.getEntry(key)) |entry| {
+            var old_value = entry.value_ptr.*;
+            old_value.deinit(self.allocator);
+            entry.value_ptr.* = Value{ .string = .{ .data = owned_str, .expires_at = current_exp } };
+        } else {
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer self.allocator.free(owned_key);
+            try self.data.put(owned_key, Value{ .string = .{ .data = owned_str, .expires_at = current_exp } });
+        }
+
+        return new_val;
+    }
+
+    // ── String mutation operations ────────────────────────────────────────────
+
+    /// Append suffix to a string value. Creates key as "" if missing.
+    /// Returns the new length, or error.WrongType if not a string.
+    pub fn appendString(self: *Storage, key: []const u8, suffix: []const u8) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.data.getEntry(key)) |entry| {
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = entry.key_ptr.*;
+                var value = entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+            } else {
+                switch (entry.value_ptr.*) {
+                    .string => |*sv| {
+                        // Build new string = existing + suffix
+                        const new_len = sv.data.len + suffix.len;
+                        const new_buf = try self.allocator.alloc(u8, new_len);
+                        errdefer self.allocator.free(new_buf);
+                        @memcpy(new_buf[0..sv.data.len], sv.data);
+                        @memcpy(new_buf[sv.data.len..], suffix);
+                        self.allocator.free(sv.data);
+                        sv.data = new_buf;
+                        return new_len;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        // Key doesn't exist (or was expired): create with suffix as value
+        const owned_val = try self.allocator.dupe(u8, suffix);
+        errdefer self.allocator.free(owned_val);
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+        try self.data.put(owned_key, Value{ .string = .{ .data = owned_val, .expires_at = null } });
+        return suffix.len;
+    }
+
+    /// Get and delete a key.
+    /// Returns null if key doesn't exist. Returns error.WrongType if not a string.
+    /// Caller owns the returned slice and must free it.
+    pub fn getdel(self: *Storage, key: []const u8) !?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .string => |sv| {
+                // Copy the value before deleting the key
+                const result = try self.allocator.dupe(u8, sv.data);
+                const owned_key = entry.key_ptr.*;
+                var value = entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get string value and optionally update its expiry.
+    /// Returns null if key doesn't exist. Returns error.WrongType if not a string.
+    /// If persist=true, removes any expiry. If expires_at is non-null, sets new expiry.
+    /// Caller owns the returned slice and must free it.
+    pub fn getex(self: *Storage, key: []const u8, expires_at: ?i64, persist: bool) !?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .string => |*sv| {
+                const result = try self.allocator.dupe(u8, sv.data);
+                errdefer self.allocator.free(result);
+                if (persist) {
+                    sv.expires_at = null;
+                } else if (expires_at) |exp| {
+                    sv.expires_at = exp;
+                }
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    // ── Key rename operations ─────────────────────────────────────────────────
+
+    /// Rename key to newkey. Returns error.NoSuchKey if source doesn't exist.
+    /// If newkey already exists, it is overwritten.
+    pub fn rename(self: *Storage, key: []const u8, newkey: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Check source exists
+        const src_entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        if (src_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = src_entry.key_ptr.*;
+            var value = src_entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return error.NoSuchKey;
+        }
+
+        // Clone the value to move it under the new key
+        const src_value = src_entry.value_ptr.*;
+
+        // Remove old destination if it exists
+        if (self.data.fetchRemove(newkey)) |old| {
+            self.allocator.free(old.key);
+            var old_v = old.value;
+            old_v.deinit(self.allocator);
+        }
+
+        // Insert under newkey
+        const owned_newkey = try self.allocator.dupe(u8, newkey);
+        errdefer self.allocator.free(owned_newkey);
+
+        // Remove from old location (we already have the value copied above)
+        const src_owned_key = src_entry.key_ptr.*;
+        _ = self.data.remove(key);
+        self.allocator.free(src_owned_key);
+
+        try self.data.put(owned_newkey, src_value);
+    }
+
+    /// Rename key to newkey only if newkey does not already exist.
+    /// Returns true if renamed, false if newkey already exists.
+    /// Returns error.NoSuchKey if source doesn't exist.
+    pub fn renamenx(self: *Storage, key: []const u8, newkey: []const u8) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Check source exists
+        const src_entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        if (src_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = src_entry.key_ptr.*;
+            var value = src_entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return error.NoSuchKey;
+        }
+
+        // If destination exists and is not expired, return false
+        if (self.data.getEntry(newkey)) |dst| {
+            if (!dst.value_ptr.isExpired(getCurrentTimestamp())) return false;
+            // Destination is expired — remove it
+            const owned_key = dst.key_ptr.*;
+            var value = dst.value_ptr.*;
+            _ = self.data.remove(newkey);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+        }
+
+        // Move value
+        const src_value = src_entry.value_ptr.*;
+        const src_owned_key = src_entry.key_ptr.*;
+        _ = self.data.remove(key);
+        self.allocator.free(src_owned_key);
+
+        const owned_newkey = try self.allocator.dupe(u8, newkey);
+        errdefer self.allocator.free(owned_newkey);
+        try self.data.put(owned_newkey, src_value);
+        return true;
+    }
+
+    // ── Key listing ──────────────────────────────────────────────────────────
+
+    /// Return all non-expired keys matching the glob pattern.
+    /// Pass "*" to get all keys.
+    /// Caller owns the returned slice (and must free each element and the slice).
+    /// The returned strings are copies.
+    pub fn listKeys(self: *Storage, allocator: std.mem.Allocator, pattern: []const u8) ![][]const u8 {
+        _ = pattern; // will be used by the caller via glob; we return all live keys here
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+        var result: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+        errdefer {
+            for (result.items) |item| allocator.free(item);
+            result.deinit(allocator);
+        }
+
+        var it = self.data.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.isExpired(now)) continue;
+            const copy = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(copy);
+            try result.append(allocator, copy);
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
     /// Remove all keys from storage
     pub fn flushAll(self: *Storage) void {
         self.mutex.lock();

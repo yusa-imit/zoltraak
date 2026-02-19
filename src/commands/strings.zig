@@ -13,6 +13,7 @@ const hashes = @import("hashes.zig");
 const sorted_sets = @import("sorted_sets.zig");
 const pubsub_cmds = @import("pubsub.zig");
 const tx_mod = @import("transactions.zig");
+pub const keys_cmds = @import("keys.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -95,9 +96,14 @@ pub fn executeCommand(
                 }
             }
             const write_cmds = [_][]const u8{
-                "SET",   "DEL",     "LPUSH",   "RPUSH",   "LPOP",
-                "RPOP",  "SADD",    "SREM",    "HSET",    "HDEL",
-                "ZADD",  "ZREM",    "FLUSHDB", "FLUSHALL",
+                "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
+                "RPOP",       "SADD",       "SREM",       "HSET",       "HDEL",
+                "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
+                "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
+                "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
+                "APPEND",     "GETSET",     "GETDEL",     "GETEX",
+                "SETNX",      "SETEX",      "PSETEX",
+                "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -145,12 +151,14 @@ pub fn executeCommand(
     // Determine if this is a write command that should be AOF-logged
     const is_write_cmd = blk: {
         const write_cmds = [_][]const u8{
-            "SET", "DEL",
-            "LPUSH", "RPUSH", "LPOP", "RPOP",
-            "SADD", "SREM",
-            "HSET", "HDEL",
-            "ZADD", "ZREM",
-            "FLUSHDB", "FLUSHALL",
+            "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
+            "RPOP",       "SADD",       "SREM",       "HSET",       "HDEL",
+            "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
+            "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
+            "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
+            "APPEND",     "GETSET",     "GETDEL",     "GETEX",
+            "SETNX",      "SETEX",      "PSETEX",
+            "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -171,6 +179,78 @@ pub fn executeCommand(
             break :blk try cmdDel(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "EXISTS")) {
             break :blk try cmdExists(allocator, storage, array);
+        }
+        // String counter commands
+        else if (std.mem.eql(u8, cmd_upper, "INCR")) {
+            break :blk try cmdIncr(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "DECR")) {
+            break :blk try cmdDecr(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "INCRBY")) {
+            break :blk try cmdIncrby(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "DECRBY")) {
+            break :blk try cmdDecrby(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "INCRBYFLOAT")) {
+            break :blk try cmdIncrbyfloat(allocator, storage, array);
+        }
+        // String utility commands
+        else if (std.mem.eql(u8, cmd_upper, "APPEND")) {
+            break :blk try cmdAppend(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "STRLEN")) {
+            break :blk try cmdStrlen(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GETSET")) {
+            break :blk try cmdGetset(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GETDEL")) {
+            break :blk try cmdGetdel(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GETEX")) {
+            break :blk try cmdGetex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SETNX")) {
+            break :blk try cmdSetnx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SETEX")) {
+            break :blk try cmdSetex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PSETEX")) {
+            break :blk try cmdPsetex(allocator, storage, array);
+        }
+        // Multi-key string commands
+        else if (std.mem.eql(u8, cmd_upper, "MGET")) {
+            break :blk try cmdMget(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "MSET")) {
+            break :blk try cmdMset(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "MSETNX")) {
+            break :blk try cmdMsetnx(allocator, storage, array);
+        }
+        // TTL / expiry commands
+        else if (std.mem.eql(u8, cmd_upper, "TTL")) {
+            break :blk try keys_cmds.cmdTtl(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PTTL")) {
+            break :blk try keys_cmds.cmdPttl(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "EXPIRETIME")) {
+            break :blk try keys_cmds.cmdExpiretime(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PEXPIRETIME")) {
+            break :blk try keys_cmds.cmdPexpiretime(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "EXPIRE")) {
+            break :blk try keys_cmds.cmdExpire(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PEXPIRE")) {
+            break :blk try keys_cmds.cmdPexpire(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "EXPIREAT")) {
+            break :blk try keys_cmds.cmdExpireat(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PEXPIREAT")) {
+            break :blk try keys_cmds.cmdPexpireat(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PERSIST")) {
+            break :blk try keys_cmds.cmdPersist(allocator, storage, array);
+        }
+        // Keyspace commands
+        else if (std.mem.eql(u8, cmd_upper, "TYPE")) {
+            break :blk try keys_cmds.cmdType(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "KEYS")) {
+            break :blk try keys_cmds.cmdKeys(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RENAME")) {
+            break :blk try keys_cmds.cmdRename(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RENAMENX")) {
+            break :blk try keys_cmds.cmdRenamenx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RANDOMKEY")) {
+            break :blk try keys_cmds.cmdRandomkey(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "UNLINK")) {
+            break :blk try keys_cmds.cmdUnlink(allocator, storage, array);
         }
         // List commands
         else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
@@ -749,6 +829,549 @@ fn parseInteger(value: RespValue) !i64 {
     return std.fmt.parseInt(i64, str, 10);
 }
 
+// ── String counter commands ───────────────────────────────────────────────────
+
+/// INCR key
+/// Increments the integer value of key by 1.
+fn cmdIncr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'incr' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const new_val = storage.incrby(key, 1) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NotInteger => return w.writeError("ERR value is not an integer or out of range"),
+        error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
+        else => return err,
+    };
+
+    return w.writeInteger(new_val);
+}
+
+/// DECR key
+/// Decrements the integer value of key by 1.
+fn cmdDecr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'decr' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const new_val = storage.incrby(key, -1) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NotInteger => return w.writeError("ERR value is not an integer or out of range"),
+        error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
+        else => return err,
+    };
+
+    return w.writeInteger(new_val);
+}
+
+/// INCRBY key increment
+/// Increments the integer value of key by increment.
+fn cmdIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'incrby' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const delta = parseInteger(args[2]) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    const new_val = storage.incrby(key, delta) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NotInteger => return w.writeError("ERR value is not an integer or out of range"),
+        error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
+        else => return err,
+    };
+
+    return w.writeInteger(new_val);
+}
+
+/// DECRBY key decrement
+/// Decrements the integer value of key by decrement.
+fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'decrby' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const delta = parseInteger(args[2]) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Negate and add (DECRBY x n == INCRBY x -n)
+    const neg_delta = std.math.negate(delta) catch {
+        return w.writeError("ERR increment or decrement would overflow");
+    };
+
+    const new_val = storage.incrby(key, neg_delta) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NotInteger => return w.writeError("ERR value is not an integer or out of range"),
+        error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
+        else => return err,
+    };
+
+    return w.writeInteger(new_val);
+}
+
+/// INCRBYFLOAT key increment
+/// Increment the float value of key by increment.
+fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'incrbyfloat' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const delta_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not a valid float"),
+    };
+
+    const delta = std.fmt.parseFloat(f64, delta_str) catch {
+        return w.writeError("ERR value is not a valid float");
+    };
+
+    const new_val = storage.incrbyfloat(key, delta) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NotFloat => return w.writeError("ERR value is not a valid float"),
+        else => return err,
+    };
+
+    // Format response: strip unnecessary trailing zeros but keep at least one decimal
+    var buf: [64]u8 = undefined;
+    const formatted = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch unreachable;
+    return w.writeBulkString(formatted);
+}
+
+// ── String utility commands ───────────────────────────────────────────────────
+
+/// APPEND key value
+/// Appends value to the string stored at key. Returns new length.
+fn cmdAppend(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'append' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const suffix = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    const new_len = storage.appendString(key, suffix) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+
+    return w.writeInteger(@intCast(new_len));
+}
+
+/// STRLEN key
+/// Returns the length of the string value stored at key.
+fn cmdStrlen(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'strlen' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Check type first
+    const vtype = storage.getType(key);
+    if (vtype != null and vtype.? != .string) {
+        return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+
+    const val = storage.get(key);
+    const len: i64 = if (val) |v| @intCast(v.len) else 0;
+    return w.writeInteger(len);
+}
+
+/// GETSET key value
+/// Sets key to value and returns the old value.
+fn cmdGetset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'getset' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const value = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    // Check type
+    const vtype = storage.getType(key);
+    if (vtype != null and vtype.? != .string) {
+        return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+
+    // Get old value before overwriting
+    const old_val = storage.get(key);
+    const old_copy: ?[]u8 = if (old_val) |v| try allocator.dupe(u8, v) else null;
+    defer if (old_copy) |c| allocator.free(c);
+
+    try storage.set(key, value, null);
+
+    return w.writeBulkString(old_copy);
+}
+
+/// GETDEL key
+/// Gets the value and deletes the key.
+fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'getdel' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const val = storage.getdel(key) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+    defer if (val) |v| allocator.free(v);
+
+    return w.writeBulkString(val);
+}
+
+/// GETEX key [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-ms | PERSIST]
+/// Gets the value and optionally updates the expiry.
+fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'getex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var expires_at: ?i64 = null;
+    var persist = false;
+
+    if (args.len >= 3) {
+        const opt = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+
+        if (std.mem.eql(u8, opt_upper, "PERSIST")) {
+            persist = true;
+        } else if (std.mem.eql(u8, opt_upper, "EX")) {
+            if (args.len < 4) return w.writeError("ERR syntax error");
+            const secs = parseInteger(args[3]) catch return w.writeError("ERR value is not an integer or out of range");
+            if (secs <= 0) return w.writeError("ERR invalid expire time in 'getex' command");
+            expires_at = Storage.getCurrentTimestamp() + (secs * 1000);
+        } else if (std.mem.eql(u8, opt_upper, "PX")) {
+            if (args.len < 4) return w.writeError("ERR syntax error");
+            const ms = parseInteger(args[3]) catch return w.writeError("ERR value is not an integer or out of range");
+            if (ms <= 0) return w.writeError("ERR invalid expire time in 'getex' command");
+            expires_at = Storage.getCurrentTimestamp() + ms;
+        } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
+            if (args.len < 4) return w.writeError("ERR syntax error");
+            const ts = parseInteger(args[3]) catch return w.writeError("ERR value is not an integer or out of range");
+            if (ts <= 0) return w.writeError("ERR invalid expire time in 'getex' command");
+            expires_at = ts * 1000;
+        } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
+            if (args.len < 4) return w.writeError("ERR syntax error");
+            const ts = parseInteger(args[3]) catch return w.writeError("ERR value is not an integer or out of range");
+            if (ts <= 0) return w.writeError("ERR invalid expire time in 'getex' command");
+            expires_at = ts;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const val = storage.getex(key, expires_at, persist) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+    defer if (val) |v| allocator.free(v);
+
+    return w.writeBulkString(val);
+}
+
+/// SETNX key value
+/// Set key to value only if key does not exist. Returns 1 if set, 0 if not.
+fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'setnx' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const value = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    if (storage.exists(key)) {
+        return w.writeInteger(0);
+    }
+
+    try storage.set(key, value, null);
+    return w.writeInteger(1);
+}
+
+/// SETEX key seconds value
+/// Set key to value with expiry in seconds.
+fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'setex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const seconds = parseInteger(args[2]) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (seconds <= 0) {
+        return w.writeError("ERR invalid expire time in 'setex' command");
+    }
+
+    const value = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    const expires_at = Storage.getCurrentTimestamp() + (seconds * 1000);
+    try storage.set(key, value, expires_at);
+    return w.writeOK();
+}
+
+/// PSETEX key milliseconds value
+/// Set key to value with expiry in milliseconds.
+fn cmdPsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'psetex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const milliseconds = parseInteger(args[2]) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (milliseconds <= 0) {
+        return w.writeError("ERR invalid expire time in 'psetex' command");
+    }
+
+    const value = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    const expires_at = Storage.getCurrentTimestamp() + milliseconds;
+    try storage.set(key, value, expires_at);
+    return w.writeOK();
+}
+
+// ── Multi-key string commands ─────────────────────────────────────────────────
+
+/// MGET key [key ...]
+/// Returns values for each key (null bulk string for missing/wrong-type keys).
+fn cmdMget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'mget' command");
+    }
+
+    const count = args.len - 1;
+    var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(allocator);
+
+    const header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{count});
+    defer allocator.free(header);
+    try buf.appendSlice(allocator, header);
+
+    for (args[1..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => {
+                try buf.appendSlice(allocator, "$-1\r\n");
+                continue;
+            },
+        };
+
+        // Only return string values; wrong-type keys return null
+        const vtype = storage.getType(key);
+        if (vtype != null and vtype.? != .string) {
+            try buf.appendSlice(allocator, "$-1\r\n");
+            continue;
+        }
+
+        const val = storage.get(key);
+        if (val) |v| {
+            const elem = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ v.len, v });
+            defer allocator.free(elem);
+            try buf.appendSlice(allocator, elem);
+        } else {
+            try buf.appendSlice(allocator, "$-1\r\n");
+        }
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// MSET key value [key value ...]
+/// Sets multiple keys to multiple values.
+fn cmdMset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3 or (args.len - 1) % 2 != 0) {
+        return w.writeError("ERR wrong number of arguments for 'mset' command");
+    }
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 2) {
+        const key = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        const value = switch (args[i + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid value"),
+        };
+
+        try storage.set(key, value, null);
+    }
+
+    return w.writeOK();
+}
+
+/// MSETNX key value [key value ...]
+/// Sets multiple keys to multiple values, only if none of the keys exist.
+/// Returns 1 if all keys were set, 0 if none were set (atomic).
+fn cmdMsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3 or (args.len - 1) % 2 != 0) {
+        return w.writeError("ERR wrong number of arguments for 'msetnx' command");
+    }
+
+    // Check if any key already exists
+    var i: usize = 1;
+    while (i < args.len) : (i += 2) {
+        const key = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        if (storage.exists(key)) {
+            return w.writeInteger(0);
+        }
+    }
+
+    // All keys are new — set them all
+    i = 1;
+    while (i < args.len) : (i += 2) {
+        const key = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        const value = switch (args[i + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid value"),
+        };
+
+        try storage.set(key, value, null);
+    }
+
+    return w.writeInteger(1);
+}
+
 // Embedded unit tests
 
 test "commands - PING no argument" {
@@ -1207,4 +1830,374 @@ test "commands - executeCommand unknown command" {
 
     const expected = "-ERR unknown command 'UNKNOWN'\r\n";
     try std.testing.expectEqualStrings(expected, result);
+}
+
+// ── New command unit tests ─────────────────────────────────────────────────
+
+test "commands - INCR basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "INCR" },
+        RespValue{ .bulk_string = "counter" },
+    };
+    const r1 = try cmdIncr(allocator, storage, &args);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":1\r\n", r1);
+
+    const r2 = try cmdIncr(allocator, storage, &args);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":2\r\n", r2);
+}
+
+test "commands - INCR on non-integer returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key", "notanint", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "INCR" },
+        RespValue{ .bulk_string = "key" },
+    };
+    const result = try cmdIncr(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(result[0] == '-');
+}
+
+test "commands - DECR basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("counter", "10", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DECR" },
+        RespValue{ .bulk_string = "counter" },
+    };
+    const result = try cmdDecr(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":9\r\n", result);
+}
+
+test "commands - INCRBY basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "INCRBY" },
+        RespValue{ .bulk_string = "counter" },
+        RespValue{ .bulk_string = "5" },
+    };
+    const result = try cmdIncrby(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":5\r\n", result);
+}
+
+test "commands - DECRBY basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("counter", "20", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DECRBY" },
+        RespValue{ .bulk_string = "counter" },
+        RespValue{ .bulk_string = "7" },
+    };
+    const result = try cmdDecrby(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":13\r\n", result);
+}
+
+test "commands - INCRBYFLOAT basic" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key", "10.5", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "INCRBYFLOAT" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "0.1" },
+    };
+    const result = try cmdIncrbyfloat(allocator, storage, &args);
+    defer allocator.free(result);
+    // Result should be a bulk string starting with $
+    try std.testing.expect(result[0] == '$');
+}
+
+test "commands - INCRBYFLOAT non-float error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "INCRBYFLOAT" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "notafloat" },
+    };
+    const result = try cmdIncrbyfloat(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(result[0] == '-');
+}
+
+test "commands - APPEND creates key and returns length" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "APPEND" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "Hello" },
+    };
+    const r1 = try cmdAppend(allocator, storage, &args);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":5\r\n", r1);
+
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "APPEND" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = " World" },
+    };
+    const r2 = try cmdAppend(allocator, storage, &args2);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":11\r\n", r2);
+
+    try std.testing.expectEqualStrings("Hello World", storage.get("key").?);
+}
+
+test "commands - STRLEN returns correct length" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key", "Hello", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "STRLEN" },
+        RespValue{ .bulk_string = "key" },
+    };
+    const result = try cmdStrlen(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":5\r\n", result);
+}
+
+test "commands - STRLEN on missing key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "STRLEN" },
+        RespValue{ .bulk_string = "missing" },
+    };
+    const result = try cmdStrlen(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "commands - GETSET returns old value" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key", "old", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETSET" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "new" },
+    };
+    const result = try cmdGetset(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$3\r\nold\r\n", result);
+
+    try std.testing.expectEqualStrings("new", storage.get("key").?);
+}
+
+test "commands - GETDEL returns value and removes key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key", "value", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETDEL" },
+        RespValue{ .bulk_string = "key" },
+    };
+    const result = try cmdGetdel(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$5\r\nvalue\r\n", result);
+
+    try std.testing.expect(storage.get("key") == null);
+}
+
+test "commands - GETDEL on missing key returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETDEL" },
+        RespValue{ .bulk_string = "missing" },
+    };
+    const result = try cmdGetdel(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "commands - SETNX sets only when key missing" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETNX" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const r1 = try cmdSetnx(allocator, storage, &args);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":1\r\n", r1);
+
+    const r2 = try cmdSetnx(allocator, storage, &args);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":0\r\n", r2);
+}
+
+test "commands - SETEX sets key with expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETEX" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "100" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const result = try cmdSetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // TTL should be positive
+    const ttl = storage.getTtlMs("key");
+    try std.testing.expect(ttl > 0);
+}
+
+test "commands - SETEX rejects non-positive expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETEX" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const result = try cmdSetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(result[0] == '-');
+}
+
+test "commands - PSETEX sets key with ms expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "PSETEX" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "100000" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const result = try cmdPsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "commands - MGET multiple keys" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("k1", "v1", null);
+    try storage.set("k2", "v2", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MGET" },
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "missing" },
+    };
+    const result = try cmdMget(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should be *3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "$-1\r\n") != null);
+}
+
+test "commands - MSET sets all keys" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSET" },
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "v1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+    };
+    const result = try cmdMset(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    try std.testing.expectEqualStrings("v1", storage.get("k1").?);
+    try std.testing.expectEqualStrings("v2", storage.get("k2").?);
+}
+
+test "commands - MSETNX sets all or none" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "MSETNX" },
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "v1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+    };
+    const r1 = try cmdMsetnx(allocator, storage, &args1);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":1\r\n", r1);
+
+    // k1 already exists — should fail
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "MSETNX" },
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "new1" },
+        RespValue{ .bulk_string = "k3" },
+        RespValue{ .bulk_string = "v3" },
+    };
+    const r2 = try cmdMsetnx(allocator, storage, &args2);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":0\r\n", r2);
+
+    // k1 should still have old value; k3 should not exist
+    try std.testing.expectEqualStrings("v1", storage.get("k1").?);
+    try std.testing.expect(storage.get("k3") == null);
 }
