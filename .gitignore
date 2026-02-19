@@ -3,3 +3,5 @@ zig-out/
 *.o
 check_existing
 main
+appendonly.aof
+dump.rdb
