@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
     const integration_test_step = b.step("test-integration", "Run integration tests");
     integration_test_step.dependOn(&run_integration_tests.step);
 
-    // Add integration tests to main test step
-    test_step.dependOn(&run_integration_tests.step);
+    // Note: integration tests are NOT added to the main test step because they
+    // spawn a server binary and require special lifecycle management.
+    // Use `zig build test-integration` to run them separately.
 }
