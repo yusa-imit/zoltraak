@@ -485,6 +485,551 @@ fn cmdExpireatImpl(
     return w.writeInteger(if (ok) 1 else 0);
 }
 
+// ── SCAN family ──────────────────────────────────────────────────────────────
+
+/// SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
+/// Keyspace iterator. Returns [next_cursor, [keys]].
+/// Uses simple index-based cursor: integer offset into sorted key list.
+pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'scan' command");
+    }
+
+    const cursor_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const cursor = std.fmt.parseInt(usize, cursor_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    var pattern: []const u8 = "*";
+    var count: usize = 10;
+    var type_filter: ?[]const u8 = null;
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+
+        if (std.mem.eql(u8, opt_upper, "MATCH")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            pattern = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, opt_upper, "COUNT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const cnt_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            count = std.fmt.parseInt(usize, cnt_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.mem.eql(u8, opt_upper, "TYPE")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            type_filter = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Get all live keys matching pattern and type filter
+    const all_keys = try storage.listKeys(allocator, "*");
+    defer {
+        for (all_keys) |k| allocator.free(k);
+        allocator.free(all_keys);
+    }
+
+    // Filter by pattern and type
+    var matching: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer matching.deinit(allocator);
+
+    for (all_keys) |k| {
+        if (!glob.matchGlob(pattern, k)) continue;
+        if (type_filter) |tf| {
+            const vtype = storage.getType(k);
+            const type_str: []const u8 = if (vtype) |vt| switch (vt) {
+                .string => "string",
+                .list => "list",
+                .set => "set",
+                .hash => "hash",
+                .sorted_set => "zset",
+            } else "none";
+            const tf_lower = try std.ascii.allocLowerString(allocator, tf);
+            defer allocator.free(tf_lower);
+            if (!std.mem.eql(u8, type_str, tf_lower)) continue;
+        }
+        try matching.append(allocator, k);
+    }
+
+    // Apply cursor and count
+    const start = @min(cursor, matching.items.len);
+    const end = @min(start + count, matching.items.len);
+    const next_cursor: usize = if (end >= matching.items.len) 0 else end;
+    const page = matching.items[start..end];
+
+    // Build response: *2 array: cursor integer, then array of keys
+    var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(allocator);
+
+    // Write outer array header
+    try buf.appendSlice(allocator, "*2\r\n");
+    // Write cursor
+    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    defer allocator.free(cursor_resp);
+    try buf.appendSlice(allocator, cursor_resp);
+    // Write keys array
+    const keys_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
+    defer allocator.free(keys_header);
+    try buf.appendSlice(allocator, keys_header);
+    for (page) |k| {
+        const key_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ k.len, k });
+        defer allocator.free(key_resp);
+        try buf.appendSlice(allocator, key_resp);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// HSCAN key cursor [MATCH pattern] [COUNT count]
+/// Hash field iterator. Returns [next_cursor, [field, value, ...]].
+pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'hscan' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const cursor_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const cursor = std.fmt.parseInt(usize, cursor_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    var pattern: []const u8 = "*";
+    var count: usize = 10;
+
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "MATCH")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            pattern = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, opt_upper, "COUNT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const cnt_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            count = std.fmt.parseInt(usize, cnt_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Check type first
+    const vtype = storage.getType(key);
+    if (vtype) |vt| {
+        if (vt != .hash) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+    }
+
+    // hgetall returns interleaved [field, value, ...] with non-owned string pointers
+    // Only the outer slice is owned by the caller (not individual strings)
+    const all_pairs = (try storage.hgetall(allocator, key)) orelse &[_][]const u8{};
+    defer allocator.free(all_pairs);
+
+    // Filter by pattern: check even-indexed items (fields)
+    var pairs: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer pairs.deinit(allocator);
+
+    var j: usize = 0;
+    while (j + 1 < all_pairs.len) : (j += 2) {
+        const field = all_pairs[j];
+        const val = all_pairs[j + 1];
+        if (glob.matchGlob(pattern, field)) {
+            try pairs.append(allocator, field);
+            try pairs.append(allocator, val);
+        }
+    }
+
+    // Apply cursor and count (count is in field-value pairs)
+    const pair_count = pairs.items.len / 2;
+    const start = @min(cursor, pair_count);
+    const end = @min(start + count, pair_count);
+    const next_cursor: usize = if (end >= pair_count) 0 else end;
+    const page_pairs = pairs.items[start * 2 .. end * 2];
+
+    var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "*2\r\n");
+    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    defer allocator.free(cursor_resp);
+    try buf.appendSlice(allocator, cursor_resp);
+    const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
+    defer allocator.free(items_header);
+    try buf.appendSlice(allocator, items_header);
+    for (page_pairs) |item| {
+        const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
+        defer allocator.free(item_resp);
+        try buf.appendSlice(allocator, item_resp);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// SSCAN key cursor [MATCH pattern] [COUNT count]
+/// Set member iterator. Returns [next_cursor, [member, ...]].
+pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'sscan' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const cursor_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const cursor = std.fmt.parseInt(usize, cursor_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    var pattern: []const u8 = "*";
+    var count: usize = 10;
+
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "MATCH")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            pattern = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, opt_upper, "COUNT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const cnt_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            count = std.fmt.parseInt(usize, cnt_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const vtype = storage.getType(key);
+    if (vtype) |vt| {
+        if (vt != .set) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+    }
+
+    // smembers returns slice of non-owned string pointers into internal storage.
+    // Only the outer slice is caller-owned.
+    const all_members = (try storage.smembers(allocator, key)) orelse &[_][]const u8{};
+    defer allocator.free(all_members);
+
+    var matching: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer matching.deinit(allocator);
+
+    for (all_members) |m| {
+        if (glob.matchGlob(pattern, m)) {
+            try matching.append(allocator, m);
+        }
+    }
+
+    const start = @min(cursor, matching.items.len);
+    const end = @min(start + count, matching.items.len);
+    const next_cursor: usize = if (end >= matching.items.len) 0 else end;
+    const page = matching.items[start..end];
+
+    var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "*2\r\n");
+    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    defer allocator.free(cursor_resp);
+    try buf.appendSlice(allocator, cursor_resp);
+    const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
+    defer allocator.free(items_header);
+    try buf.appendSlice(allocator, items_header);
+    for (page) |m| {
+        const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ m.len, m });
+        defer allocator.free(item_resp);
+        try buf.appendSlice(allocator, item_resp);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// ZSCAN key cursor [MATCH pattern] [COUNT count]
+/// Sorted set iterator. Returns [next_cursor, [member, score, ...]].
+pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zscan' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const cursor_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const cursor = std.fmt.parseInt(usize, cursor_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    var pattern: []const u8 = "*";
+    var count: usize = 10;
+
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "MATCH")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            pattern = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, opt_upper, "COUNT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const cnt_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            count = std.fmt.parseInt(usize, cnt_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const vtype = storage.getType(key);
+    if (vtype) |vt| {
+        if (vt != .sorted_set) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+    }
+
+    // Get all members via zrange (all of them)
+    const all_members = (try storage.zrange(allocator, key, 0, -1, true)) orelse &[_][]const u8{};
+    defer {
+        // With WITHSCORES: interleaved [member, score, ...]
+        // Only score strings (odd indices) are owned by the caller
+        var j: usize = 0;
+        while (j < all_members.len) : (j += 2) {
+            if (j + 1 < all_members.len) allocator.free(all_members[j + 1]);
+        }
+        allocator.free(all_members);
+    }
+
+    // Build filtered member-score pairs
+    var pairs: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer pairs.deinit(allocator);
+
+    var j: usize = 0;
+    while (j + 1 < all_members.len) : (j += 2) {
+        const member = all_members[j];
+        const score = all_members[j + 1];
+        if (glob.matchGlob(pattern, member)) {
+            try pairs.append(allocator, member);
+            try pairs.append(allocator, score);
+        }
+    }
+
+    const pair_count = pairs.items.len / 2;
+    const start = @min(cursor, pair_count);
+    const end = @min(start + count, pair_count);
+    const next_cursor: usize = if (end >= pair_count) 0 else end;
+    const page_pairs = pairs.items[start * 2 .. end * 2];
+
+    var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "*2\r\n");
+    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    defer allocator.free(cursor_resp);
+    try buf.appendSlice(allocator, cursor_resp);
+    const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
+    defer allocator.free(items_header);
+    try buf.appendSlice(allocator, items_header);
+    for (page_pairs) |item| {
+        const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
+        defer allocator.free(item_resp);
+        try buf.appendSlice(allocator, item_resp);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+// ── OBJECT subcommands ────────────────────────────────────────────────────────
+
+/// OBJECT ENCODING key | OBJECT REFCOUNT key | OBJECT IDLETIME key | OBJECT FREQ key | OBJECT HELP
+/// Returns plausible encoding strings and stub values.
+pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'object' command");
+    }
+
+    const subcommand = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    const sub_upper = try std.ascii.allocUpperString(allocator, subcommand);
+    defer allocator.free(sub_upper);
+
+    if (std.mem.eql(u8, sub_upper, "HELP")) {
+        const help_items = [_][]const u8{
+            "OBJECT <subcommand> [<arg> [value] [opt] ...]. subcommands are:",
+            "ENCODING <key>",
+            "    Return the kind of internal representation the Redis object stored at <key> is using.",
+            "FREQ <key>",
+            "    Return the access frequency index of the key <key>.",
+            "HELP",
+            "    Return subcommand help summary.",
+            "IDLETIME <key>",
+            "    Return the idle time of the key <key>.",
+            "REFCOUNT <key>",
+            "    Return the reference count of the object stored at <key>.",
+        };
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, help_items.len);
+        defer resp_values.deinit(allocator);
+        for (help_items) |item| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = item });
+        }
+        return w.writeArray(resp_values.items);
+    }
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'object|encoding' command");
+    }
+
+    const key = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    if (std.mem.eql(u8, sub_upper, "REFCOUNT")) {
+        if (storage.getType(key) == null) {
+            return w.writeError("ERR no such key");
+        }
+        return w.writeInteger(1);
+    } else if (std.mem.eql(u8, sub_upper, "IDLETIME")) {
+        if (storage.getType(key) == null) {
+            return w.writeError("ERR no such key");
+        }
+        return w.writeInteger(0);
+    } else if (std.mem.eql(u8, sub_upper, "FREQ")) {
+        if (storage.getType(key) == null) {
+            return w.writeError("ERR no such key");
+        }
+        return w.writeInteger(0);
+    } else if (std.mem.eql(u8, sub_upper, "ENCODING")) {
+        const vtype = storage.getType(key) orelse {
+            return w.writeError("ERR no such key");
+        };
+        const encoding: []const u8 = switch (vtype) {
+            .string => enc: {
+                const val = storage.get(key);
+                if (val) |v| {
+                    // Check if it's a valid integer
+                    if (std.fmt.parseInt(i64, v, 10)) |_| {
+                        break :enc "int";
+                    } else |_| {}
+                    break :enc if (v.len <= 44) "embstr" else "raw";
+                }
+                break :enc "embstr";
+            },
+            .list => blk: {
+                const ln = storage.llen(key) orelse 0;
+                break :blk if (ln <= 128) "listpack" else "quicklist";
+            },
+            .set => blk: {
+                const sc = storage.scard(key) orelse 0;
+                break :blk if (sc <= 128) "listpack" else "hashtable";
+            },
+            .hash => blk: {
+                const hl = storage.hlen(key) orelse 0;
+                break :blk if (hl <= 128) "listpack" else "hashtable";
+            },
+            .sorted_set => blk: {
+                const zc = storage.zcard(key) orelse 0;
+                break :blk if (zc <= 128) "listpack" else "skiplist";
+            },
+        };
+        return w.writeSimpleString(encoding);
+    } else {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "ERR unknown subcommand or wrong number of arguments for '{s}' command", .{subcommand}) catch "ERR unknown subcommand";
+        return w.writeError(msg);
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 test "keys - TTL on missing key returns -2" {

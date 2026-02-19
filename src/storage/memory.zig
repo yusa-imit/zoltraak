@@ -3130,6 +3130,814 @@ pub const Storage = struct {
     pub fn getCurrentTimestamp() i64 {
         return std.time.milliTimestamp();
     }
+
+    // ── Set: new operations ───────────────────────────────────────────────────
+
+    /// Pop random members from a set. count=0 means pop 1.
+    /// Returns owned slice of member strings (caller must free slice and each string).
+    /// Returns null if key does not exist.
+    /// Returns error.WrongType if key is not a set.
+    pub fn spop(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        count: usize,
+    ) error{ WrongType, OutOfMemory }!?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .set => |*set_val| {
+                const pop_count = if (count == 0) @as(usize, 1) else @min(count, set_val.data.count());
+                if (pop_count == 0) return try allocator.alloc([]const u8, 0);
+
+                var result = try allocator.alloc([]const u8, pop_count);
+                errdefer {
+                    for (result) |s| allocator.free(s);
+                    allocator.free(result);
+                }
+
+                var i: usize = 0;
+                while (i < pop_count) : (i += 1) {
+                    // Pick a pseudo-random member by iterating to a random offset
+                    const set_len = set_val.data.count();
+                    if (set_len == 0) break;
+                    const rnd_idx = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(i)), @as(i128, @intCast(set_len)))));
+                    var it = set_val.data.keyIterator();
+                    var idx: usize = 0;
+                    while (it.next()) |member_ptr| {
+                        if (idx == rnd_idx) {
+                            const member = member_ptr.*;
+                            result[i] = try allocator.dupe(u8, member);
+                            // Remove from set
+                            if (set_val.data.fetchRemove(member)) |kv| {
+                                self.allocator.free(kv.key);
+                            }
+                            break;
+                        }
+                        idx += 1;
+                    }
+                }
+
+                // Auto-delete empty set
+                if (set_val.data.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Return random members from a set without removing them.
+    /// If count >= 0: return min(count, setLen) distinct members.
+    /// If count < 0: return abs(count) members (may repeat).
+    /// Returns owned slice of member strings (caller must free slice and each string).
+    /// Returns null if key does not exist.
+    /// Returns error.WrongType if key is not a set.
+    pub fn srandmember(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        count: i64,
+    ) error{ WrongType, OutOfMemory }!?[][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .set => |*set_val| {
+                const set_len = set_val.data.count();
+
+                // Collect all members into a temporary slice for indexing
+                var all_members = try allocator.alloc([]const u8, set_len);
+                defer allocator.free(all_members);
+                var it = set_val.data.keyIterator();
+                var idx: usize = 0;
+                while (it.next()) |member_ptr| : (idx += 1) {
+                    all_members[idx] = member_ptr.*;
+                }
+
+                if (count >= 0) {
+                    // Distinct members up to min(count, setLen)
+                    const n = @min(@as(usize, @intCast(count)), set_len);
+                    var result = try allocator.alloc([]const u8, n);
+                    errdefer {
+                        for (result) |s| allocator.free(s);
+                        allocator.free(result);
+                    }
+                    // Simple selection without replacement using a boolean visited array
+                    var visited = try allocator.alloc(bool, set_len);
+                    defer allocator.free(visited);
+                    @memset(visited, false);
+                    var ri: usize = 0;
+                    while (ri < n) : (ri += 1) {
+                        const rnd = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(ri)), @as(i128, @intCast(set_len)))));
+                        // Find next unvisited starting at rnd
+                        var j: usize = 0;
+                        while (j < set_len) : (j += 1) {
+                            const candidate = (rnd + j) % set_len;
+                            if (!visited[candidate]) {
+                                visited[candidate] = true;
+                                result[ri] = try allocator.dupe(u8, all_members[candidate]);
+                                break;
+                            }
+                        }
+                    }
+                    return result;
+                } else {
+                    // May repeat; abs(count) elements
+                    const n = @as(usize, @intCast(-count));
+                    var result = try allocator.alloc([]const u8, n);
+                    errdefer {
+                        for (result) |s| allocator.free(s);
+                        allocator.free(result);
+                    }
+                    for (0..n) |ri| {
+                        const rnd = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(ri)), @as(i128, @intCast(set_len)))));
+                        result[ri] = try allocator.dupe(u8, all_members[rnd % set_len]);
+                    }
+                    return result;
+                }
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Atomically move member from source set to destination set.
+    /// Returns true if moved, false if member not found in source.
+    /// Returns error.WrongType if source or destination is not a set.
+    pub fn smove(
+        self: *Storage,
+        source: []const u8,
+        destination: []const u8,
+        member: []const u8,
+    ) error{ WrongType, OutOfMemory }!bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Verify source
+        const src_entry = self.data.getEntry(source) orelse return false;
+
+        if (src_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = src_entry.key_ptr.*;
+            var value = src_entry.value_ptr.*;
+            _ = self.data.remove(source);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return false;
+        }
+
+        switch (src_entry.value_ptr.*) {
+            .set => {},
+            else => return error.WrongType,
+        }
+
+        const src_set = &src_entry.value_ptr.set;
+        if (!src_set.data.contains(member)) return false;
+
+        // Check destination type (if it exists)
+        if (self.data.getEntry(destination)) |dst_entry| {
+            if (!dst_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                switch (dst_entry.value_ptr.*) {
+                    .set => {},
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        // Remove from source
+        const owned_member: []const u8 = blk: {
+            if (src_set.data.fetchRemove(member)) |kv| {
+                break :blk kv.key;
+            }
+            return false;
+        };
+
+        // Auto-delete source if empty
+        if (src_set.data.count() == 0) {
+            const owned_key = src_entry.key_ptr.*;
+            var value = src_entry.value_ptr.*;
+            _ = self.data.remove(source);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+        }
+
+        // Insert into destination
+        if (self.data.getEntry(destination)) |dst_entry| {
+            if (dst_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = dst_entry.key_ptr.*;
+                var value = dst_entry.value_ptr.*;
+                _ = self.data.remove(destination);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+                // fall through to create new
+            } else {
+                switch (dst_entry.value_ptr.*) {
+                    .set => |*dst_set| {
+                        // member already owned; if destination already has it, free the dup
+                        if (dst_set.data.contains(owned_member)) {
+                            self.allocator.free(owned_member);
+                        } else {
+                            try dst_set.data.put(owned_member, {});
+                        }
+                        return true;
+                    },
+                    else => {
+                        self.allocator.free(owned_member);
+                        return error.WrongType;
+                    },
+                }
+            }
+        }
+
+        // Create new destination set
+        var new_set = std.StringHashMap(void).init(self.allocator);
+        errdefer {
+            var it = new_set.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            new_set.deinit();
+        }
+        try new_set.put(owned_member, {});
+        const owned_dst_key = try self.allocator.dupe(u8, destination);
+        errdefer self.allocator.free(owned_dst_key);
+        try self.data.put(owned_dst_key, Value{
+            .set = .{ .data = new_set, .expires_at = null },
+        });
+        return true;
+    }
+
+    /// Check membership for multiple members. Returns owned slice of bool (true=member).
+    /// Returns error.WrongType if key is not a set.
+    pub fn smismember(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        members: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try allocator.alloc(bool, members.len);
+        errdefer allocator.free(result);
+
+        const entry = self.data.getEntry(key) orelse {
+            @memset(result, false);
+            return result;
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            @memset(result, false);
+            return result;
+        }
+
+        switch (entry.value_ptr.*) {
+            .set => |*set_val| {
+                for (members, 0..) |member, i| {
+                    result[i] = set_val.data.contains(member);
+                }
+                return result;
+            },
+            else => {
+                allocator.free(result);
+                return error.WrongType;
+            },
+        }
+    }
+
+    /// Return cardinality of set intersection, optionally capped at limit (0 = no cap).
+    /// Returns error.WrongType if any key is not a set.
+    pub fn sintercard(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+        limit: usize,
+    ) error{ WrongType, OutOfMemory }!usize {
+        const members = try self.sinter(allocator, keys);
+        defer allocator.free(members);
+        const count = members.len;
+        if (limit > 0 and count > limit) return limit;
+        return count;
+    }
+
+    // ── Sorted Set: new operations ────────────────────────────────────────────
+
+    /// Pop count lowest-score members from sorted set.
+    /// Returns owned slice of ScoredMember (caller must free).
+    /// Returns null if key does not exist.
+    /// Returns error.WrongType if key is not a sorted set.
+    pub fn zpopmin(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        count: usize,
+    ) error{ WrongType, OutOfMemory }!?[]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const pop_count = @min(count, zset.sorted_list.items.len);
+                var result = try allocator.alloc(Value.ScoredMember, pop_count);
+                errdefer allocator.free(result);
+
+                for (0..pop_count) |i| {
+                    const item = zset.sorted_list.items[0];
+                    result[i] = Value.ScoredMember{
+                        .score = item.score,
+                        .member = try allocator.dupe(u8, item.member),
+                    };
+                    _ = zset.sorted_list.orderedRemove(0);
+                    if (zset.members.fetchRemove(item.member)) |kv| {
+                        self.allocator.free(kv.key);
+                    }
+                }
+
+                if (zset.members.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Pop count highest-score members from sorted set.
+    /// Returns owned slice of ScoredMember (caller must free).
+    /// Returns null if key does not exist.
+    /// Returns error.WrongType if key is not a sorted set.
+    pub fn zpopmax(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        count: usize,
+    ) error{ WrongType, OutOfMemory }!?[]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const pop_count = @min(count, zset.sorted_list.items.len);
+                var result = try allocator.alloc(Value.ScoredMember, pop_count);
+                errdefer allocator.free(result);
+
+                for (0..pop_count) |i| {
+                    const last_idx = zset.sorted_list.items.len - 1;
+                    const item = zset.sorted_list.items[last_idx];
+                    result[i] = Value.ScoredMember{
+                        .score = item.score,
+                        .member = try allocator.dupe(u8, item.member),
+                    };
+                    _ = zset.sorted_list.pop();
+                    if (zset.members.fetchRemove(item.member)) |kv| {
+                        self.allocator.free(kv.key);
+                    }
+                }
+
+                if (zset.members.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get scores for multiple members. Returns owned slice of ?f64 (null for missing).
+    /// Returns error.WrongType if key is not a sorted set.
+    pub fn zmscore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        members: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]?f64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try allocator.alloc(?f64, members.len);
+        errdefer allocator.free(result);
+
+        const entry = self.data.getEntry(key) orelse {
+            @memset(result, null);
+            return result;
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            @memset(result, null);
+            return result;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                for (members, 0..) |member, i| {
+                    result[i] = zset.members.get(member);
+                }
+                return result;
+            },
+            else => {
+                allocator.free(result);
+                return error.WrongType;
+            },
+        }
+    }
+
+    /// Return random members from sorted set.
+    /// count >= 0: up to count distinct members; count < 0: abs(count) members (may repeat).
+    /// Returns owned slice of ScoredMember (caller must free each .member and the slice).
+    /// Returns null if key does not exist.
+    /// Returns error.WrongType if key is not a sorted set.
+    pub fn zrandmember(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        count: i64,
+    ) error{ WrongType, OutOfMemory }!?[]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const items = zset.sorted_list.items;
+                const set_len = items.len;
+                if (set_len == 0) return try allocator.alloc(Value.ScoredMember, 0);
+
+                if (count >= 0) {
+                    const n = @min(@as(usize, @intCast(count)), set_len);
+                    var result = try allocator.alloc(Value.ScoredMember, n);
+                    errdefer {
+                        for (result) |sm| allocator.free(sm.member);
+                        allocator.free(result);
+                    }
+                    var visited = try allocator.alloc(bool, set_len);
+                    defer allocator.free(visited);
+                    @memset(visited, false);
+                    for (0..n) |ri| {
+                        const rnd = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(ri)), @as(i128, @intCast(set_len)))));
+                        var j: usize = 0;
+                        while (j < set_len) : (j += 1) {
+                            const candidate = (rnd + j) % set_len;
+                            if (!visited[candidate]) {
+                                visited[candidate] = true;
+                                result[ri] = Value.ScoredMember{
+                                    .score = items[candidate].score,
+                                    .member = try allocator.dupe(u8, items[candidate].member),
+                                };
+                                break;
+                            }
+                        }
+                    }
+                    return result;
+                } else {
+                    const n = @as(usize, @intCast(-count));
+                    var result = try allocator.alloc(Value.ScoredMember, n);
+                    errdefer {
+                        for (result) |sm| allocator.free(sm.member);
+                        allocator.free(result);
+                    }
+                    for (0..n) |ri| {
+                        const rnd = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(ri)), @as(i128, @intCast(set_len)))));
+                        result[ri] = Value.ScoredMember{
+                            .score = items[rnd].score,
+                            .member = try allocator.dupe(u8, items[rnd].member),
+                        };
+                    }
+                    return result;
+                }
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get range of members by rank in reverse order (highest rank first).
+    /// Returns owned slice of ScoredMember (caller must free each .member and the slice).
+    /// Returns null if key does not exist.
+    pub fn zrevrange(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        start: i64,
+        stop: i64,
+    ) error{ WrongType, OutOfMemory }!?[]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const len = zset.sorted_list.items.len;
+                if (len == 0) return try allocator.alloc(Value.ScoredMember, 0);
+
+                // Normalize indices as ZRANGE but the view is reversed
+                const norm_start: usize = blk: {
+                    if (start < 0) {
+                        const s = @as(i64, @intCast(len)) + start;
+                        break :blk if (s < 0) 0 else @as(usize, @intCast(s));
+                    } else {
+                        if (@as(usize, @intCast(start)) >= len) return try allocator.alloc(Value.ScoredMember, 0);
+                        break :blk @as(usize, @intCast(start));
+                    }
+                };
+
+                const norm_stop: usize = blk: {
+                    if (stop < 0) {
+                        const s = @as(i64, @intCast(len)) + stop;
+                        if (s < 0) return try allocator.alloc(Value.ScoredMember, 0);
+                        break :blk @as(usize, @intCast(s));
+                    } else {
+                        break :blk @min(@as(usize, @intCast(stop)), len - 1);
+                    }
+                };
+
+                if (norm_start > norm_stop) return try allocator.alloc(Value.ScoredMember, 0);
+
+                const count = norm_stop - norm_start + 1;
+                var result = try allocator.alloc(Value.ScoredMember, count);
+                errdefer {
+                    for (result) |sm| allocator.free(sm.member);
+                    allocator.free(result);
+                }
+
+                // Reversed: index 0 in result = highest rank = last in sorted_list
+                for (0..count) |i| {
+                    const src_idx = len - 1 - norm_start - i;
+                    result[i] = Value.ScoredMember{
+                        .score = zset.sorted_list.items[src_idx].score,
+                        .member = try allocator.dupe(u8, zset.sorted_list.items[src_idx].member),
+                    };
+                }
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get members by score in descending order (max to min).
+    /// Returns owned slice of ScoredMember (caller must free each .member and the slice).
+    /// Returns null if key does not exist.
+    pub fn zrevrangebyscore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        max: f64,
+        min: f64,
+        offset: usize,
+        limit: i64,
+    ) error{ WrongType, OutOfMemory }!?[]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                var result_list: std.ArrayList(Value.ScoredMember) = .{
+                    .items = &.{},
+                    .capacity = 0,
+                };
+                defer result_list.deinit(allocator);
+
+                // Iterate sorted_list in reverse (highest score first)
+                const items = zset.sorted_list.items;
+                var i: usize = items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const item = items[i];
+                    if (item.score >= min and item.score <= max) {
+                        try result_list.append(allocator, item);
+                    } else if (item.score < min) {
+                        break;
+                    }
+                }
+
+                // Apply offset/limit
+                const start_idx = @min(offset, result_list.items.len);
+                const end_idx = if (limit < 0)
+                    result_list.items.len
+                else
+                    @min(start_idx + @as(usize, @intCast(limit)), result_list.items.len);
+
+                const slice = result_list.items[start_idx..end_idx];
+                var result = try allocator.alloc(Value.ScoredMember, slice.len);
+                errdefer {
+                    for (result) |sm| allocator.free(sm.member);
+                    allocator.free(result);
+                }
+                for (slice, 0..) |sm, ri| {
+                    result[ri] = Value.ScoredMember{
+                        .score = sm.score,
+                        .member = try allocator.dupe(u8, sm.member),
+                    };
+                }
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    // ── String range operations ───────────────────────────────────────────────
+
+    /// Get range of string value bytes. Negative indices supported.
+    /// Returns empty string if key doesn't exist or range is out of bounds.
+    /// Caller owns the returned slice and must free it.
+    pub fn getrange(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        start: i64,
+        end: i64,
+    ) error{ WrongType, OutOfMemory }![]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse {
+            return try allocator.dupe(u8, "");
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return try allocator.dupe(u8, "");
+        }
+
+        switch (entry.value_ptr.*) {
+            .string => |*sv| {
+                const slen = @as(i64, @intCast(sv.data.len));
+
+                // Normalize negative indices
+                const norm_start: i64 = if (start < 0) @max(slen + start, 0) else @min(start, slen);
+                const norm_end: i64 = if (end < 0) @max(slen + end, -1) else @min(end, slen - 1);
+
+                if (norm_start > norm_end or norm_start >= slen) {
+                    return try allocator.dupe(u8, "");
+                }
+
+                const s = @as(usize, @intCast(norm_start));
+                const e = @as(usize, @intCast(norm_end)) + 1;
+                return try allocator.dupe(u8, sv.data[s..e]);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Overwrite bytes of string at offset. Zero-pads if offset > len.
+    /// Returns new total length.
+    /// Returns error.WrongType if key is not a string.
+    pub fn setrange(
+        self: *Storage,
+        key: []const u8,
+        offset: usize,
+        value: []const u8,
+    ) error{ WrongType, OutOfMemory }!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const required_len = offset + value.len;
+
+        if (self.data.getEntry(key)) |entry| {
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = entry.key_ptr.*;
+                var old_value = entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                old_value.deinit(self.allocator);
+                // Fall through to create new
+            } else {
+                switch (entry.value_ptr.*) {
+                    .string => |*sv| {
+                        const new_len = @max(sv.data.len, required_len);
+                        // Allocate a mutable buffer to perform the overwrite
+                        const new_buf = try self.allocator.alloc(u8, new_len);
+                        @memcpy(new_buf[0..sv.data.len], sv.data);
+                        if (new_len > sv.data.len) {
+                            @memset(new_buf[sv.data.len..], 0);
+                        }
+                        if (value.len > 0) {
+                            @memcpy(new_buf[offset .. offset + value.len], value);
+                        }
+                        self.allocator.free(sv.data);
+                        sv.data = new_buf;
+                        return sv.data.len;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        // Key doesn't exist: create zero-padded string
+        const new_buf = try self.allocator.alloc(u8, required_len);
+        errdefer self.allocator.free(new_buf);
+        @memset(new_buf, 0);
+        if (value.len > 0) {
+            @memcpy(new_buf[offset..], value);
+        }
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+        try self.data.put(owned_key, Value{
+            .string = .{ .data = new_buf, .expires_at = null },
+        });
+        return required_len;
+    }
 };
 
 // Embedded unit tests

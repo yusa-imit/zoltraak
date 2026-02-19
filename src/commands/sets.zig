@@ -416,6 +416,280 @@ pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
     return w.writeInteger(@intCast(count));
 }
 
+/// SPOP key [count]
+/// Remove and return random member(s) from set.
+/// Returns bulk string (single pop) or array (with count).
+pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'spop' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const has_count = args.len == 3;
+    const count: usize = if (has_count) blk: {
+        const cs = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        const n = std.fmt.parseInt(i64, cs, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+        if (n < 0) return w.writeError("ERR value is not an integer or out of range");
+        break :blk @as(usize, @intCast(n));
+    } else 0;
+
+    const popped = storage.spop(allocator, key, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (!has_count) {
+        // Single pop: return bulk string or null
+        if (popped) |members| {
+            defer {
+                for (members) |m| allocator.free(m);
+                allocator.free(members);
+            }
+            if (members.len > 0) {
+                return w.writeBulkString(members[0]);
+            }
+        }
+        return w.writeBulkString(null);
+    } else {
+        // With count: return array
+        if (popped) |members| {
+            defer {
+                for (members) |m| allocator.free(m);
+                allocator.free(members);
+            }
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+            defer resp_values.deinit(allocator);
+            for (members) |m| {
+                try resp_values.append(allocator, RespValue{ .bulk_string = m });
+            }
+            return w.writeArray(resp_values.items);
+        }
+        return w.writeArray(&[_]RespValue{});
+    }
+}
+
+/// SRANDMEMBER key [count]
+/// Return random member(s) from set without removing.
+/// Without count: returns one bulk string.
+/// With positive count: up to count distinct members.
+/// With negative count: abs(count) members (may repeat).
+pub fn cmdSrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'srandmember' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const has_count = args.len == 3;
+    const count: i64 = if (has_count) blk: {
+        const cs = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        break :blk std.fmt.parseInt(i64, cs, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+    } else 1;
+
+    const members = storage.srandmember(allocator, key, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (!has_count) {
+        if (members) |ms| {
+            defer {
+                for (ms) |m| allocator.free(m);
+                allocator.free(ms);
+            }
+            if (ms.len > 0) return w.writeBulkString(ms[0]);
+        }
+        return w.writeBulkString(null);
+    } else {
+        if (members) |ms| {
+            defer {
+                for (ms) |m| allocator.free(m);
+                allocator.free(ms);
+            }
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, ms.len);
+            defer resp_values.deinit(allocator);
+            for (ms) |m| {
+                try resp_values.append(allocator, RespValue{ .bulk_string = m });
+            }
+            return w.writeArray(resp_values.items);
+        }
+        return w.writeArray(&[_]RespValue{});
+    }
+}
+
+/// SMOVE source destination member
+/// Atomically move member between sets.
+/// Returns :1 if moved, :0 if member not in source.
+pub fn cmdSmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'smove' command");
+    }
+
+    const source = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid source"),
+    };
+    const destination = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+    const member = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid member"),
+    };
+
+    const moved = storage.smove(source, destination, member) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(if (moved) 1 else 0);
+}
+
+/// SMISMEMBER key member [member ...]
+/// Bulk membership check. Returns array of 0/1.
+pub fn cmdSmismember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'smismember' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var members = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 2);
+    defer members.deinit(allocator);
+
+    for (args[2..]) |arg| {
+        const member = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid member"),
+        };
+        try members.append(allocator, member);
+    }
+
+    const results = storage.smismember(allocator, key, members.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer allocator.free(results);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, results.len);
+    defer resp_values.deinit(allocator);
+
+    for (results) |is_member| {
+        try resp_values.append(allocator, RespValue{ .integer = if (is_member) 1 else 0 });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// SINTERCARD numkeys key [key ...] [LIMIT limit]
+/// Returns cardinality of intersection without storing.
+pub fn cmdSintercard(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'sintercard' command");
+    }
+
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+    if (numkeys == 0) {
+        return w.writeError("ERR numkeys can't be non-positive");
+    }
+    if (args.len < 2 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[2..2 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    // Parse optional LIMIT
+    var limit: usize = 0;
+    var i: usize = 2 + numkeys;
+    while (i < args.len) : (i += 1) {
+        const opt_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt_str);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "LIMIT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const limit_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            limit = std.fmt.parseInt(usize, limit_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        }
+    }
+
+    const card = storage.sintercard(allocator, keys.items, limit) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(card));
+}
+
 // Embedded unit tests
 
 test "sets - SADD single member" {

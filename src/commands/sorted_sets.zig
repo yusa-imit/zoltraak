@@ -608,6 +608,456 @@ pub fn cmdZcount(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     return w.writeInteger(@intCast(count));
 }
 
+/// ZPOPMIN key [count]
+/// Remove and return lowest-score members.
+/// Returns interleaved array of [member, score, ...].
+pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'zpopmin' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const count: usize = if (args.len == 3) blk: {
+        const cs = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        const n = std.fmt.parseInt(i64, cs, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+        if (n < 0) return w.writeError("ERR value is not an integer or out of range");
+        break :blk @as(usize, @intCast(n));
+    } else 1;
+
+    const popped = storage.zpopmin(allocator, key, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (popped) |members| {
+        defer {
+            for (members) |sm| allocator.free(sm.member);
+            allocator.free(members);
+        }
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
+        defer resp_values.deinit(allocator);
+        // Collect allocated score strings so we can free them after writeArray
+        var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, members.len);
+        defer {
+            for (score_strings.items) |s| allocator.free(s);
+            score_strings.deinit(allocator);
+        }
+        for (members) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+            var score_buf: [64]u8 = undefined;
+            const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+            const owned_score = try allocator.dupe(u8, score_str);
+            try score_strings.append(allocator, owned_score);
+            try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+        }
+        return w.writeArray(resp_values.items);
+    }
+    return w.writeArray(&[_]RespValue{});
+}
+
+/// ZPOPMAX key [count]
+/// Remove and return highest-score members.
+/// Returns interleaved array of [member, score, ...].
+pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'zpopmax' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const count: usize = if (args.len == 3) blk: {
+        const cs = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        const n = std.fmt.parseInt(i64, cs, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+        if (n < 0) return w.writeError("ERR value is not an integer or out of range");
+        break :blk @as(usize, @intCast(n));
+    } else 1;
+
+    const popped = storage.zpopmax(allocator, key, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (popped) |members| {
+        defer {
+            for (members) |sm| allocator.free(sm.member);
+            allocator.free(members);
+        }
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
+        defer resp_values.deinit(allocator);
+        var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, members.len);
+        defer {
+            for (score_strings.items) |s| allocator.free(s);
+            score_strings.deinit(allocator);
+        }
+        for (members) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+            var score_buf: [64]u8 = undefined;
+            const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+            const owned_score = try allocator.dupe(u8, score_str);
+            try score_strings.append(allocator, owned_score);
+            try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+        }
+        return w.writeArray(resp_values.items);
+    }
+    return w.writeArray(&[_]RespValue{});
+}
+
+/// ZMSCORE key member [member ...]
+/// Bulk ZSCORE. Returns array of scores (null bulk string for missing members).
+pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zmscore' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var members = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 2);
+    defer members.deinit(allocator);
+
+    for (args[2..]) |arg| {
+        const member = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid member"),
+        };
+        try members.append(allocator, member);
+    }
+
+    const scores = storage.zmscore(allocator, key, members.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer allocator.free(scores);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, scores.len);
+    defer resp_values.deinit(allocator);
+
+    var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, scores.len);
+    defer {
+        for (score_strings.items) |s| allocator.free(s);
+        score_strings.deinit(allocator);
+    }
+    for (scores) |maybe_score| {
+        if (maybe_score) |score| {
+            var score_buf: [64]u8 = undefined;
+            const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{score}) catch "0";
+            const owned_score = try allocator.dupe(u8, score_str);
+            try score_strings.append(allocator, owned_score);
+            try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+        } else {
+            try resp_values.append(allocator, RespValue{ .null_bulk_string = {} });
+        }
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// ZREVRANGE key start stop [WITHSCORES]
+/// Reverse-order range by index (deprecated but needed for compatibility).
+pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zrevrange' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const start_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const stop_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+
+    const start = std.fmt.parseInt(i64, start_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+    const stop = std.fmt.parseInt(i64, stop_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    var with_scores = false;
+    if (args.len >= 5) {
+        const opt = switch (args[4]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "WITHSCORES")) {
+            with_scores = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const members = storage.zrevrange(allocator, key, start, stop) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (members) |ms| {
+        defer {
+            for (ms) |sm| allocator.free(sm.member);
+            allocator.free(ms);
+        }
+        const result_len = if (with_scores) ms.len * 2 else ms.len;
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
+        defer resp_values.deinit(allocator);
+        var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+        defer {
+            for (score_strings.items) |s| allocator.free(s);
+            score_strings.deinit(allocator);
+        }
+        for (ms) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+            if (with_scores) {
+                var score_buf: [64]u8 = undefined;
+                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                const owned_score = try allocator.dupe(u8, score_str);
+                try score_strings.append(allocator, owned_score);
+                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+            }
+        }
+        return w.writeArray(resp_values.items);
+    }
+    return w.writeArray(&[_]RespValue{});
+}
+
+/// ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
+/// Score range descending (max first).
+pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zrevrangebyscore' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const max_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR max is not a valid float"),
+    };
+    const min_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR min is not a valid float"),
+    };
+
+    const max_score = parseScore(max_str) catch {
+        return w.writeError("ERR max is not a valid float");
+    };
+    const min_score = parseScore(min_str) catch {
+        return w.writeError("ERR min is not a valid float");
+    };
+
+    var with_scores = false;
+    var offset: usize = 0;
+    var limit: i64 = -1;
+
+    var i: usize = 4;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "WITHSCORES")) {
+            with_scores = true;
+        } else if (std.mem.eql(u8, opt_upper, "LIMIT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const off_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            offset = std.fmt.parseInt(usize, off_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const cnt_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            limit = std.fmt.parseInt(i64, cnt_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const members = storage.zrevrangebyscore(allocator, key, max_score, min_score, offset, limit) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (members) |ms| {
+        defer {
+            for (ms) |sm| allocator.free(sm.member);
+            allocator.free(ms);
+        }
+        const result_len = if (with_scores) ms.len * 2 else ms.len;
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
+        defer resp_values.deinit(allocator);
+        var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+        defer {
+            for (score_strings.items) |s| allocator.free(s);
+            score_strings.deinit(allocator);
+        }
+        for (ms) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+            if (with_scores) {
+                var score_buf: [64]u8 = undefined;
+                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                const owned_score = try allocator.dupe(u8, score_str);
+                try score_strings.append(allocator, owned_score);
+                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+            }
+        }
+        return w.writeArray(resp_values.items);
+    }
+    return w.writeArray(&[_]RespValue{});
+}
+
+/// ZRANDMEMBER key [count [WITHSCORES]]
+/// Return random member(s) from sorted set.
+pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 4) {
+        return w.writeError("ERR wrong number of arguments for 'zrandmember' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const has_count = args.len >= 3;
+    const count: i64 = if (has_count) blk: {
+        const cs = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        break :blk std.fmt.parseInt(i64, cs, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+    } else 1;
+
+    var with_scores = false;
+    if (args.len == 4) {
+        const opt = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+        if (std.mem.eql(u8, opt_upper, "WITHSCORES")) {
+            with_scores = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const members = storage.zrandmember(allocator, key, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    if (!has_count) {
+        if (members) |ms| {
+            defer {
+                for (ms) |sm| allocator.free(sm.member);
+                allocator.free(ms);
+            }
+            if (ms.len > 0) return w.writeBulkString(ms[0].member);
+        }
+        return w.writeBulkString(null);
+    } else {
+        if (members) |ms| {
+            defer {
+                for (ms) |sm| allocator.free(sm.member);
+                allocator.free(ms);
+            }
+            const result_len = if (with_scores) ms.len * 2 else ms.len;
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
+            defer resp_values.deinit(allocator);
+            var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+            defer {
+                for (score_strings.items) |s| allocator.free(s);
+                score_strings.deinit(allocator);
+            }
+            for (ms) |sm| {
+                try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+                if (with_scores) {
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                    const owned_score = try allocator.dupe(u8, score_str);
+                    try score_strings.append(allocator, owned_score);
+                    try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+                }
+            }
+            return w.writeArray(resp_values.items);
+        }
+        return w.writeArray(&[_]RespValue{});
+    }
+}
+
 // Embedded unit tests
 
 test "cmdZadd - basic add" {

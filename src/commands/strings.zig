@@ -108,6 +108,7 @@ pub fn executeCommand(
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",
+                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -167,6 +168,7 @@ pub fn executeCommand(
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",
+            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -365,6 +367,50 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZincrby(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZCOUNT")) {
             break :blk try sorted_sets.cmdZcount(allocator, storage, array);
+        }
+        // SCAN family commands
+        else if (std.mem.eql(u8, cmd_upper, "SCAN")) {
+            break :blk try keys_cmds.cmdScan(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HSCAN")) {
+            break :blk try keys_cmds.cmdHscan(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SSCAN")) {
+            break :blk try keys_cmds.cmdSscan(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZSCAN")) {
+            break :blk try keys_cmds.cmdZscan(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "OBJECT")) {
+            break :blk try keys_cmds.cmdObject(allocator, storage, array);
+        }
+        // Set commands (new)
+        else if (std.mem.eql(u8, cmd_upper, "SPOP")) {
+            break :blk try sets.cmdSpop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SRANDMEMBER")) {
+            break :blk try sets.cmdSrandmember(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SMOVE")) {
+            break :blk try sets.cmdSmove(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SMISMEMBER")) {
+            break :blk try sets.cmdSmismember(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SINTERCARD")) {
+            break :blk try sets.cmdSintercard(allocator, storage, array);
+        }
+        // Sorted set commands (new)
+        else if (std.mem.eql(u8, cmd_upper, "ZPOPMIN")) {
+            break :blk try sorted_sets.cmdZpopmin(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZPOPMAX")) {
+            break :blk try sorted_sets.cmdZpopmax(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
+            break :blk try sorted_sets.cmdZmscore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGE")) {
+            break :blk try sorted_sets.cmdZrevrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGEBYSCORE")) {
+            break :blk try sorted_sets.cmdZrevrangebyscore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZRANDMEMBER")) {
+            break :blk try sorted_sets.cmdZrandmember(allocator, storage, array);
+        }
+        // String range commands (new)
+        else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {
+            break :blk try cmdGetrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SETRANGE")) {
+            break :blk try cmdSetrange(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {
@@ -1886,6 +1932,91 @@ test "commands - executeCommand unknown command" {
 
     const expected = "-ERR unknown command 'UNKNOWN'\r\n";
     try std.testing.expectEqualStrings(expected, result);
+}
+
+// ── String range commands ─────────────────────────────────────────────────────
+
+/// GETRANGE key start end (also aliased as SUBSTR)
+/// Returns substring of string value. Negative indices supported.
+/// Returns empty string if key doesn't exist.
+pub fn cmdGetrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'getrange' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const start_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const end_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+
+    const start = std.fmt.parseInt(i64, start_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+    const end = std.fmt.parseInt(i64, end_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    const result = storage.getrange(allocator, key, start, end) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer allocator.free(result);
+
+    return w.writeBulkString(result);
+}
+
+/// SETRANGE key offset value
+/// Overwrite bytes at offset in string. Zero-pads if necessary.
+/// Returns new total length.
+pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'setrange' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const offset_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR value is not an integer or out of range"),
+    };
+    const value = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid value"),
+    };
+
+    const offset = std.fmt.parseInt(i64, offset_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+    if (offset < 0) {
+        return w.writeError("ERR offset is out of range");
+    }
+
+    const new_len = storage.setrange(key, @as(usize, @intCast(offset)), value) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(new_len));
 }
 
 // ── New command unit tests ─────────────────────────────────────────────────
