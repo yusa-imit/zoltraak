@@ -86,15 +86,27 @@ redis-cli -p 6379
 | LRANGE | `LRANGE key start stop` | Get range of elements |
 | LLEN | `LLEN key` | Get list length |
 
-### Set Commands (Iteration 3)
+### Set Commands (Iterations 3 + 12)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
 | SADD | `SADD key member [member ...]` | Add members to set |
 | SREM | `SREM key member [member ...]` | Remove members from set |
 | SISMEMBER | `SISMEMBER key member` | Check if member exists |
+| SMISMEMBER | `SMISMEMBER key member [member ...]` | Bulk membership check |
 | SMEMBERS | `SMEMBERS key` | Get all members |
 | SCARD | `SCARD key` | Get set cardinality |
+| SPOP | `SPOP key [count]` | Remove and return random member(s) |
+| SRANDMEMBER | `SRANDMEMBER key [count]` | Return random member(s) without removing |
+| SMOVE | `SMOVE source destination member` | Atomically move member between sets |
+| SINTERCARD | `SINTERCARD numkeys key [key ...] [LIMIT limit]` | Intersection cardinality |
+| SUNION | `SUNION key [key ...]` | Union of sets |
+| SINTER | `SINTER key [key ...]` | Intersection of sets |
+| SDIFF | `SDIFF key [key ...]` | Difference of sets |
+| SUNIONSTORE | `SUNIONSTORE dest key [key ...]` | Store union result |
+| SINTERSTORE | `SINTERSTORE dest key [key ...]` | Store intersection result |
+| SDIFFSTORE | `SDIFFSTORE dest key [key ...]` | Store difference result |
+| SSCAN | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate set members |
 
 ### Hash Commands (Iteration 4)
 
@@ -151,16 +163,47 @@ redis-cli -p 6379
 | FLUSHDB | `FLUSHDB` | Remove all keys from the database |
 | FLUSHALL | `FLUSHALL` | Remove all keys from all databases |
 
-### Sorted Set Commands (Iteration 5)
+### Keyspace Scanning Commands (Iteration 12)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| SCAN | `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]` | Iterate keyspace |
+| HSCAN | `HSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate hash fields |
+| SSCAN | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate set members |
+| ZSCAN | `ZSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate sorted set members |
+| OBJECT ENCODING | `OBJECT ENCODING key` | Get internal encoding of value |
+| OBJECT REFCOUNT | `OBJECT REFCOUNT key` | Get reference count (stub: 1) |
+| OBJECT IDLETIME | `OBJECT IDLETIME key` | Get idle time (stub: 0) |
+| OBJECT FREQ | `OBJECT FREQ key` | Get access frequency (stub: 0) |
+
+### String Range Commands (Iteration 12)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| GETRANGE | `GETRANGE key start end` | Get substring of string value (alias: SUBSTR) |
+| SETRANGE | `SETRANGE key offset value` | Overwrite bytes at offset, returns new length |
+
+### Sorted Set Commands (Iterations 5, 11, 12)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
 | ZADD | `ZADD key [NX\|XX] [CH] score member [score member ...]` | Add members with scores |
 | ZREM | `ZREM key member [member ...]` | Remove members from sorted set |
 | ZRANGE | `ZRANGE key start stop [WITHSCORES]` | Get range of members by rank |
+| ZREVRANGE | `ZREVRANGE key start stop [WITHSCORES]` | Get range in reverse order |
 | ZRANGEBYSCORE | `ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]` | Get members by score range |
+| ZREVRANGEBYSCORE | `ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]` | Get members by score descending |
 | ZSCORE | `ZSCORE key member` | Get score of member |
+| ZMSCORE | `ZMSCORE key member [member ...]` | Get scores for multiple members |
 | ZCARD | `ZCARD key` | Get number of members |
+| ZRANK | `ZRANK key member` | Get rank of member (ascending) |
+| ZREVRANK | `ZREVRANK key member` | Get rank of member (descending) |
+| ZCOUNT | `ZCOUNT key min max` | Count members in score range |
+| ZINCRBY | `ZINCRBY key increment member` | Increment score of member |
+| ZPOPMIN | `ZPOPMIN key [count]` | Remove and return lowest-score members |
+| ZPOPMAX | `ZPOPMAX key [count]` | Remove and return highest-score members |
+| ZRANDMEMBER | `ZRANDMEMBER key [count [WITHSCORES]]` | Return random members |
+| ZSCAN | `ZSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate sorted set members |
 
 ## Example Session
 
@@ -224,7 +267,7 @@ OK
 
 ## Project Status
 
-Iterations 1–10 are complete. Replication (primary/replica mode) is now fully implemented.
+Iterations 1–12 are complete. 22 new commands added in Iteration 12 (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands).
 
 ### Roadmap
 
@@ -234,10 +277,10 @@ Iterations 1–10 are complete. Replication (primary/replica mode) is now fully 
 - [x] Basic commands (GET, SET, DEL)
 - [x] String operations (PING, EXISTS)
 - [x] Key expiration (EX, PX options)
-- [x] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
-- [x] Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
-- [x] Hash operations (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
-- [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
+- [x] List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, +10 more)
+- [x] Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, +union/inter/diff)
+- [x] Hash operations (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN, HMGET, HINCRBY, HINCRBYFLOAT, HSETNX)
+- [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD, ZRANK, ZREVRANK, ZINCRBY, ZCOUNT, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER)
 - [x] Persistence (RDB snapshots — SAVE, BGSAVE, auto-load on startup)
 - [x] Persistence (AOF — append-only log, replay on startup, BGREWRITEAOF)
 - [x] Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB CHANNELS/NUMSUB)
