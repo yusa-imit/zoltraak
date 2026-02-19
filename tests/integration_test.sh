@@ -23,6 +23,9 @@ normalize_output() {
     output=$(echo "$output" | sed 's/^(integer) //')
     # Normalize "(nil)" -> "" (RESP2 nil -> empty like RESP3)
     output=$(echo "$output" | sed 's/^(nil)$//')
+    # Normalize "(empty array)" / "(empty list or set)" -> ""
+    output=$(echo "$output" | sed 's/^(empty array)$//')
+    output=$(echo "$output" | sed 's/^(empty list or set)$//')
     echo "$output"
 }
 
@@ -31,6 +34,8 @@ normalize_expected() {
     # Same normalization for expected values
     expected=$(echo "$expected" | sed 's/^(integer) //')
     expected=$(echo "$expected" | sed 's/^(nil)$//')
+    expected=$(echo "$expected" | sed 's/^(empty array)$//')
+    expected=$(echo "$expected" | sed 's/^(empty list or set)$//')
     echo "$expected"
 }
 
@@ -132,7 +137,8 @@ $REDIS_CLI SET key3 value3 > /dev/null
 test_command "DEL single key" "$REDIS_CLI DEL key1" "(integer) 1"
 test_command "DEL non-existent key" "$REDIS_CLI DEL nosuchkey" "(integer) 0"
 test_command "DEL multiple keys" "$REDIS_CLI DEL key2 key3 nosuchkey" "(integer) 2"
-test_command "DEL duplicate keys" "$REDIS_CLI SET dupkey value && $REDIS_CLI DEL dupkey dupkey" "(integer) 1"
+$REDIS_CLI SET dupkey value > /dev/null
+test_command "DEL duplicate keys" "$REDIS_CLI DEL dupkey dupkey" "(integer) 1"
 test_command_contains "DEL no arguments" "$REDIS_CLI DEL" "ERR"
 echo ""
 
@@ -244,17 +250,17 @@ echo ""
 echo "=== LPOP Command Tests ==="
 $REDIS_CLI RPUSH poplist a b c d e > /dev/null
 test_command "LPOP without count" "$REDIS_CLI LPOP poplist" "a"
-test_command "LPOP with count parameter" "$REDIS_CLI LPOP poplist 2 | head -n1" "(empty array)"
+test_command "LPOP with count parameter" "$REDIS_CLI LPOP poplist 2 | wc -l | tr -d ' '" "2"
 test_command "LPOP on non-existent key" "$REDIS_CLI LPOP nosuchlist" "(nil)"
 test_command "LPOP with count on non-existent" "$REDIS_CLI LPOP nosuchlist 5" "(empty array)"
 $REDIS_CLI RPUSH smalllist x y > /dev/null
-test_command "LPOP count > length" "$REDIS_CLI LPOP smalllist 10 | head -n1" "(empty array)"
+test_command "LPOP count > length" "$REDIS_CLI LPOP smalllist 10 | wc -l | tr -d ' '" "2"
 echo ""
 
 echo "=== RPOP Command Tests ==="
 $REDIS_CLI RPUSH rpoplist a b c d e > /dev/null
 test_command "RPOP without count" "$REDIS_CLI RPOP rpoplist" "e"
-test_command "RPOP with count parameter" "$REDIS_CLI RPOP rpoplist 2 | head -n1" "(empty array)"
+test_command "RPOP with count parameter" "$REDIS_CLI RPOP rpoplist 2 | wc -l | tr -d ' '" "2"
 test_command "RPOP on non-existent key" "$REDIS_CLI RPOP nosuchlist" "(nil)"
 echo ""
 

@@ -339,11 +339,9 @@ pub const Storage = struct {
             // Key exists - verify it's a list
             switch (entry.value_ptr.*) {
                 .list => |*list_val| {
-                    // Insert elements at head in reverse order to maintain order
-                    var i: usize = elements.len;
-                    while (i > 0) {
-                        i -= 1;
-                        const owned_elem = try self.allocator.dupe(u8, elements[i]);
+                    // Insert elements at head one by one, left to right (Redis semantics)
+                    for (elements) |elem| {
+                        const owned_elem = try self.allocator.dupe(u8, elem);
                         errdefer self.allocator.free(owned_elem);
                         try list_val.data.insert(self.allocator, 0, owned_elem);
                     }
