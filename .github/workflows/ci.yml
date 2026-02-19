@@ -40,13 +40,16 @@ jobs:
         run: zig build
 
       - name: Install redis-cli
-        run: sudo apt-get update && sudo apt-get install -y redis-tools
+        run: |
+          curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
 
       - name: Start server
         run: |
           ./zig-out/bin/zoltraak &
           sleep 2
-          # Verify server is listening
           redis-cli -p 6379 PING
 
       - name: Run integration tests
@@ -54,4 +57,4 @@ jobs:
 
       - name: Stop server
         if: always()
-        run: kill $(lsof -t -i:6379) 2>/dev/null || true
+        run: pkill -f zoltraak 2>/dev/null || true
