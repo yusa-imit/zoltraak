@@ -147,8 +147,14 @@ pub const ClientRegistry = struct {
         defer self.mutex.unlock();
 
         if (self.clients.getPtr(client_id)) |info| {
+            // Allocate new command string first to avoid use-after-free
+            const new_cmd = self.allocator.dupe(u8, cmd_name) catch {
+                std.log.warn("CLIENT: failed to allocate memory for last_cmd update (client_id={d})", .{client_id});
+                return; // Keep old value intact
+            };
+            // Now safe to free old value and update
             self.allocator.free(info.last_cmd);
-            info.last_cmd = self.allocator.dupe(u8, cmd_name) catch return;
+            info.last_cmd = new_cmd;
             info.last_cmd_at = std.time.milliTimestamp();
         }
     }
@@ -163,7 +169,7 @@ pub const ClientRegistry = struct {
         defer self.mutex.unlock();
 
         var buf = std.ArrayList(u8){};
-        errdefer buf.deinit(allocator);
+        defer buf.deinit(allocator);
 
         const now = std.time.milliTimestamp();
 
@@ -304,7 +310,7 @@ fn cmdClientList(
                 return w.writeError("ERR syntax error");
             }
 
-            filter_type = switch (args[i + 1]) {
+            const type_value = switch (args[i + 1]) {
                 .bulk_string => |s| s,
                 else => {
                     var w = Writer.init(allocator);
@@ -312,6 +318,23 @@ fn cmdClientList(
                     return w.writeError("ERR syntax error");
                 },
             };
+
+            // Validate TYPE value - only "normal", "master", "replica", "pubsub" are valid
+            if (!std.ascii.eqlIgnoreCase(type_value, "normal") and
+                !std.ascii.eqlIgnoreCase(type_value, "master") and
+                !std.ascii.eqlIgnoreCase(type_value, "replica") and
+                !std.ascii.eqlIgnoreCase(type_value, "pubsub"))
+            {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf = std.ArrayList(u8){};
+                try buf.writer(allocator).print("ERR Unknown client type '{s}'", .{type_value});
+                const msg = try buf.toOwnedSlice(allocator);
+                defer allocator.free(msg);
+                return w.writeError(msg);
+            }
+
+            filter_type = type_value;
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -363,8 +386,8 @@ pub fn cmdClient(
         var w = Writer.init(allocator);
         defer w.deinit();
         var buf = std.ArrayList(u8){};
-        defer buf.deinit(allocator);
-        try buf.writer(allocator).print("ERR Unknown subcommand '{s}'. Try CLIENT HELP.", .{subcmd});
+        // No defer buf.deinit() needed - toOwnedSlice handles it
+        try buf.writer(allocator).print("ERR unknown subcommand '{s}'. Try CLIENT HELP.", .{subcmd});
         const msg = try buf.toOwnedSlice(allocator);
         defer allocator.free(msg);
         return w.writeError(msg);
@@ -638,5 +661,31 @@ test "CLIENT unknown subcommand" {
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
-    try std.testing.expect(std.mem.indexOf(u8, response, "Unknown subcommand") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "unknown subcommand") != null);
+}
+
+test "CLIENT LIST command - invalid TYPE" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    _ = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "LIST" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TYPE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "invalid" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, 1, args_slice);
+    defer allocator.free(response);
+
+    // Should return error for unknown client type
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "Unknown client type") != null);
 }
