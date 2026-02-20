@@ -117,7 +117,7 @@ pub fn executeCommand(
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
-                "XADD",
+                "XADD",       "XDEL",       "XTRIM",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -178,7 +178,7 @@ pub fn executeCommand(
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
-            "XADD",
+            "XADD",       "XDEL",       "XTRIM",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -429,6 +429,12 @@ pub fn executeCommand(
             break :blk try streams.cmdXlen(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XRANGE")) {
             break :blk try streams.cmdXrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XREVRANGE")) {
+            break :blk try streams.cmdXrevrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XDEL")) {
+            break :blk try streams.cmdXdel(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XTRIM")) {
+            break :blk try streams.cmdXtrim(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {

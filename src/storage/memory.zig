@@ -4192,6 +4192,169 @@ pub const Storage = struct {
             else => return error.WrongType,
         }
     }
+
+    /// Query range of stream entries in reverse order (newest to oldest).
+    /// Returns slice of entries. Caller must free.
+    /// start/end can be "+" (max) or "-" (min) or specific IDs.
+    pub fn xrevrange(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        start_str: []const u8,
+        end_str: []const u8,
+        count: ?usize,
+    ) error{ WrongType, OutOfMemory, InvalidStreamId, Overflow, InvalidCharacter }!?[]const Value.StreamEntry {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                // Parse start/end (note: start is max, end is min in XREVRANGE)
+                const start_id = if (std.mem.eql(u8, start_str, "+"))
+                    Value.StreamId{ .ms = std.math.maxInt(i64), .seq = std.math.maxInt(u64) }
+                else
+                    try Value.StreamId.parse(start_str, null);
+
+                const end_id = if (std.mem.eql(u8, end_str, "-"))
+                    Value.StreamId{ .ms = std.math.minInt(i64), .seq = 0 }
+                else
+                    try Value.StreamId.parse(end_str, null);
+
+                // Filter entries in range (reverse order)
+                var result = std.ArrayList(Value.StreamEntry){};
+                defer result.deinit(allocator);
+
+                var i = stream_val.entries.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const entry_item = stream_val.entries.items[i];
+                    if ((end_id.lessThan(entry_item.id) or end_id.equals(entry_item.id)) and
+                        (entry_item.id.lessThan(start_id) or entry_item.id.equals(start_id)))
+                    {
+                        try result.append(allocator, entry_item);
+                        if (count) |c| {
+                            if (result.items.len >= c) break;
+                        }
+                    }
+                }
+
+                const owned_slice = try result.toOwnedSlice(allocator);
+                return owned_slice;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Delete specific entries from stream by ID.
+    /// Returns number of entries deleted.
+    pub fn xdel(
+        self: *Storage,
+        key: []const u8,
+        ids: []const []const u8,
+    ) error{ WrongType, OutOfMemory, InvalidStreamId, Overflow, InvalidCharacter }!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                // Parse IDs to delete
+                var target_ids = try std.ArrayList(Value.StreamId).initCapacity(self.allocator, ids.len);
+                defer target_ids.deinit(self.allocator);
+
+                for (ids) |id_str| {
+                    const id = try Value.StreamId.parse(id_str, null);
+                    try target_ids.append(self.allocator, id);
+                }
+
+                // Remove matching entries
+                var deleted: usize = 0;
+                var i: usize = 0;
+                while (i < stream_val.entries.items.len) {
+                    const entry_id = stream_val.entries.items[i].id;
+                    var should_delete = false;
+                    for (target_ids.items) |target| {
+                        if (entry_id.equals(target)) {
+                            should_delete = true;
+                            break;
+                        }
+                    }
+
+                    if (should_delete) {
+                        var removed = stream_val.entries.orderedRemove(i);
+                        removed.deinit(self.allocator);
+                        deleted += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                return deleted;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Trim stream to approximately maxlen entries (using MAXLEN strategy).
+    /// Returns number of entries deleted.
+    pub fn xtrim(
+        self: *Storage,
+        key: []const u8,
+        maxlen: usize,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const current_len = stream_val.entries.items.len;
+                if (current_len <= maxlen) return 0;
+
+                const to_delete = current_len - maxlen;
+
+                // Delete oldest entries
+                for (0..to_delete) |_| {
+                    var removed = stream_val.entries.orderedRemove(0);
+                    removed.deinit(self.allocator);
+                }
+
+                return to_delete;
+            },
+            else => return error.WrongType,
+        }
+    }
 };
 
 // Embedded unit tests
