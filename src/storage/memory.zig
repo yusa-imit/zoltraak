@@ -10,6 +10,7 @@ pub const ValueType = enum {
     set,
     hash,
     sorted_set,
+    stream,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -20,6 +21,7 @@ pub const Value = union(ValueType) {
     set: SetValue,
     hash: HashValue,
     sorted_set: SortedSetValue,
+    stream: StreamValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -106,6 +108,73 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// Stream entry ID in millisecondTimestamp-sequenceNumber format
+    pub const StreamId = struct {
+        ms: i64,
+        seq: u64,
+
+        /// Parse ID from string like "1234567890-0" or "*" for auto-generation
+        pub fn parse(s: []const u8, last_id: ?StreamId) !StreamId {
+            if (std.mem.eql(u8, s, "*")) {
+                // Auto-generate ID based on current time
+                const now = std.time.milliTimestamp();
+                const ms = if (last_id) |lid| @max(now, lid.ms) else now;
+                const seq = if (last_id) |lid| (if (ms == lid.ms) lid.seq + 1 else 0) else 0;
+                return StreamId{ .ms = ms, .seq = seq };
+            }
+
+            // Parse "ms-seq" format
+            const dash = std.mem.indexOf(u8, s, "-") orelse return error.InvalidStreamId;
+            const ms = try std.fmt.parseInt(i64, s[0..dash], 10);
+            const seq = try std.fmt.parseInt(u64, s[dash + 1 ..], 10);
+            return StreamId{ .ms = ms, .seq = seq };
+        }
+
+        /// Compare two stream IDs
+        pub fn lessThan(a: StreamId, b: StreamId) bool {
+            if (a.ms != b.ms) return a.ms < b.ms;
+            return a.seq < b.seq;
+        }
+
+        pub fn equals(a: StreamId, b: StreamId) bool {
+            return a.ms == b.ms and a.seq == b.seq;
+        }
+
+        /// Format ID as "ms-seq" string
+        pub fn format(self: StreamId, allocator: std.mem.Allocator) ![]const u8 {
+            return std.fmt.allocPrint(allocator, "{d}-{d}", .{ self.ms, self.seq });
+        }
+    };
+
+    /// Single entry in a stream
+    pub const StreamEntry = struct {
+        id: StreamId,
+        /// Field-value pairs stored as flat array: [field1, value1, field2, value2, ...]
+        fields: std.ArrayList([]const u8),
+
+        pub fn deinit(self: *StreamEntry, allocator: std.mem.Allocator) void {
+            for (self.fields.items) |item| {
+                allocator.free(item);
+            }
+            self.fields.deinit(allocator);
+        }
+    };
+
+    /// Stream value with optional expiration
+    /// Ordered log of entries with unique IDs
+    pub const StreamValue = struct {
+        entries: std.ArrayList(StreamEntry),
+        last_id: ?StreamId,
+        expires_at: ?i64,
+
+        pub fn deinit(self: *StreamValue, allocator: std.mem.Allocator) void {
+            for (self.entries.items) |*entry| {
+                entry.deinit(allocator);
+            }
+            self.entries.deinit(allocator);
+        }
+    };
+
     /// Deinitialize value and free all associated memory
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -114,6 +183,7 @@ pub const Value = union(ValueType) {
             .set => |*s| s.deinit(allocator),
             .hash => |*h| h.deinit(allocator),
             .sorted_set => |*z| z.deinit(allocator),
+            .stream => |*st| st.deinit(allocator),
         }
     }
 
@@ -125,6 +195,7 @@ pub const Value = union(ValueType) {
             .set => |s| s.expires_at,
             .hash => |h| h.expires_at,
             .sorted_set => |z| z.expires_at,
+            .stream => |st| st.expires_at,
         };
     }
 
@@ -2780,6 +2851,7 @@ pub const Storage = struct {
             .set => |*v| v.expires_at = expires_at,
             .hash => |*v| v.expires_at = expires_at,
             .sorted_set => |*v| v.expires_at = expires_at,
+            .stream => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -3954,6 +4026,171 @@ pub const Storage = struct {
             .string = .{ .data = new_buf, .expires_at = null },
         });
         return required_len;
+    }
+
+    // ── Stream operations ─────────────────────────────────────────────────────
+
+    /// Add entry to stream with auto-generated or explicit ID.
+    /// Returns the assigned StreamId or error if ID is invalid.
+    pub fn xadd(
+        self: *Storage,
+        key: []const u8,
+        id_str: []const u8,
+        fields: []const []const u8,
+        expires_at: ?i64,
+    ) error{ WrongType, OutOfMemory, InvalidStreamId, StreamIdTooSmall, Overflow, InvalidCharacter }!Value.StreamId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+
+        // Get or create stream
+        const entry = try self.data.getOrPut(key);
+        if (!entry.found_existing) {
+            const owned_key = try self.allocator.dupe(u8, key);
+            entry.key_ptr.* = owned_key;
+            entry.value_ptr.* = Value{
+                .stream = .{
+                    .entries = std.ArrayList(Value.StreamEntry){},
+                    .last_id = null,
+                    .expires_at = expires_at,
+                },
+            };
+        } else {
+            // Check expiration
+            if (entry.value_ptr.isExpired(now)) {
+                var value = entry.value_ptr.*;
+                value.deinit(self.allocator);
+                entry.value_ptr.* = Value{
+                    .stream = .{
+                        .entries = std.ArrayList(Value.StreamEntry){},
+                        .last_id = null,
+                        .expires_at = expires_at,
+                    },
+                };
+            }
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                // Parse and validate ID
+                const id = try Value.StreamId.parse(id_str, stream_val.last_id);
+
+                // Validate ID is greater than last_id
+                if (stream_val.last_id) |last| {
+                    if (!id.lessThan(last) and !id.equals(last)) {
+                        // ok
+                    } else {
+                        return error.StreamIdTooSmall;
+                    }
+                }
+
+                // Create owned copies of fields
+                var owned_fields = try std.ArrayList([]const u8).initCapacity(self.allocator, fields.len);
+                errdefer {
+                    for (owned_fields.items) |f| self.allocator.free(f);
+                    owned_fields.deinit(self.allocator);
+                }
+
+                for (fields) |field| {
+                    const owned = try self.allocator.dupe(u8, field);
+                    try owned_fields.append(self.allocator, owned);
+                }
+
+                // Add entry
+                try stream_val.entries.append(self.allocator, .{
+                    .id = id,
+                    .fields = owned_fields,
+                });
+                stream_val.last_id = id;
+
+                return id;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get stream length (number of entries).
+    /// Returns null if key doesn't exist, error.WrongType if not a stream.
+    pub fn xlen(self: *Storage, key: []const u8) error{WrongType}!?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| return stream_val.entries.items.len,
+            else => return error.WrongType,
+        }
+    }
+
+    /// Query range of stream entries by ID.
+    /// Returns slice of (id, fields) tuples. Caller must free.
+    /// start/end can be "-" (min) or "+" (max) or specific IDs.
+    pub fn xrange(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        start_str: []const u8,
+        end_str: []const u8,
+        count: ?usize,
+    ) error{ WrongType, OutOfMemory, InvalidStreamId, Overflow, InvalidCharacter }!?[]const Value.StreamEntry {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                // Parse start/end
+                const start_id = if (std.mem.eql(u8, start_str, "-"))
+                    Value.StreamId{ .ms = std.math.minInt(i64), .seq = 0 }
+                else
+                    try Value.StreamId.parse(start_str, null);
+
+                const end_id = if (std.mem.eql(u8, end_str, "+"))
+                    Value.StreamId{ .ms = std.math.maxInt(i64), .seq = std.math.maxInt(u64) }
+                else
+                    try Value.StreamId.parse(end_str, null);
+
+                // Filter entries in range - just reference existing entries
+                var result = std.ArrayList(Value.StreamEntry){};
+                defer result.deinit(allocator);
+
+                for (stream_val.entries.items) |entry_item| {
+                    if ((start_id.lessThan(entry_item.id) or start_id.equals(entry_item.id)) and
+                        (entry_item.id.lessThan(end_id) or entry_item.id.equals(end_id)))
+                    {
+                        try result.append(allocator, entry_item);
+                        if (count) |c| {
+                            if (result.items.len >= c) break;
+                        }
+                    }
+                }
+
+                const owned_slice = try result.toOwnedSlice(allocator);
+                return owned_slice;
+            },
+            else => return error.WrongType,
+        }
     }
 };
 
@@ -5436,4 +5673,125 @@ test "storage - getType returns sorted_set type" {
     _ = try storage.zadd("myzset", &scores, &members, 0, null);
 
     try std.testing.expectEqual(ValueType.sorted_set, storage.getType("myzset").?);
+}
+
+// ── Stream tests ──────────────────────────────────────────────────────────────
+
+test "storage - xadd creates stream with auto-generated ID" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "temp", "25", "humidity", "60" };
+    const id = try storage.xadd("weather", "*", &fields, null);
+
+    try std.testing.expect(id.ms > 0);
+    try std.testing.expectEqual(@as(u64, 0), id.seq);
+}
+
+test "storage - xadd with explicit ID" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "field1", "value1" };
+    const id = try storage.xadd("mystream", "1234567890-0", &fields, null);
+
+    try std.testing.expectEqual(@as(i64, 1234567890), id.ms);
+    try std.testing.expectEqual(@as(u64, 0), id.seq);
+}
+
+test "storage - xadd enforces ID ordering" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "a", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+
+    // Try to add earlier ID - should fail
+    const result = storage.xadd("s", "999-0", &fields, null);
+    try std.testing.expectError(error.StreamIdTooSmall, result);
+}
+
+test "storage - xlen returns entry count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "a", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "1001-0", &fields, null);
+    _ = try storage.xadd("s", "1002-0", &fields, null);
+
+    const len = (try storage.xlen("s")).?;
+    try std.testing.expectEqual(@as(usize, 3), len);
+}
+
+test "storage - xlen on non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const len = try storage.xlen("nosuchkey");
+    try std.testing.expect(len == null);
+}
+
+test "storage - xrange returns entries in range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "data", "x" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "2000-0", &fields, null);
+    _ = try storage.xadd("s", "3000-0", &fields, null);
+
+    const result = (try storage.xrange(allocator, "s", "1500-0", "2500-0", null)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqual(@as(i64, 2000), result[0].id.ms);
+}
+
+test "storage - xrange with - and + bounds" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "y" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "2000-0", &fields, null);
+
+    const result = (try storage.xrange(allocator, "s", "-", "+", null)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+}
+
+test "storage - xrange with COUNT limit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "a", "b" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "2000-0", &fields, null);
+    _ = try storage.xadd("s", "3000-0", &fields, null);
+
+    const result = (try storage.xrange(allocator, "s", "-", "+", 2)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+}
+
+test "storage - getType returns stream type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "a", "1" };
+    _ = try storage.xadd("mystream", "*", &fields, null);
+
+    try std.testing.expectEqual(ValueType.stream, storage.getType("mystream").?);
 }

@@ -11,6 +11,7 @@ const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
 const sorted_sets = @import("sorted_sets.zig");
+const streams = @import("streams.zig");
 const pubsub_cmds = @import("pubsub.zig");
 const tx_mod = @import("transactions.zig");
 pub const keys_cmds = @import("keys.zig");
@@ -116,6 +117,7 @@ pub fn executeCommand(
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
+                "XADD",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -176,6 +178,7 @@ pub fn executeCommand(
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
+            "XADD",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -418,6 +421,14 @@ pub fn executeCommand(
             break :blk try cmdGetrange(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SETRANGE")) {
             break :blk try cmdSetrange(allocator, storage, array);
+        }
+        // Stream commands
+        else if (std.mem.eql(u8, cmd_upper, "XADD")) {
+            break :blk try streams.cmdXadd(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XLEN")) {
+            break :blk try streams.cmdXlen(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XRANGE")) {
+            break :blk try streams.cmdXrange(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {

@@ -239,6 +239,9 @@ pub const Aof = struct {
                         }
                     }
                 },
+                .stream => {
+                    // Streams not yet implemented in AOF - skip for now
+                },
             }
         }
 

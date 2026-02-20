@@ -65,6 +65,7 @@ pub const Persistence = struct {
                 .set => RDB_TYPE_SET,
                 .hash => RDB_TYPE_HASH,
                 .sorted_set => RDB_TYPE_SORTED_SET,
+                .stream => 0xFF, // Placeholder - streams not yet serialized
             };
             try w.writeByte(type_byte);
 
@@ -112,6 +113,10 @@ pub const Persistence = struct {
                         try w.writeInt(u64, score_bits, .little);
                         try writeBlob(w, scored.member);
                     }
+                },
+                .stream => {
+                    // Streams not yet fully implemented in persistence
+                    try w.writeInt(u32, 0, .little);
                 },
             }
         }
@@ -369,6 +374,7 @@ pub const Persistence = struct {
                 .set => RDB_TYPE_SET,
                 .hash => RDB_TYPE_HASH,
                 .sorted_set => RDB_TYPE_SORTED_SET,
+                .stream => 0xFE, // Streams not yet serialized
             };
             try w.writeByte(type_byte);
 
@@ -408,6 +414,10 @@ pub const Persistence = struct {
                         try w.writeInt(u64, score_bits, .little);
                         try writeBlob(w, scored.member);
                     }
+                },
+                .stream => {
+                    // Streams not yet implemented - write empty marker
+                    try w.writeInt(u32, 0, .little);
                 },
             }
         }

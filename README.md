@@ -208,6 +208,14 @@ redis-cli -p 6379
 | COMMAND LIST | `COMMAND LIST [FILTERBY <filter>]` | List command names (supports pattern: filter) |
 | COMMAND HELP | `COMMAND HELP` | Show COMMAND command help |
 
+### Stream Commands (Iteration 16)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| XADD | `XADD key <ID \| *> field value [field value ...]` | Append entry to stream with auto or explicit ID |
+| XLEN | `XLEN key` | Get number of entries in stream |
+| XRANGE | `XRANGE key start end [COUNT count]` | Query range of entries by ID (use `-` for min, `+` for max) |
+
 ### Keyspace Scanning Commands (Iteration 12)
 
 | Command | Syntax | Description |
@@ -312,11 +320,12 @@ OK
 
 ## Project Status
 
-Iterations 1–15 are complete.
+Iterations 1–16 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
 - Iteration 15: 6 COMMAND introspection commands (COMMAND, COMMAND COUNT, COMMAND INFO, COMMAND GETKEYS, COMMAND LIST, COMMAND HELP)
+- Iteration 16: 3 STREAM commands (XADD, XLEN, XRANGE) - basic stream data type support
 
 ### Roadmap
 
