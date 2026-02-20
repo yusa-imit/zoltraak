@@ -197,6 +197,17 @@ redis-cli -p 6379
 | appendfsync | string | everysec | No | AOF fsync mode (always, everysec, no) |
 | databases | integer | 1 | Yes | Number of databases (Zoltraak uses 1) |
 
+### Command Introspection Commands (Iteration 15)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| COMMAND | `COMMAND` | Return all commands with metadata |
+| COMMAND COUNT | `COMMAND COUNT` | Return number of commands |
+| COMMAND INFO | `COMMAND INFO <command> [<command> ...]` | Return command details (arity, flags, key positions) |
+| COMMAND GETKEYS | `COMMAND GETKEYS <command> [<arg> ...]` | Extract key positions from command arguments |
+| COMMAND LIST | `COMMAND LIST [FILTERBY <filter>]` | List command names (supports pattern: filter) |
+| COMMAND HELP | `COMMAND HELP` | Show COMMAND command help |
+
 ### Keyspace Scanning Commands (Iteration 12)
 
 | Command | Syntax | Description |
@@ -301,10 +312,11 @@ OK
 
 ## Project Status
 
-Iterations 1–13 are complete.
+Iterations 1–15 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
+- Iteration 15: 6 COMMAND introspection commands (COMMAND, COMMAND COUNT, COMMAND INFO, COMMAND GETKEYS, COMMAND LIST, COMMAND HELP)
 
 ### Roadmap
 

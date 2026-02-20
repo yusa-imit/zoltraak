@@ -5506,3 +5506,172 @@ test "CONFIG REWRITE - creates config file" {
     try testing.expect(std.mem.indexOf(u8, content, "maxmemory") != null);
     try testing.expect(std.mem.indexOf(u8, content, "4096") != null);
 }
+
+// ============================================================================
+// COMMAND Introspection Tests (Iteration 15)
+// ============================================================================
+
+test "COMMAND - returns all commands" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"COMMAND"});
+    defer testing.allocator.free(response);
+
+    // Should return an array
+    try testing.expect(std.mem.startsWith(u8, response, "*"));
+    // Should have many commands
+    try testing.expect(std.mem.indexOf(u8, response, "ping") != null or std.mem.indexOf(u8, response, "get") != null);
+}
+
+test "COMMAND COUNT - returns command count" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "COUNT" });
+    defer testing.allocator.free(response);
+
+    // Should return an integer
+    try testing.expect(std.mem.startsWith(u8, response, ":"));
+    // Should be > 0
+    const count_str = response[1 .. response.len - 2];
+    const count = try std.fmt.parseInt(i64, count_str, 10);
+    try testing.expect(count > 90); // We have 90+ commands
+}
+
+test "COMMAND INFO - returns info for specific commands" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "INFO", "GET", "SET" });
+    defer testing.allocator.free(response);
+
+    // Should return array of 2 items
+    try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    // Each command info should have 6 fields
+    try testing.expect(std.mem.indexOf(u8, response, "*6\r\n") != null);
+    // Should contain command names
+    try testing.expect(std.mem.indexOf(u8, response, "get") != null or std.mem.indexOf(u8, response, "GET") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "set") != null or std.mem.indexOf(u8, response, "SET") != null);
+}
+
+test "COMMAND INFO - returns null for unknown command" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "INFO", "NONEXISTENT" });
+    defer testing.allocator.free(response);
+
+    // Should return array of 1 null
+    try testing.expectEqualStrings("*1\r\n$-1\r\n", response);
+}
+
+test "COMMAND GETKEYS - extracts keys from command" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // GET has 1 key at position 1
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "GETKEYS", "GET", "mykey" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "*1\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "mykey") != null);
+}
+
+test "COMMAND GETKEYS - extracts multiple keys" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // DEL can have multiple keys
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "GETKEYS", "DEL", "key1", "key2", "key3" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "key1") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "key2") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "key3") != null);
+}
+
+test "COMMAND GETKEYS - returns empty for commands without keys" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "GETKEYS", "PING" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "COMMAND LIST - lists all commands" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "LIST" });
+    defer testing.allocator.free(response);
+
+    // Should return an array
+    try testing.expect(std.mem.startsWith(u8, response, "*"));
+    // Should contain common commands
+    try testing.expect(std.mem.indexOf(u8, response, "ping") != null or std.mem.indexOf(u8, response, "PING") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "get") != null or std.mem.indexOf(u8, response, "GET") != null);
+}
+
+test "COMMAND LIST FILTERBY pattern - filters by pattern" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "LIST", "FILTERBY", "pattern:h*" });
+    defer testing.allocator.free(response);
+
+    // Should return an array
+    try testing.expect(std.mem.startsWith(u8, response, "*"));
+    // Should contain hash commands
+    try testing.expect(std.mem.indexOf(u8, response, "hset") != null or std.mem.indexOf(u8, response, "HSET") != null);
+    // Should not contain non-matching commands
+    try testing.expect(std.mem.indexOf(u8, response, "sadd") == null and std.mem.indexOf(u8, response, "SADD") == null);
+}
+
+test "COMMAND HELP - shows help" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "COMMAND", "HELP" });
+    defer testing.allocator.free(response);
+
+    // Should return an array
+    try testing.expect(std.mem.startsWith(u8, response, "*"));
+    // Should contain help text
+    try testing.expect(std.mem.indexOf(u8, response, "COMMAND") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "COUNT") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "INFO") != null);
+}

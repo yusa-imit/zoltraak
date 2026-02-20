@@ -16,6 +16,7 @@ const tx_mod = @import("transactions.zig");
 pub const keys_cmds = @import("keys.zig");
 const client_cmds = @import("client.zig");
 const config_cmds = @import("config.zig");
+const command_cmds = @import("command.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -498,6 +499,69 @@ pub fn executeCommand(
         // Configuration commands
         else if (std.mem.eql(u8, cmd_upper, "CONFIG")) {
             break :blk try config_cmds.executeConfigCommand(allocator, storage, array);
+        }
+        // Command introspection
+        else if (std.mem.eql(u8, cmd_upper, "COMMAND")) {
+            if (array.len == 1) {
+                // COMMAND - return all commands
+                break :blk try command_cmds.cmdCommand(allocator);
+            } else {
+                const subcmd = switch (array[1]) {
+                    .bulk_string => |s| s,
+                    else => {
+                        var w = Writer.init(allocator);
+                        defer w.deinit();
+                        return w.writeError("ERR invalid subcommand format");
+                    },
+                };
+                const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+                defer allocator.free(subcmd_upper);
+
+                if (std.mem.eql(u8, subcmd_upper, "COUNT")) {
+                    break :blk try command_cmds.cmdCommandCount(allocator);
+                } else if (std.mem.eql(u8, subcmd_upper, "INFO")) {
+                    const cmd_args = try extractBulkStrings(allocator, array[2..]);
+                    defer allocator.free(cmd_args);
+                    break :blk try command_cmds.cmdCommandInfo(allocator, cmd_args);
+                } else if (std.mem.eql(u8, subcmd_upper, "GETKEYS")) {
+                    const cmd_args = try extractBulkStrings(allocator, array[2..]);
+                    defer allocator.free(cmd_args);
+                    break :blk try command_cmds.cmdCommandGetKeys(allocator, cmd_args);
+                } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
+                    var filter_by: ?[]const u8 = null;
+                    if (array.len > 2) {
+                        const filter_opt = switch (array[2]) {
+                            .bulk_string => |s| s,
+                            else => {
+                                var w = Writer.init(allocator);
+                                defer w.deinit();
+                                return w.writeError("ERR invalid filter format");
+                            },
+                        };
+                        const filter_upper = try std.ascii.allocUpperString(allocator, filter_opt);
+                        defer allocator.free(filter_upper);
+                        if (std.mem.eql(u8, filter_upper, "FILTERBY") and array.len > 3) {
+                            filter_by = switch (array[3]) {
+                                .bulk_string => |s| s,
+                                else => {
+                                    var w = Writer.init(allocator);
+                                    defer w.deinit();
+                                    return w.writeError("ERR invalid filter value");
+                                },
+                            };
+                        }
+                    }
+                    break :blk try command_cmds.cmdCommandList(allocator, filter_by);
+                } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                    break :blk try command_cmds.cmdCommandHelp(allocator);
+                } else {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    var buf: [256]u8 = undefined;
+                    const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown COMMAND subcommand '{s}'", .{subcmd});
+                    return w.writeError(err_msg);
+                }
+            }
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -648,6 +712,18 @@ fn cmdExec(
 
     tx.reset();
     return out.toOwnedSlice(allocator);
+}
+
+/// Helper to extract bulk strings from RespValue array
+fn extractBulkStrings(allocator: std.mem.Allocator, args: []const RespValue) ![][]const u8 {
+    var result = try allocator.alloc([]const u8, args.len);
+    for (args, 0..) |arg, i| {
+        result[i] = switch (arg) {
+            .bulk_string => |s| s,
+            else => return error.InvalidArgument,
+        };
+    }
+    return result;
 }
 
 /// PING [message]
