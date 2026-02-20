@@ -56,6 +56,22 @@ pub fn build(b: *std.Build) void {
     const integration_test_step = b.step("test-integration", "Run integration tests");
     integration_test_step.dependOn(&run_integration_tests.step);
 
+    // Extended CONFIG command integration tests
+    const config_extended_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_config_extended.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_config_extended_tests = b.addRunArtifact(config_extended_tests);
+    const config_extended_test_step = b.step("test-config-extended", "Run extended CONFIG integration tests");
+    config_extended_test_step.dependOn(&run_config_extended_tests.step);
+
+    // Add extended tests to main integration test step
+    integration_test_step.dependOn(&run_config_extended_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

@@ -142,13 +142,19 @@ pub const Storage = struct {
     config: *Config,
     mutex: std.Thread.Mutex,
 
-    /// Initialize a new storage instance
-    /// port and bind_addr are used to initialize runtime configuration
-    pub fn init(allocator: std.mem.Allocator, port: u16, bind_addr: []const u8) !*Storage {
+    /// Initialize a new storage instance with runtime configuration.
+    ///
+    /// Arguments:
+    ///   - allocator: Memory allocator for storage and config
+    ///   - port: Server port for read-only CONFIG parameter
+    ///   - bind: Server bind address for read-only CONFIG parameter
+    ///
+    /// Returns error.OutOfMemory if allocation fails.
+    pub fn init(allocator: std.mem.Allocator, port: u16, bind: []const u8) !*Storage {
         const storage = try allocator.create(Storage);
         errdefer allocator.destroy(storage);
 
-        const cfg = try Config.init(allocator, port, bind_addr);
+        const cfg = try Config.init(allocator, port, bind);
         errdefer cfg.deinit();
 
         storage.* = Storage{

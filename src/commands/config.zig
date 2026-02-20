@@ -234,13 +234,15 @@ fn cmdConfigRewrite(
         .sub_path = config_path,
         .data = data,
     }) catch |err| {
-        var w = Writer.init(allocator);
-        defer w.deinit();
-        return w.writeError(try std.fmt.allocPrint(
+        const err_msg = try std.fmt.allocPrint(
             allocator,
             "ERR Failed to write config file: {s}",
             .{@errorName(err)},
-        ));
+        );
+        defer allocator.free(err_msg);
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError(err_msg);
     };
 
     var w = Writer.init(allocator);
@@ -319,7 +321,7 @@ const testing = std.testing;
 test "CONFIG GET single parameter" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG GET maxmemory
@@ -340,7 +342,7 @@ test "CONFIG GET single parameter" {
 test "CONFIG GET with wildcard pattern" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG GET maxmemory*
@@ -361,7 +363,7 @@ test "CONFIG GET with wildcard pattern" {
 test "CONFIG GET all parameters" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG GET *
@@ -383,7 +385,7 @@ test "CONFIG GET all parameters" {
 test "CONFIG SET valid parameter" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG SET maxmemory 1073741824
@@ -415,7 +417,7 @@ test "CONFIG SET valid parameter" {
 test "CONFIG SET read-only parameter fails" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG SET port 8080
@@ -437,7 +439,7 @@ test "CONFIG SET read-only parameter fails" {
 test "CONFIG SET invalid value fails" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG SET maxmemory not-a-number
@@ -458,7 +460,7 @@ test "CONFIG SET invalid value fails" {
 test "CONFIG SET multiple parameters" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG SET maxmemory 2048 timeout 60
@@ -494,7 +496,7 @@ test "CONFIG SET multiple parameters" {
 test "CONFIG RESETSTAT returns OK" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG RESETSTAT
@@ -512,7 +514,7 @@ test "CONFIG RESETSTAT returns OK" {
 test "CONFIG HELP returns help text" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG HELP
@@ -534,7 +536,7 @@ test "CONFIG HELP returns help text" {
 test "CONFIG with invalid subcommand" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG INVALID
@@ -553,7 +555,7 @@ test "CONFIG with invalid subcommand" {
 test "CONFIG GET case insensitive" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Build command: CONFIG GET MaxMemory
@@ -572,7 +574,7 @@ test "CONFIG GET case insensitive" {
 test "CONFIG SET boolean parameter" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Test different boolean formats
@@ -617,7 +619,7 @@ test "CONFIG SET boolean parameter" {
 test "CONFIG REWRITE creates config file" {
     const allocator = testing.allocator;
 
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Set some parameters first

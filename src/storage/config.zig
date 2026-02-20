@@ -55,7 +55,7 @@ pub const Config = struct {
     mutex: std.Thread.Mutex,
 
     /// Initialize configuration with Redis-compatible defaults
-    pub fn init(allocator: std.mem.Allocator, port: u16, bind_addr: []const u8) !*Config {
+    pub fn init(allocator: std.mem.Allocator, port: u16, bind: []const u8) !*Config {
         const config = try allocator.create(Config);
         errdefer allocator.destroy(config);
 
@@ -88,7 +88,7 @@ pub const Config = struct {
             .{ .name = "timeout", .value = .{ .int = 0 }, .read_only = false }, // 0 = no timeout
             .{ .name = "tcp-keepalive", .value = .{ .int = 300 }, .read_only = false },
             .{ .name = "port", .value = .{ .int = @as(i64, port) }, .read_only = true },
-            .{ .name = "bind", .value = .{ .string = bind_addr }, .read_only = true },
+            .{ .name = "bind", .value = .{ .string = bind }, .read_only = true },
 
             // Persistence
             .{ .name = "save", .value = .{ .string = "900 1 300 10 60 10000" }, .read_only = false },

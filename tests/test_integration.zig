@@ -3,7 +3,7 @@ const testing = std.testing;
 const net = std.net;
 
 // RESP Protocol helpers for integration testing
-const RespClient = struct {
+pub const RespClient = struct {
     allocator: std.mem.Allocator,
     stream: net.Stream,
 
@@ -49,7 +49,7 @@ const RespClient = struct {
 };
 
 // Helper to start server in background
-const TestServer = struct {
+pub const TestServer = struct {
     process: std.process.Child,
     allocator: std.mem.Allocator,
 
