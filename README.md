@@ -163,6 +163,15 @@ redis-cli -p 6379
 | FLUSHDB | `FLUSHDB` | Remove all keys from the database |
 | FLUSHALL | `FLUSHALL` | Remove all keys from all databases |
 
+### Client Connection Commands (Iteration 13)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| CLIENT ID | `CLIENT ID` | Return the current connection ID |
+| CLIENT GETNAME | `CLIENT GETNAME` | Get the current connection name |
+| CLIENT SETNAME | `CLIENT SETNAME connection-name` | Set the current connection name (no spaces allowed) |
+| CLIENT LIST | `CLIENT LIST [TYPE normal]` | List all active client connections with metadata |
+
 ### Keyspace Scanning Commands (Iteration 12)
 
 | Command | Syntax | Description |
@@ -267,7 +276,9 @@ OK
 
 ## Project Status
 
-Iterations 1–12 are complete. 22 new commands added in Iteration 12 (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands).
+Iterations 1–13 are complete.
+- Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
+- Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 
 ### Roadmap
 

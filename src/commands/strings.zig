@@ -14,6 +14,7 @@ const sorted_sets = @import("sorted_sets.zig");
 const pubsub_cmds = @import("pubsub.zig");
 const tx_mod = @import("transactions.zig");
 pub const keys_cmds = @import("keys.zig");
+const client_cmds = @import("client.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -24,6 +25,7 @@ const Storage = storage_mod.Storage;
 const Persistence = persistence_mod.Persistence;
 pub const Aof = aof_mod.Aof;
 pub const PubSub = pubsub_mod.PubSub;
+pub const ClientRegistry = client_cmds.ClientRegistry;
 
 /// Default RDB file path
 const DEFAULT_RDB_PATH = "dump.rdb";
@@ -39,6 +41,7 @@ const DEFAULT_AOF_PATH = "appendonly.aof";
 ///   Pass null to disable replication (e.g., during AOF replay or internal use).
 /// `my_port` is this server's listen port, sent to primary during REPLCONF handshake.
 /// `replica_stream` is set when this connection is from a replica performing PSYNC.
+/// `client_registry` and `client_id` are used for CLIENT commands.
 pub fn executeCommand(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -51,6 +54,8 @@ pub fn executeCommand(
     my_port: u16,
     replica_stream: ?std.net.Stream,
     replica_idx: ?usize,
+    client_registry: *ClientRegistry,
+    client_id: u64,
 ) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
@@ -137,7 +142,7 @@ pub fn executeCommand(
     } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
         return tx_mod.cmdUnwatch(allocator, tx, array);
     } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
-        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port);
+        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id);
     }
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
@@ -482,6 +487,12 @@ pub fn executeCommand(
             var w = Writer.init(allocator);
             defer w.deinit();
             return w.writeBulkString("# Replication\r\nrole:master\r\n");
+        }
+        // Client connection commands
+        else if (std.mem.eql(u8, cmd_upper, "CLIENT")) {
+            // CLIENT subcommand is in array[1]
+            const subcmd_array = array[1..];
+            break :blk try client_cmds.cmdClient(allocator, client_registry, client_id, subcmd_array);
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -554,6 +565,8 @@ fn cmdExec(
     tx: *TxState,
     repl: ?*ReplicationState,
     my_port: u16,
+    client_registry: *ClientRegistry,
+    client_id: u64,
 ) anyerror![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -605,6 +618,8 @@ fn cmdExec(
             my_port,
             null,
             null,
+            client_registry,
+            client_id,
         ) catch |err| blk: {
             var buf: [64]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "ERR command error: {any}", .{err}) catch "ERR internal error";

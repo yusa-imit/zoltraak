@@ -6,6 +6,7 @@ const storage_mod = @import("storage/memory.zig");
 const aof_mod = @import("storage/aof.zig");
 const pubsub_mod = @import("storage/pubsub.zig");
 const repl_mod = @import("storage/replication.zig");
+const client_mod = @import("commands/client.zig");
 
 const Parser = protocol.Parser;
 const Writer = writer_mod.Writer;
@@ -13,6 +14,7 @@ const Storage = storage_mod.Storage;
 const Aof = aof_mod.Aof;
 const PubSub = pubsub_mod.PubSub;
 const ReplicationState = repl_mod.ReplicationState;
+const ClientRegistry = client_mod.ClientRegistry;
 
 /// Server configuration
 pub const Config = struct {
@@ -34,6 +36,8 @@ pub const Server = struct {
     pubsub: PubSub,
     /// Replication state (always initialised; role depends on config)
     repl: ReplicationState,
+    /// Client registry for tracking active connections
+    client_registry: ClientRegistry,
     /// Monotonically increasing connection ID used as subscriber_id.
     next_subscriber_id: u64,
     running: std.atomic.Value(bool),
@@ -60,6 +64,7 @@ pub const Server = struct {
             .aof = null,
             .pubsub = PubSub.init(allocator),
             .repl = repl,
+            .client_registry = ClientRegistry.init(allocator),
             .next_subscriber_id = 1,
             .running = std.atomic.Value(bool).init(false),
         };
@@ -73,6 +78,7 @@ pub const Server = struct {
         self.storage.deinit();
         self.pubsub.deinit();
         self.repl.deinit();
+        self.client_registry.deinit();
         const allocator = self.allocator;
         allocator.destroy(self);
     }
@@ -144,6 +150,28 @@ pub const Server = struct {
 
         std.debug.print("Client connected from {any}\n", .{connection.address});
 
+        // Format address for client registry
+        var addr_buf: [256]u8 = undefined;
+        const addr_str = blk: {
+            // Extract IP and port from sockaddr_in (network byte order)
+            const in = connection.address.in;
+            // addr is in network byte order (big-endian), convert to bytes
+            const ip_bytes = @as([4]u8, @bitCast(in.sa.addr));
+            const port = @byteSwap(in.sa.port); // port is big-endian, swap to little
+            const formatted = std.fmt.bufPrint(
+                &addr_buf,
+                "{d}.{d}.{d}.{d}:{d}",
+                .{ ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3], port },
+            ) catch {
+                break :blk "unknown";
+            };
+            break :blk formatted;
+        };
+
+        // Register client connection
+        const client_id = try self.client_registry.registerClient(addr_str, connection.stream.handle);
+        defer self.client_registry.unregisterClient(client_id);
+
         // Assign a unique subscriber ID for this connection
         const subscriber_id = self.next_subscriber_id;
         self.next_subscriber_id += 1;
@@ -203,6 +231,20 @@ pub const Server = struct {
                     null;
             }
 
+            // Extract command name for client tracking
+            const cmd_name = blk: {
+                const array = switch (cmd) {
+                    .array => |arr| arr,
+                    else => break :blk "",
+                };
+                if (array.len == 0) break :blk "";
+                const name = switch (array[0]) {
+                    .bulk_string => |s| s,
+                    else => break :blk "",
+                };
+                break :blk name;
+            };
+
             // Execute command
             const response = commands.executeCommand(
                 arena_allocator,
@@ -216,12 +258,17 @@ pub const Server = struct {
                 self.config.port,
                 connection.stream,
                 this_replica_idx,
+                &self.client_registry,
+                client_id,
             ) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";
                 _ = connection.stream.write(error_response) catch break;
                 continue;
             };
+
+            // Update last command timestamp
+            self.client_registry.updateLastCommand(client_id, cmd_name);
 
             // Write command response (skip empty responses, e.g. after PSYNC which
             // already wrote directly to the stream)
