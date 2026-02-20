@@ -172,6 +172,31 @@ redis-cli -p 6379
 | CLIENT SETNAME | `CLIENT SETNAME connection-name` | Set the current connection name (no spaces allowed) |
 | CLIENT LIST | `CLIENT LIST [TYPE normal]` | List all active client connections with metadata |
 
+### Configuration Commands (Iteration 14)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| CONFIG GET | `CONFIG GET pattern [pattern ...]` | Get configuration parameters matching glob patterns |
+| CONFIG SET | `CONFIG SET parameter value [parameter value ...]` | Set configuration parameters at runtime |
+| CONFIG REWRITE | `CONFIG REWRITE` | Rewrite configuration file with current settings |
+| CONFIG RESETSTAT | `CONFIG RESETSTAT` | Reset server statistics |
+| CONFIG HELP | `CONFIG HELP` | Show CONFIG command help |
+
+**Supported Configuration Parameters:**
+
+| Parameter | Type | Default | Read-Only | Description |
+|-----------|------|---------|-----------|-------------|
+| maxmemory | integer | 0 | No | Maximum memory limit in bytes (0 = unlimited) |
+| maxmemory-policy | string | noeviction | No | Eviction policy (noeviction, allkeys-lru, volatile-lru, etc.) |
+| timeout | integer | 0 | No | Client connection timeout in seconds (0 = no timeout) |
+| tcp-keepalive | integer | 300 | No | TCP keepalive interval in seconds |
+| port | integer | 6379 | Yes | Server listen port |
+| bind | string | 127.0.0.1 | Yes | Server bind address |
+| save | string | "900 1 300 10 60 10000" | No | RDB save intervals |
+| appendonly | boolean | no | No | Enable AOF persistence |
+| appendfsync | string | everysec | No | AOF fsync mode (always, everysec, no) |
+| databases | integer | 1 | Yes | Number of databases (Zoltraak uses 1) |
+
 ### Keyspace Scanning Commands (Iteration 12)
 
 | Command | Syntax | Description |
@@ -279,6 +304,7 @@ OK
 Iterations 1–13 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
+- Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
 
 ### Roadmap
 

@@ -5286,3 +5286,223 @@ test "Replica read-only guard - write commands are rejected on replica" {
     defer testing.allocator.free(set_response);
     try testing.expectEqualStrings("+OK\r\n", set_response);
 }
+
+// ============================================================================
+// CONFIG Command Tests
+// ============================================================================
+
+test "CONFIG GET - single parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "maxmemory" });
+    defer testing.allocator.free(response);
+
+    // Response should be array with 2 elements: ["maxmemory", "0"]
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\n0\r\n") != null);
+}
+
+test "CONFIG GET - wildcard pattern" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "maxmemory*" });
+    defer testing.allocator.free(response);
+
+    // Should match maxmemory and maxmemory-policy
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory-policy") != null);
+}
+
+test "CONFIG GET - all parameters" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "*" });
+    defer testing.allocator.free(response);
+
+    // Should contain multiple parameters
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "port") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "appendonly") != null);
+}
+
+test "CONFIG SET - valid parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set maxmemory
+    const set_response = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "maxmemory", "1073741824" });
+    defer testing.allocator.free(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // Verify with GET
+    const get_response = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "maxmemory" });
+    defer testing.allocator.free(get_response);
+    try testing.expect(std.mem.indexOf(u8, get_response, "1073741824") != null);
+}
+
+test "CONFIG SET - read-only parameter fails" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "port", "8080" });
+    defer testing.allocator.free(response);
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try testing.expect(std.mem.indexOf(u8, response, "read-only") != null);
+}
+
+test "CONFIG SET - invalid value fails" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "maxmemory", "not-a-number" });
+    defer testing.allocator.free(response);
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "CONFIG SET - multiple parameters" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const set_response = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "maxmemory", "2048", "timeout", "60" });
+    defer testing.allocator.free(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // Verify both parameters
+    const get_response1 = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "maxmemory" });
+    defer testing.allocator.free(get_response1);
+    try testing.expect(std.mem.indexOf(u8, get_response1, "2048") != null);
+
+    const get_response2 = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "timeout" });
+    defer testing.allocator.free(get_response2);
+    try testing.expect(std.mem.indexOf(u8, get_response2, "60") != null);
+}
+
+test "CONFIG RESETSTAT - returns OK" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "RESETSTAT" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "CONFIG HELP - returns help text" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CONFIG", "HELP" });
+    defer testing.allocator.free(response);
+
+    // Should contain help text
+    try testing.expect(std.mem.indexOf(u8, response, "GET") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "SET") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "REWRITE") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "RESETSTAT") != null);
+}
+
+test "CONFIG - case insensitive subcommand" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "config", "get", "port" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "port") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "6379") != null);
+}
+
+test "CONFIG SET - boolean parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set with yes
+    const set_yes = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "appendonly", "yes" });
+    defer testing.allocator.free(set_yes);
+    try testing.expectEqualStrings("+OK\r\n", set_yes);
+
+    const get_yes = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "appendonly" });
+    defer testing.allocator.free(get_yes);
+    try testing.expect(std.mem.indexOf(u8, get_yes, "yes") != null);
+
+    // Set with no
+    const set_no = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "appendonly", "no" });
+    defer testing.allocator.free(set_no);
+    try testing.expectEqualStrings("+OK\r\n", set_no);
+
+    const get_no = try client.sendCommand(&[_][]const u8{ "CONFIG", "GET", "appendonly" });
+    defer testing.allocator.free(get_no);
+    try testing.expect(std.mem.indexOf(u8, get_no, "no") != null);
+}
+
+test "CONFIG REWRITE - creates config file" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set a parameter first
+    const set_response = try client.sendCommand(&[_][]const u8{ "CONFIG", "SET", "maxmemory", "4096" });
+    defer testing.allocator.free(set_response);
+
+    // Rewrite config
+    const rewrite_response = try client.sendCommand(&[_][]const u8{ "CONFIG", "REWRITE" });
+    defer testing.allocator.free(rewrite_response);
+    try testing.expectEqualStrings("+OK\r\n", rewrite_response);
+
+    // Verify file was created
+    const file = std.fs.cwd().openFile("zoltraak.conf", .{}) catch |err| {
+        std.debug.print("Failed to open config file: {}\n", .{err});
+        return err;
+    };
+    defer {
+        file.close();
+        std.fs.cwd().deleteFile("zoltraak.conf") catch {};
+    }
+
+    const content = try file.readToEndAlloc(testing.allocator, 1024 * 1024);
+    defer testing.allocator.free(content);
+
+    try testing.expect(std.mem.indexOf(u8, content, "maxmemory") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "4096") != null);
+}

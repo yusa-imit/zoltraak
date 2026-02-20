@@ -48,7 +48,7 @@ pub const Server = struct {
         const server = try allocator.create(Server);
         errdefer allocator.destroy(server);
 
-        const storage = try Storage.init(allocator);
+        const storage = try Storage.init(allocator, config.port, config.host);
         errdefer storage.deinit();
 
         // Initialise replication state based on config

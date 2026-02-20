@@ -15,6 +15,7 @@ const pubsub_cmds = @import("pubsub.zig");
 const tx_mod = @import("transactions.zig");
 pub const keys_cmds = @import("keys.zig");
 const client_cmds = @import("client.zig");
+const config_cmds = @import("config.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -493,6 +494,10 @@ pub fn executeCommand(
             // CLIENT subcommand is in array[1]
             const subcmd_array = array[1..];
             break :blk try client_cmds.cmdClient(allocator, client_registry, client_id, subcmd_array);
+        }
+        // Configuration commands
+        else if (std.mem.eql(u8, cmd_upper, "CONFIG")) {
+            break :blk try config_cmds.executeConfigCommand(allocator, storage, array);
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();

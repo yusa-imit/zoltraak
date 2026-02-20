@@ -1,4 +1,7 @@
 const std = @import("std");
+const config_mod = @import("config.zig");
+
+pub const Config = config_mod.Config;
 
 /// Type of value stored in the key-value store
 pub const ValueType = enum {
@@ -136,16 +139,22 @@ pub const Value = union(ValueType) {
 pub const Storage = struct {
     allocator: std.mem.Allocator,
     data: std.StringHashMap(Value),
+    config: *Config,
     mutex: std.Thread.Mutex,
 
     /// Initialize a new storage instance
-    pub fn init(allocator: std.mem.Allocator) !*Storage {
+    /// port and bind_addr are used to initialize runtime configuration
+    pub fn init(allocator: std.mem.Allocator, port: u16, bind_addr: []const u8) !*Storage {
         const storage = try allocator.create(Storage);
         errdefer allocator.destroy(storage);
+
+        const cfg = try Config.init(allocator, port, bind_addr);
+        errdefer cfg.deinit();
 
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
+            .config = cfg,
             .mutex = std.Thread.Mutex{},
         };
 
@@ -164,6 +173,8 @@ pub const Storage = struct {
             value.deinit(self.allocator);
         }
         self.data.deinit();
+
+        self.config.deinit();
 
         const allocator = self.allocator;
         self.mutex.unlock();
