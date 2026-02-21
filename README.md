@@ -65,7 +65,7 @@ redis-cli -p 6379
 
 ## Supported Commands
 
-### String Commands (Iteration 1)
+### String Commands (Iterations 1, 19)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -74,6 +74,22 @@ redis-cli -p 6379
 | GET | `GET key` | Get value by key |
 | DEL | `DEL key [key ...]` | Delete one or more keys |
 | EXISTS | `EXISTS key [key ...]` | Check if keys exist |
+| INCR | `INCR key` | Increment integer value by 1 |
+| DECR | `DECR key` | Decrement integer value by 1 |
+| INCRBY | `INCRBY key increment` | Increment integer value by increment |
+| DECRBY | `DECRBY key decrement` | Decrement integer value by decrement |
+| INCRBYFLOAT | `INCRBYFLOAT key increment` | Increment float value by increment |
+| APPEND | `APPEND key value` | Append value to string, returns new length |
+| STRLEN | `STRLEN key` | Get length of string value |
+| GETSET | `GETSET key value` | Set value and return old value |
+| GETDEL | `GETDEL key` | Get value and delete key |
+| GETEX | `GETEX key [EX s\|PX ms\|EXAT ts\|PXAT ts\|PERSIST]` | Get value and optionally update expiry |
+| SETNX | `SETNX key value` | Set value only if key does not exist |
+| SETEX | `SETEX key seconds value` | Set value with expiry in seconds |
+| PSETEX | `PSETEX key milliseconds value` | Set value with expiry in milliseconds |
+| MGET | `MGET key [key ...]` | Get values of multiple keys |
+| MSET | `MSET key value [key value ...]` | Set multiple keys to multiple values |
+| MSETNX | `MSETNX key value [key value ...]` | Set multiple keys only if none exist |
 
 ### List Commands (Iterations 2, 11, 18)
 
@@ -290,6 +306,28 @@ OK
 127.0.0.1:6379> DEL mykey session
 (integer) 2
 
+# String manipulation operations
+127.0.0.1:6379> SET counter "10"
+OK
+127.0.0.1:6379> INCR counter
+(integer) 11
+127.0.0.1:6379> INCRBY counter 5
+(integer) 16
+127.0.0.1:6379> DECR counter
+(integer) 15
+127.0.0.1:6379> APPEND counter "00"
+(integer) 4
+127.0.0.1:6379> GET counter
+"1500"
+127.0.0.1:6379> STRLEN counter
+(integer) 4
+127.0.0.1:6379> MSET key1 "val1" key2 "val2" key3 "val3"
+OK
+127.0.0.1:6379> MGET key1 key2 key3
+1) "val1"
+2) "val2"
+3) "val3"
+
 # List operations
 127.0.0.1:6379> RPUSH tasks "task1" "task2" "task3"
 (integer) 3
@@ -336,7 +374,7 @@ OK
 
 ## Project Status
 
-Iterations 1–18 are complete.
+Iterations 1–19 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -344,6 +382,7 @@ Iterations 1–18 are complete.
 - Iteration 16: 3 STREAM commands (XADD, XLEN, XRANGE) - basic stream data type support
 - Iteration 17: 3 additional STREAM commands (XREVRANGE, XDEL, XTRIM) - stream manipulation and maintenance
 - Iteration 18: 3 blocking list commands (BLPOP, BRPOP, BLMOVE) - immediate-return implementation for single-threaded architecture
+- Iteration 19: 16 string manipulation commands (INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETSET, GETDEL, GETEX, SETNX, SETEX, PSETEX, MGET, MSET, MSETNX) - comprehensive string operations
 
 ### Roadmap
 
