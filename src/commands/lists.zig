@@ -1737,3 +1737,322 @@ test "lists - RPOPLPUSH on missing source returns null" {
 
     try std.testing.expectEqualStrings("$-1\r\n", result);
 }
+
+// ── Blocking list commands ───────────────────────────────────────────────────
+
+/// BLPOP key [key ...] timeout
+/// Blocking version of LPOP - blocks until an element is available.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns array [key, element] or null if all lists are empty.
+pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'blpop' command");
+    }
+
+    // Last argument is timeout (we parse but ignore in this implementation)
+    const timeout_str = switch (args[args.len - 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    // Try to pop from each key in order
+    for (args[1 .. args.len - 1]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try LPOP from this key
+        const result = (try storage.lpop(allocator, key, 1)) orelse continue;
+        defer {
+            for (result) |elem| allocator.free(elem);
+            allocator.free(result);
+        }
+
+        if (result.len > 0) {
+            // Return [key, element]
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+            defer resp_values.deinit(allocator);
+
+            try resp_values.append(allocator, RespValue{ .bulk_string = key });
+            try resp_values.append(allocator, RespValue{ .bulk_string = result[0] });
+
+            return w.writeArray(resp_values.items);
+        }
+    }
+
+    // All lists empty - return null
+    return w.writeNull();
+}
+
+/// BRPOP key [key ...] timeout
+/// Blocking version of RPOP - blocks until an element is available.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns array [key, element] or null if all lists are empty.
+pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'brpop' command");
+    }
+
+    // Last argument is timeout (we parse but ignore in this implementation)
+    const timeout_str = switch (args[args.len - 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    // Try to pop from each key in order
+    for (args[1 .. args.len - 1]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try RPOP from this key
+        const result = (try storage.rpop(allocator, key, 1)) orelse continue;
+        defer {
+            for (result) |elem| allocator.free(elem);
+            allocator.free(result);
+        }
+
+        if (result.len > 0) {
+            // Return [key, element]
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+            defer resp_values.deinit(allocator);
+
+            try resp_values.append(allocator, RespValue{ .bulk_string = key });
+            try resp_values.append(allocator, RespValue{ .bulk_string = result[0] });
+
+            return w.writeArray(resp_values.items);
+        }
+    }
+
+    // All lists empty - return null
+    return w.writeNull();
+}
+
+/// BLMOVE source dest LEFT|RIGHT LEFT|RIGHT timeout
+/// Blocking version of LMOVE - blocks until an element is available.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns the moved element or null if source is empty.
+pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 6) {
+        return w.writeError("ERR wrong number of arguments for 'blmove' command");
+    }
+
+    const src = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid source key"),
+    };
+
+    const dst = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination key"),
+    };
+
+    const src_dir = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const dst_dir = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const timeout_str = switch (args[5]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    const src_left = if (std.ascii.eqlIgnoreCase(src_dir, "LEFT"))
+        true
+    else if (std.ascii.eqlIgnoreCase(src_dir, "RIGHT"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    const dst_left = if (std.ascii.eqlIgnoreCase(dst_dir, "LEFT"))
+        true
+    else if (std.ascii.eqlIgnoreCase(dst_dir, "RIGHT"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    const moved = storage.lmove(allocator, src, dst, src_left, dst_left) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer if (moved) |m| allocator.free(m);
+
+    if (moved) |elem| {
+        return w.writeBulkString(elem);
+    } else {
+        return w.writeNull();
+    }
+}
+
+// ── Unit tests for blocking list commands ────────────────────────────────────
+
+test "lists - BLPOP returns from first non-empty list" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: list2 has data, list1 is empty
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+    };
+    const sr = try cmdRpush(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLPOP" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBlpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [list2, a]
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "list2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na") != null);
+}
+
+test "lists - BLPOP on all empty lists returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLPOP" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBlpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "lists - BRPOP returns from first non-empty list" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: list2 has data
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+    };
+    const sr = try cmdRpush(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BRPOP" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBrpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [list2, b]
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "list2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb") != null);
+}
+
+test "lists - BRPOP on all empty lists returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BRPOP" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBrpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "lists - BLMOVE moves element with timeout" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "src" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+    };
+    const sr = try cmdRpush(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLMOVE" },
+        RespValue{ .bulk_string = "src" },
+        RespValue{ .bulk_string = "dst" },
+        RespValue{ .bulk_string = "LEFT" },
+        RespValue{ .bulk_string = "RIGHT" },
+        RespValue{ .bulk_string = "1.0" },
+    };
+    const result = try cmdBlmove(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$1\r\na\r\n", result);
+}
+
+test "lists - BLMOVE on empty source returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLMOVE" },
+        RespValue{ .bulk_string = "nosrc" },
+        RespValue{ .bulk_string = "dst" },
+        RespValue{ .bulk_string = "LEFT" },
+        RespValue{ .bulk_string = "LEFT" },
+        RespValue{ .bulk_string = "0.5" },
+    };
+    const result = try cmdBlmove(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}

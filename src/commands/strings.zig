@@ -115,7 +115,8 @@ pub fn executeCommand(
                 "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-                "LINSERT",    "LMOVE",      "RPOPLPUSH",
+                "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
+                "BLMOVE",
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
                 "XADD",       "XDEL",       "XTRIM",
             };
@@ -176,7 +177,8 @@ pub fn executeCommand(
             "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-            "LINSERT",    "LMOVE",      "RPOPLPUSH",
+            "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
+            "BLMOVE",
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
             "XADD",       "XDEL",       "XTRIM",
         };
@@ -305,6 +307,12 @@ pub fn executeCommand(
             break :blk try lists.cmdLmove(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "RPOPLPUSH")) {
             break :blk try lists.cmdRpoplpush(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BLPOP")) {
+            break :blk try lists.cmdBlpop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BRPOP")) {
+            break :blk try lists.cmdBrpop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BLMOVE")) {
+            break :blk try lists.cmdBlmove(allocator, storage, array);
         }
         // Set commands
         else if (std.mem.eql(u8, cmd_upper, "SADD")) {

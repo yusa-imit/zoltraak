@@ -5675,3 +5675,172 @@ test "COMMAND HELP - shows help" {
     try testing.expect(std.mem.indexOf(u8, response, "COUNT") != null);
     try testing.expect(std.mem.indexOf(u8, response, "INFO") != null);
 }
+
+// ============================================================================
+// Blocking List Command Tests (Iteration 18)
+// ============================================================================
+
+test "BLPOP - returns from first non-empty list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup: list2 has data, list1 is empty
+    const setup = try client.sendCommand(&[_][]const u8{ "RPUSH", "list2", "a", "b" });
+    defer testing.allocator.free(setup);
+
+    const response = try client.sendCommand(&[_][]const u8{ "BLPOP", "list1", "list2", "0" });
+    defer testing.allocator.free(response);
+
+    // Should return [list2, a]
+    try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "list2") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\na") != null);
+}
+
+test "BLPOP - returns null on all empty lists" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BLPOP", "list1", "list2", "0" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "BLPOP - validates timeout parameter" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BLPOP", "list1", "invalid" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "BRPOP - returns from first non-empty list" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup: list2 has data
+    const setup = try client.sendCommand(&[_][]const u8{ "RPUSH", "list2", "a", "b" });
+    defer testing.allocator.free(setup);
+
+    const response = try client.sendCommand(&[_][]const u8{ "BRPOP", "list1", "list2", "0" });
+    defer testing.allocator.free(response);
+
+    // Should return [list2, b]
+    try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "list2") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\nb") != null);
+}
+
+test "BRPOP - returns null on all empty lists" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BRPOP", "list1", "list2", "0" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "BRPOP - pops from tail" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup
+    const setup = try client.sendCommand(&[_][]const u8{ "RPUSH", "mylist", "first", "middle", "last" });
+    defer testing.allocator.free(setup);
+
+    const response = try client.sendCommand(&[_][]const u8{ "BRPOP", "mylist", "1" });
+    defer testing.allocator.free(response);
+
+    // Should return [mylist, last]
+    try testing.expect(std.mem.indexOf(u8, response, "last") != null);
+}
+
+test "BLMOVE - moves element with timeout" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const setup = try client.sendCommand(&[_][]const u8{ "RPUSH", "src", "a", "b" });
+    defer testing.allocator.free(setup);
+
+    const response = try client.sendCommand(&[_][]const u8{ "BLMOVE", "src", "dst", "LEFT", "RIGHT", "1.0" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$1\r\na\r\n", response);
+
+    // Verify dst has the element
+    const dst_check = try client.sendCommand(&[_][]const u8{ "LRANGE", "dst", "0", "-1" });
+    defer testing.allocator.free(dst_check);
+    try testing.expect(std.mem.indexOf(u8, dst_check, "$1\r\na") != null);
+}
+
+test "BLMOVE - returns null on empty source" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BLMOVE", "nosrc", "dst", "LEFT", "LEFT", "0.5" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "BLMOVE - validates direction arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BLMOVE", "src", "dst", "INVALID", "LEFT", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "BLPOP - multiple keys priority order" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Setup: both lists have data
+    const setup1 = try client.sendCommand(&[_][]const u8{ "RPUSH", "list1", "a" });
+    defer testing.allocator.free(setup1);
+    const setup2 = try client.sendCommand(&[_][]const u8{ "RPUSH", "list2", "b" });
+    defer testing.allocator.free(setup2);
+
+    // BLPOP should return from list1 first (priority order)
+    const response = try client.sendCommand(&[_][]const u8{ "BLPOP", "list1", "list2", "0" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "list1") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\na") != null);
+}

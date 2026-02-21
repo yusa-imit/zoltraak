@@ -75,7 +75,7 @@ redis-cli -p 6379
 | DEL | `DEL key [key ...]` | Delete one or more keys |
 | EXISTS | `EXISTS key [key ...]` | Check if keys exist |
 
-### List Commands (Iteration 2)
+### List Commands (Iterations 2, 11, 18)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -85,6 +85,19 @@ redis-cli -p 6379
 | RPOP | `RPOP key [count]` | Pop elements from list tail |
 | LRANGE | `LRANGE key start stop` | Get range of elements |
 | LLEN | `LLEN key` | Get list length |
+| LINDEX | `LINDEX key index` | Get element at index |
+| LSET | `LSET key index element` | Set element at index |
+| LTRIM | `LTRIM key start stop` | Trim list to range |
+| LREM | `LREM key count element` | Remove elements by value |
+| LPUSHX | `LPUSHX key element [element ...]` | Push to head if key exists |
+| RPUSHX | `RPUSHX key element [element ...]` | Push to tail if key exists |
+| LINSERT | `LINSERT key BEFORE\|AFTER pivot element` | Insert before/after pivot |
+| LPOS | `LPOS key element [RANK rank] [COUNT num] [MAXLEN len]` | Find positions of element |
+| LMOVE | `LMOVE source dest LEFT\|RIGHT LEFT\|RIGHT` | Atomically move element |
+| RPOPLPUSH | `RPOPLPUSH source dest` | Pop from tail, push to head (legacy) |
+| BLPOP | `BLPOP key [key ...] timeout` | Blocking pop from head |
+| BRPOP | `BRPOP key [key ...] timeout` | Blocking pop from tail |
+| BLMOVE | `BLMOVE source dest LEFT\|RIGHT LEFT\|RIGHT timeout` | Blocking move element |
 
 ### Set Commands (Iterations 3 + 12)
 
@@ -323,13 +336,14 @@ OK
 
 ## Project Status
 
-Iterations 1–17 are complete.
+Iterations 1–18 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
 - Iteration 15: 6 COMMAND introspection commands (COMMAND, COMMAND COUNT, COMMAND INFO, COMMAND GETKEYS, COMMAND LIST, COMMAND HELP)
 - Iteration 16: 3 STREAM commands (XADD, XLEN, XRANGE) - basic stream data type support
 - Iteration 17: 3 additional STREAM commands (XREVRANGE, XDEL, XTRIM) - stream manipulation and maintenance
+- Iteration 18: 3 blocking list commands (BLPOP, BRPOP, BLMOVE) - immediate-return implementation for single-threaded architecture
 
 ### Roadmap
 

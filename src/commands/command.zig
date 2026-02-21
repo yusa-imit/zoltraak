@@ -38,6 +38,9 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "lpos", .arity = -3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "lmove", .arity = 5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 2, .step = 1 },
     .{ .name = "rpoplpush", .arity = 3, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "blpop", .arity = -3, .flags = &.{ "write", "noscript" }, .first_key = 1, .last_key = -2, .step = 1 },
+    .{ .name = "brpop", .arity = -3, .flags = &.{ "write", "noscript" }, .first_key = 1, .last_key = -2, .step = 1 },
+    .{ .name = "blmove", .arity = 6, .flags = &.{ "write", "denyoom", "noscript" }, .first_key = 1, .last_key = 2, .step = 1 },
 
     // Set commands
     .{ .name = "sadd", .arity = -3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
