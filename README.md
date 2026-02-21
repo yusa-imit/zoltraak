@@ -114,6 +114,7 @@ redis-cli -p 6379
 | BLPOP | `BLPOP key [key ...] timeout` | Blocking pop from head |
 | BRPOP | `BRPOP key [key ...] timeout` | Blocking pop from tail |
 | BLMOVE | `BLMOVE source dest LEFT\|RIGHT LEFT\|RIGHT timeout` | Blocking move element |
+| BLMPOP | `BLMPOP timeout numkeys key [key ...] LEFT\|RIGHT [COUNT count]` | Blocking multi-pop from first non-empty list |
 
 ### Set Commands (Iterations 3 + 12)
 
@@ -316,6 +317,8 @@ redis-cli -p 6379
 | ZINCRBY | `ZINCRBY key increment member` | Increment score of member |
 | ZPOPMIN | `ZPOPMIN key [count]` | Remove and return lowest-score members |
 | ZPOPMAX | `ZPOPMAX key [count]` | Remove and return highest-score members |
+| BZPOPMIN | `BZPOPMIN key [key ...] timeout` | Blocking pop minimum from first non-empty sorted set |
+| BZPOPMAX | `BZPOPMAX key [key ...] timeout` | Blocking pop maximum from first non-empty sorted set |
 | ZRANDMEMBER | `ZRANDMEMBER key [count [WITHSCORES]]` | Return random members |
 | ZSCAN | `ZSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate sorted set members |
 
@@ -403,7 +406,7 @@ OK
 
 ## Project Status
 
-Iterations 1–21 are complete.
+Iterations 1–22 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -414,6 +417,7 @@ Iterations 1–21 are complete.
 - Iteration 19: 16 string manipulation commands (INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETSET, GETDEL, GETEX, SETNX, SETEX, PSETEX, MGET, MSET, MSETNX) - comprehensive string operations
 - Iteration 20: 4 bit operation commands (SETBIT, GETBIT, BITCOUNT, BITOP) - bitmap manipulation for efficient storage and operations
 - Iteration 21: 15 key management commands (TTL, PTTL, EXPIRETIME, PEXPIRETIME, EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST, TYPE, KEYS, RENAME, RENAMENX, RANDOMKEY, UNLINK) - comprehensive key lifecycle management
+- Iteration 22: 3 advanced blocking commands (BLMPOP, BZPOPMIN, BZPOPMAX) - blocking multi-key pop operations for lists and sorted sets
 
 ### Roadmap
 

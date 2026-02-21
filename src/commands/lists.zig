@@ -1914,6 +1914,143 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 }
 
+/// BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]
+/// Blocking version of LMPOP - pops elements from the first non-empty list.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns array [key, [elements...]] or null if all lists are empty.
+pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'blmpop' command");
+    }
+
+    // Parse timeout
+    const timeout_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    // Parse numkeys
+    const numkeys_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys is not an integer or out of range"),
+    };
+    const numkeys = std.fmt.parseInt(i64, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys is not an integer or out of range");
+    };
+    if (numkeys <= 0) {
+        return w.writeError("ERR numkeys should be greater than 0");
+    }
+
+    const numkeys_usize = @as(usize, @intCast(numkeys));
+    if (args.len < 3 + numkeys_usize + 1) {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Parse direction (LEFT or RIGHT)
+    const direction_idx = 3 + numkeys_usize;
+    const direction = switch (args[direction_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const pop_left = if (std.mem.eql(u8, direction, "LEFT"))
+        true
+    else if (std.mem.eql(u8, direction, "RIGHT"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    // Parse optional COUNT
+    var count: usize = 1;
+    if (args.len > direction_idx + 1) {
+        if (args.len < direction_idx + 3) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_keyword = switch (args[direction_idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (!std.mem.eql(u8, count_keyword, "COUNT")) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_str = switch (args[direction_idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR count is not an integer or out of range"),
+        };
+        const count_i64 = std.fmt.parseInt(i64, count_str, 10) catch {
+            return w.writeError("ERR count is not an integer or out of range");
+        };
+        if (count_i64 <= 0) {
+            return w.writeError("ERR count should be greater than 0");
+        }
+        count = @as(usize, @intCast(count_i64));
+    }
+
+    // Try to pop from each key in order
+    for (args[3 .. 3 + numkeys_usize]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try popping from this key
+        const result = if (pop_left)
+            (try storage.lpop(allocator, key, count)) orelse continue
+        else
+            (try storage.rpop(allocator, key, count)) orelse continue;
+
+        defer {
+            for (result) |elem| allocator.free(elem);
+            allocator.free(result);
+        }
+
+        if (result.len > 0) {
+            // Return [key, [elements...]]
+            var elements = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
+            defer elements.deinit(allocator);
+            for (result) |elem| {
+                try elements.append(allocator, RespValue{ .bulk_string = elem });
+            }
+
+            var outer = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+            defer outer.deinit(allocator);
+            try outer.append(allocator, RespValue{ .bulk_string = key });
+
+            // Build array response for elements
+            var inner_buf = std.ArrayList(u8){};
+            defer inner_buf.deinit(allocator);
+            const inner_writer = inner_buf.writer(allocator);
+            try inner_writer.print("*{d}\r\n", .{elements.items.len});
+            for (elements.items) |elem| {
+                const bs = switch (elem) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+                try inner_writer.print("${d}\r\n{s}\r\n", .{ bs.len, bs });
+            }
+
+            const inner_str = try inner_buf.toOwnedSlice(allocator);
+            defer allocator.free(inner_str);
+
+            // Manually build response: *2\r\n$<keylen>\r\n<key>\r\n<inner>
+            var resp_buf = std.ArrayList(u8){};
+            defer resp_buf.deinit(allocator);
+            const resp_writer = resp_buf.writer(allocator);
+            try resp_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, inner_str });
+            return resp_buf.toOwnedSlice(allocator);
+        }
+    }
+
+    // All lists empty - return null
+    return w.writeNull();
+}
+
 // ── Unit tests for blocking list commands ────────────────────────────────────
 
 test "lists - BLPOP returns from first non-empty list" {
@@ -2052,6 +2189,97 @@ test "lists - BLMOVE on empty source returns null" {
         RespValue{ .bulk_string = "0.5" },
     };
     const result = try cmdBlmove(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "lists - BLMPOP pops from first non-empty list with LEFT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: list2 has data
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    const sr = try cmdRpush(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLMPOP" },
+        RespValue{ .bulk_string = "0" }, // timeout
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "LEFT" },
+        RespValue{ .bulk_string = "COUNT" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdBlmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [list2, [a, b]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "list2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb") != null);
+}
+
+test "lists - BLMPOP pops from first non-empty list with RIGHT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: list2 has data
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    const sr = try cmdRpush(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLMPOP" },
+        RespValue{ .bulk_string = "0" }, // timeout
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "RIGHT" },
+        RespValue{ .bulk_string = "COUNT" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdBlmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [list2, [c, b]] (from the right)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "list2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb") != null);
+}
+
+test "lists - BLMPOP on all empty lists returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLMPOP" },
+        RespValue{ .bulk_string = "0" }, // timeout
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "LEFT" },
+    };
+    const result = try cmdBlmpop(allocator, storage, &args);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);

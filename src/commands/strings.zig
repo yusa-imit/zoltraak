@@ -117,8 +117,9 @@ pub fn executeCommand(
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-                "BLMOVE",
-                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
+                "BLMOVE",     "BLMPOP",
+                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
+                "BZPOPMAX",   "SETRANGE",
                 "SETBIT",     "BITOP",
                 "XADD",       "XDEL",       "XTRIM",
             };
@@ -180,8 +181,9 @@ pub fn executeCommand(
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-            "BLMOVE",
-            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
+            "BLMOVE",     "BLMPOP",
+            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
+            "BZPOPMAX",   "SETRANGE",
             "SETBIT",     "BITOP",
             "XADD",       "XDEL",       "XTRIM",
         };
@@ -316,6 +318,8 @@ pub fn executeCommand(
             break :blk try lists.cmdBrpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BLMOVE")) {
             break :blk try lists.cmdBlmove(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BLMPOP")) {
+            break :blk try lists.cmdBlmpop(allocator, storage, array);
         }
         // Set commands
         else if (std.mem.eql(u8, cmd_upper, "SADD")) {
@@ -418,6 +422,10 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZpopmin(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZPOPMAX")) {
             break :blk try sorted_sets.cmdZpopmax(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BZPOPMIN")) {
+            break :blk try sorted_sets.cmdBzpopmin(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BZPOPMAX")) {
+            break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
             break :blk try sorted_sets.cmdZmscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGE")) {

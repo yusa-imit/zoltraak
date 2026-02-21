@@ -1620,3 +1620,218 @@ test "cmdZcount - exclusive bounds" {
 
     try std.testing.expectEqualStrings(":2\r\n", response);
 }
+
+/// BZPOPMIN key [key ...] timeout
+/// Blocking version of ZPOPMIN - pops lowest-score member from first non-empty sorted set.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns array [key, member, score] or null if all sorted sets are empty.
+pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'bzpopmin' command");
+    }
+
+    // Last argument is timeout (we parse but ignore in this implementation)
+    const timeout_str = switch (args[args.len - 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    // Try to pop from each key in order
+    for (args[1 .. args.len - 1]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try ZPOPMIN from this key
+        const popped = storage.zpopmin(allocator, key, 1) catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        };
+
+        if (popped) |members| {
+            defer {
+                for (members) |sm| allocator.free(sm.member);
+                allocator.free(members);
+            }
+
+            if (members.len > 0) {
+                // Return [key, member, score]
+                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
+                defer resp_values.deinit(allocator);
+
+                try resp_values.append(allocator, RespValue{ .bulk_string = key });
+                try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
+
+                var score_buf: [64]u8 = undefined;
+                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
+                const owned_score = try allocator.dupe(u8, score_str);
+                defer allocator.free(owned_score);
+
+                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+
+                return w.writeArray(resp_values.items);
+            }
+        }
+    }
+
+    // All sorted sets empty - return null
+    return w.writeNull();
+}
+
+/// BZPOPMAX key [key ...] timeout
+/// Blocking version of ZPOPMAX - pops highest-score member from first non-empty sorted set.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns array [key, member, score] or null if all sorted sets are empty.
+pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'bzpopmax' command");
+    }
+
+    // Last argument is timeout (we parse but ignore in this implementation)
+    const timeout_str = switch (args[args.len - 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    // Try to pop from each key in order
+    for (args[1 .. args.len - 1]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try ZPOPMAX from this key
+        const popped = storage.zpopmax(allocator, key, 1) catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        };
+
+        if (popped) |members| {
+            defer {
+                for (members) |sm| allocator.free(sm.member);
+                allocator.free(members);
+            }
+
+            if (members.len > 0) {
+                // Return [key, member, score]
+                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
+                defer resp_values.deinit(allocator);
+
+                try resp_values.append(allocator, RespValue{ .bulk_string = key });
+                try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
+
+                var score_buf: [64]u8 = undefined;
+                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
+                const owned_score = try allocator.dupe(u8, score_str);
+                defer allocator.free(owned_score);
+
+                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+
+                return w.writeArray(resp_values.items);
+            }
+        }
+    }
+
+    // All sorted sets empty - return null
+    return w.writeNull();
+}
+
+// ── Unit tests for blocking sorted set commands ──────────────────────────────
+
+test "sorted_sets - BZPOPMIN returns from first non-empty sorted set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: zset2 has data
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "b" },
+    };
+    const sr = try cmdZadd(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BZPOPMIN" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBzpopmin(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [zset2, a, 1]
+    try std.testing.expect(std.mem.indexOf(u8, result, "*3\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "zset2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na") != null);
+}
+
+test "sorted_sets - BZPOPMAX returns from first non-empty sorted set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: zset2 has data
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "b" },
+    };
+    const sr = try cmdZadd(allocator, storage, &setup);
+    defer allocator.free(sr);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BZPOPMAX" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBzpopmax(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [zset2, b, 2]
+    try std.testing.expect(std.mem.indexOf(u8, result, "*3\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "zset2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb") != null);
+}
+
+test "sorted_sets - BZPOPMIN on all empty sorted sets returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BZPOPMIN" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBzpopmin(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
