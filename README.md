@@ -277,6 +277,26 @@ redis-cli -p 6379
 | BITCOUNT | `BITCOUNT key [start end]` | Count set bits in string (optionally within byte range) |
 | BITOP | `BITOP operation destkey key [key ...]` | Perform bitwise operation (AND, OR, XOR, NOT) between strings |
 
+### Key Management Commands (Iteration 21)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| TTL | `TTL key` | Get time-to-live in seconds (-2 if key doesn't exist, -1 if no expiry) |
+| PTTL | `PTTL key` | Get time-to-live in milliseconds |
+| EXPIRETIME | `EXPIRETIME key` | Get absolute Unix timestamp (seconds) when key will expire |
+| PEXPIRETIME | `PEXPIRETIME key` | Get absolute Unix timestamp (milliseconds) when key will expire |
+| EXPIRE | `EXPIRE key seconds [NX\|XX\|GT\|LT]` | Set expiry in seconds from now |
+| PEXPIRE | `PEXPIRE key milliseconds [NX\|XX\|GT\|LT]` | Set expiry in milliseconds from now |
+| EXPIREAT | `EXPIREAT key unix-time-seconds [NX\|XX\|GT\|LT]` | Set expiry at absolute Unix timestamp (seconds) |
+| PEXPIREAT | `PEXPIREAT key unix-time-ms [NX\|XX\|GT\|LT]` | Set expiry at absolute Unix timestamp (milliseconds) |
+| PERSIST | `PERSIST key` | Remove expiry from key (returns 1 if removed, 0 otherwise) |
+| TYPE | `TYPE key` | Get the type of value stored at key (string, list, set, hash, zset, stream, or none) |
+| KEYS | `KEYS pattern` | Find all keys matching glob pattern (use with caution in production) |
+| RENAME | `RENAME key newkey` | Rename a key (overwrites newkey if exists) |
+| RENAMENX | `RENAMENX key newkey` | Rename key only if newkey doesn't exist |
+| RANDOMKEY | `RANDOMKEY` | Return a random key from the keyspace |
+| UNLINK | `UNLINK key [key ...]` | Delete keys (async deletion, currently same as DEL) |
+
 ### Sorted Set Commands (Iterations 5, 11, 12)
 
 | Command | Syntax | Description |
@@ -383,7 +403,7 @@ OK
 
 ## Project Status
 
-Iterations 1–20 are complete.
+Iterations 1–21 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -393,6 +413,7 @@ Iterations 1–20 are complete.
 - Iteration 18: 3 blocking list commands (BLPOP, BRPOP, BLMOVE) - immediate-return implementation for single-threaded architecture
 - Iteration 19: 16 string manipulation commands (INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETSET, GETDEL, GETEX, SETNX, SETEX, PSETEX, MGET, MSET, MSETNX) - comprehensive string operations
 - Iteration 20: 4 bit operation commands (SETBIT, GETBIT, BITCOUNT, BITOP) - bitmap manipulation for efficient storage and operations
+- Iteration 21: 15 key management commands (TTL, PTTL, EXPIRETIME, PEXPIRETIME, EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST, TYPE, KEYS, RENAME, RENAMENX, RANDOMKEY, UNLINK) - comprehensive key lifecycle management
 
 ### Roadmap
 
