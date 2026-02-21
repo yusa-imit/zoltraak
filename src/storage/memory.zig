@@ -4028,6 +4028,295 @@ pub const Storage = struct {
         return required_len;
     }
 
+    // ── Bit operations ────────────────────────────────────────────────────────
+
+    /// Set bit at offset to value (0 or 1)
+    /// Returns the original bit value at that position
+    pub fn setbit(
+        self: *Storage,
+        key: []const u8,
+        offset: usize,
+        value: u1,
+    ) error{ WrongType, OutOfMemory }!u1 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const byte_offset = offset / 8;
+        const bit_offset: u3 = @intCast(offset % 8);
+        const required_len = byte_offset + 1;
+
+        if (self.data.getEntry(key)) |entry| {
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = entry.key_ptr.*;
+                var old_value = entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                old_value.deinit(self.allocator);
+                // Fall through to create new
+            } else {
+                switch (entry.value_ptr.*) {
+                    .string => |*sv| {
+                        // Expand if necessary
+                        if (sv.data.len < required_len) {
+                            const new_buf = try self.allocator.alloc(u8, required_len);
+                            @memcpy(new_buf[0..sv.data.len], sv.data);
+                            @memset(new_buf[sv.data.len..], 0);
+                            self.allocator.free(sv.data);
+                            sv.data = new_buf;
+                        }
+
+                        // Get original bit value
+                        const byte = sv.data[byte_offset];
+                        const original_bit: u1 = @intCast((byte >> (7 - bit_offset)) & 1);
+
+                        // Set new bit value
+                        const new_byte = if (value == 1)
+                            byte | (@as(u8, 1) << (7 - bit_offset))
+                        else
+                            byte & ~(@as(u8, 1) << (7 - bit_offset));
+
+                        // Modify in place (cast away const)
+                        const mutable_data: []u8 = @constCast(sv.data);
+                        mutable_data[byte_offset] = new_byte;
+
+                        return original_bit;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        // Key doesn't exist: create zero-padded string
+        const new_buf = try self.allocator.alloc(u8, required_len);
+        errdefer self.allocator.free(new_buf);
+        @memset(new_buf, 0);
+
+        // Set the bit
+        if (value == 1) {
+            new_buf[byte_offset] = @as(u8, 1) << (7 - bit_offset);
+        }
+
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+        try self.data.put(owned_key, Value{
+            .string = .{ .data = new_buf, .expires_at = null },
+        });
+        return 0; // Original bit was 0
+    }
+
+    /// Get bit at offset (returns 0 or 1)
+    pub fn getbit(
+        self: *Storage,
+        key: []const u8,
+        offset: usize,
+    ) error{WrongType}!u1 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const byte_offset = offset / 8;
+        const bit_offset: u3 = @intCast(offset % 8);
+
+        if (self.data.get(key)) |value| {
+            if (value.isExpired(getCurrentTimestamp())) {
+                return 0;
+            }
+
+            switch (value) {
+                .string => |sv| {
+                    if (byte_offset >= sv.data.len) {
+                        return 0;
+                    }
+                    const byte = sv.data[byte_offset];
+                    return @intCast((byte >> (7 - bit_offset)) & 1);
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        return 0; // Key doesn't exist
+    }
+
+    /// Count set bits (population count) in string
+    pub fn bitcount(
+        self: *Storage,
+        key: []const u8,
+        start: ?i64,
+        end: ?i64,
+    ) error{WrongType}!i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.data.get(key)) |value| {
+            if (value.isExpired(getCurrentTimestamp())) {
+                return 0;
+            }
+
+            switch (value) {
+                .string => |sv| {
+                    if (sv.data.len == 0) return 0;
+
+                    const len: i64 = @intCast(sv.data.len);
+                    const start_idx = if (start) |s| blk: {
+                        const idx = if (s < 0) len + s else s;
+                        break :blk @max(0, @min(idx, len - 1));
+                    } else 0;
+                    const end_idx = if (end) |e| blk: {
+                        const idx = if (e < 0) len + e else e;
+                        break :blk @max(0, @min(idx, len - 1));
+                    } else len - 1;
+
+                    if (start_idx > end_idx) return 0;
+
+                    var count: i64 = 0;
+                    const start_u: usize = @intCast(start_idx);
+                    const end_u: usize = @intCast(end_idx);
+                    for (sv.data[start_u .. end_u + 1]) |byte| {
+                        count += @popCount(byte);
+                    }
+                    return count;
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        return 0; // Key doesn't exist
+    }
+
+    pub const BitOp = enum {
+        AND,
+        OR,
+        XOR,
+        NOT,
+    };
+
+    /// Perform bitwise operation between strings
+    /// Returns the length of the result string
+    pub fn bitop(
+        self: *Storage,
+        operation: BitOp,
+        destkey: []const u8,
+        srckeys: []const []const u8,
+    ) error{ WrongType, OutOfMemory }!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+
+        // Collect source string data
+        var max_len: usize = 0;
+        var src_data = try self.allocator.alloc(?[]const u8, srckeys.len);
+        defer self.allocator.free(src_data);
+
+        for (srckeys, 0..) |srckey, i| {
+            if (self.data.get(srckey)) |value| {
+                if (value.isExpired(now)) {
+                    src_data[i] = null;
+                } else {
+                    switch (value) {
+                        .string => |sv| {
+                            src_data[i] = sv.data;
+                            max_len = @max(max_len, sv.data.len);
+                        },
+                        else => return error.WrongType,
+                    }
+                }
+            } else {
+                src_data[i] = null;
+            }
+        }
+
+        // Allocate result buffer
+        const result_len = if (operation == .NOT) blk: {
+            if (srckeys.len != 1) return error.WrongType;
+            break :blk if (src_data[0]) |data| data.len else 0;
+        } else max_len;
+
+        const result = try self.allocator.alloc(u8, result_len);
+        errdefer self.allocator.free(result);
+        @memset(result, 0);
+
+        // Perform operation
+        switch (operation) {
+            .AND => {
+                if (srckeys.len == 0) {
+                    // No sources: result is empty
+                } else {
+                    @memset(result, 0xFF); // Start with all 1s
+                    for (src_data) |src_opt| {
+                        if (src_opt) |src| {
+                            for (result, 0..) |*dest_byte, i| {
+                                if (i < src.len) {
+                                    dest_byte.* &= src[i];
+                                } else {
+                                    dest_byte.* = 0;
+                                }
+                            }
+                        } else {
+                            @memset(result, 0); // Missing key = all zeros
+                            break;
+                        }
+                    }
+                }
+            },
+            .OR => {
+                for (src_data) |src_opt| {
+                    if (src_opt) |src| {
+                        for (result, 0..) |*dest_byte, i| {
+                            if (i < src.len) {
+                                dest_byte.* |= src[i];
+                            }
+                        }
+                    }
+                }
+            },
+            .XOR => {
+                for (src_data) |src_opt| {
+                    if (src_opt) |src| {
+                        for (result, 0..) |*dest_byte, i| {
+                            if (i < src.len) {
+                                dest_byte.* ^= src[i];
+                            }
+                        }
+                    }
+                }
+            },
+            .NOT => {
+                if (src_data[0]) |src| {
+                    for (result, 0..) |*dest_byte, i| {
+                        dest_byte.* = ~src[i];
+                    }
+                }
+            },
+        }
+
+        // Store result
+        if (self.data.getEntry(destkey)) |entry| {
+            if (entry.value_ptr.isExpired(now)) {
+                const owned_key = entry.key_ptr.*;
+                var old_value = entry.value_ptr.*;
+                _ = self.data.remove(destkey);
+                self.allocator.free(owned_key);
+                old_value.deinit(self.allocator);
+            } else {
+                var old_value = entry.value_ptr.*;
+                old_value.deinit(self.allocator);
+                entry.value_ptr.* = Value{
+                    .string = .{ .data = result, .expires_at = null },
+                };
+                return result_len;
+            }
+        }
+
+        // Create new entry
+        const owned_key = try self.allocator.dupe(u8, destkey);
+        errdefer self.allocator.free(owned_key);
+        try self.data.put(owned_key, Value{
+            .string = .{ .data = result, .expires_at = null },
+        });
+
+        return result_len;
+    }
+
     // ── Stream operations ─────────────────────────────────────────────────────
 
     /// Add entry to stream with auto-generated or explicit ID.

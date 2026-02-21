@@ -21,6 +21,12 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "getrange", .arity = 4, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "setrange", .arity = 4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
 
+    // Bit operations
+    .{ .name = "setbit", .arity = 4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "getbit", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "bitcount", .arity = -2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "bitop", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 3, .last_key = -1, .step = 1 },
+
     // List commands
     .{ .name = "lpush", .arity = -3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "rpush", .arity = -3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },

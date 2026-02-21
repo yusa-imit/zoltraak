@@ -18,6 +18,7 @@ pub const keys_cmds = @import("keys.zig");
 const client_cmds = @import("client.zig");
 const config_cmds = @import("config.zig");
 const command_cmds = @import("command.zig");
+const bits_cmds = @import("bits.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -118,6 +119,7 @@ pub fn executeCommand(
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
                 "BLMOVE",
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
+                "SETBIT",     "BITOP",
                 "XADD",       "XDEL",       "XTRIM",
             };
             var is_write = false;
@@ -180,6 +182,7 @@ pub fn executeCommand(
             "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
             "BLMOVE",
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "SETRANGE",
+            "SETBIT",     "BITOP",
             "XADD",       "XDEL",       "XTRIM",
         };
         for (write_cmds) |wc| {
@@ -424,11 +427,21 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "ZRANDMEMBER")) {
             break :blk try sorted_sets.cmdZrandmember(allocator, storage, array);
         }
-        // String range commands (new)
+        // String range commands
         else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {
             break :blk try cmdGetrange(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SETRANGE")) {
             break :blk try cmdSetrange(allocator, storage, array);
+        }
+        // Bit operations
+        else if (std.mem.eql(u8, cmd_upper, "SETBIT")) {
+            break :blk try cmdSetbit(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GETBIT")) {
+            break :blk try cmdGetbit(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BITCOUNT")) {
+            break :blk try cmdBitcount(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BITOP")) {
+            break :blk try cmdBitop(allocator, storage, array);
         }
         // Stream commands
         else if (std.mem.eql(u8, cmd_upper, "XADD")) {
@@ -2138,6 +2151,183 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     };
 
     return w.writeInteger(@intCast(new_len));
+}
+
+// ── Bit operations ────────────────────────────────────────────────────────
+
+pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'setbit' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const offset_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR bit offset is not an integer or out of range"),
+    };
+    const value_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR bit is not an integer or out of range"),
+    };
+
+    const offset = std.fmt.parseInt(usize, offset_str, 10) catch {
+        return w.writeError("ERR bit offset is not an integer or out of range");
+    };
+
+    const value_int = std.fmt.parseInt(u8, value_str, 10) catch {
+        return w.writeError("ERR bit is not an integer or out of range");
+    };
+
+    if (value_int > 1) {
+        return w.writeError("ERR bit is not an integer or out of range");
+    }
+
+    const value: u1 = @intCast(value_int);
+
+    const original_bit = storage.setbit(key, offset, value) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(original_bit);
+}
+
+pub fn cmdGetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'getbit' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+    const offset_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR bit offset is not an integer or out of range"),
+    };
+
+    const offset = std.fmt.parseInt(usize, offset_str, 10) catch {
+        return w.writeError("ERR bit offset is not an integer or out of range");
+    };
+
+    const bit = storage.getbit(key, offset) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(bit);
+}
+
+pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2 and args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'bitcount' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const start: ?i64 = if (args.len == 4) blk: {
+        const start_str = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        break :blk std.fmt.parseInt(i64, start_str, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+    } else null;
+
+    const end: ?i64 = if (args.len == 4) blk: {
+        const end_str = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+        break :blk std.fmt.parseInt(i64, end_str, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+    } else null;
+
+    const count = storage.bitcount(key, start, end) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(count);
+}
+
+pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'bitop' command");
+    }
+
+    const op_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const operation: Storage.BitOp = if (std.ascii.eqlIgnoreCase(op_str, "AND"))
+        .AND
+    else if (std.ascii.eqlIgnoreCase(op_str, "OR"))
+        .OR
+    else if (std.ascii.eqlIgnoreCase(op_str, "XOR"))
+        .XOR
+    else if (std.ascii.eqlIgnoreCase(op_str, "NOT"))
+        .NOT
+    else {
+        return w.writeError("ERR syntax error");
+    };
+
+    const destkey = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Extract source keys
+    var srckeys = std.ArrayList([]const u8){};
+    defer srckeys.deinit(allocator);
+
+    for (args[3..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try srckeys.append(allocator, key);
+    }
+
+    if (operation == .NOT and srckeys.items.len != 1) {
+        return w.writeError("ERR BITOP NOT must be called with a single source key");
+    }
+
+    const result_len = storage.bitop(operation, destkey, srckeys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(result_len));
 }
 
 // ── New command unit tests ─────────────────────────────────────────────────

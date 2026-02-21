@@ -268,6 +268,15 @@ redis-cli -p 6379
 | GETRANGE | `GETRANGE key start end` | Get substring of string value (alias: SUBSTR) |
 | SETRANGE | `SETRANGE key offset value` | Overwrite bytes at offset, returns new length |
 
+### Bit Operations (Iteration 20)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| SETBIT | `SETBIT key offset value` | Set or clear the bit at offset (0 or 1), returns original bit value |
+| GETBIT | `GETBIT key offset` | Returns the bit value at offset |
+| BITCOUNT | `BITCOUNT key [start end]` | Count set bits in string (optionally within byte range) |
+| BITOP | `BITOP operation destkey key [key ...]` | Perform bitwise operation (AND, OR, XOR, NOT) between strings |
+
 ### Sorted Set Commands (Iterations 5, 11, 12)
 
 | Command | Syntax | Description |
@@ -374,7 +383,7 @@ OK
 
 ## Project Status
 
-Iterations 1–19 are complete.
+Iterations 1–20 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -383,6 +392,7 @@ Iterations 1–19 are complete.
 - Iteration 17: 3 additional STREAM commands (XREVRANGE, XDEL, XTRIM) - stream manipulation and maintenance
 - Iteration 18: 3 blocking list commands (BLPOP, BRPOP, BLMOVE) - immediate-return implementation for single-threaded architecture
 - Iteration 19: 16 string manipulation commands (INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETSET, GETDEL, GETEX, SETNX, SETEX, PSETEX, MGET, MSET, MSETNX) - comprehensive string operations
+- Iteration 20: 4 bit operation commands (SETBIT, GETBIT, BITCOUNT, BITOP) - bitmap manipulation for efficient storage and operations
 
 ### Roadmap
 

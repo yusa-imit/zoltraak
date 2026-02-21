@@ -5844,3 +5844,211 @@ test "BLPOP - multiple keys priority order" {
     try testing.expect(std.mem.indexOf(u8, response, "list1") != null);
     try testing.expect(std.mem.indexOf(u8, response, "$1\r\na") != null);
 }
+
+// ── Bit Operations Tests ──────────────────────────────────────────────────
+
+test "SETBIT - set and get bit" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set bit 7 to 1
+    const r1 = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "7", "1" });
+    defer testing.allocator.free(r1);
+    try testing.expectEqualStrings(":0\r\n", r1);
+
+    // Get bit 7
+    const r2 = try client.sendCommand(&[_][]const u8{ "GETBIT", "mykey", "7" });
+    defer testing.allocator.free(r2);
+    try testing.expectEqualStrings(":1\r\n", r2);
+
+    // Get bit 0
+    const r3 = try client.sendCommand(&[_][]const u8{ "GETBIT", "mykey", "0" });
+    defer testing.allocator.free(r3);
+    try testing.expectEqualStrings(":0\r\n", r3);
+}
+
+test "SETBIT - toggle bit" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set bit to 1
+    const r1 = try client.sendCommand(&[_][]const u8{ "SETBIT", "toggle", "0", "1" });
+    defer testing.allocator.free(r1);
+    try testing.expectEqualStrings(":0\r\n", r1);
+
+    // Set bit to 0 (returns previous value 1)
+    const r2 = try client.sendCommand(&[_][]const u8{ "SETBIT", "toggle", "0", "0" });
+    defer testing.allocator.free(r2);
+    try testing.expectEqualStrings(":1\r\n", r2);
+}
+
+test "GETBIT - nonexistent key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "GETBIT", "nonexistent", "100" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "BITCOUNT - count set bits" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set some bits
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "bits", "0", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "bits", "1", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "bits", "8", "1" });
+
+    // Count all bits
+    const response = try client.sendCommand(&[_][]const u8{ "BITCOUNT", "bits" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "BITCOUNT - with range" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set string value
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "mykey", "foo" });
+
+    // Count bits in first byte
+    const response = try client.sendCommand(&[_][]const u8{ "BITCOUNT", "mykey", "0", "0" });
+    defer testing.allocator.free(response);
+
+    // 'f' = 0x66 = 0110 0110 = 4 bits set
+    try testing.expectEqualStrings(":4\r\n", response);
+}
+
+test "BITOP AND - basic operation" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key1", "foo" });
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key2", "bar" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITOP", "AND", "dest", "key1", "key2" });
+    defer testing.allocator.free(response);
+
+    // Result length should be 3
+    try testing.expectEqualStrings(":3\r\n", response);
+
+    // Verify result exists
+    const r2 = try client.sendCommand(&[_][]const u8{ "GET", "dest" });
+    defer testing.allocator.free(r2);
+    try testing.expect(std.mem.startsWith(u8, r2, "$"));
+}
+
+test "BITOP OR - basic operation" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key1", "foo" });
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key2", "bar" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITOP", "OR", "dest", "key1", "key2" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "BITOP XOR - basic operation" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key1", "foo" });
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key2", "bar" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITOP", "XOR", "dest", "key1", "key2" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "BITOP NOT - basic operation" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key1", "foo" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITOP", "NOT", "dest", "key1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "BITOP NOT - requires single source key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key1", "foo" });
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key2", "bar" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITOP", "NOT", "dest", "key1", "key2" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "SETBIT - wrong type error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a list
+    _ = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "a" });
+
+    // Try SETBIT on list
+    const response = try client.sendCommand(&[_][]const u8{ "SETBIT", "mylist", "0", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
+}
+
+test "BITCOUNT - empty string" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "empty", "" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITCOUNT", "empty" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}
