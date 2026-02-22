@@ -238,7 +238,7 @@ redis-cli -p 6379
 | COMMAND LIST | `COMMAND LIST [FILTERBY <filter>]` | List command names (supports pattern: filter) |
 | COMMAND HELP | `COMMAND HELP` | Show COMMAND command help |
 
-### Stream Commands (Iterations 16–17)
+### Stream Commands (Iterations 16–17, 24)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -248,6 +248,12 @@ redis-cli -p 6379
 | XREVRANGE | `XREVRANGE key start end [COUNT count]` | Query range in reverse order (use `+` for max, `-` for min) |
 | XDEL | `XDEL key ID [ID ...]` | Remove specific entries from stream by ID |
 | XTRIM | `XTRIM key MAXLEN [~] count` | Trim stream to approximately maxlen entries |
+| XREAD | `XREAD [COUNT count] [BLOCK ms] STREAMS key [key ...] id [id ...]` | Read entries from one or more streams ($ = only new messages) |
+| XGROUP CREATE | `XGROUP CREATE key groupname <id \| $> [MKSTREAM]` | Create a consumer group |
+| XGROUP DESTROY | `XGROUP DESTROY key groupname` | Destroy a consumer group |
+| XGROUP SETID | `XGROUP SETID key groupname <id \| $>` | Set consumer group's last delivered ID |
+| XREADGROUP | `XREADGROUP GROUP group consumer [COUNT count] [BLOCK ms] [NOACK] STREAMS key [key ...] id [id ...]` | Read entries from streams using consumer groups (> = new messages) |
+| XACK | `XACK key groupname id [id ...]` | Acknowledge processing of messages in a consumer group |
 
 ### Keyspace Scanning Commands (Iteration 12)
 
@@ -416,7 +422,7 @@ OK
 
 ## Project Status
 
-Iterations 1–23 are complete.
+Iterations 1–24 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -429,6 +435,7 @@ Iterations 1–23 are complete.
 - Iteration 21: 15 key management commands (TTL, PTTL, EXPIRETIME, PEXPIRETIME, EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST, TYPE, KEYS, RENAME, RENAMENX, RANDOMKEY, UNLINK) - comprehensive key lifecycle management
 - Iteration 22: 3 advanced blocking commands (BLMPOP, BZPOPMIN, BZPOPMAX) - blocking multi-key pop operations for lists and sorted sets
 - Iteration 23: 5 advanced key commands (DUMP, RESTORE, COPY, TOUCH, MOVE) - key serialization, copying, and migration support
+- Iteration 24: 6 advanced stream commands (XREAD, XGROUP CREATE/DESTROY/SETID, XREADGROUP, XACK) - consumer groups and advanced stream consumption patterns
 
 ### Roadmap
 

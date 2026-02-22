@@ -136,6 +136,7 @@ pub const Value = union(ValueType) {
             return a.seq < b.seq;
         }
 
+        /// Check if two stream IDs are equal
         pub fn equals(a: StreamId, b: StreamId) bool {
             return a.ms == b.ms and a.seq == b.seq;
         }
@@ -160,18 +161,71 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// Pending entry in a consumer group
+    pub const PendingEntry = struct {
+        id: StreamId,
+        consumer: []const u8,
+        delivery_time: i64, // Unix timestamp in ms
+        delivery_count: u64,
+
+        pub fn deinit(self: *PendingEntry, allocator: std.mem.Allocator) void {
+            allocator.free(self.consumer);
+        }
+    };
+
+    /// Consumer in a consumer group
+    pub const Consumer = struct {
+        name: []const u8,
+        pending: std.ArrayList(StreamId), // IDs of messages pending acknowledgment
+
+        pub fn deinit(self: *Consumer, allocator: std.mem.Allocator) void {
+            allocator.free(self.name);
+            self.pending.deinit(allocator);
+        }
+    };
+
+    /// Consumer group for stream
+    pub const ConsumerGroup = struct {
+        name: []const u8,
+        last_delivered_id: StreamId, // Last ID delivered to any consumer
+        consumers: std.StringHashMap(Consumer), // consumer_name -> Consumer
+        pending: std.ArrayList(PendingEntry), // All pending entries across all consumers
+
+        pub fn deinit(self: *ConsumerGroup, allocator: std.mem.Allocator) void {
+            allocator.free(self.name);
+            var it = self.consumers.valueIterator();
+            while (it.next()) |consumer| {
+                var copy = consumer.*;
+                copy.deinit(allocator);
+            }
+            self.consumers.deinit();
+            for (self.pending.items) |*entry| {
+                entry.deinit(allocator);
+            }
+            self.pending.deinit(allocator);
+        }
+    };
+
     /// Stream value with optional expiration
     /// Ordered log of entries with unique IDs
     pub const StreamValue = struct {
         entries: std.ArrayList(StreamEntry),
         last_id: ?StreamId,
         expires_at: ?i64,
+        consumer_groups: std.StringHashMap(ConsumerGroup), // group_name -> ConsumerGroup
 
         pub fn deinit(self: *StreamValue, allocator: std.mem.Allocator) void {
             for (self.entries.items) |*entry| {
                 entry.deinit(allocator);
             }
             self.entries.deinit(allocator);
+
+            var it = self.consumer_groups.valueIterator();
+            while (it.next()) |group| {
+                var copy = group.*;
+                copy.deinit(allocator);
+            }
+            self.consumer_groups.deinit();
         }
     };
 
@@ -3458,7 +3512,12 @@ pub const Storage = struct {
                     last_id = entries.items[entries.items.len - 1].id;
                 }
 
-                value = Value{ .stream = .{ .entries = entries, .last_id = last_id, .expires_at = expires_at } };
+                value = Value{ .stream = .{
+                    .entries = entries,
+                    .last_id = last_id,
+                    .expires_at = expires_at,
+                    .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                } };
             },
             else => return error.UnknownDumpType,
         }
@@ -3609,7 +3668,12 @@ pub const Storage = struct {
                     });
                 }
 
-                break :blk Value{ .stream = .{ .entries = entries_copy, .last_id = st.last_id, .expires_at = st.expires_at } };
+                break :blk Value{ .stream = .{
+                    .entries = entries_copy,
+                    .last_id = st.last_id,
+                    .expires_at = st.expires_at,
+                    .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                } };
             },
         };
     }
@@ -4805,6 +4869,7 @@ pub const Storage = struct {
                     .entries = std.ArrayList(Value.StreamEntry){},
                     .last_id = null,
                     .expires_at = expires_at,
+                    .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                 },
             };
         } else {
@@ -4817,6 +4882,7 @@ pub const Storage = struct {
                         .entries = std.ArrayList(Value.StreamEntry){},
                         .last_id = null,
                         .expires_at = expires_at,
+                        .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                     },
                 };
             }
@@ -5102,6 +5168,267 @@ pub const Storage = struct {
                 }
 
                 return to_delete;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Create a consumer group for a stream
+    pub fn xgroupCreate(
+        self: *Storage,
+        key: []const u8,
+        group_name: []const u8,
+        id_str: []const u8,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                // Check if group already exists
+                if (stream_val.consumer_groups.contains(group_name)) {
+                    return error.GroupExists;
+                }
+
+                // Parse starting ID
+                const starting_id = if (std.mem.eql(u8, id_str, "$"))
+                    stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 }
+                else if (std.mem.eql(u8, id_str, "0"))
+                    Value.StreamId{ .ms = 0, .seq = 0 }
+                else
+                    try Value.StreamId.parse(id_str, null);
+
+                // Create consumer group
+                const owned_name = try self.allocator.dupe(u8, group_name);
+                errdefer self.allocator.free(owned_name);
+
+                try stream_val.consumer_groups.put(owned_name, Value.ConsumerGroup{
+                    .name = owned_name,
+                    .last_delivered_id = starting_id,
+                    .consumers = std.StringHashMap(Value.Consumer).init(self.allocator),
+                    .pending = std.ArrayList(Value.PendingEntry){},
+                });
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Destroy a consumer group
+    pub fn xgroupDestroy(
+        self: *Storage,
+        key: []const u8,
+        group_name: []const u8,
+    ) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return false;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return false;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                if (stream_val.consumer_groups.fetchRemove(group_name)) |kv| {
+                    var group = kv.value;
+                    group.deinit(self.allocator);
+                    return true;
+                }
+                return false;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Set the last delivered ID for a consumer group
+    pub fn xgroupSetId(
+        self: *Storage,
+        key: []const u8,
+        group_name: []const u8,
+        id_str: []const u8,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                const new_id = if (std.mem.eql(u8, id_str, "$"))
+                    stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 }
+                else
+                    try Value.StreamId.parse(id_str, null);
+
+                group_ptr.last_delivered_id = new_id;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Read from a stream for a consumer group
+    pub fn xreadgroup(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        group_name: []const u8,
+        consumer_name: []const u8,
+        key: []const u8,
+        id_str: []const u8,
+        count: ?usize,
+        noack: bool,
+    ) !?std.ArrayList(Value.StreamEntry) {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                // Get or create consumer
+                const consumer_entry = try group_ptr.consumers.getOrPut(consumer_name);
+                if (!consumer_entry.found_existing) {
+                    const owned_consumer_name = try self.allocator.dupe(u8, consumer_name);
+                    consumer_entry.key_ptr.* = owned_consumer_name;
+                    consumer_entry.value_ptr.* = Value.Consumer{
+                        .name = owned_consumer_name,
+                        .pending = std.ArrayList(Value.StreamId){},
+                    };
+                }
+
+                // Determine starting ID
+                const start_id = if (std.mem.eql(u8, id_str, ">")) blk: {
+                    // Read new messages (greater than last delivered)
+                    break :blk group_ptr.last_delivered_id;
+                } else if (std.mem.eql(u8, id_str, "0") or std.mem.eql(u8, id_str, "0-0")) {
+                    // Read pending messages for this consumer
+                    // For now, we'll return an empty list as pending message delivery is complex
+                    return std.ArrayList(Value.StreamEntry){};
+                } else blk: {
+                    break :blk try Value.StreamId.parse(id_str, null);
+                };
+
+                // Collect entries
+                var result = std.ArrayList(Value.StreamEntry){};
+                errdefer result.deinit(allocator);
+
+                var collected: usize = 0;
+                for (stream_val.entries.items) |*entry_item| {
+                    if (count) |max| {
+                        if (collected >= max) break;
+                    }
+
+                    if (entry_item.id.lessThan(start_id) or entry_item.id.equals(start_id)) {
+                        continue;
+                    }
+
+                    // Clone entry
+                    var cloned_fields = std.ArrayList([]const u8){};
+                    for (entry_item.fields.items) |field| {
+                        const owned_field = try allocator.dupe(u8, field);
+                        try cloned_fields.append(allocator, owned_field);
+                    }
+
+                    try result.append(allocator, Value.StreamEntry{
+                        .id = entry_item.id,
+                        .fields = cloned_fields,
+                    });
+
+                    collected += 1;
+
+                    // Update last delivered ID
+                    group_ptr.last_delivered_id = entry_item.id;
+
+                    // Add to pending unless NOACK
+                    if (!noack) {
+                        try consumer_entry.value_ptr.pending.append(self.allocator, entry_item.id);
+                        try group_ptr.pending.append(self.allocator, Value.PendingEntry{
+                            .id = entry_item.id,
+                            .consumer = try self.allocator.dupe(u8, consumer_name),
+                            .delivery_time = std.time.milliTimestamp(),
+                            .delivery_count = 1,
+                        });
+                    }
+                }
+
+                if (result.items.len == 0) {
+                    result.deinit(allocator);
+                    return null;
+                }
+
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Acknowledge messages in a consumer group
+    pub fn xack(
+        self: *Storage,
+        key: []const u8,
+        group_name: []const u8,
+        ids: []const []const u8,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return 0;
+
+                var acked: usize = 0;
+
+                for (ids) |id_str| {
+                    const id = Value.StreamId.parse(id_str, null) catch continue;
+
+                    // Find and remove from pending list
+                    var i: usize = 0;
+                    while (i < group_ptr.pending.items.len) : (i += 1) {
+                        if (group_ptr.pending.items[i].id.equals(id)) {
+                            var removed = group_ptr.pending.orderedRemove(i);
+                            removed.deinit(self.allocator);
+
+                            // Also remove from consumer's pending list
+                            if (group_ptr.consumers.getPtr(removed.consumer)) |consumer_ptr| {
+                                var j: usize = 0;
+                                while (j < consumer_ptr.pending.items.len) : (j += 1) {
+                                    if (consumer_ptr.pending.items[j].equals(id)) {
+                                        _ = consumer_ptr.pending.orderedRemove(j);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            acked += 1;
+                            break;
+                        }
+                    }
+                }
+
+                return acked;
             },
             else => return error.WrongType,
         }

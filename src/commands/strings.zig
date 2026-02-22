@@ -12,6 +12,7 @@ const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
 const sorted_sets = @import("sorted_sets.zig");
 const streams = @import("streams.zig");
+const streams_adv = @import("streams_advanced.zig");
 const pubsub_cmds = @import("pubsub.zig");
 const tx_mod = @import("transactions.zig");
 pub const keys_cmds = @import("keys.zig");
@@ -122,7 +123,7 @@ pub fn executeCommand(
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
                 "BZPOPMAX",   "SETRANGE",
                 "SETBIT",     "BITOP",
-                "XADD",       "XDEL",       "XTRIM",
+                "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -187,7 +188,7 @@ pub fn executeCommand(
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
             "BZPOPMAX",   "SETRANGE",
             "SETBIT",     "BITOP",
-            "XADD",       "XDEL",       "XTRIM",
+            "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -476,6 +477,14 @@ pub fn executeCommand(
             break :blk try streams.cmdXdel(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XTRIM")) {
             break :blk try streams.cmdXtrim(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XGROUP")) {
+            break :blk try streams_adv.cmdXgroup(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XREAD")) {
+            break :blk try streams_adv.cmdXread(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XREADGROUP")) {
+            break :blk try streams_adv.cmdXreadgroup(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XACK")) {
+            break :blk try streams_adv.cmdXack(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {
