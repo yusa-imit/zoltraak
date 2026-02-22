@@ -554,3 +554,211 @@ test "UNLINK - deletes keys" {
     try testing.expect(store.get("key1") == null);
     try testing.expect(store.get("key2") == null);
 }
+
+// ── DUMP/RESTORE/COPY/TOUCH/MOVE integration tests ──────────────────────────
+
+test "DUMP - serializes string value" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("mykey", "hello world", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "DUMP" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try keys_cmds.cmdDump(allocator, store, &args);
+    defer allocator.free(result);
+
+    // Should return a bulk string with serialized data
+    try testing.expect(result[0] == '$');
+    try testing.expect(result.len > 10); // Should have some data
+}
+
+test "DUMP - returns null for non-existent key" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "DUMP" },
+        .{ .bulk_string = "nosuchkey" },
+    };
+    const result = try keys_cmds.cmdDump(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "RESTORE - deserializes value" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    // First dump a value
+    try store.set("source", "test value", null);
+    const dump = (try store.dumpValue(allocator, "source")).?;
+    defer allocator.free(dump);
+
+    // Restore to new key
+    const args = [_]RespValue{
+        .{ .bulk_string = "RESTORE" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "0" }, // No TTL
+        .{ .bulk_string = dump },
+    };
+    const result = try keys_cmds.cmdRestore(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings("+OK\r\n", result);
+
+    // Verify restored value
+    const value = store.get("dest").?;
+    try testing.expectEqualStrings("test value", value);
+}
+
+test "RESTORE - with REPLACE option" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("source", "new value", null);
+    try store.set("dest", "old value", null);
+
+    const dump = (try store.dumpValue(allocator, "source")).?;
+    defer allocator.free(dump);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "RESTORE" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = dump },
+        .{ .bulk_string = "REPLACE" },
+    };
+    const result = try keys_cmds.cmdRestore(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings("+OK\r\n", result);
+
+    const value = store.get("dest").?;
+    try testing.expectEqualStrings("new value", value);
+}
+
+test "RESTORE - fails without REPLACE" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("source", "value", null);
+    try store.set("dest", "existing", null);
+
+    const dump = (try store.dumpValue(allocator, "source")).?;
+    defer allocator.free(dump);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "RESTORE" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = dump },
+    };
+    const result = try keys_cmds.cmdRestore(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expect(result[0] == '-'); // Error
+}
+
+test "COPY - copies key" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("source", "value", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+    };
+    const result = try keys_cmds.cmdCopy(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings(":1\r\n", result);
+
+    // Verify both keys exist
+    try testing.expectEqualStrings("value", store.get("source").?);
+    try testing.expectEqualStrings("value", store.get("dest").?);
+}
+
+test "COPY - returns 0 if destination exists" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("source", "src_val", null);
+    try store.set("dest", "dest_val", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+    };
+    const result = try keys_cmds.cmdCopy(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings(":0\r\n", result);
+
+    // Destination unchanged
+    try testing.expectEqualStrings("dest_val", store.get("dest").?);
+}
+
+test "COPY - with REPLACE overwrites" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("source", "new", null);
+    try store.set("dest", "old", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "REPLACE" },
+    };
+    const result = try keys_cmds.cmdCopy(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings(":1\r\n", result);
+
+    try testing.expectEqualStrings("new", store.get("dest").?);
+}
+
+test "TOUCH - counts existing keys" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("key1", "a", null);
+    try store.set("key2", "b", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "TOUCH" },
+        .{ .bulk_string = "key1" },
+        .{ .bulk_string = "key2" },
+        .{ .bulk_string = "key3" }, // doesn't exist
+    };
+    const result = try keys_cmds.cmdTouch(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "MOVE - always returns 0 (single DB)" {
+    const allocator = testing.allocator;
+    const store = try Storage.init(allocator);
+    defer store.deinit();
+
+    try store.set("mykey", "value", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "MOVE" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "1" }, // DB index
+    };
+    const result = try keys_cmds.cmdMove(allocator, store, &args);
+    defer allocator.free(result);
+    try testing.expectEqualStrings(":0\r\n", result);
+}

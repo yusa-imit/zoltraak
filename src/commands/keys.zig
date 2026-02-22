@@ -347,6 +347,200 @@ pub fn cmdUnlink(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     return w.writeInteger(@intCast(deleted_count));
 }
 
+/// DUMP key
+/// Serialize the value stored at key in RDB format.
+/// Returns the serialized value or nil if the key doesn't exist.
+pub fn cmdDump(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'dump' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const serialized = try storage.dumpValue(allocator, key);
+    if (serialized) |data| {
+        defer allocator.free(data);
+        return w.writeBulkString(data);
+    } else {
+        return w.writeNull();
+    }
+}
+
+/// RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]
+/// Create a key associated with a value that is obtained via DUMP.
+/// ttl: time-to-live in milliseconds, 0 means no expiry
+/// REPLACE: replace existing key
+/// ABSTTL: ttl is absolute Unix timestamp (not implemented)
+pub fn cmdRestore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'restore' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const ttl_ms = switch (args[2]) {
+        .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
+            return w.writeError("ERR invalid TTL");
+        },
+        else => return w.writeError("ERR invalid TTL"),
+    };
+
+    const serialized = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid serialized value"),
+    };
+
+    // Parse options
+    var replace = false;
+    var i: usize = 4;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.ascii.eqlIgnoreCase(opt, "REPLACE")) {
+            replace = true;
+        } else if (std.ascii.eqlIgnoreCase(opt, "ABSTTL") or
+            std.ascii.eqlIgnoreCase(opt, "IDLETIME") or
+            std.ascii.eqlIgnoreCase(opt, "FREQ"))
+        {
+            // Skip unsupported options and their values
+            if (std.ascii.eqlIgnoreCase(opt, "IDLETIME") or std.ascii.eqlIgnoreCase(opt, "FREQ")) {
+                i += 1; // skip the value
+            }
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    storage.restoreValue(key, serialized, ttl_ms, replace) catch |err| {
+        return switch (err) {
+            error.KeyAlreadyExists => w.writeError("BUSYKEY Target key name already exists"),
+            error.InvalidDumpPayload, error.DumpChecksumMismatch, error.UnknownDumpType => w.writeError("ERR DUMP payload version or checksum are wrong"),
+            else => w.writeError("ERR restore failed"),
+        };
+    };
+
+    return w.writeSimpleString("OK");
+}
+
+/// COPY source destination [DB destination-db] [REPLACE]
+/// Copy a key to a new key.
+/// Returns 1 if source was copied, 0 if not (e.g., destination exists).
+pub fn cmdCopy(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'copy' command");
+    }
+
+    const source = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid source key"),
+    };
+
+    const destination = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination key"),
+    };
+
+    // Parse options
+    var replace = false;
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.ascii.eqlIgnoreCase(opt, "REPLACE")) {
+            replace = true;
+        } else if (std.ascii.eqlIgnoreCase(opt, "DB")) {
+            i += 1; // skip DB value (we only have 1 database)
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            // Ignore DB parameter since we're single-DB
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const success = storage.copyKey(source, destination, replace) catch |err| {
+        return switch (err) {
+            error.NoSuchKey => w.writeInteger(0),
+            else => w.writeError("ERR copy failed"),
+        };
+    };
+
+    return w.writeInteger(if (success) 1 else 0);
+}
+
+/// TOUCH key [key ...]
+/// Alters the last access time of a key(s).
+/// Returns the number of keys that were touched.
+pub fn cmdTouch(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'touch' command");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, args.len - 1);
+    defer keys.deinit(allocator);
+
+    for (args[1..]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.touch(keys.items);
+    return w.writeInteger(@intCast(count));
+}
+
+/// MOVE key db
+/// Move a key to another database (stub - Zoltraak uses single DB).
+/// Always returns 0 since we don't support multiple databases.
+pub fn cmdMove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    _ = storage;
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'move' command");
+    }
+
+    // Just validate arguments but always return 0
+    _ = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    _ = switch (args[2]) {
+        .bulk_string => |s| std.fmt.parseInt(i32, s, 10) catch {
+            return w.writeError("ERR invalid DB index");
+        },
+        else => return w.writeError("ERR invalid DB index"),
+    };
+
+    // Zoltraak uses single database - always return 0
+    return w.writeInteger(0);
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Shared implementation for EXPIRE and PEXPIRE.

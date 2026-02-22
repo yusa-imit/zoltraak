@@ -3173,6 +3173,468 @@ pub const Storage = struct {
         return true;
     }
 
+    // ── Advanced key commands ────────────────────────────────────────────────
+
+    /// Serialize a single value to RDB format (for DUMP command).
+    /// Returns owned byte slice that caller must free.
+    /// Returns null if key doesn't exist or is expired.
+    pub fn dumpValue(self: *Storage, allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.get(key) orelse return null;
+        const now = getCurrentTimestamp();
+        if (entry.isExpired(now)) return null;
+
+        // Use the persistence module's RDB serialization format
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+
+        const w = buf.writer(allocator);
+
+        // Write type byte
+        const type_byte: u8 = switch (entry) {
+            .string => 0x00, // RDB_TYPE_STRING
+            .list => 0x01, // RDB_TYPE_LIST
+            .set => 0x02, // RDB_TYPE_SET
+            .hash => 0x04, // RDB_TYPE_HASH
+            .sorted_set => 0x03, // RDB_TYPE_SORTED_SET
+            .stream => 0xFE, // Stream type
+        };
+        try w.writeByte(type_byte);
+
+        // Write expiration if present
+        const expires_at = entry.getExpiration();
+        if (expires_at) |exp| {
+            try w.writeByte(1);
+            try w.writeInt(i64, exp, .little);
+        } else {
+            try w.writeByte(0);
+        }
+
+        // Write value data
+        switch (entry) {
+            .string => |s| {
+                try writeBlob(w, s.data);
+            },
+            .list => |l| {
+                try w.writeInt(u32, @intCast(l.data.items.len), .little);
+                for (l.data.items) |elem| try writeBlob(w, elem);
+            },
+            .set => |s| {
+                try w.writeInt(u32, @intCast(s.data.count()), .little);
+                var kit = s.data.keyIterator();
+                while (kit.next()) |k| try writeBlob(w, k.*);
+            },
+            .hash => |h| {
+                try w.writeInt(u32, @intCast(h.data.count()), .little);
+                var hit = h.data.iterator();
+                while (hit.next()) |e| {
+                    try writeBlob(w, e.key_ptr.*);
+                    try writeBlob(w, e.value_ptr.*);
+                }
+            },
+            .sorted_set => |z| {
+                try w.writeInt(u32, @intCast(z.sorted_list.items.len), .little);
+                for (z.sorted_list.items) |scored| {
+                    const score_bits = @as(u64, @bitCast(scored.score));
+                    try w.writeInt(u64, score_bits, .little);
+                    try writeBlob(w, scored.member);
+                }
+            },
+            .stream => |st| {
+                try w.writeInt(u32, @intCast(st.entries.items.len), .little);
+                for (st.entries.items) |e| {
+                    try w.writeInt(i64, e.id.ms, .little);
+                    try w.writeInt(u64, e.id.seq, .little);
+                    // Fields are stored as flat array [field1, value1, field2, value2, ...]
+                    try w.writeInt(u32, @intCast(e.fields.items.len), .little);
+                    for (e.fields.items) |field_or_value| {
+                        try writeBlob(w, field_or_value);
+                    }
+                }
+            },
+        }
+
+        // Add CRC32 checksum
+        const crc = std.hash.Crc32.hash(buf.items);
+        var crc_bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &crc_bytes, crc, .little);
+        try buf.appendSlice(allocator, &crc_bytes);
+
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    /// Deserialize and restore a value from RDB format (for RESTORE command).
+    /// ttl_ms: 0 = no expiration, >0 = expiration in milliseconds from now
+    /// replace: if true, overwrite existing key; if false, fail if key exists
+    pub fn restoreValue(self: *Storage, key: []const u8, serialized: []const u8, ttl_ms: i64, replace: bool) !void {
+        if (serialized.len < 6) return error.InvalidDumpPayload; // type + exp_flag + crc (min)
+
+        // Verify checksum
+        const payload = serialized[0 .. serialized.len - 4];
+        const stored_crc = std.mem.readInt(u32, serialized[serialized.len - 4 ..][0..4], .little);
+        const computed_crc = std.hash.Crc32.hash(payload);
+        if (stored_crc != computed_crc) return error.DumpChecksumMismatch;
+
+        var pos: usize = 0;
+
+        // Read type
+        const type_byte = payload[pos];
+        pos += 1;
+
+        // Read expiration flag
+        const has_expiration = payload[pos];
+        pos += 1;
+
+        var expires_at: ?i64 = null;
+        if (has_expiration == 1) {
+            if (payload.len < pos + 8) return error.InvalidDumpPayload;
+            expires_at = std.mem.readInt(i64, payload[pos..][0..8], .little);
+            pos += 8;
+        }
+
+        // Override with ttl_ms if provided
+        if (ttl_ms > 0) {
+            expires_at = getCurrentTimestamp() + ttl_ms;
+        } else if (ttl_ms == 0) {
+            expires_at = null;
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Check if key exists
+        if (!replace) {
+            if (self.data.get(key)) |existing| {
+                const now = getCurrentTimestamp();
+                if (!existing.isExpired(now)) return error.KeyAlreadyExists;
+            }
+        }
+
+        // Parse and create value based on type
+        var value: Value = undefined;
+
+        switch (type_byte) {
+            0x00 => { // String
+                const data = try readBlob(payload, &pos, self.allocator);
+                value = Value{ .string = .{ .data = data, .expires_at = expires_at } };
+            },
+            0x01 => { // List
+                if (payload.len < pos + 4) return error.InvalidDumpPayload;
+                const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                pos += 4;
+
+                var list = std.ArrayList([]const u8){};
+                errdefer {
+                    for (list.items) |elem| self.allocator.free(elem);
+                    list.deinit(self.allocator);
+                }
+
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    const elem = try readBlob(payload, &pos, self.allocator);
+                    try list.append(self.allocator, elem);
+                }
+
+                value = Value{ .list = .{ .data = list, .expires_at = expires_at } };
+            },
+            0x02 => { // Set
+                if (payload.len < pos + 4) return error.InvalidDumpPayload;
+                const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                pos += 4;
+
+                var set_data = std.StringHashMap(void).init(self.allocator);
+                errdefer {
+                    var it = set_data.keyIterator();
+                    while (it.next()) |k| self.allocator.free(k.*);
+                    set_data.deinit();
+                }
+
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    const member = try readBlob(payload, &pos, self.allocator);
+                    try set_data.put(member, {});
+                }
+
+                value = Value{ .set = .{ .data = set_data, .expires_at = expires_at } };
+            },
+            0x04 => { // Hash
+                if (payload.len < pos + 4) return error.InvalidDumpPayload;
+                const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                pos += 4;
+
+                var hash = std.StringHashMap([]const u8).init(self.allocator);
+                errdefer {
+                    var it = hash.iterator();
+                    while (it.next()) |e| {
+                        self.allocator.free(e.key_ptr.*);
+                        self.allocator.free(e.value_ptr.*);
+                    }
+                    hash.deinit();
+                }
+
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    const field = try readBlob(payload, &pos, self.allocator);
+                    const val = try readBlob(payload, &pos, self.allocator);
+                    try hash.put(field, val);
+                }
+
+                value = Value{ .hash = .{ .data = hash, .expires_at = expires_at } };
+            },
+            0x03 => { // Sorted Set
+                if (payload.len < pos + 4) return error.InvalidDumpPayload;
+                const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                pos += 4;
+
+                var members = std.StringHashMap(f64).init(self.allocator);
+                var sorted_list = std.ArrayList(Value.ScoredMember){};
+
+                errdefer {
+                    var it = members.keyIterator();
+                    while (it.next()) |k| self.allocator.free(k.*);
+                    members.deinit();
+                    sorted_list.deinit(self.allocator);
+                }
+
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    if (payload.len < pos + 8) return error.InvalidDumpPayload;
+                    const score_bits = std.mem.readInt(u64, payload[pos..][0..8], .little);
+                    const score = @as(f64, @bitCast(score_bits));
+                    pos += 8;
+
+                    const member = try readBlob(payload, &pos, self.allocator);
+                    try members.put(member, score);
+                    try sorted_list.append(self.allocator, .{ .score = score, .member = member });
+                }
+
+                value = Value{ .sorted_set = .{ .members = members, .sorted_list = sorted_list, .expires_at = expires_at } };
+            },
+            0xFE => { // Stream
+                if (payload.len < pos + 4) return error.InvalidDumpPayload;
+                const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                pos += 4;
+
+                var entries = std.ArrayList(Value.StreamEntry){};
+                errdefer {
+                    for (entries.items) |*e| e.deinit(self.allocator);
+                    entries.deinit(self.allocator);
+                }
+
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    if (payload.len < pos + 16) return error.InvalidDumpPayload;
+                    const ms = std.mem.readInt(i64, payload[pos..][0..8], .little);
+                    pos += 8;
+                    const seq = std.mem.readInt(u64, payload[pos..][0..8], .little);
+                    pos += 8;
+
+                    if (payload.len < pos + 4) return error.InvalidDumpPayload;
+                    const items_count = std.mem.readInt(u32, payload[pos..][0..4], .little);
+                    pos += 4;
+
+                    var fields = std.ArrayList([]const u8){};
+                    errdefer {
+                        for (fields.items) |item| self.allocator.free(item);
+                        fields.deinit(self.allocator);
+                    }
+
+                    var j: u32 = 0;
+                    while (j < items_count) : (j += 1) {
+                        const item = try readBlob(payload, &pos, self.allocator);
+                        try fields.append(self.allocator, item);
+                    }
+
+                    try entries.append(self.allocator, .{
+                        .id = .{ .ms = ms, .seq = seq },
+                        .fields = fields,
+                    });
+                }
+
+                var last_id: ?Value.StreamId = null;
+                if (entries.items.len > 0) {
+                    last_id = entries.items[entries.items.len - 1].id;
+                }
+
+                value = Value{ .stream = .{ .entries = entries, .last_id = last_id, .expires_at = expires_at } };
+            },
+            else => return error.UnknownDumpType,
+        }
+
+        // Remove old value if exists
+        if (self.data.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+            var old_value = kv.value;
+            old_value.deinit(self.allocator);
+        }
+
+        // Insert new value
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+        try self.data.put(owned_key, value);
+    }
+
+    /// Copy a key to a new key (for COPY command).
+    /// replace: if true, overwrite destination; if false, fail if destination exists.
+    /// Returns true if copy succeeded, false if destination exists and replace=false.
+    pub fn copyKey(self: *Storage, source: []const u8, destination: []const u8, replace: bool) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Check source exists and is not expired
+        const src_entry = self.data.get(source) orelse return error.NoSuchKey;
+        const now = getCurrentTimestamp();
+        if (src_entry.isExpired(now)) return error.NoSuchKey;
+
+        // Check destination
+        if (!replace) {
+            if (self.data.get(destination)) |dst| {
+                if (!dst.isExpired(now)) return false;
+            }
+        }
+
+        // Deep copy the value
+        var copied_value = try self.deepCopyValue(src_entry);
+        errdefer copied_value.deinit(self.allocator);
+
+        // Remove old destination if exists
+        if (self.data.fetchRemove(destination)) |kv| {
+            self.allocator.free(kv.key);
+            var old_value = kv.value;
+            old_value.deinit(self.allocator);
+        }
+
+        // Insert copied value
+        const owned_dest = try self.allocator.dupe(u8, destination);
+        errdefer self.allocator.free(owned_dest);
+        try self.data.put(owned_dest, copied_value);
+
+        return true;
+    }
+
+    /// Deep copy a Value (helper for COPY command)
+    fn deepCopyValue(self: *Storage, value: Value) !Value {
+        return switch (value) {
+            .string => |s| blk: {
+                const data_copy = try self.allocator.dupe(u8, s.data);
+                break :blk Value{ .string = .{ .data = data_copy, .expires_at = s.expires_at } };
+            },
+            .list => |l| blk: {
+                var list_copy = std.ArrayList([]const u8){};
+                errdefer {
+                    for (list_copy.items) |elem| self.allocator.free(elem);
+                    list_copy.deinit(self.allocator);
+                }
+                for (l.data.items) |elem| {
+                    const elem_copy = try self.allocator.dupe(u8, elem);
+                    try list_copy.append(self.allocator, elem_copy);
+                }
+                break :blk Value{ .list = .{ .data = list_copy, .expires_at = l.expires_at } };
+            },
+            .set => |s| blk: {
+                var set_copy = std.StringHashMap(void).init(self.allocator);
+                errdefer {
+                    var it = set_copy.keyIterator();
+                    while (it.next()) |k| self.allocator.free(k.*);
+                    set_copy.deinit();
+                }
+                var it = s.data.keyIterator();
+                while (it.next()) |k| {
+                    const key_copy = try self.allocator.dupe(u8, k.*);
+                    try set_copy.put(key_copy, {});
+                }
+                break :blk Value{ .set = .{ .data = set_copy, .expires_at = s.expires_at } };
+            },
+            .hash => |h| blk: {
+                var hash_copy = std.StringHashMap([]const u8).init(self.allocator);
+                errdefer {
+                    var it = hash_copy.iterator();
+                    while (it.next()) |e| {
+                        self.allocator.free(e.key_ptr.*);
+                        self.allocator.free(e.value_ptr.*);
+                    }
+                    hash_copy.deinit();
+                }
+                var it = h.data.iterator();
+                while (it.next()) |e| {
+                    const field_copy = try self.allocator.dupe(u8, e.key_ptr.*);
+                    const val_copy = try self.allocator.dupe(u8, e.value_ptr.*);
+                    try hash_copy.put(field_copy, val_copy);
+                }
+                break :blk Value{ .hash = .{ .data = hash_copy, .expires_at = h.expires_at } };
+            },
+            .sorted_set => |z| blk: {
+                var members_copy = std.StringHashMap(f64).init(self.allocator);
+                var sorted_list_copy = std.ArrayList(Value.ScoredMember){};
+
+                errdefer {
+                    var it = members_copy.keyIterator();
+                    while (it.next()) |k| self.allocator.free(k.*);
+                    members_copy.deinit();
+                    sorted_list_copy.deinit(self.allocator);
+                }
+
+                for (z.sorted_list.items) |scored| {
+                    const member_copy = try self.allocator.dupe(u8, scored.member);
+                    try members_copy.put(member_copy, scored.score);
+                    try sorted_list_copy.append(self.allocator, .{ .score = scored.score, .member = member_copy });
+                }
+
+                break :blk Value{ .sorted_set = .{ .members = members_copy, .sorted_list = sorted_list_copy, .expires_at = z.expires_at } };
+            },
+            .stream => |st| blk: {
+                var entries_copy = std.ArrayList(Value.StreamEntry){};
+                errdefer {
+                    for (entries_copy.items) |*e| e.deinit(self.allocator);
+                    entries_copy.deinit(self.allocator);
+                }
+
+                for (st.entries.items) |e| {
+                    var fields_copy = std.ArrayList([]const u8){};
+                    errdefer {
+                        for (fields_copy.items) |item| self.allocator.free(item);
+                        fields_copy.deinit(self.allocator);
+                    }
+
+                    for (e.fields.items) |item| {
+                        const item_copy = try self.allocator.dupe(u8, item);
+                        try fields_copy.append(self.allocator, item_copy);
+                    }
+
+                    try entries_copy.append(self.allocator, .{
+                        .id = e.id,
+                        .fields = fields_copy,
+                    });
+                }
+
+                break :blk Value{ .stream = .{ .entries = entries_copy, .last_id = st.last_id, .expires_at = st.expires_at } };
+            },
+        };
+    }
+
+    /// Touch one or more keys (update last access time - currently a stub).
+    /// Returns count of existing non-expired keys touched.
+    pub fn touch(self: *Storage, keys: []const []const u8) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+        var count: usize = 0;
+
+        for (keys) |key| {
+            if (self.data.get(key)) |value| {
+                if (!value.isExpired(now)) {
+                    count += 1;
+                    // In a full implementation, we'd update an access timestamp here
+                }
+            }
+        }
+
+        return count;
+    }
+
     // ── Key listing ──────────────────────────────────────────────────────────
 
     /// Return all non-expired keys matching the glob pattern.
@@ -6246,4 +6708,176 @@ test "storage - getType returns stream type" {
     _ = try storage.xadd("mystream", "*", &fields, null);
 
     try std.testing.expectEqual(ValueType.stream, storage.getType("mystream").?);
+}
+
+// ── Helper functions for DUMP/RESTORE serialization ─────────────────────────
+
+/// Write a length-prefixed blob
+fn writeBlob(w: anytype, data: []const u8) !void {
+    try w.writeInt(u32, @intCast(data.len), .little);
+    try w.writeAll(data);
+}
+
+/// Read a length-prefixed blob; caller owns returned memory
+fn readBlob(data: []const u8, pos: *usize, allocator: std.mem.Allocator) ![]u8 {
+    if (pos.* + 4 > data.len) return error.InvalidDumpPayload;
+    const len = std.mem.readInt(u32, data[pos.*..][0..4], .little);
+    pos.* += 4;
+    if (pos.* + len > data.len) return error.InvalidDumpPayload;
+    const blob = try allocator.dupe(u8, data[pos.* .. pos.* + len]);
+    pos.* += len;
+    return blob;
+}
+
+// ── Unit tests for DUMP/RESTORE/COPY/TOUCH ──────────────────────────────────
+
+test "storage - dump and restore string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+
+    const dump = (try storage.dumpValue(allocator, "mykey")).?;
+    defer allocator.free(dump);
+
+    try storage.restoreValue("newkey", dump, 0, false);
+
+    const value = storage.get("newkey").?;
+    try std.testing.expectEqualStrings("hello", value);
+}
+
+test "storage - dump and restore list" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const elements = [_][]const u8{ "a", "b", "c" };
+    _ = try storage.rpush("mylist", &elements, null);
+
+    const dump = (try storage.dumpValue(allocator, "mylist")).?;
+    defer allocator.free(dump);
+
+    try storage.restoreValue("newlist", dump, 0, false);
+
+    const len = storage.llen("newlist").?;
+    try std.testing.expectEqual(@as(usize, 3), len);
+}
+
+test "storage - dump and restore with TTL" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("mykey", "value", null);
+
+    const dump = (try storage.dumpValue(allocator, "mykey")).?;
+    defer allocator.free(dump);
+
+    // Restore with 1 hour TTL
+    try storage.restoreValue("newkey", dump, 3600 * 1000, false);
+
+    const value = storage.get("newkey").?;
+    try std.testing.expectEqualStrings("value", value);
+
+    // Check expiration is set
+    const ttl = storage.getTtlMs("newkey");
+    try std.testing.expect(ttl > 0);
+}
+
+test "storage - restore fails if key exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+    try storage.set("key2", "value2", null);
+
+    const dump = (try storage.dumpValue(allocator, "key1")).?;
+    defer allocator.free(dump);
+
+    // Should fail without replace flag
+    const result = storage.restoreValue("key2", dump, 0, false);
+    try std.testing.expectError(error.KeyAlreadyExists, result);
+}
+
+test "storage - restore with replace overwrites" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+    try storage.set("key2", "old", null);
+
+    const dump = (try storage.dumpValue(allocator, "key1")).?;
+    defer allocator.free(dump);
+
+    // Should succeed with replace flag
+    try storage.restoreValue("key2", dump, 0, true);
+
+    const value = storage.get("key2").?;
+    try std.testing.expectEqualStrings("value1", value);
+}
+
+test "storage - copy key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("source", "hello", null);
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    const value = storage.get("dest").?;
+    try std.testing.expectEqualStrings("hello", value);
+
+    // Verify source still exists
+    const source_value = storage.get("source").?;
+    try std.testing.expectEqualStrings("hello", source_value);
+}
+
+test "storage - copy fails if destination exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("source", "value1", null);
+    try storage.set("dest", "value2", null);
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(!success);
+
+    // Destination should be unchanged
+    const value = storage.get("dest").?;
+    try std.testing.expectEqualStrings("value2", value);
+}
+
+test "storage - copy with replace overwrites" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("source", "new_value", null);
+    try storage.set("dest", "old_value", null);
+
+    const success = try storage.copyKey("source", "dest", true);
+    try std.testing.expect(success);
+
+    const value = storage.get("dest").?;
+    try std.testing.expectEqualStrings("new_value", value);
+}
+
+test "storage - touch counts existing keys" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("key1", "a", null);
+    try storage.set("key2", "b", null);
+
+    const keys = [_][]const u8{ "key1", "key2", "key3" };
+    const count = storage.touch(&keys);
+
+    try std.testing.expectEqual(@as(usize, 2), count);
 }

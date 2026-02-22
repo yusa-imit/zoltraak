@@ -113,6 +113,7 @@ pub fn executeCommand(
                 "APPEND",     "GETSET",     "GETDEL",     "GETEX",
                 "SETNX",      "SETEX",      "PSETEX",
                 "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
+                "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
                 "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
@@ -177,6 +178,7 @@ pub fn executeCommand(
             "APPEND",     "GETSET",     "GETDEL",     "GETEX",
             "SETNX",      "SETEX",      "PSETEX",
             "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
+            "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
             "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
@@ -278,6 +280,16 @@ pub fn executeCommand(
             break :blk try keys_cmds.cmdRandomkey(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "UNLINK")) {
             break :blk try keys_cmds.cmdUnlink(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "DUMP")) {
+            break :blk try keys_cmds.cmdDump(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "RESTORE")) {
+            break :blk try keys_cmds.cmdRestore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "COPY")) {
+            break :blk try keys_cmds.cmdCopy(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "TOUCH")) {
+            break :blk try keys_cmds.cmdTouch(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "MOVE")) {
+            break :blk try keys_cmds.cmdMove(allocator, storage, array);
         }
         // List commands
         else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {

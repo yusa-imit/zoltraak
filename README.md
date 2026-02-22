@@ -298,6 +298,16 @@ redis-cli -p 6379
 | RANDOMKEY | `RANDOMKEY` | Return a random key from the keyspace |
 | UNLINK | `UNLINK key [key ...]` | Delete keys (async deletion, currently same as DEL) |
 
+### Advanced Key Commands (Iteration 23)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| DUMP | `DUMP key` | Serialize the value stored at key in RDB format |
+| RESTORE | `RESTORE key ttl serialized-value [REPLACE] [ABSTTL]` | Create a key from a serialized value (ttl in ms, 0 = no expiry) |
+| COPY | `COPY source destination [DB db] [REPLACE]` | Copy a key to a new key (returns 1 if copied, 0 otherwise) |
+| TOUCH | `TOUCH key [key ...]` | Update last access time of keys (returns count of touched keys) |
+| MOVE | `MOVE key db` | Move key to another database (stub: always returns 0, single-DB only) |
+
 ### Sorted Set Commands (Iterations 5, 11, 12)
 
 | Command | Syntax | Description |
@@ -406,7 +416,7 @@ OK
 
 ## Project Status
 
-Iterations 1–22 are complete.
+Iterations 1–23 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -418,6 +428,7 @@ Iterations 1–22 are complete.
 - Iteration 20: 4 bit operation commands (SETBIT, GETBIT, BITCOUNT, BITOP) - bitmap manipulation for efficient storage and operations
 - Iteration 21: 15 key management commands (TTL, PTTL, EXPIRETIME, PEXPIRETIME, EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST, TYPE, KEYS, RENAME, RENAMENX, RANDOMKEY, UNLINK) - comprehensive key lifecycle management
 - Iteration 22: 3 advanced blocking commands (BLMPOP, BZPOPMIN, BZPOPMAX) - blocking multi-key pop operations for lists and sorted sets
+- Iteration 23: 5 advanced key commands (DUMP, RESTORE, COPY, TOUCH, MOVE) - key serialization, copying, and migration support
 
 ### Roadmap
 
