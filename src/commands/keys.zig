@@ -179,6 +179,7 @@ pub fn cmdType(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         .hash => "hash",
         .sorted_set => "zset",
         .stream => "stream",
+        .hyperloglog => "string",
     } else "none";
 
     return w.writeSimpleString(type_str);
@@ -765,6 +766,7 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
                 .hash => "hash",
                 .sorted_set => "zset",
                 .stream => "stream",
+                .hyperloglog => "string",
             } else "none";
             const tf_lower = try std.ascii.allocLowerString(allocator, tf);
             defer allocator.free(tf_lower);
@@ -1218,6 +1220,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 break :blk if (zc <= 128) "listpack" else "skiplist";
             },
             .stream => "stream",
+            .hyperloglog => "hyperloglog",
         };
         return w.writeSimpleString(encoding);
     } else {

@@ -11,6 +11,7 @@ pub const ValueType = enum {
     hash,
     sorted_set,
     stream,
+    hyperloglog,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -22,6 +23,7 @@ pub const Value = union(ValueType) {
     hash: HashValue,
     sorted_set: SortedSetValue,
     stream: StreamValue,
+    hyperloglog: HyperLogLogValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -229,6 +231,87 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// HyperLogLog value for cardinality estimation
+    /// Uses 16384 6-bit registers (14-bit precision, standard Redis configuration)
+    pub const HyperLogLogValue = struct {
+        registers: [16384]u8, // 16384 registers, each 6-bit max value
+        expires_at: ?i64,
+
+        pub fn deinit(_: *HyperLogLogValue, _: std.mem.Allocator) void {
+            // Registers are fixed-size array, no dynamic allocation to clean up
+        }
+
+        /// Initialize a new HyperLogLog with all registers set to 0
+        pub fn init() HyperLogLogValue {
+            return HyperLogLogValue{
+                .registers = [_]u8{0} ** 16384,
+                .expires_at = null,
+            };
+        }
+
+        /// Add an element to the HyperLogLog
+        /// Returns true if the register was updated
+        pub fn add(self: *HyperLogLogValue, element: []const u8) bool {
+            const hash = std.hash.Murmur2_64.hash(element);
+
+            // Use first 14 bits for register index (0-16383)
+            const register_index = @as(u16, @truncate(hash & 0x3FFF));
+
+            // Count leading zeros in remaining 50 bits, add 1
+            const remaining = hash >> 14;
+            const leading_zeros = @clz(remaining | 1); // | 1 prevents all-zeros
+            const rank = @as(u8, @intCast(50 - leading_zeros + 1));
+
+            // Update register if new rank is higher (max 6-bit value = 63)
+            const capped_rank = @min(rank, 63);
+            if (capped_rank > self.registers[register_index]) {
+                self.registers[register_index] = capped_rank;
+                return true;
+            }
+            return false;
+        }
+
+        /// Estimate cardinality using HyperLogLog algorithm
+        pub fn count(self: *const HyperLogLogValue) u64 {
+            // Standard HyperLogLog cardinality estimation
+            const m: f64 = 16384.0; // number of registers
+            const alpha: f64 = 0.7213 / (1.0 + 1.079 / m); // bias correction
+
+            var raw_sum: f64 = 0.0;
+            var zero_count: u32 = 0;
+
+            for (self.registers) |register_val| {
+                raw_sum += std.math.pow(f64, 2.0, -@as(f64, @floatFromInt(register_val)));
+                if (register_val == 0) zero_count += 1;
+            }
+
+            const raw_estimate = alpha * m * m / raw_sum;
+
+            // Small range correction
+            if (raw_estimate <= 5.0 * m) {
+                if (zero_count > 0) {
+                    const v: f64 = @floatFromInt(zero_count);
+                    return @intFromFloat(m * @log(m / v));
+                }
+            }
+
+            // Large range correction
+            if (raw_estimate > (1.0 / 30.0) * 4294967296.0) {
+                return @intFromFloat(-4294967296.0 * @log(1.0 - raw_estimate / 4294967296.0));
+            }
+
+            return @intFromFloat(raw_estimate);
+        }
+
+        /// Merge another HyperLogLog into this one
+        /// Takes the maximum value for each register
+        pub fn merge(self: *HyperLogLogValue, other: *const HyperLogLogValue) void {
+            for (&self.registers, other.registers) |*reg, other_reg| {
+                reg.* = @max(reg.*, other_reg);
+            }
+        }
+    };
+
     /// Deinitialize value and free all associated memory
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -238,6 +321,7 @@ pub const Value = union(ValueType) {
             .hash => |*h| h.deinit(allocator),
             .sorted_set => |*z| z.deinit(allocator),
             .stream => |*st| st.deinit(allocator),
+            .hyperloglog => |*hll| hll.deinit(allocator),
         }
     }
 
@@ -250,6 +334,7 @@ pub const Value = union(ValueType) {
             .hash => |h| h.expires_at,
             .sorted_set => |z| z.expires_at,
             .stream => |st| st.expires_at,
+            .hyperloglog => |hll| hll.expires_at,
         };
     }
 
@@ -2906,6 +2991,7 @@ pub const Storage = struct {
             .hash => |*v| v.expires_at = expires_at,
             .sorted_set => |*v| v.expires_at = expires_at,
             .stream => |*v| v.expires_at = expires_at,
+            .hyperloglog => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -3254,6 +3340,7 @@ pub const Storage = struct {
             .hash => 0x04, // RDB_TYPE_HASH
             .sorted_set => 0x03, // RDB_TYPE_SORTED_SET
             .stream => 0xFE, // Stream type
+            .hyperloglog => 0xFD, // HyperLogLog type
         };
         try w.writeByte(type_byte);
 
@@ -3307,6 +3394,10 @@ pub const Storage = struct {
                         try writeBlob(w, field_or_value);
                     }
                 }
+            },
+            .hyperloglog => |hll| {
+                // Serialize HyperLogLog as raw bytes (16384 bytes for 16384 6-bit registers)
+                try writeBlob(w, &hll.registers);
             },
         }
 
@@ -3519,6 +3610,18 @@ pub const Storage = struct {
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                 } };
             },
+            0xFD => { // HyperLogLog
+                const registers_data = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(registers_data);
+
+                if (registers_data.len != 16384) return error.InvalidDumpPayload;
+
+                var hll = Value.HyperLogLogValue.init();
+                hll.expires_at = expires_at;
+                @memcpy(&hll.registers, registers_data);
+
+                value = Value{ .hyperloglog = hll };
+            },
             else => return error.UnknownDumpType,
         }
 
@@ -3674,6 +3777,13 @@ pub const Storage = struct {
                     .expires_at = st.expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                 } };
+            },
+            .hyperloglog => |hll| blk: {
+                // HyperLogLog is a fixed-size array, simple copy
+                var hll_copy = Value.HyperLogLogValue.init();
+                hll_copy.registers = hll.registers;
+                hll_copy.expires_at = hll.expires_at;
+                break :blk Value{ .hyperloglog = hll_copy };
             },
         };
     }

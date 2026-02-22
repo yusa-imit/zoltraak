@@ -242,6 +242,10 @@ pub const Aof = struct {
                 .stream => {
                     // Streams not yet implemented in AOF - skip for now
                 },
+                .hyperloglog => {
+                    // HyperLogLog not yet implemented in AOF - skip for now
+                    // (Would require serializing 16384 bytes as args, not practical)
+                },
             }
         }
 

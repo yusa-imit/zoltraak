@@ -66,6 +66,7 @@ pub const Persistence = struct {
                 .hash => RDB_TYPE_HASH,
                 .sorted_set => RDB_TYPE_SORTED_SET,
                 .stream => 0xFF, // Placeholder - streams not yet serialized
+                .hyperloglog => 0xFE, // HyperLogLog type
             };
             try w.writeByte(type_byte);
 
@@ -117,6 +118,9 @@ pub const Persistence = struct {
                 .stream => {
                     // Streams not yet fully implemented in persistence
                     try w.writeInt(u32, 0, .little);
+                },
+                .hyperloglog => |hll| {
+                    try writeBlob(w, &hll.registers);
                 },
             }
         }
@@ -273,6 +277,25 @@ pub const Persistence = struct {
                         _ = try storage.zadd(key, &scores_arr, &members_arr, 0, expires_at);
                     }
                 },
+                0xFE => { // HyperLogLog
+                    const registers_data = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(registers_data);
+
+                    if (registers_data.len != 16384) return error.InvalidRdbFile;
+
+                    // Create HyperLogLog value directly
+                    var hll = Value.HyperLogLogValue.init();
+                    hll.expires_at = expires_at;
+                    @memcpy(&hll.registers, registers_data);
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .hyperloglog = hll });
+                },
                 else => return error.InvalidRdbFile,
             }
 
@@ -374,7 +397,8 @@ pub const Persistence = struct {
                 .set => RDB_TYPE_SET,
                 .hash => RDB_TYPE_HASH,
                 .sorted_set => RDB_TYPE_SORTED_SET,
-                .stream => 0xFE, // Streams not yet serialized
+                .stream => 0xFF, // Streams not yet serialized
+                .hyperloglog => 0xFE, // HyperLogLog
             };
             try w.writeByte(type_byte);
 
@@ -418,6 +442,9 @@ pub const Persistence = struct {
                 .stream => {
                     // Streams not yet implemented - write empty marker
                     try w.writeInt(u32, 0, .little);
+                },
+                .hyperloglog => |hll| {
+                    try writeBlob(w, &hll.registers);
                 },
             }
         }

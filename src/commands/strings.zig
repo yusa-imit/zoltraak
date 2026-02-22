@@ -21,6 +21,7 @@ const config_cmds = @import("config.zig");
 const command_cmds = @import("command.zig");
 const bits_cmds = @import("bits.zig");
 const geo_cmds = @import("geo.zig");
+const hll_cmds = @import("hyperloglog.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -125,7 +126,7 @@ pub fn executeCommand(
                 "BZPOPMAX",   "SETRANGE",
                 "SETBIT",     "BITOP",
                 "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
-                "GEOADD",
+                "GEOADD",     "PFADD",      "PFMERGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -191,7 +192,7 @@ pub fn executeCommand(
             "BZPOPMAX",   "SETRANGE",
             "SETBIT",     "BITOP",
             "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
-            "GEOADD",
+            "GEOADD",     "PFADD",      "PFMERGE",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -646,6 +647,14 @@ pub fn executeCommand(
             break :blk try geo_cmds.cmdGeoradius(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
             break :blk try geo_cmds.cmdGeosearch(allocator, storage, array);
+        }
+        // HyperLogLog commands
+        else if (std.mem.eql(u8, cmd_upper, "PFADD")) {
+            break :blk try hll_cmds.cmdPfadd(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PFCOUNT")) {
+            break :blk try hll_cmds.cmdPfcount(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "PFMERGE")) {
+            break :blk try hll_cmds.cmdPfmerge(allocator, storage, array);
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
