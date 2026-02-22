@@ -238,7 +238,7 @@ redis-cli -p 6379
 | COMMAND LIST | `COMMAND LIST [FILTERBY <filter>]` | List command names (supports pattern: filter) |
 | COMMAND HELP | `COMMAND HELP` | Show COMMAND command help |
 
-### Stream Commands (Iterations 16–17, 24)
+### Stream Commands (Iterations 16–17, 24, 27)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -254,6 +254,8 @@ redis-cli -p 6379
 | XGROUP SETID | `XGROUP SETID key groupname <id \| $>` | Set consumer group's last delivered ID |
 | XREADGROUP | `XREADGROUP GROUP group consumer [COUNT count] [BLOCK ms] [NOACK] STREAMS key [key ...] id [id ...]` | Read entries from streams using consumer groups (> = new messages) |
 | XACK | `XACK key groupname id [id ...]` | Acknowledge processing of messages in a consumer group |
+| XPENDING | `XPENDING key group [[IDLE min-idle-time] start end count [consumer]]` | Get information about pending messages in consumer group |
+| XINFO STREAM | `XINFO STREAM key [FULL [COUNT count]]` | Get information about stream metadata and entries |
 
 ### Keyspace Scanning Commands (Iteration 12)
 
@@ -441,7 +443,7 @@ OK
 
 ## Project Status
 
-Iterations 1–26 are complete.
+Iterations 1–27 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -457,8 +459,7 @@ Iterations 1–26 are complete.
 - Iteration 24: 6 advanced stream commands (XREAD, XGROUP CREATE/DESTROY/SETID, XREADGROUP, XACK) - consumer groups and advanced stream consumption patterns
 - Iteration 25: 6 geospatial commands (GEOADD, GEOPOS, GEODIST, GEOHASH, GEORADIUS, GEOSEARCH) - geospatial indexing and radius queries using geohash encoding
 - Iteration 26: 3 HyperLogLog commands (PFADD, PFCOUNT, PFMERGE) - probabilistic cardinality estimation with 16384 6-bit registers
-- Iteration 24: 6 advanced stream commands (XREAD, XGROUP CREATE/DESTROY/SETID, XREADGROUP, XACK) - consumer groups and advanced stream consumption patterns
-- Iteration 25: 6 geospatial commands (GEOADD, GEOPOS, GEODIST, GEOHASH, GEORADIUS, GEOSEARCH) - geospatial indexing and radius queries using geohash encoding
+- Iteration 27: 2 stream introspection commands (XPENDING, XINFO STREAM) - pending message tracking and stream metadata inspection
 
 ### Roadmap
 

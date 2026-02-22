@@ -716,3 +716,236 @@ test "streams - XRANGE with COUNT limit" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
 }
+
+/// XPENDING key group [[IDLE min-idle-time] start end count [consumer]]
+/// Returns pending entries information for a consumer group
+pub fn cmdXpending(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'xpending' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const group_name = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid group name"),
+    };
+
+    // Simple form: XPENDING key group
+    if (args.len == 3) {
+        const info = storage.xpendingSummary(allocator, key, group_name) catch |err| switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            error.NoSuchKey => return w.writeArray(null),
+            error.NoSuchGroup => return w.writeError("NOGROUP No such consumer group"),
+            else => return err,
+        };
+        defer allocator.free(info);
+
+        return w.writeSimpleString(info);
+    }
+
+    // Extended form: XPENDING key group [IDLE min-idle] start end count [consumer]
+    var start_idx: usize = 3;
+    var idle_time: ?i64 = null;
+    var consumer_name: ?[]const u8 = null;
+
+    // Parse optional IDLE parameter
+    if (args.len > 4) {
+        const maybe_idle = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid argument"),
+        };
+        if (std.mem.eql(u8, maybe_idle, "IDLE")) {
+            if (args.len < 6) {
+                return w.writeError("ERR wrong number of arguments for 'xpending' command");
+            }
+            const idle_str = switch (args[4]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid idle time"),
+            };
+            idle_time = std.fmt.parseInt(i64, idle_str, 10) catch {
+                return w.writeError("ERR invalid idle time");
+            };
+            start_idx = 5;
+        }
+    }
+
+    if (args.len < start_idx + 3) {
+        return w.writeError("ERR wrong number of arguments for 'xpending' command");
+    }
+
+    const start = switch (args[start_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid start ID"),
+    };
+
+    const end = switch (args[start_idx + 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid end ID"),
+    };
+
+    const count_str = switch (args[start_idx + 2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid count"),
+    };
+
+    const count = std.fmt.parseInt(usize, count_str, 10) catch {
+        return w.writeError("ERR invalid count");
+    };
+
+    // Parse optional consumer parameter
+    if (args.len > start_idx + 3) {
+        consumer_name = switch (args[start_idx + 3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid consumer name"),
+        };
+    }
+
+    const entries = storage.xpendingRange(allocator, key, group_name, start, end, count, consumer_name, idle_time) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NoSuchKey => return w.writeArray(null),
+        error.NoSuchGroup => return w.writeError("NOGROUP No such consumer group"),
+        error.InvalidStreamId => return w.writeError("ERR Invalid stream ID"),
+        else => return err,
+    };
+    defer allocator.free(entries);
+
+    return w.writeSimpleString(entries);
+}
+
+/// XINFO STREAM key [FULL [COUNT count]]
+/// Returns information about the stream
+pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'xinfo' command");
+    }
+
+    const subcommand = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid subcommand"),
+    };
+
+    if (!std.mem.eql(u8, subcommand, "STREAM")) {
+        return w.writeError("ERR unknown XINFO subcommand");
+    }
+
+    const key = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var full_mode = false;
+    var count_limit: ?usize = null;
+
+    // Parse optional FULL [COUNT count]
+    if (args.len > 3) {
+        const full_flag = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid argument"),
+        };
+        if (std.mem.eql(u8, full_flag, "FULL")) {
+            full_mode = true;
+            if (args.len > 5) {
+                const count_flag = switch (args[4]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR invalid argument"),
+                };
+                if (std.mem.eql(u8, count_flag, "COUNT")) {
+                    const count_str = switch (args[5]) {
+                        .bulk_string => |s| s,
+                        else => return w.writeError("ERR invalid count"),
+                    };
+                    count_limit = std.fmt.parseInt(usize, count_str, 10) catch {
+                        return w.writeError("ERR invalid count");
+                    };
+                }
+            }
+        }
+    }
+
+    const info = storage.xinfoStream(allocator, key, full_mode, count_limit) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NoSuchKey => return w.writeError("ERR no such key"),
+        else => return err,
+    };
+    defer allocator.free(info);
+
+    return w.writeSimpleString(info);
+}
+
+test "streams - XPENDING summary shows pending count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "x" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    // Create consumer group
+    _ = try storage.xgroupCreate("s", "g", "0");
+
+    // Read with consumer group (creates pending entry)
+    const read_result = try storage.xreadgroup(allocator, "g", "c1", "s", ">", 10, false);
+    if (read_result) |r| {
+        r.deinit(allocator);
+    }
+
+    // Check pending summary
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XPENDING" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "g" },
+    };
+    const result = try cmdXpending(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should show 1 pending message
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);
+}
+
+test "streams - XINFO STREAM shows basic metadata" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entry
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "x" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    // Get stream info
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XINFO" },
+        RespValue{ .bulk_string = "STREAM" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const result = try cmdXinfoStream(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should contain length and last-entry-id
+    try std.testing.expect(std.mem.indexOf(u8, result, "length") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "last-entry-id") != null);
+}

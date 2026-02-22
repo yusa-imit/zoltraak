@@ -5543,6 +5543,300 @@ pub const Storage = struct {
             else => return error.WrongType,
         }
     }
+
+    /// Get summary of pending messages for a consumer group
+    /// Returns RESP-formatted string: [count, min_id, max_id, [[consumer, count], ...]]
+    pub fn xpendingSummary(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        group_name: []const u8,
+    ) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoSuchKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoSuchGroup;
+
+                if (group_ptr.pending.items.len == 0) {
+                    return try std.fmt.allocPrint(allocator, "*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n", .{});
+                }
+
+                // Find min and max IDs
+                var min_id = group_ptr.pending.items[0].id;
+                var max_id = group_ptr.pending.items[0].id;
+                for (group_ptr.pending.items) |pending| {
+                    if (pending.id.lessThan(min_id)) min_id = pending.id;
+                    if (max_id.lessThan(pending.id)) max_id = pending.id;
+                }
+
+                // Count per consumer
+                var consumer_counts = std.StringHashMap(usize).init(allocator);
+                defer consumer_counts.deinit();
+
+                for (group_ptr.pending.items) |pending| {
+                    const entry_ptr = try consumer_counts.getOrPut(pending.consumer);
+                    if (entry_ptr.found_existing) {
+                        entry_ptr.value_ptr.* += 1;
+                    } else {
+                        entry_ptr.value_ptr.* = 1;
+                    }
+                }
+
+                // Format response
+                var buf = std.ArrayList(u8){};
+                defer buf.deinit(allocator);
+
+                const writer = buf.writer(allocator);
+                try writer.print("*4\r\n:{d}\r\n${d}\r\n{d}-{d}\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                    group_ptr.pending.items.len,
+                    std.fmt.count("{d}-{d}", .{ min_id.ms, min_id.seq }),
+                    min_id.ms,
+                    min_id.seq,
+                    std.fmt.count("{d}-{d}", .{ max_id.ms, max_id.seq }),
+                    max_id.ms,
+                    max_id.seq,
+                    consumer_counts.count(),
+                });
+
+                var it = consumer_counts.iterator();
+                while (it.next()) |kv| {
+                    try writer.print("*2\r\n${d}\r\n{s}\r\n:{d}\r\n", .{
+                        kv.key_ptr.len,
+                        kv.key_ptr.*,
+                        kv.value_ptr.*,
+                    });
+                }
+
+                return try allocator.dupe(u8, buf.items);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get detailed list of pending messages in a range
+    pub fn xpendingRange(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        group_name: []const u8,
+        start: []const u8,
+        end: []const u8,
+        count: usize,
+        consumer_name: ?[]const u8,
+        idle_time: ?i64,
+    ) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoSuchKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoSuchGroup;
+
+                // Parse start and end IDs
+                const start_id = if (std.mem.eql(u8, start, "-"))
+                    Value.StreamId{ .ms = 0, .seq = 0 }
+                else
+                    try Value.StreamId.parse(start, null);
+
+                const end_id = if (std.mem.eql(u8, end, "+"))
+                    Value.StreamId{ .ms = std.math.maxInt(i64), .seq = std.math.maxInt(u64) }
+                else
+                    try Value.StreamId.parse(end, null);
+
+                // Collect matching pending entries
+                var result_list = std.ArrayList(Value.PendingEntry){};
+                defer result_list.deinit(allocator);
+
+                const now = std.time.milliTimestamp();
+
+                for (group_ptr.pending.items) |pending| {
+                    if (pending.id.lessThan(start_id) or end_id.lessThan(pending.id)) {
+                        continue;
+                    }
+
+                    // Filter by consumer if specified
+                    if (consumer_name) |cname| {
+                        if (!std.mem.eql(u8, pending.consumer, cname)) {
+                            continue;
+                        }
+                    }
+
+                    // Filter by idle time if specified
+                    if (idle_time) |idle_ms| {
+                        const elapsed = now - pending.delivery_time;
+                        if (elapsed < idle_ms) {
+                            continue;
+                        }
+                    }
+
+                    try result_list.append(allocator, pending);
+
+                    if (result_list.items.len >= count) {
+                        break;
+                    }
+                }
+
+                // Format response: array of [id, consumer, elapsed_ms, delivery_count]
+                var buf = std.ArrayList(u8){};
+                defer buf.deinit(allocator);
+
+                const writer = buf.writer(allocator);
+                try writer.print("*{d}\r\n", .{result_list.items.len});
+
+                for (result_list.items) |pending| {
+                    const elapsed = now - pending.delivery_time;
+                    const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ pending.id.ms, pending.id.seq });
+                    defer allocator.free(id_str);
+
+                    try writer.print("*4\r\n${d}\r\n{s}\r\n${d}\r\n{s}\r\n:{d}\r\n:{d}\r\n", .{
+                        id_str.len,
+                        id_str,
+                        pending.consumer.len,
+                        pending.consumer,
+                        elapsed,
+                        pending.delivery_count,
+                    });
+                }
+
+                return try allocator.dupe(u8, buf.items);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get information about a stream
+    pub fn xinfoStream(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        full_mode: bool,
+        count_limit: ?usize,
+    ) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoSuchKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                var buf = std.ArrayList(u8){};
+                defer buf.deinit(allocator);
+
+                const writer = buf.writer(allocator);
+
+                if (!full_mode) {
+                    // Simple mode: basic stream metadata
+                    const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
+
+                    try writer.print("*14\r\n", .{});
+                    try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
+                    try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
+                    try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
+                    try writer.print("$6\r\ngroups\r\n:{d}\r\n", .{stream_val.consumer_groups.count()});
+                    try writer.print("$13\r\nlast-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        std.fmt.count("{d}-{d}", .{ last_id.ms, last_id.seq }),
+                        last_id.ms,
+                        last_id.seq,
+                    });
+                    try writer.print("$13\r\nfirst-entry\r\n", .{});
+                    if (stream_val.entries.items.len > 0) {
+                        const first_entry = stream_val.entries.items[0];
+                        try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                            std.fmt.count("{d}-{d}", .{ first_entry.id.ms, first_entry.id.seq }),
+                            first_entry.id.ms,
+                            first_entry.id.seq,
+                            first_entry.fields.items.len,
+                        });
+                        for (first_entry.fields.items) |field| {
+                            try writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
+                        }
+                    } else {
+                        try writer.print("$-1\r\n", .{});
+                    }
+                    try writer.print("$10\r\nlast-entry\r\n", .{});
+                    if (stream_val.entries.items.len > 0) {
+                        const last_entry = stream_val.entries.items[stream_val.entries.items.len - 1];
+                        try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                            std.fmt.count("{d}-{d}", .{ last_entry.id.ms, last_entry.id.seq }),
+                            last_entry.id.ms,
+                            last_entry.id.seq,
+                            last_entry.fields.items.len,
+                        });
+                        for (last_entry.fields.items) |field| {
+                            try writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
+                        }
+                    } else {
+                        try writer.print("$-1\r\n", .{});
+                    }
+                } else {
+                    // Full mode: include all entries
+                    const limit = count_limit orelse stream_val.entries.items.len;
+                    const num_entries = @min(limit, stream_val.entries.items.len);
+
+                    try writer.print("*12\r\n", .{});
+                    try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
+                    try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
+                    try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
+
+                    const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
+                    try writer.print("$13\r\nlast-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        std.fmt.count("{d}-{d}", .{ last_id.ms, last_id.seq }),
+                        last_id.ms,
+                        last_id.seq,
+                    });
+
+                    try writer.print("$7\r\nentries\r\n*{d}\r\n", .{num_entries});
+                    for (stream_val.entries.items[0..num_entries]) |stream_entry| {
+                        try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                            std.fmt.count("{d}-{d}", .{ stream_entry.id.ms, stream_entry.id.seq }),
+                            stream_entry.id.ms,
+                            stream_entry.id.seq,
+                            stream_entry.fields.items.len,
+                        });
+                        for (stream_entry.fields.items) |field| {
+                            try writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
+                        }
+                    }
+
+                    try writer.print("$6\r\ngroups\r\n*{d}\r\n", .{stream_val.consumer_groups.count()});
+                    var group_it = stream_val.consumer_groups.iterator();
+                    while (group_it.next()) |group_kv| {
+                        const group = group_kv.value_ptr;
+                        try writer.print("*8\r\n", .{});
+                        try writer.print("$4\r\nname\r\n${d}\r\n{s}\r\n", .{ group_kv.key_ptr.len, group_kv.key_ptr.* });
+                        try writer.print("$9\r\nconsumers\r\n:{d}\r\n", .{group.consumers.count()});
+                        try writer.print("$7\r\npending\r\n:{d}\r\n", .{group.pending.items.len});
+                        try writer.print("$16\r\nlast-delivered-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                            std.fmt.count("{d}-{d}", .{ group.last_delivered_id.ms, group.last_delivered_id.seq }),
+                            group.last_delivered_id.ms,
+                            group.last_delivered_id.seq,
+                        });
+                    }
+                }
+
+                return try allocator.dupe(u8, buf.items);
+            },
+            else => return error.WrongType,
+        }
+    }
 };
 
 // Embedded unit tests

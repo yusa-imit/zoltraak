@@ -489,6 +489,10 @@ pub fn executeCommand(
             break :blk try streams_adv.cmdXreadgroup(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XACK")) {
             break :blk try streams_adv.cmdXack(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XPENDING")) {
+            break :blk try streams.cmdXpending(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XINFO")) {
+            break :blk try streams.cmdXinfoStream(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {
