@@ -338,6 +338,17 @@ redis-cli -p 6379
 | ZRANDMEMBER | `ZRANDMEMBER key [count [WITHSCORES]]` | Return random members |
 | ZSCAN | `ZSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate sorted set members |
 
+### Geospatial Commands (Iteration 25)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| GEOADD | `GEOADD key longitude latitude member [longitude latitude member ...]` | Add geospatial items (longitude, latitude, name) to a key |
+| GEOPOS | `GEOPOS key member [member ...]` | Returns longitude and latitude of members |
+| GEODIST | `GEODIST key member1 member2 [m\|km\|ft\|mi]` | Returns distance between two members (default: meters) |
+| GEOHASH | `GEOHASH key member [member ...]` | Returns geohash strings representing positions of members |
+| GEORADIUS | `GEORADIUS key longitude latitude radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Query members within radius from point |
+| GEOSEARCH | `GEOSEARCH key FROMMEMBER member \| FROMLONLAT lon lat BYRADIUS radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Modern geospatial query (BYBOX not implemented) |
+
 ## Example Session
 
 ```
@@ -422,7 +433,7 @@ OK
 
 ## Project Status
 
-Iterations 1–24 are complete.
+Iterations 1–25 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -436,6 +447,7 @@ Iterations 1–24 are complete.
 - Iteration 22: 3 advanced blocking commands (BLMPOP, BZPOPMIN, BZPOPMAX) - blocking multi-key pop operations for lists and sorted sets
 - Iteration 23: 5 advanced key commands (DUMP, RESTORE, COPY, TOUCH, MOVE) - key serialization, copying, and migration support
 - Iteration 24: 6 advanced stream commands (XREAD, XGROUP CREATE/DESTROY/SETID, XREADGROUP, XACK) - consumer groups and advanced stream consumption patterns
+- Iteration 25: 6 geospatial commands (GEOADD, GEOPOS, GEODIST, GEOHASH, GEORADIUS, GEOSEARCH) - geospatial indexing and radius queries using geohash encoding
 
 ### Roadmap
 

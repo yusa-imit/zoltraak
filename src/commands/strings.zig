@@ -20,6 +20,7 @@ const client_cmds = @import("client.zig");
 const config_cmds = @import("config.zig");
 const command_cmds = @import("command.zig");
 const bits_cmds = @import("bits.zig");
+const geo_cmds = @import("geo.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -124,6 +125,7 @@ pub fn executeCommand(
                 "BZPOPMAX",   "SETRANGE",
                 "SETBIT",     "BITOP",
                 "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
+                "GEOADD",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -189,6 +191,7 @@ pub fn executeCommand(
             "BZPOPMAX",   "SETRANGE",
             "SETBIT",     "BITOP",
             "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
+            "GEOADD",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -629,6 +632,20 @@ pub fn executeCommand(
                     return w.writeError(err_msg);
                 }
             }
+        }
+        // Geospatial commands
+        else if (std.mem.eql(u8, cmd_upper, "GEOADD")) {
+            break :blk try geo_cmds.cmdGeoadd(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEOPOS")) {
+            break :blk try geo_cmds.cmdGeopos(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEODIST")) {
+            break :blk try geo_cmds.cmdGeodist(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEOHASH")) {
+            break :blk try geo_cmds.cmdGeohash(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS")) {
+            break :blk try geo_cmds.cmdGeoradius(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
+            break :blk try geo_cmds.cmdGeosearch(allocator, storage, array);
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
