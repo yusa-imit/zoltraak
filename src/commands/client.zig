@@ -5,6 +5,12 @@ const writer_mod = @import("../protocol/writer.zig");
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 
+/// RESP protocol version
+pub const RespProtocol = enum(u8) {
+    RESP2 = 2,
+    RESP3 = 3,
+};
+
 /// Metadata for a single client connection
 pub const ClientInfo = struct {
     /// Unique connection ID
@@ -23,6 +29,8 @@ pub const ClientInfo = struct {
     last_cmd: []const u8,
     /// Client flags (e.g., "N" = normal)
     flags: []const u8,
+    /// RESP protocol version (2 or 3, defaults to 2)
+    protocol: RespProtocol,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -98,6 +106,7 @@ pub const ClientRegistry = struct {
             .last_cmd_at = now,
             .last_cmd = default_cmd,
             .flags = flags,
+            .protocol = .RESP2, // Default to RESP2
         };
 
         try self.clients.put(client_id, info);
@@ -157,6 +166,27 @@ pub const ClientRegistry = struct {
             info.last_cmd = new_cmd;
             info.last_cmd_at = std.time.milliTimestamp();
         }
+    }
+
+    /// Set the protocol version for a client connection
+    pub fn setProtocol(self: *ClientRegistry, client_id: u64, proto: RespProtocol) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.protocol = proto;
+        }
+    }
+
+    /// Get the protocol version for a client connection
+    pub fn getProtocol(self: *ClientRegistry, client_id: u64) RespProtocol {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.protocol;
+        }
+        return .RESP2; // Default to RESP2 if client not found
     }
 
     /// Format client list output matching Redis format
@@ -688,4 +718,32 @@ test "CLIENT LIST command - invalid TYPE" {
     // Should return error for unknown client type
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "Unknown client type") != null);
+}
+
+test "ClientRegistry: set and get protocol version" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Default protocol should be RESP2
+    try std.testing.expectEqual(RespProtocol.RESP2, registry.getProtocol(client_id));
+
+    // Set to RESP3
+    registry.setProtocol(client_id, .RESP3);
+    try std.testing.expectEqual(RespProtocol.RESP3, registry.getProtocol(client_id));
+
+    // Set back to RESP2
+    registry.setProtocol(client_id, .RESP2);
+    try std.testing.expectEqual(RespProtocol.RESP2, registry.getProtocol(client_id));
+}
+
+test "ClientRegistry: get protocol for non-existent client" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Should return RESP2 for non-existent client
+    try std.testing.expectEqual(RespProtocol.RESP2, registry.getProtocol(999));
 }

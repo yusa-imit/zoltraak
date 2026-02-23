@@ -210,7 +210,7 @@ pub fn executeCommand(
         // Server commands
         if (std.mem.eql(u8, cmd_upper, "HELLO")) {
             const args_slice = if (array.len > 1) array[1..] else array[0..0];
-            break :blk try server_cmds.cmdHello(allocator, args_slice);
+            break :blk try server_cmds.cmdHello(allocator, client_registry, client_id, args_slice);
         }
         // String commands
         else if (std.mem.eql(u8, cmd_upper, "PING")) {

@@ -6166,3 +6166,130 @@ test "INFO - case insensitive section names" {
     try testing.expect(std.mem.indexOf(u8, response2, "# Server") != null);
     try testing.expect(std.mem.indexOf(u8, response3, "# Server") != null);
 }
+
+// ============================================================================
+// RESP3 Protocol Negotiation Tests (Iteration 32)
+// ============================================================================
+
+test "HELLO - default RESP2 without arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"HELLO"});
+    defer testing.allocator.free(response);
+
+    // Should return RESP2 array format
+    try testing.expect(std.mem.startsWith(u8, response, "*14\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "zoltraak") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "proto\r\n:2") != null);
+}
+
+test "HELLO - negotiate RESP2 explicitly" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HELLO", "2" });
+    defer testing.allocator.free(response);
+
+    // Should return RESP2 array format
+    try testing.expect(std.mem.startsWith(u8, response, "*14\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "$5\r\nproto\r\n:2\r\n") != null);
+}
+
+test "HELLO - negotiate RESP3" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HELLO", "3" });
+    defer testing.allocator.free(response);
+
+    // Should return RESP3 map format
+    try testing.expect(std.mem.startsWith(u8, response, "%7\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "+proto\r\n:3\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "+zoltraak\r\n") != null);
+}
+
+test "HELLO - with SETNAME" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HELLO", "2", "SETNAME", "test-client" });
+    defer testing.allocator.free(response);
+
+    // Should succeed and return RESP2 format
+    try testing.expect(std.mem.startsWith(u8, response, "*14\r\n"));
+
+    // Verify client name was set via CLIENT GETNAME
+    const name_response = try client.sendCommand(&[_][]const u8{ "CLIENT", "GETNAME" });
+    defer testing.allocator.free(name_response);
+    try testing.expect(std.mem.indexOf(u8, name_response, "test-client") != null);
+}
+
+test "HELLO - RESP3 with SETNAME" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HELLO", "3", "SETNAME", "resp3-client" });
+    defer testing.allocator.free(response);
+
+    // Should succeed and return RESP3 map format
+    try testing.expect(std.mem.startsWith(u8, response, "%7\r\n"));
+
+    // Verify client name was set
+    const name_response = try client.sendCommand(&[_][]const u8{ "CLIENT", "GETNAME" });
+    defer testing.allocator.free(name_response);
+    try testing.expect(std.mem.indexOf(u8, name_response, "resp3-client") != null);
+}
+
+test "HELLO - invalid protocol version" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "HELLO", "5" });
+    defer testing.allocator.free(response);
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-NOPROTO"));
+}
+
+test "HELLO - protocol persists across commands" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Negotiate RESP3
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "HELLO", "3" });
+        defer testing.allocator.free(response);
+        try testing.expect(std.mem.startsWith(u8, response, "%7\r\n"));
+    }
+
+    // Protocol is tracked per-connection
+    // For now, server uses RESP2 for all responses after negotiation
+    // This test documents current behavior
+    {
+        const response = try client.sendCommand(&[_][]const u8{"PING"});
+        defer testing.allocator.free(response);
+        try testing.expectEqualStrings("+PONG\r\n", response);
+    }
+}

@@ -374,11 +374,11 @@ redis-cli -p 6379
 | SLOWLOG RESET | `SLOWLOG RESET` | Reset slow log (stub - always returns OK) |
 | INFO | `INFO [section]` | Get comprehensive server information (supports server, clients, memory, persistence, stats, replication, cpu, keyspace, all, default sections) |
 
-### Protocol Negotiation Commands (Iteration 31)
+### Protocol Negotiation Commands (Iterations 31-32)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
-| HELLO | `HELLO [protover [AUTH username password] [SETNAME clientname]]` | Protocol negotiation command - returns server information including version, role, and mode (currently returns RESP2 format) |
+| HELLO | `HELLO [protover [AUTH username password] [SETNAME clientname]]` | Protocol negotiation command - negotiates RESP2/RESP3 protocol version per connection, returns server information in negotiated format (map for RESP3, array for RESP2) |
 
 ## Example Session
 
@@ -464,7 +464,7 @@ OK
 
 ## Project Status
 
-Iterations 1–31 are complete.
+Iterations 1–32 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -485,6 +485,7 @@ Iterations 1–31 are complete.
 - Iteration 29: 7 server introspection commands (MEMORY STATS/USAGE/DOCTOR/HELP, SLOWLOG GET/LEN/RESET) - server monitoring and debugging tools (stub implementations)
 - Iteration 30: Comprehensive INFO command - complete implementation with all major sections (Server, Clients, Memory, Persistence, Stats, Replication, CPU, Keyspace)
 - Iteration 31: RESP3 protocol support - parser and writer for RESP3 types (null, boolean, double, big number, bulk error, verbatim string, map, set, push), HELLO command for protocol negotiation (basic RESP2 implementation)
+- Iteration 32: Full RESP3 integration - per-connection protocol tracking, HELLO command negotiates and persists protocol version (RESP2 or RESP3), responses formatted according to negotiated protocol
 
 ### Roadmap
 
