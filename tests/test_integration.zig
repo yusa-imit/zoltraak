@@ -6052,3 +6052,117 @@ test "BITCOUNT - empty string" {
 
     try testing.expectEqualStrings(":0\r\n", response);
 }
+
+// ============================================================================
+// INFO Command Tests (Iteration 30)
+// ============================================================================
+
+test "INFO - default shows multiple sections" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{"INFO"});
+    defer testing.allocator.free(response);
+
+    // Verify bulk string response format
+    try testing.expect(response[0] == '$');
+
+    // Check for all major sections in default output
+    try testing.expect(std.mem.indexOf(u8, response, "# Server") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# Clients") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# Memory") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# Persistence") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# Stats") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# Replication") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# CPU") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "# Keyspace") != null);
+}
+
+test "INFO - server section contains version" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "INFO", "SERVER" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "# Server") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "redis_version:") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "tcp_port:6379") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "uptime_in_seconds:") != null);
+}
+
+test "INFO - replication section shows role" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "INFO", "REPLICATION" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "# Replication") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "role:master") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "connected_slaves:0") != null);
+}
+
+test "INFO - keyspace section shows keys" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add some keys
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key1", "value1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SET", "key2", "value2" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "INFO", "KEYSPACE" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "# Keyspace") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "db0:keys=2") != null);
+}
+
+test "INFO - memory section shows usage" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "INFO", "MEMORY" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.indexOf(u8, response, "# Memory") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "used_memory:") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "used_memory_human:") != null);
+}
+
+test "INFO - case insensitive section names" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response1 = try client.sendCommand(&[_][]const u8{ "INFO", "server" });
+    defer testing.allocator.free(response1);
+
+    const response2 = try client.sendCommand(&[_][]const u8{ "INFO", "SERVER" });
+    defer testing.allocator.free(response2);
+
+    const response3 = try client.sendCommand(&[_][]const u8{ "INFO", "Server" });
+    defer testing.allocator.free(response3);
+
+    // All should contain the same section
+    try testing.expect(std.mem.indexOf(u8, response1, "# Server") != null);
+    try testing.expect(std.mem.indexOf(u8, response2, "# Server") != null);
+    try testing.expect(std.mem.indexOf(u8, response3, "# Server") != null);
+}

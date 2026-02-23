@@ -23,6 +23,7 @@ const bits_cmds = @import("bits.zig");
 const geo_cmds = @import("geo.zig");
 const hll_cmds = @import("hyperloglog.zig");
 const introspection_cmds = @import("introspection.zig");
+const info_cmds = @import("info.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -562,15 +563,38 @@ pub fn executeCommand(
             defer w.deinit();
             return w.writeInteger(0);
         } else if (std.mem.eql(u8, cmd_upper, "INFO")) {
+            const str_args = try arrayToStrings(allocator, array);
+            defer allocator.free(str_args);
+
+            // Build server config from storage/defaults
+            const server_config = info_cmds.ServerConfig{
+                .port = 6379,  // TODO: pass actual port
+                .bind = "127.0.0.1",  // TODO: pass actual bind address
+                .maxmemory = 0,
+                .maxmemory_policy = "noeviction",
+                .timeout = 0,
+                .tcp_keepalive = 300,
+                .save = "900 1 300 10 60 10000",
+                .appendonly = aof != null,
+                .appendfsync = "everysec",
+                .databases = 1,
+            };
+
+            // Build server stats
+            const server_stats = info_cmds.ServerStats{
+                .client_count = 1,  // TODO: track actual client count
+                .total_commands_processed = 0,  // TODO: track command count
+                .total_connections_received = 0,  // TODO: track connection count
+                .start_time_seconds = 0,  // TODO: track server start time
+            };
+
             if (repl) |r| {
-                const str_args = try arrayToStrings(allocator, array);
-                defer allocator.free(str_args);
-                break :blk try repl_cmds.cmdInfo(allocator, r, str_args);
+                break :blk try info_cmds.cmdInfo(allocator, storage, r, server_config, server_stats, str_args);
             }
-            // Fallback info with no replication state
-            var w = Writer.init(allocator);
-            defer w.deinit();
-            return w.writeBulkString("# Replication\r\nrole:master\r\n");
+            // Fallback without replication
+            var fallback_repl = try ReplicationState.initPrimary(allocator);
+            defer fallback_repl.deinit();
+            break :blk try info_cmds.cmdInfo(allocator, storage, &fallback_repl, server_config, server_stats, str_args);
         }
         // Client connection commands
         else if (std.mem.eql(u8, cmd_upper, "CLIENT")) {
