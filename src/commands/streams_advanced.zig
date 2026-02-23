@@ -2,6 +2,7 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const streams = @import("streams.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
@@ -622,4 +623,411 @@ test "XACK - acknowledges messages" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);
+}
+
+/// XCLAIM key group consumer min-idle-time ID [ID ...] [IDLE ms] [TIME ms-unix-time]
+///        [RETRYCOUNT count] [FORCE] [JUSTID]
+pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 6) {
+        return w.writeError("ERR wrong number of arguments for 'xclaim' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const group = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid group name"),
+    };
+
+    const consumer = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid consumer name"),
+    };
+
+    const min_idle_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min-idle-time"),
+    };
+    const min_idle_time = std.fmt.parseInt(i64, min_idle_str, 10) catch {
+        return w.writeError("ERR min-idle-time is not an integer or out of range");
+    };
+    if (min_idle_time < 0) {
+        return w.writeError("ERR Invalid min-idle-time");
+    }
+
+    // Collect IDs and options
+    var id_list = std.ArrayList([]const u8){};
+    defer id_list.deinit(allocator);
+
+    var idle: ?i64 = null;
+    var time: ?i64 = null;
+    var retrycount: ?u64 = null;
+    var force = false;
+    var justid = false;
+
+    var i: usize = 5;
+    while (i < args.len) : (i += 1) {
+        const arg = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(arg, "IDLE")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const idle_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            idle = std.fmt.parseInt(i64, idle_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.ascii.eqlIgnoreCase(arg, "TIME")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const time_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            time = std.fmt.parseInt(i64, time_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.ascii.eqlIgnoreCase(arg, "RETRYCOUNT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const rc_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            retrycount = std.fmt.parseInt(u64, rc_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.ascii.eqlIgnoreCase(arg, "FORCE")) {
+            force = true;
+        } else if (std.ascii.eqlIgnoreCase(arg, "JUSTID")) {
+            justid = true;
+        } else {
+            // This is an ID
+            try id_list.append(allocator, arg);
+        }
+    }
+
+    if (id_list.items.len == 0) {
+        return w.writeError("ERR wrong number of arguments for 'xclaim' command");
+    }
+
+    const entries = storage.xclaim(
+        allocator,
+        key,
+        group,
+        consumer,
+        min_idle_time,
+        id_list.items,
+        idle,
+        time,
+        retrycount,
+        force,
+        justid,
+    ) catch |err| switch (err) {
+        error.NoKey => return w.writeError("ERR no such key"),
+        error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => |e| return e,
+    };
+
+    if (entries == null) {
+        return w.writeArray(&[_]RespValue{});
+    }
+
+    var result = entries.?;
+    defer {
+        for (result.items) |*entry| {
+            entry.deinit(allocator);
+        }
+        result.deinit(allocator);
+    }
+
+    // Format response manually using RESP protocol
+    var result_buf = std.ArrayList(u8){};
+    defer result_buf.deinit(allocator);
+    const result_writer = result_buf.writer(allocator);
+
+    try result_writer.print("*{d}\r\n", .{result.items.len});
+    for (result.items) |*entry| {
+        if (justid) {
+            // Just return the ID
+            const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ entry.id.ms, entry.id.seq });
+            defer allocator.free(id_str);
+            try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
+        } else {
+            // Return [ID, [field, value, ...]]
+            try result_writer.writeAll("*2\r\n");
+            const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ entry.id.ms, entry.id.seq });
+            defer allocator.free(id_str);
+            try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
+            try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+            for (entry.fields.items) |field| {
+                try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
+            }
+        }
+    }
+
+    return result_buf.toOwnedSlice(allocator);
+}
+
+/// XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]
+pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 6) {
+        return w.writeError("ERR wrong number of arguments for 'xautoclaim' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const group = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid group name"),
+    };
+
+    const consumer = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid consumer name"),
+    };
+
+    const min_idle_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min-idle-time"),
+    };
+    const min_idle_time = std.fmt.parseInt(i64, min_idle_str, 10) catch {
+        return w.writeError("ERR min-idle-time is not an integer or out of range");
+    };
+    if (min_idle_time < 0) {
+        return w.writeError("ERR Invalid min-idle-time");
+    }
+
+    const start = switch (args[5]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid start ID"),
+    };
+
+    // Parse options
+    var count: usize = 100; // Default count
+    var justid = false;
+
+    var i: usize = 6;
+    while (i < args.len) : (i += 1) {
+        const arg = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(arg, "COUNT")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const count_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            count = std.fmt.parseInt(usize, count_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            if (count == 0) {
+                return w.writeError("ERR COUNT must be > 0");
+            }
+        } else if (std.ascii.eqlIgnoreCase(arg, "JUSTID")) {
+            justid = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const result = storage.xautoclaim(
+        allocator,
+        key,
+        group,
+        consumer,
+        min_idle_time,
+        start,
+        count,
+        justid,
+    ) catch |err| switch (err) {
+        error.NoKey => return w.writeError("ERR no such key"),
+        error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => |e| return e,
+    };
+
+    defer {
+        if (result.entries) |entries| {
+            var mut_entries = entries;
+            for (mut_entries.items) |*entry| {
+                entry.deinit(allocator);
+            }
+            mut_entries.deinit(allocator);
+        }
+    }
+
+    // Format response manually using RESP protocol
+    // Response format: [next_cursor, [entries...]]
+    var result_buf = std.ArrayList(u8){};
+    defer result_buf.deinit(allocator);
+    const result_writer = result_buf.writer(allocator);
+
+    try result_writer.writeAll("*2\r\n");
+
+    // Next cursor
+    try result_writer.print("${d}\r\n{s}\r\n", .{ result.next_cursor.len, result.next_cursor });
+
+    // Entries
+    if (result.entries) |entries| {
+        try result_writer.print("*{d}\r\n", .{entries.items.len});
+        for (entries.items) |*entry| {
+            if (justid) {
+                const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ entry.id.ms, entry.id.seq });
+                defer allocator.free(id_str);
+                try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
+            } else {
+                try result_writer.writeAll("*2\r\n");
+                const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ entry.id.ms, entry.id.seq });
+                defer allocator.free(id_str);
+                try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
+                try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+                for (entry.fields.items) |field| {
+                    try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
+                }
+            }
+        }
+    } else {
+        try result_writer.writeAll("*0\r\n");
+    }
+
+    return result_buf.toOwnedSlice(allocator);
+}
+
+test "XCLAIM basic functionality" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream and add entry
+    const xadd_args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "field1" },
+        RespValue{ .bulk_string = "value1" },
+    };
+    const xadd_result1 = try streams.cmdXadd(allocator, &storage, &xadd_args1);
+    defer allocator.free(xadd_result1);
+
+    // Create consumer group
+    const xgroup_args = [_]RespValue{
+        RespValue{ .bulk_string = "XGROUP" },
+        RespValue{ .bulk_string = "CREATE" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const xgroup_result = try cmdXgroup(allocator, &storage, &xgroup_args);
+    defer allocator.free(xgroup_result);
+
+    // Read message with consumer1
+    const xreadgroup_args = [_]RespValue{
+        RespValue{ .bulk_string = "XREADGROUP" },
+        RespValue{ .bulk_string = "GROUP" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "consumer1" },
+        RespValue{ .bulk_string = "STREAMS" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = ">" },
+    };
+    const xreadgroup_result = try cmdXreadgroup(allocator, &storage, &xreadgroup_args);
+    defer allocator.free(xreadgroup_result);
+
+    // Sleep briefly to ensure idle time
+    std.time.sleep(std.time.ns_per_ms * 10);
+
+    // Claim message for consumer2
+    const xclaim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XCLAIM" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "consumer2" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const xclaim_result = try cmdXclaim(allocator, &storage, &xclaim_args);
+    defer allocator.free(xclaim_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, xclaim_result, "1000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xclaim_result, "field1") != null);
+}
+
+test "XAUTOCLAIM basic functionality" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream and add entries
+    const xadd_args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "field1" },
+        RespValue{ .bulk_string = "value1" },
+    };
+    const xadd_result1 = try streams.cmdXadd(allocator, &storage, &xadd_args1);
+    defer allocator.free(xadd_result1);
+
+    // Create consumer group
+    const xgroup_args = [_]RespValue{
+        RespValue{ .bulk_string = "XGROUP" },
+        RespValue{ .bulk_string = "CREATE" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const xgroup_result = try cmdXgroup(allocator, &storage, &xgroup_args);
+    defer allocator.free(xgroup_result);
+
+    // Read message with consumer1
+    const xreadgroup_args = [_]RespValue{
+        RespValue{ .bulk_string = "XREADGROUP" },
+        RespValue{ .bulk_string = "GROUP" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "consumer1" },
+        RespValue{ .bulk_string = "STREAMS" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = ">" },
+    };
+    const xreadgroup_result = try cmdXreadgroup(allocator, &storage, &xreadgroup_args);
+    defer allocator.free(xreadgroup_result);
+
+    // Sleep briefly
+    std.time.sleep(std.time.ns_per_ms * 10);
+
+    // Auto-claim for consumer2
+    const xautoclaim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XAUTOCLAIM" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "consumer2" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "0-0" },
+    };
+    const xautoclaim_result = try cmdXautoclaim(allocator, &storage, &xautoclaim_args);
+    defer allocator.free(xautoclaim_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, xautoclaim_result, "1000-0") != null);
 }

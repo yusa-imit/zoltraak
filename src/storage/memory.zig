@@ -5544,6 +5544,293 @@ pub const Storage = struct {
         }
     }
 
+    /// Claim ownership of pending messages in a consumer group
+    /// Returns claimed entries
+    pub fn xclaim(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        group_name: []const u8,
+        consumer_name: []const u8,
+        min_idle_time: i64,
+        ids: []const []const u8,
+        idle: ?i64,
+        time: ?i64,
+        retrycount: ?u64,
+        force: bool,
+        justid: bool,
+    ) !?std.ArrayList(Value.StreamEntry) {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                // Ensure target consumer exists
+                const consumer_entry = try group_ptr.consumers.getOrPut(consumer_name);
+                if (!consumer_entry.found_existing) {
+                    const owned_consumer_name = try self.allocator.dupe(u8, consumer_name);
+                    consumer_entry.key_ptr.* = owned_consumer_name;
+                    consumer_entry.value_ptr.* = Value.Consumer{
+                        .name = owned_consumer_name,
+                        .pending = std.ArrayList(Value.StreamId){},
+                    };
+                }
+
+                const current_time = time orelse std.time.milliTimestamp();
+                var result = std.ArrayList(Value.StreamEntry){};
+
+                for (ids) |id_str| {
+                    const id = Value.StreamId.parse(id_str, null) catch continue;
+
+                    // Find the pending entry
+                    var pending_idx: ?usize = null;
+                    var old_consumer: ?[]const u8 = null;
+                    var old_delivery_count: u64 = 0;
+
+                    for (group_ptr.pending.items, 0..) |*pending, idx| {
+                        if (pending.id.equals(id)) {
+                            // Check if idle time is sufficient
+                            const idle_time = current_time - pending.delivery_time;
+                            if (!force and idle_time < min_idle_time) {
+                                continue;
+                            }
+
+                            pending_idx = idx;
+                            old_consumer = pending.consumer;
+                            old_delivery_count = pending.delivery_count;
+                            break;
+                        }
+                    }
+
+                    // If not in pending, check if FORCE is set
+                    if (pending_idx == null and !force) {
+                        continue;
+                    }
+
+                    // Find the actual stream entry
+                    var stream_entry: ?*Value.StreamEntry = null;
+                    for (stream_val.entries.items) |*item| {
+                        if (item.id.equals(id)) {
+                            stream_entry = item;
+                            break;
+                        }
+                    }
+
+                    if (stream_entry == null and !force) {
+                        continue;
+                    }
+
+                    // Remove from old consumer's pending list if it exists
+                    if (pending_idx) |idx| {
+                        if (old_consumer) |old_cons| {
+                            if (group_ptr.consumers.getPtr(old_cons)) |old_consumer_ptr| {
+                                var i: usize = 0;
+                                while (i < old_consumer_ptr.pending.items.len) : (i += 1) {
+                                    if (old_consumer_ptr.pending.items[i].equals(id)) {
+                                        _ = old_consumer_ptr.pending.orderedRemove(i);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Update the pending entry
+                        var pending = &group_ptr.pending.items[idx];
+                        self.allocator.free(pending.consumer);
+                        pending.consumer = try self.allocator.dupe(u8, consumer_name);
+                        pending.delivery_time = if (idle) |i| current_time - i else current_time;
+                        if (retrycount) |rc| {
+                            pending.delivery_count = rc;
+                        } else {
+                            pending.delivery_count = old_delivery_count + 1;
+                        }
+                    } else if (force) {
+                        // Add new pending entry if FORCE is set and entry doesn't exist in PEL
+                        try group_ptr.pending.append(self.allocator, Value.PendingEntry{
+                            .id = id,
+                            .consumer = try self.allocator.dupe(u8, consumer_name),
+                            .delivery_time = if (idle) |i| current_time - i else current_time,
+                            .delivery_count = retrycount orelse 1,
+                        });
+                    }
+
+                    // Add to new consumer's pending list
+                    try consumer_entry.value_ptr.pending.append(self.allocator, id);
+
+                    // Build result entry
+                    if (stream_entry) |se| {
+                        if (!justid) {
+                            var cloned_fields = std.ArrayList([]const u8){};
+                            for (se.fields.items) |field| {
+                                const owned_field = try allocator.dupe(u8, field);
+                                try cloned_fields.append(allocator, owned_field);
+                            }
+
+                            try result.append(allocator, Value.StreamEntry{
+                                .id = se.id,
+                                .fields = cloned_fields,
+                            });
+                        } else {
+                            try result.append(allocator, Value.StreamEntry{
+                                .id = se.id,
+                                .fields = std.ArrayList([]const u8){}, // Empty fields for JUSTID
+                            });
+                        }
+                    }
+                }
+
+                if (result.items.len == 0) {
+                    result.deinit(allocator);
+                    return null;
+                }
+
+                return result;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Auto-claim old pending messages in a consumer group
+    /// Returns (claimed entries, next cursor)
+    pub fn xautoclaim(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        group_name: []const u8,
+        consumer_name: []const u8,
+        min_idle_time: i64,
+        start: []const u8,
+        count: usize,
+        justid: bool,
+    ) !struct { entries: ?std.ArrayList(Value.StreamEntry), next_cursor: []const u8 } {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                // Ensure target consumer exists
+                const consumer_entry = try group_ptr.consumers.getOrPut(consumer_name);
+                if (!consumer_entry.found_existing) {
+                    const owned_consumer_name = try self.allocator.dupe(u8, consumer_name);
+                    consumer_entry.key_ptr.* = owned_consumer_name;
+                    consumer_entry.value_ptr.* = Value.Consumer{
+                        .name = owned_consumer_name,
+                        .pending = std.ArrayList(Value.StreamId){},
+                    };
+                }
+
+                const current_time = std.time.milliTimestamp();
+                var result = std.ArrayList(Value.StreamEntry){};
+                var claimed_count: usize = 0;
+                var next_id_str: []const u8 = "0-0";
+
+                // Parse start cursor
+                const start_id = if (std.mem.eql(u8, start, "0") or std.mem.eql(u8, start, "0-0"))
+                    Value.StreamId{ .ms = 0, .seq = 0 }
+                else
+                    Value.StreamId.parse(start, null) catch Value.StreamId{ .ms = 0, .seq = 0 };
+
+                // Scan through pending entries looking for old ones
+                for (group_ptr.pending.items) |*pending| {
+                    // Skip entries before start cursor
+                    if (pending.id.lessThan(start_id) or pending.id.equals(start_id)) {
+                        continue;
+                    }
+
+                    if (claimed_count >= count) {
+                        // Set next cursor
+                        next_id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ pending.id.ms, pending.id.seq });
+                        break;
+                    }
+
+                    // Check if entry is old enough
+                    const idle_time = current_time - pending.delivery_time;
+                    if (idle_time < min_idle_time) {
+                        continue;
+                    }
+
+                    // Find the stream entry
+                    var stream_entry: ?*Value.StreamEntry = null;
+                    for (stream_val.entries.items) |*item| {
+                        if (item.id.equals(pending.id)) {
+                            stream_entry = item;
+                            break;
+                        }
+                    }
+
+                    if (stream_entry == null) {
+                        continue;
+                    }
+
+                    // Remove from old consumer
+                    if (group_ptr.consumers.getPtr(pending.consumer)) |old_consumer_ptr| {
+                        var i: usize = 0;
+                        while (i < old_consumer_ptr.pending.items.len) : (i += 1) {
+                            if (old_consumer_ptr.pending.items[i].equals(pending.id)) {
+                                _ = old_consumer_ptr.pending.orderedRemove(i);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Update pending entry
+                    self.allocator.free(pending.consumer);
+                    pending.consumer = try self.allocator.dupe(u8, consumer_name);
+                    pending.delivery_time = current_time;
+                    pending.delivery_count += 1;
+
+                    // Add to new consumer
+                    try consumer_entry.value_ptr.pending.append(self.allocator, pending.id);
+
+                    // Build result
+                    if (stream_entry) |se| {
+                        if (!justid) {
+                            var cloned_fields = std.ArrayList([]const u8){};
+                            for (se.fields.items) |field| {
+                                const owned_field = try allocator.dupe(u8, field);
+                                try cloned_fields.append(allocator, owned_field);
+                            }
+
+                            try result.append(allocator, Value.StreamEntry{
+                                .id = se.id,
+                                .fields = cloned_fields,
+                            });
+                        } else {
+                            try result.append(allocator, Value.StreamEntry{
+                                .id = se.id,
+                                .fields = std.ArrayList([]const u8){},
+                            });
+                        }
+                    }
+
+                    claimed_count += 1;
+                }
+
+                return .{
+                    .entries = if (result.items.len > 0) result else null,
+                    .next_cursor = next_id_str,
+                };
+            },
+            else => return error.WrongType,
+        }
+    }
+
     /// Get summary of pending messages for a consumer group
     /// Returns RESP-formatted string: [count, min_id, max_id, [[consumer, count], ...]]
     pub fn xpendingSummary(

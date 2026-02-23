@@ -238,7 +238,7 @@ redis-cli -p 6379
 | COMMAND LIST | `COMMAND LIST [FILTERBY <filter>]` | List command names (supports pattern: filter) |
 | COMMAND HELP | `COMMAND HELP` | Show COMMAND command help |
 
-### Stream Commands (Iterations 16–17, 24, 27)
+### Stream Commands (Iterations 16–17, 24, 27–28)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -254,6 +254,8 @@ redis-cli -p 6379
 | XGROUP SETID | `XGROUP SETID key groupname <id \| $>` | Set consumer group's last delivered ID |
 | XREADGROUP | `XREADGROUP GROUP group consumer [COUNT count] [BLOCK ms] [NOACK] STREAMS key [key ...] id [id ...]` | Read entries from streams using consumer groups (> = new messages) |
 | XACK | `XACK key groupname id [id ...]` | Acknowledge processing of messages in a consumer group |
+| XCLAIM | `XCLAIM key group consumer min-idle-time ID [ID ...] [IDLE ms] [TIME ms] [RETRYCOUNT count] [FORCE] [JUSTID]` | Claim ownership of pending messages and transfer to another consumer |
+| XAUTOCLAIM | `XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]` | Automatically claim old pending messages and return next cursor |
 | XPENDING | `XPENDING key group [[IDLE min-idle-time] start end count [consumer]]` | Get information about pending messages in consumer group |
 | XINFO STREAM | `XINFO STREAM key [FULL [COUNT count]]` | Get information about stream metadata and entries |
 
@@ -443,7 +445,7 @@ OK
 
 ## Project Status
 
-Iterations 1–27 are complete.
+Iterations 1–28 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -460,6 +462,7 @@ Iterations 1–27 are complete.
 - Iteration 25: 6 geospatial commands (GEOADD, GEOPOS, GEODIST, GEOHASH, GEORADIUS, GEOSEARCH) - geospatial indexing and radius queries using geohash encoding
 - Iteration 26: 3 HyperLogLog commands (PFADD, PFCOUNT, PFMERGE) - probabilistic cardinality estimation with 16384 6-bit registers
 - Iteration 27: 2 stream introspection commands (XPENDING, XINFO STREAM) - pending message tracking and stream metadata inspection
+- Iteration 28: 2 stream consumer group recovery commands (XCLAIM, XAUTOCLAIM) - claim ownership of pending messages and transfer between consumers
 
 ### Roadmap
 

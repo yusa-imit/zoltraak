@@ -126,6 +126,7 @@ pub fn executeCommand(
                 "BZPOPMAX",   "SETRANGE",
                 "SETBIT",     "BITOP",
                 "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
+                "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
             };
             var is_write = false;
@@ -192,6 +193,7 @@ pub fn executeCommand(
             "BZPOPMAX",   "SETRANGE",
             "SETBIT",     "BITOP",
             "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
+            "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
         };
         for (write_cmds) |wc| {
@@ -489,6 +491,10 @@ pub fn executeCommand(
             break :blk try streams_adv.cmdXreadgroup(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XACK")) {
             break :blk try streams_adv.cmdXack(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XCLAIM")) {
+            break :blk try streams_adv.cmdXclaim(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XAUTOCLAIM")) {
+            break :blk try streams_adv.cmdXautoclaim(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XPENDING")) {
             break :blk try streams.cmdXpending(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XINFO")) {
