@@ -22,6 +22,7 @@ const command_cmds = @import("command.zig");
 const bits_cmds = @import("bits.zig");
 const geo_cmds = @import("geo.zig");
 const hll_cmds = @import("hyperloglog.zig");
+const introspection_cmds = @import("introspection.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -665,6 +666,16 @@ pub fn executeCommand(
             break :blk try hll_cmds.cmdPfcount(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "PFMERGE")) {
             break :blk try hll_cmds.cmdPfmerge(allocator, storage, array);
+        }
+        // Server introspection commands
+        else if (std.mem.eql(u8, cmd_upper, "MEMORY")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            break :blk try introspection_cmds.cmdMemory(allocator, storage, args);
+        } else if (std.mem.eql(u8, cmd_upper, "SLOWLOG")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            break :blk try introspection_cmds.cmdSlowlogStub(allocator, args);
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
