@@ -374,6 +374,12 @@ redis-cli -p 6379
 | SLOWLOG RESET | `SLOWLOG RESET` | Reset slow log (stub - always returns OK) |
 | INFO | `INFO [section]` | Get comprehensive server information (supports server, clients, memory, persistence, stats, replication, cpu, keyspace, all, default sections) |
 
+### Protocol Negotiation Commands (Iteration 31)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| HELLO | `HELLO [protover [AUTH username password] [SETNAME clientname]]` | Protocol negotiation command - returns server information including version, role, and mode (currently returns RESP2 format) |
+
 ## Example Session
 
 ```
@@ -458,7 +464,7 @@ OK
 
 ## Project Status
 
-Iterations 1–30 are complete.
+Iterations 1–31 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -478,6 +484,7 @@ Iterations 1–30 are complete.
 - Iteration 28: 2 stream consumer group recovery commands (XCLAIM, XAUTOCLAIM) - claim ownership of pending messages and transfer between consumers
 - Iteration 29: 7 server introspection commands (MEMORY STATS/USAGE/DOCTOR/HELP, SLOWLOG GET/LEN/RESET) - server monitoring and debugging tools (stub implementations)
 - Iteration 30: Comprehensive INFO command - complete implementation with all major sections (Server, Clients, Memory, Persistence, Stats, Replication, CPU, Keyspace)
+- Iteration 31: RESP3 protocol support - parser and writer for RESP3 types (null, boolean, double, big number, bulk error, verbatim string, map, set, push), HELLO command for protocol negotiation (basic RESP2 implementation)
 
 ### Roadmap
 

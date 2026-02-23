@@ -24,6 +24,7 @@ const geo_cmds = @import("geo.zig");
 const hll_cmds = @import("hyperloglog.zig");
 const introspection_cmds = @import("introspection.zig");
 const info_cmds = @import("info.zig");
+const server_cmds = @import("server_commands.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 
@@ -206,8 +207,13 @@ pub fn executeCommand(
 
     // Execute command
     const response = blk: {
+        // Server commands
+        if (std.mem.eql(u8, cmd_upper, "HELLO")) {
+            const args_slice = if (array.len > 1) array[1..] else array[0..0];
+            break :blk try server_cmds.cmdHello(allocator, args_slice);
+        }
         // String commands
-        if (std.mem.eql(u8, cmd_upper, "PING")) {
+        else if (std.mem.eql(u8, cmd_upper, "PING")) {
             break :blk try cmdPing(allocator, array);
         } else if (std.mem.eql(u8, cmd_upper, "SET")) {
             break :blk try cmdSet(allocator, storage, array);
