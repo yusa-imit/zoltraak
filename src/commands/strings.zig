@@ -373,11 +373,14 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
             break :blk try sets.cmdScard(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SUNION")) {
-            break :blk try sets.cmdSunion(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sets.cmdSunion(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SINTER")) {
-            break :blk try sets.cmdSinter(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sets.cmdSinter(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SDIFF")) {
-            break :blk try sets.cmdSdiff(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sets.cmdSdiff(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SUNIONSTORE")) {
             break :blk try sets.cmdSunionstore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SINTERSTORE")) {

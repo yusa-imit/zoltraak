@@ -202,7 +202,8 @@ pub fn cmdScard(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// SUNION key [key ...]
 /// Returns the members of the set resulting from the union of all the given sets
 /// Non-existent keys are treated as empty sets
-pub fn cmdSunion(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Returns RESP3 set (~) when RESP3 is negotiated, RESP2 array otherwise
+pub fn cmdSunion(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -236,13 +237,19 @@ pub fn cmdSunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         try resp_values.append(allocator, RespValue{ .bulk_string = member });
     }
 
-    return w.writeArray(resp_values.items);
+    // Return RESP3 set if RESP3, otherwise array
+    if (protocol_version == .RESP3) {
+        return w.writeSet(resp_values.items);
+    } else {
+        return w.writeArray(resp_values.items);
+    }
 }
 
 /// SINTER key [key ...]
 /// Returns the members of the set resulting from the intersection of all the given sets
 /// Non-existent keys are treated as empty sets
-pub fn cmdSinter(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Returns RESP3 set (~) when RESP3 is negotiated, RESP2 array otherwise
+pub fn cmdSinter(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -276,13 +283,19 @@ pub fn cmdSinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         try resp_values.append(allocator, RespValue{ .bulk_string = member });
     }
 
-    return w.writeArray(resp_values.items);
+    // Return RESP3 set if RESP3, otherwise array
+    if (protocol_version == .RESP3) {
+        return w.writeSet(resp_values.items);
+    } else {
+        return w.writeArray(resp_values.items);
+    }
 }
 
 /// SDIFF key [key ...]
 /// Returns the members of the set resulting from the difference between the first set and all successive sets
 /// Non-existent keys are treated as empty sets
-pub fn cmdSdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Returns RESP3 set (~) when RESP3 is negotiated, RESP2 array otherwise
+pub fn cmdSdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -316,7 +329,12 @@ pub fn cmdSdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         try resp_values.append(allocator, RespValue{ .bulk_string = member });
     }
 
-    return w.writeArray(resp_values.items);
+    // Return RESP3 set if RESP3, otherwise array
+    if (protocol_version == .RESP3) {
+        return w.writeSet(resp_values.items);
+    } else {
+        return w.writeArray(resp_values.items);
+    }
 }
 
 /// SUNIONSTORE destination key [key ...]
