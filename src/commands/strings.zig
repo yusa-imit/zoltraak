@@ -27,6 +27,7 @@ const info_cmds = @import("info.zig");
 const server_cmds = @import("server_commands.zig");
 const scripting_cmds = @import("scripting.zig");
 const scripting_mod = @import("../storage/scripting.zig");
+const acl_cmds = @import("acl.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 pub const ScriptStore = scripting_mod.ScriptStore;
@@ -779,6 +780,48 @@ pub fn executeCommand(
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SCRIPT subcommand '{s}'", .{subcmd});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+        // ACL commands
+        else if (std.mem.eql(u8, cmd_upper, "ACL")) {
+            if (array.len < 2) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR wrong number of arguments for 'acl' command");
+            }
+            const subcmd = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR invalid subcommand format");
+                },
+            };
+            const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+            defer allocator.free(subcmd_upper);
+
+            if (std.mem.eql(u8, subcmd_upper, "WHOAMI")) {
+                break :blk try acl_cmds.cmdACLWhoami(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
+                break :blk try acl_cmds.cmdACLList(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "USERS")) {
+                break :blk try acl_cmds.cmdACLUsers(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "GETUSER")) {
+                break :blk try acl_cmds.cmdACLGetuser(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "SETUSER")) {
+                break :blk try acl_cmds.cmdACLSetuser(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "DELUSER")) {
+                break :blk try acl_cmds.cmdACLDeluser(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "CAT")) {
+                break :blk try acl_cmds.cmdACLCat(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                break :blk try acl_cmds.cmdACLHelp(allocator, array[1..]);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown ACL subcommand '{s}'", .{subcmd});
                 break :blk try w.writeError(err_msg);
             }
         } else {

@@ -405,6 +405,21 @@ redis-cli -p 6379
 
 **Note**: The scripting commands provide Redis-compatible interfaces but currently return stub values (nil for EVAL/EVALSHA). Full Lua script execution would require embedding a Lua interpreter. The SCRIPT LOAD command generates proper SHA1 hashes and stores scripts for future reference.
 
+### ACL (Access Control List) Commands (Iteration 37)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| ACL WHOAMI | `ACL WHOAMI` | Return the current connection username (stub: always returns "default") |
+| ACL LIST | `ACL LIST` | List all ACL rules in config file format (stub: only default user) |
+| ACL USERS | `ACL USERS` | List all usernames (stub: only "default" exists) |
+| ACL GETUSER | `ACL GETUSER <username>` | Get user details including flags, passwords, commands, and keys (stub: only default user supported) |
+| ACL SETUSER | `ACL SETUSER <username> <attribute> [<attribute> ...]` | Create or modify user with specified attributes (stub: accepts but doesn't persist) |
+| ACL DELUSER | `ACL DELUSER <username> [<username> ...]` | Delete one or more users (stub: cannot delete default user) |
+| ACL CAT | `ACL CAT [<category>]` | List command categories or commands in a category |
+| ACL HELP | `ACL HELP` | Show help for ACL command |
+
+**Note**: The ACL commands provide Redis-compatible interfaces but are stub implementations. Authentication and authorization are not enforced - all clients have full access. The commands return appropriate responses for compatibility with Redis clients but do not store or enforce user permissions.
+
 ## Example Session
 
 ```
@@ -489,7 +504,7 @@ OK
 
 ## Project Status
 
-Iterations 1–36 are complete.
+Iterations 1–37 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -515,7 +530,7 @@ Iterations 1–36 are complete.
 - Iteration 34: Extended RESP3-aware commands - HKEYS returns RESP3 set (field names are unique), ZRANGE/ZREVRANGE with WITHSCORES return RESP3 map (member → score), expanding native RESP3 type usage for improved semantic clarity
 - Iteration 35: Set operation RESP3 support - SINTER/SUNION/SDIFF return RESP3 set when RESP3 negotiated, completing RESP3 native type usage for all set-returning commands
 - Iteration 36: Basic scripting support - EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH/HELP commands with SHA1 script caching (stub implementation - returns nil, full Lua execution pending)
-- Iteration 35: Set operation RESP3 support - SINTER/SUNION/SDIFF return RESP3 set when RESP3 negotiated, completing RESP3 native type usage for all set-returning commands
+- Iteration 37: ACL (Access Control List) basic stubs - ACL WHOAMI/LIST/USERS/GETUSER/SETUSER/DELUSER/CAT/HELP commands (stub implementation - authentication not enforced, always uses "default" user)
 
 ### Roadmap
 
