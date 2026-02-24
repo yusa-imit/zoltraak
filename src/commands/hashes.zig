@@ -192,8 +192,8 @@ pub fn cmdHgetall(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
 /// HKEYS key
 /// Get all field names in a hash
-/// Returns array of field names
-pub fn cmdHkeys(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Returns array of field names (RESP3: set, since fields are unique)
+pub fn cmdHkeys(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -220,17 +220,27 @@ pub fn cmdHkeys(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             try resp_values.append(allocator, RespValue{ .bulk_string = field });
         }
 
-        return w.writeArray(resp_values.items);
+        // RESP3: return as set (fields are unique), RESP2: return as array
+        if (protocol_version == .RESP3) {
+            return w.writeSet(resp_values.items);
+        } else {
+            return w.writeArray(resp_values.items);
+        }
     } else {
-        // Empty array for non-existent key
-        return w.writeArray(&[_]RespValue{});
+        // Empty set/array for non-existent key
+        if (protocol_version == .RESP3) {
+            return w.writeSet(&[_]RespValue{});
+        } else {
+            return w.writeArray(&[_]RespValue{});
+        }
     }
 }
 
 /// HVALS key
 /// Get all values in a hash
-/// Returns array of values
-pub fn cmdHvals(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Returns array of values (values may repeat, so always array even in RESP3)
+pub fn cmdHvals(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+    _ = protocol_version; // Values may repeat, so always array
     var w = Writer.init(allocator);
     defer w.deinit();
 

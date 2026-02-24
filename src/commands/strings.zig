@@ -396,9 +396,11 @@ pub fn executeCommand(
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try hashes.cmdHgetall(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HKEYS")) {
-            break :blk try hashes.cmdHkeys(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try hashes.cmdHkeys(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HVALS")) {
-            break :blk try hashes.cmdHvals(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try hashes.cmdHvals(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HEXISTS")) {
             break :blk try hashes.cmdHexists(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HLEN")) {
@@ -418,7 +420,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "ZREM")) {
             break :blk try sorted_sets.cmdZrem(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANGE")) {
-            break :blk try sorted_sets.cmdZrange(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrange(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYSCORE")) {
             break :blk try sorted_sets.cmdZrangebyscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZSCORE")) {
@@ -470,7 +473,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
             break :blk try sorted_sets.cmdZmscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGE")) {
-            break :blk try sorted_sets.cmdZrevrange(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrevrange(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGEBYSCORE")) {
             break :blk try sorted_sets.cmdZrevrangebyscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANDMEMBER")) {

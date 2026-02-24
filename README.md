@@ -374,15 +374,18 @@ redis-cli -p 6379
 | SLOWLOG RESET | `SLOWLOG RESET` | Reset slow log (stub - always returns OK) |
 | INFO | `INFO [section]` | Get comprehensive server information (supports server, clients, memory, persistence, stats, replication, cpu, keyspace, all, default sections) |
 
-### Protocol Negotiation Commands (Iterations 31-33)
+### Protocol Negotiation Commands (Iterations 31-34)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
 | HELLO | `HELLO [protover [AUTH username password] [SETNAME clientname]]` | Protocol negotiation command - negotiates RESP2/RESP3 protocol version per connection, returns server information in negotiated format (map for RESP3, array for RESP2) |
 
-**RESP3 Protocol-Aware Response Formatting (Iteration 33):**
+**RESP3 Protocol-Aware Response Formatting (Iterations 33-34):**
 - `HGETALL`: Returns RESP3 map (`%<count>\r\n<key><value>...\r\n`) when RESP3 is negotiated, RESP2 array otherwise
 - `SMEMBERS`: Returns RESP3 set (`~<count>\r\n<elem>...\r\n`) when RESP3 is negotiated, RESP2 array otherwise
+- `HKEYS`: Returns RESP3 set when RESP3 is negotiated (field names are unique), RESP2 array otherwise
+- `ZRANGE` with WITHSCORES: Returns RESP3 map (member → score) when RESP3 is negotiated, RESP2 flat array otherwise
+- `ZREVRANGE` with WITHSCORES: Returns RESP3 map (member → score) when RESP3 is negotiated, RESP2 flat array otherwise
 - Protocol version is tracked per connection and persists for the session duration
 - All other commands continue to work with both RESP2 and RESP3
 
@@ -470,7 +473,7 @@ OK
 
 ## Project Status
 
-Iterations 1–33 are complete.
+Iterations 1–34 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -493,6 +496,7 @@ Iterations 1–33 are complete.
 - Iteration 31: RESP3 protocol support - parser and writer for RESP3 types (null, boolean, double, big number, bulk error, verbatim string, map, set, push), HELLO command for protocol negotiation (basic RESP2 implementation)
 - Iteration 32: Full RESP3 integration - per-connection protocol tracking, HELLO command negotiates and persists protocol version (RESP2 or RESP3), responses formatted according to negotiated protocol
 - Iteration 33: Protocol-aware response formatting - HGETALL returns RESP3 map when RESP3 negotiated, SMEMBERS returns RESP3 set when RESP3 negotiated, leveraging native RESP3 collection types for better semantic clarity
+- Iteration 34: Extended RESP3-aware commands - HKEYS returns RESP3 set (field names are unique), ZRANGE/ZREVRANGE with WITHSCORES return RESP3 map (member → score), expanding native RESP3 type usage for improved semantic clarity
 
 ### Roadmap
 

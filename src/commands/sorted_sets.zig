@@ -2,10 +2,13 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const client_mod = @import("./client.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
+const MapPair = writer_mod.MapPair;
 const Storage = storage_mod.Storage;
+const RespProtocol = client_mod.RespProtocol;
 
 /// Parse score from string, supporting +inf and -inf
 fn parseScore(s: []const u8) !f64 {
@@ -151,7 +154,8 @@ pub fn cmdZrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// ZRANGE key start stop [WITHSCORES]
 /// Get members by rank range
 /// Returns array of members (interleaved with scores if WITHSCORES)
-pub fn cmdZrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: returns map when WITHSCORES is used
+pub fn cmdZrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -211,16 +215,41 @@ pub fn cmdZrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             allocator.free(items);
         }
 
-        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, items.len);
-        defer resp_values.deinit(allocator);
+        // RESP3 with WITHSCORES: return as map (member -> score)
+        if (protocol_version == .RESP3 and with_scores and items.len > 0) {
+            const map_len = items.len / 2;
+            const map_pairs = try allocator.alloc(MapPair, map_len);
+            defer allocator.free(map_pairs);
 
-        for (items) |item| {
-            try resp_values.append(allocator, RespValue{ .bulk_string = item });
+            var i: usize = 0;
+            var pair_idx: usize = 0;
+            while (i < items.len) : (i += 2) {
+                map_pairs[pair_idx] = MapPair{
+                    .key = RespValue{ .bulk_string = items[i] },
+                    .value = RespValue{ .bulk_string = items[i + 1] },
+                };
+                pair_idx += 1;
+            }
+
+            return w.writeMap(map_pairs);
+        } else {
+            // RESP2 or no WITHSCORES: flat array
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, items.len);
+            defer resp_values.deinit(allocator);
+
+            for (items) |item| {
+                try resp_values.append(allocator, RespValue{ .bulk_string = item });
+            }
+
+            return w.writeArray(resp_values.items);
         }
-
-        return w.writeArray(resp_values.items);
     } else {
-        return w.writeArray(&[_]RespValue{});
+        // Empty result
+        if (protocol_version == .RESP3 and with_scores) {
+            return w.writeMap(&[_]MapPair{});
+        } else {
+            return w.writeArray(&[_]RespValue{});
+        }
     }
 }
 
@@ -788,7 +817,7 @@ pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
 /// ZREVRANGE key start stop [WITHSCORES]
 /// Reverse-order range by index (deprecated but needed for compatibility).
-pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -844,27 +873,60 @@ pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
             for (ms) |sm| allocator.free(sm.member);
             allocator.free(ms);
         }
-        const result_len = if (with_scores) ms.len * 2 else ms.len;
-        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
-        defer resp_values.deinit(allocator);
-        var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
-        defer {
-            for (score_strings.items) |s| allocator.free(s);
-            score_strings.deinit(allocator);
-        }
-        for (ms) |sm| {
-            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
-            if (with_scores) {
+
+        // RESP3 with WITHSCORES: return as map (member -> score)
+        if (protocol_version == .RESP3 and with_scores and ms.len > 0) {
+            const map_pairs = try allocator.alloc(MapPair, ms.len);
+            defer allocator.free(map_pairs);
+            var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+            defer {
+                for (score_strings.items) |s| allocator.free(s);
+                score_strings.deinit(allocator);
+            }
+
+            for (ms, 0..) |sm, i| {
                 var score_buf: [64]u8 = undefined;
                 const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
                 const owned_score = try allocator.dupe(u8, score_str);
                 try score_strings.append(allocator, owned_score);
-                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+
+                map_pairs[i] = MapPair{
+                    .key = RespValue{ .bulk_string = sm.member },
+                    .value = RespValue{ .bulk_string = owned_score },
+                };
             }
+
+            return w.writeMap(map_pairs);
+        } else {
+            // RESP2 or no WITHSCORES: flat array
+            const result_len = if (with_scores) ms.len * 2 else ms.len;
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
+            defer resp_values.deinit(allocator);
+            var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+            defer {
+                for (score_strings.items) |s| allocator.free(s);
+                score_strings.deinit(allocator);
+            }
+            for (ms) |sm| {
+                try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+                if (with_scores) {
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                    const owned_score = try allocator.dupe(u8, score_str);
+                    try score_strings.append(allocator, owned_score);
+                    try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+                }
+            }
+            return w.writeArray(resp_values.items);
         }
-        return w.writeArray(resp_values.items);
     }
-    return w.writeArray(&[_]RespValue{});
+
+    // Empty result
+    if (protocol_version == .RESP3 and with_scores) {
+        return w.writeMap(&[_]MapPair{});
+    } else {
+        return w.writeArray(&[_]RespValue{});
+    }
 }
 
 /// ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
