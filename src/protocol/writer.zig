@@ -3,6 +3,12 @@ const parser = @import("parser.zig");
 const RespValue = parser.RespValue;
 const RespType = parser.RespType;
 
+/// Type for RESP3 map key-value pairs
+pub const MapPair = struct {
+    key: RespValue,
+    value: RespValue,
+};
+
 /// RESP protocol writer for serializing responses (RESP2 + RESP3)
 pub const Writer = struct {
     allocator: std.mem.Allocator,
@@ -200,7 +206,7 @@ pub const Writer = struct {
     }
 
     /// Write a RESP3 map (%<count>\r\n<key><value>...\r\n)
-    pub fn writeMap(self: *Writer, pairs: []const struct { key: RespValue, value: RespValue }) ![]const u8 {
+    pub fn writeMap(self: *Writer, pairs: []const MapPair) ![]const u8 {
         var buffer = std.ArrayList(u8){};
         errdefer buffer.deinit(self.allocator);
 

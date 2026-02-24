@@ -2,10 +2,13 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const client_mod = @import("./client.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
+const MapPair = writer_mod.MapPair;
 const Storage = storage_mod.Storage;
+const RespProtocol = client_mod.RespProtocol;
 
 /// HSET key field value [field value ...]
 /// Sets field-value pairs in a hash
@@ -129,7 +132,7 @@ pub fn cmdHdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// HGETALL key
 /// Get all fields and values in a hash
 /// Returns array where even indices are fields, odd indices are values
-pub fn cmdHgetall(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHgetall(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -148,18 +151,42 @@ pub fn cmdHgetall(allocator: std.mem.Allocator, storage: *Storage, args: []const
     if (result) |pairs| {
         defer allocator.free(pairs);
 
-        // Convert to RespValue array
-        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, pairs.len);
-        defer resp_values.deinit(allocator);
+        // RESP3: return as map, RESP2: return as flat array
+        if (protocol_version == .RESP3 and pairs.len > 0) {
+            // Build map pairs (field -> value)
+            const map_len = pairs.len / 2;
+            const map_pairs = try allocator.alloc(MapPair, map_len);
+            defer allocator.free(map_pairs);
 
-        for (pairs) |item| {
-            try resp_values.append(allocator, RespValue{ .bulk_string = item });
+            var i: usize = 0;
+            var pair_idx: usize = 0;
+            while (i < pairs.len) : (i += 2) {
+                map_pairs[pair_idx] = MapPair{
+                    .key = RespValue{ .bulk_string = pairs[i] },
+                    .value = RespValue{ .bulk_string = pairs[i + 1] },
+                };
+                pair_idx += 1;
+            }
+
+            return w.writeMap(map_pairs);
+        } else {
+            // RESP2: flat array [field1, value1, field2, value2, ...]
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, pairs.len);
+            defer resp_values.deinit(allocator);
+
+            for (pairs) |item| {
+                try resp_values.append(allocator, RespValue{ .bulk_string = item });
+            }
+
+            return w.writeArray(resp_values.items);
         }
-
-        return w.writeArray(resp_values.items);
     } else {
-        // Empty array for non-existent key
-        return w.writeArray(&[_]RespValue{});
+        // Empty array/map for non-existent key
+        if (protocol_version == .RESP3) {
+            return w.writeMap(&[_]MapPair{});
+        } else {
+            return w.writeArray(&[_]RespValue{});
+        }
     }
 }
 
@@ -906,4 +933,77 @@ test "cmdHsetnx - field already exists returns 0" {
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "cmdHgetall - RESP2 returns flat array" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up hash with two fields
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // HGETALL with RESP2
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETALL" },
+        .{ .bulk_string = "myhash" },
+    };
+    const response = try cmdHgetall(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    // Should return flat array: *4\r\n$6\r\nfield1\r\n$6\r\nvalue1\r\n$6\r\nfield2\r\n$6\r\nvalue2\r\n
+    try std.testing.expect(std.mem.startsWith(u8, response, "*4\r\n"));
+}
+
+test "cmdHgetall - RESP3 returns map" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up hash with two fields
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // HGETALL with RESP3
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETALL" },
+        .{ .bulk_string = "myhash" },
+    };
+    const response = try cmdHgetall(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // Should return RESP3 map: %2\r\n...
+    try std.testing.expect(std.mem.startsWith(u8, response, "%2\r\n"));
+}
+
+test "cmdHgetall - RESP3 empty hash returns empty map" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // HGETALL on non-existent key with RESP3
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETALL" },
+        .{ .bulk_string = "nonexistent" },
+    };
+    const response = try cmdHgetall(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // Should return empty RESP3 map: %0\r\n
+    try std.testing.expectEqualStrings("%0\r\n", response);
 }

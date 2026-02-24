@@ -2,10 +2,12 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const client_mod = @import("./client.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const RespProtocol = client_mod.RespProtocol;
 
 /// SADD key member [member ...]
 /// Adds one or more members to a set
@@ -119,8 +121,8 @@ pub fn cmdSismember(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
 /// SMEMBERS key
 /// Returns all members of the set
-/// Returns array of bulk strings
-pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: Returns set, RESP2: Returns array of bulk strings
+pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -143,12 +145,16 @@ pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     // Execute SMEMBERS
     const members = (try storage.smembers(allocator, key)) orelse {
-        // Key doesn't exist or is empty - return empty array
-        return w.writeArray(&[_]RespValue{});
+        // Key doesn't exist or is empty - return empty set/array
+        if (protocol_version == .RESP3) {
+            return w.writeSet(&[_]RespValue{});
+        } else {
+            return w.writeArray(&[_]RespValue{});
+        }
     };
     defer allocator.free(members);
 
-    // Convert to RespValue array
+    // Convert to RespValue array/set
     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
     defer resp_values.deinit(allocator);
 
@@ -156,7 +162,12 @@ pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         try resp_values.append(allocator, RespValue{ .bulk_string = member });
     }
 
-    return w.writeArray(resp_values.items);
+    // RESP3: return as set, RESP2: return as array
+    if (protocol_version == .RESP3) {
+        return w.writeSet(resp_values.items);
+    } else {
+        return w.writeArray(resp_values.items);
+    }
 }
 
 /// SCARD key
@@ -1310,4 +1321,73 @@ test "sets - SDIFFSTORE" {
 
     // a and c are in s1 but not s2
     try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "cmdSmembers - RESP2 returns array" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up set with two members
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "SADD" },
+        .{ .bulk_string = "myset" },
+        .{ .bulk_string = "member1" },
+        .{ .bulk_string = "member2" },
+    };
+    _ = try cmdSadd(allocator, storage, &set_args);
+
+    // SMEMBERS with RESP2
+    const args = [_]RespValue{
+        .{ .bulk_string = "SMEMBERS" },
+        .{ .bulk_string = "myset" },
+    };
+    const response = try cmdSmembers(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    // Should return RESP2 array: *2\r\n...
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+}
+
+test "cmdSmembers - RESP3 returns set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up set with two members
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "SADD" },
+        .{ .bulk_string = "myset" },
+        .{ .bulk_string = "member1" },
+        .{ .bulk_string = "member2" },
+    };
+    _ = try cmdSadd(allocator, storage, &set_args);
+
+    // SMEMBERS with RESP3
+    const args = [_]RespValue{
+        .{ .bulk_string = "SMEMBERS" },
+        .{ .bulk_string = "myset" },
+    };
+    const response = try cmdSmembers(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // Should return RESP3 set: ~2\r\n...
+    try std.testing.expect(std.mem.startsWith(u8, response, "~2\r\n"));
+}
+
+test "cmdSmembers - RESP3 empty set returns empty set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // SMEMBERS on non-existent key with RESP3
+    const args = [_]RespValue{
+        .{ .bulk_string = "SMEMBERS" },
+        .{ .bulk_string = "nonexistent" },
+    };
+    const response = try cmdSmembers(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // Should return empty RESP3 set: ~0\r\n
+    try std.testing.expectEqualStrings("~0\r\n", response);
 }

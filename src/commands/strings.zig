@@ -36,11 +36,23 @@ const Persistence = persistence_mod.Persistence;
 pub const Aof = aof_mod.Aof;
 pub const PubSub = pubsub_mod.PubSub;
 pub const ClientRegistry = client_cmds.ClientRegistry;
+const RespProtocol = client_cmds.RespProtocol;
 
 /// Default RDB file path
 const DEFAULT_RDB_PATH = "dump.rdb";
 /// Default AOF file path
 const DEFAULT_AOF_PATH = "appendonly.aof";
+
+/// Get the RESP protocol version for a client (defaults to RESP2 if not found)
+fn getClientProtocol(client_registry: *ClientRegistry, client_id: u64) RespProtocol {
+    client_registry.mutex.lock();
+    defer client_registry.mutex.unlock();
+
+    if (client_registry.clients.get(client_id)) |client_info| {
+        return client_info.protocol;
+    }
+    return .RESP2; // Default to RESP2
+}
 
 /// Execute a RESP command and return the serialized response.
 /// Caller owns returned memory and must free it.
@@ -356,7 +368,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "SISMEMBER")) {
             break :blk try sets.cmdSismember(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SMEMBERS")) {
-            break :blk try sets.cmdSmembers(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sets.cmdSmembers(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
             break :blk try sets.cmdScard(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SUNION")) {
@@ -380,7 +393,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "HDEL")) {
             break :blk try hashes.cmdHdel(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HGETALL")) {
-            break :blk try hashes.cmdHgetall(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try hashes.cmdHgetall(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HKEYS")) {
             break :blk try hashes.cmdHkeys(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HVALS")) {
