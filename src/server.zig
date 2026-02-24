@@ -7,6 +7,7 @@ const aof_mod = @import("storage/aof.zig");
 const pubsub_mod = @import("storage/pubsub.zig");
 const repl_mod = @import("storage/replication.zig");
 const client_mod = @import("commands/client.zig");
+const scripting_mod = @import("storage/scripting.zig");
 
 const Parser = protocol.Parser;
 const Writer = writer_mod.Writer;
@@ -15,6 +16,7 @@ const Aof = aof_mod.Aof;
 const PubSub = pubsub_mod.PubSub;
 const ReplicationState = repl_mod.ReplicationState;
 const ClientRegistry = client_mod.ClientRegistry;
+const ScriptStore = scripting_mod.ScriptStore;
 
 /// Server configuration
 pub const Config = struct {
@@ -38,6 +40,8 @@ pub const Server = struct {
     repl: ReplicationState,
     /// Client registry for tracking active connections
     client_registry: ClientRegistry,
+    /// Script storage for Lua scripts
+    script_store: ScriptStore,
     /// Monotonically increasing connection ID used as subscriber_id.
     next_subscriber_id: u64,
     running: std.atomic.Value(bool),
@@ -65,6 +69,7 @@ pub const Server = struct {
             .pubsub = PubSub.init(allocator),
             .repl = repl,
             .client_registry = ClientRegistry.init(allocator),
+            .script_store = ScriptStore.init(allocator),
             .next_subscriber_id = 1,
             .running = std.atomic.Value(bool).init(false),
         };
@@ -79,6 +84,7 @@ pub const Server = struct {
         self.pubsub.deinit();
         self.repl.deinit();
         self.client_registry.deinit();
+        self.script_store.deinit();
         const allocator = self.allocator;
         allocator.destroy(self);
     }
@@ -260,6 +266,7 @@ pub const Server = struct {
                 this_replica_idx,
                 &self.client_registry,
                 client_id,
+                &self.script_store,
             ) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";

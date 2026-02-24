@@ -25,8 +25,11 @@ const hll_cmds = @import("hyperloglog.zig");
 const introspection_cmds = @import("introspection.zig");
 const info_cmds = @import("info.zig");
 const server_cmds = @import("server_commands.zig");
+const scripting_cmds = @import("scripting.zig");
+const scripting_mod = @import("../storage/scripting.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
+pub const ScriptStore = scripting_mod.ScriptStore;
 
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
@@ -78,6 +81,7 @@ pub fn executeCommand(
     replica_idx: ?usize,
     client_registry: *ClientRegistry,
     client_id: u64,
+    script_store: *ScriptStore,
 ) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
@@ -171,7 +175,7 @@ pub fn executeCommand(
     } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
         return tx_mod.cmdUnwatch(allocator, tx, array);
     } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
-        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id);
+        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store);
     }
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
@@ -727,6 +731,56 @@ pub fn executeCommand(
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
             break :blk try introspection_cmds.cmdSlowlogStub(allocator, args);
+        }
+        // Scripting commands
+        else if (std.mem.eql(u8, cmd_upper, "EVAL")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
+            break :blk try scripting_cmds.cmdEval(allocator, storage, script_store, args, resp_version);
+        } else if (std.mem.eql(u8, cmd_upper, "EVALSHA")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
+            break :blk try scripting_cmds.cmdEvalSHA(allocator, storage, script_store, args, resp_version);
+        } else if (std.mem.eql(u8, cmd_upper, "SCRIPT")) {
+            if (array.len < 2) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR wrong number of arguments for 'script' command");
+            }
+            const subcmd = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR invalid subcommand format");
+                },
+            };
+            const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+            defer allocator.free(subcmd_upper);
+
+            if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
+                const args = try extractBulkStrings(allocator, array[2..]);
+                defer allocator.free(args);
+                break :blk try scripting_cmds.cmdScriptLoad(allocator, script_store, args);
+            } else if (std.mem.eql(u8, subcmd_upper, "EXISTS")) {
+                const args = try extractBulkStrings(allocator, array[2..]);
+                defer allocator.free(args);
+                break :blk try scripting_cmds.cmdScriptExists(allocator, script_store, args);
+            } else if (std.mem.eql(u8, subcmd_upper, "FLUSH")) {
+                const args = try extractBulkStrings(allocator, array[2..]);
+                defer allocator.free(args);
+                break :blk try scripting_cmds.cmdScriptFlush(allocator, script_store, args);
+            } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                break :blk try scripting_cmds.cmdScriptHelp(allocator);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SCRIPT subcommand '{s}'", .{subcmd});
+                break :blk try w.writeError(err_msg);
+            }
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -801,6 +855,7 @@ fn cmdExec(
     my_port: u16,
     client_registry: *ClientRegistry,
     client_id: u64,
+    script_store: *ScriptStore,
 ) anyerror![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -854,6 +909,7 @@ fn cmdExec(
             null,
             client_registry,
             client_id,
+            script_store,
         ) catch |err| blk: {
             var buf: [64]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "ERR command error: {any}", .{err}) catch "ERR internal error";

@@ -392,6 +392,19 @@ redis-cli -p 6379
 - Protocol version is tracked per connection and persists for the session duration
 - All other commands continue to work with both RESP2 and RESP3
 
+### Scripting Commands (Iteration 36)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| EVAL | `EVAL script numkeys key [key ...] arg [arg ...]` | Execute a Lua script server side (stub implementation - returns nil) |
+| EVALSHA | `EVALSHA sha1 numkeys key [key ...] arg [arg ...]` | Execute a cached script by SHA1 digest (stub implementation - returns nil) |
+| SCRIPT LOAD | `SCRIPT LOAD script` | Load a script into the script cache and return its SHA1 digest |
+| SCRIPT EXISTS | `SCRIPT EXISTS sha1 [sha1 ...]` | Check if scripts exist in the cache (returns array of 1/0) |
+| SCRIPT FLUSH | `SCRIPT FLUSH [ASYNC\|SYNC]` | Remove all scripts from the script cache |
+| SCRIPT HELP | `SCRIPT HELP` | Show help for SCRIPT command |
+
+**Note**: The scripting commands provide Redis-compatible interfaces but currently return stub values (nil for EVAL/EVALSHA). Full Lua script execution would require embedding a Lua interpreter. The SCRIPT LOAD command generates proper SHA1 hashes and stores scripts for future reference.
+
 ## Example Session
 
 ```
@@ -476,7 +489,7 @@ OK
 
 ## Project Status
 
-Iterations 1–35 are complete.
+Iterations 1–36 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -500,6 +513,8 @@ Iterations 1–35 are complete.
 - Iteration 32: Full RESP3 integration - per-connection protocol tracking, HELLO command negotiates and persists protocol version (RESP2 or RESP3), responses formatted according to negotiated protocol
 - Iteration 33: Protocol-aware response formatting - HGETALL returns RESP3 map when RESP3 negotiated, SMEMBERS returns RESP3 set when RESP3 negotiated, leveraging native RESP3 collection types for better semantic clarity
 - Iteration 34: Extended RESP3-aware commands - HKEYS returns RESP3 set (field names are unique), ZRANGE/ZREVRANGE with WITHSCORES return RESP3 map (member → score), expanding native RESP3 type usage for improved semantic clarity
+- Iteration 35: Set operation RESP3 support - SINTER/SUNION/SDIFF return RESP3 set when RESP3 negotiated, completing RESP3 native type usage for all set-returning commands
+- Iteration 36: Basic scripting support - EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH/HELP commands with SHA1 script caching (stub implementation - returns nil, full Lua execution pending)
 - Iteration 35: Set operation RESP3 support - SINTER/SUNION/SDIFF return RESP3 set when RESP3 negotiated, completing RESP3 native type usage for all set-returning commands
 
 ### Roadmap
