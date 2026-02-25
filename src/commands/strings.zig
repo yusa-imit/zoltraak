@@ -28,6 +28,7 @@ const server_cmds = @import("server_commands.zig");
 const scripting_cmds = @import("scripting.zig");
 const scripting_mod = @import("../storage/scripting.zig");
 const acl_cmds = @import("acl.zig");
+const cluster_cmds = @import("cluster.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 pub const ScriptStore = scripting_mod.ScriptStore;
@@ -780,6 +781,58 @@ pub fn executeCommand(
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SCRIPT subcommand '{s}'", .{subcmd});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+        // CLUSTER commands
+        else if (std.mem.eql(u8, cmd_upper, "CLUSTER")) {
+            if (array.len < 2) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR wrong number of arguments for 'cluster' command");
+            }
+            const subcmd = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR invalid subcommand format");
+                },
+            };
+            const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+            defer allocator.free(subcmd_upper);
+
+            // Convert RespValue array to string args
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+
+            if (std.mem.eql(u8, subcmd_upper, "SLOTS")) {
+                break :blk try cluster_cmds.cmdClusterSlots(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "NODES")) {
+                break :blk try cluster_cmds.cmdClusterNodes(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "INFO")) {
+                break :blk try cluster_cmds.cmdClusterInfo(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "MYID")) {
+                break :blk try cluster_cmds.cmdClusterMyId(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "KEYSLOT")) {
+                break :blk try cluster_cmds.cmdClusterKeyslot(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "COUNTKEYSINSLOT")) {
+                break :blk try cluster_cmds.cmdClusterCountKeysInSlot(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "GETKEYSINSLOT")) {
+                break :blk try cluster_cmds.cmdClusterGetKeysInSlot(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                break :blk try cluster_cmds.cmdClusterHelp(allocator, args, storage, null, 0);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown CLUSTER subcommand '{s}'", .{subcmd});
                 break :blk try w.writeError(err_msg);
             }
         }

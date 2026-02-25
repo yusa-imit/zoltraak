@@ -420,6 +420,21 @@ redis-cli -p 6379
 
 **Note**: The ACL commands provide Redis-compatible interfaces but are stub implementations. Authentication and authorization are not enforced - all clients have full access. The commands return appropriate responses for compatibility with Redis clients but do not store or enforce user permissions.
 
+### CLUSTER Commands (Iteration 38)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| CLUSTER SLOTS | `CLUSTER SLOTS` | Return cluster slots configuration (stub: single node covering all 16384 slots) |
+| CLUSTER NODES | `CLUSTER NODES` | Return cluster nodes configuration (stub: single standalone node) |
+| CLUSTER INFO | `CLUSTER INFO` | Return cluster state information (stub: reports cluster as ok with 1 node) |
+| CLUSTER MYID | `CLUSTER MYID` | Return the node ID (stub: returns "zoltraak-standalone-node") |
+| CLUSTER KEYSLOT | `CLUSTER KEYSLOT <key>` | Return hash slot (0-16383) for a key using CRC16 algorithm |
+| CLUSTER COUNTKEYSINSLOT | `CLUSTER COUNTKEYSINSLOT <slot>` | Count keys in a hash slot (stub: always returns 0) |
+| CLUSTER GETKEYSINSLOT | `CLUSTER GETKEYSINSLOT <slot> <count>` | Return keys in a hash slot (stub: always returns empty array) |
+| CLUSTER HELP | `CLUSTER HELP` | Show help for CLUSTER command |
+
+**Note**: The CLUSTER commands provide Redis-compatible interfaces for cluster mode, but Zoltraak operates as a single standalone node. Most commands return stub values indicating a single-node cluster. CLUSTER KEYSLOT correctly implements the Redis CRC16 hash slot algorithm with hash tag support (e.g., `{foo}bar` uses "foo" for hashing), which is useful for understanding key distribution even in standalone mode.
+
 ## Example Session
 
 ```
@@ -504,7 +519,7 @@ OK
 
 ## Project Status
 
-Iterations 1–37 are complete.
+Iterations 1–38 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -531,6 +546,7 @@ Iterations 1–37 are complete.
 - Iteration 35: Set operation RESP3 support - SINTER/SUNION/SDIFF return RESP3 set when RESP3 negotiated, completing RESP3 native type usage for all set-returning commands
 - Iteration 36: Basic scripting support - EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH/HELP commands with SHA1 script caching (stub implementation - returns nil, full Lua execution pending)
 - Iteration 37: ACL (Access Control List) basic stubs - ACL WHOAMI/LIST/USERS/GETUSER/SETUSER/DELUSER/CAT/HELP commands (stub implementation - authentication not enforced, always uses "default" user)
+- Iteration 38: CLUSTER basic stubs - CLUSTER SLOTS/NODES/INFO/MYID/KEYSLOT/COUNTKEYSINSLOT/GETKEYSINSLOT/HELP commands (stub implementation - single standalone node, KEYSLOT implements full CRC16 hash slot algorithm with hash tag support)
 
 ### Roadmap
 
