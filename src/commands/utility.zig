@@ -278,6 +278,49 @@ pub fn cmdDebug(
     }
 }
 
+/// SWAPDB command - swap two databases (stub for single-DB mode)
+pub fn cmdSwapdb(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    _: *Storage,
+    _: *PubSub,
+    _: ?*TxState,
+    _: *ClientRegistry,
+    _: u64,
+    _: *ServerConfig,
+    _: u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return try w.writeError("ERR wrong number of arguments for 'swapdb' command");
+    }
+
+    // Parse database indices
+    const index1 = std.fmt.parseInt(i64, args[1], 10) catch {
+        return try w.writeError("ERR invalid first DB index");
+    };
+
+    const index2 = std.fmt.parseInt(i64, args[2], 10) catch {
+        return try w.writeError("ERR invalid second DB index");
+    };
+
+    // Validate indices are non-negative
+    if (index1 < 0 or index2 < 0) {
+        return try w.writeError("ERR DB index is out of range");
+    }
+
+    // Zoltraak only supports database 0 (single database mode)
+    // SWAPDB 0 0 is allowed (no-op), but any other index is rejected
+    if (index1 != 0 or index2 != 0) {
+        return try w.writeError("ERR DB index is out of range");
+    }
+
+    // SWAPDB 0 0 is a no-op but returns OK
+    return try w.writeSimpleString("OK");
+}
+
 // Unit tests
 test "cmdEcho - basic echo" {
     const allocator = std.testing.allocator;
@@ -540,4 +583,127 @@ test "cmdSelect - wrong number of arguments" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
+}
+
+test "cmdSwapdb - SWAPDB 0 0 returns OK" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "SWAPDB", "0", "0" };
+    const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "cmdSwapdb - non-zero database rejected" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    // Test SWAPDB 0 1
+    {
+        const args = [_][]const u8{ "SWAPDB", "0", "1" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR DB index is out of range"));
+    }
+
+    // Test SWAPDB 1 0
+    {
+        const args = [_][]const u8{ "SWAPDB", "1", "0" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR DB index is out of range"));
+    }
+
+    // Test SWAPDB 1 1
+    {
+        const args = [_][]const u8{ "SWAPDB", "1", "1" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR DB index is out of range"));
+    }
+}
+
+test "cmdSwapdb - negative index rejected" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "SWAPDB", "-1", "0" };
+    const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR DB index is out of range"));
+}
+
+test "cmdSwapdb - invalid argument" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    // Test invalid first index
+    {
+        const args = [_][]const u8{ "SWAPDB", "abc", "0" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR invalid first DB index"));
+    }
+
+    // Test invalid second index
+    {
+        const args = [_][]const u8{ "SWAPDB", "0", "xyz" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR invalid second DB index"));
+    }
+}
+
+test "cmdSwapdb - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    // Test too few arguments
+    {
+        const args = [_][]const u8{ "SWAPDB", "0" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
+    }
+
+    // Test too many arguments
+    {
+        const args = [_][]const u8{ "SWAPDB", "0", "0", "extra" };
+        const result = try cmdSwapdb(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
+    }
 }
