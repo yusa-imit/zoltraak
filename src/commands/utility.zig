@@ -178,6 +178,42 @@ pub fn cmdMonitor(
     return try w.writeSimpleString("OK");
 }
 
+/// SELECT command - select database by index (stub for single-DB mode)
+pub fn cmdSelect(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    _: *Storage,
+    _: *PubSub,
+    _: ?*TxState,
+    _: *ClientRegistry,
+    _: u64,
+    _: *ServerConfig,
+    _: u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return try w.writeError("ERR wrong number of arguments for 'select' command");
+    }
+
+    // Parse database index
+    const db_index = std.fmt.parseInt(i64, args[1], 10) catch {
+        return try w.writeError("ERR invalid DB index");
+    };
+
+    // Zoltraak only supports database 0 (single database mode)
+    if (db_index < 0) {
+        return try w.writeError("ERR DB index is out of range");
+    }
+
+    if (db_index != 0) {
+        return try w.writeError("ERR DB index is out of range");
+    }
+
+    return try w.writeSimpleString("OK");
+}
+
 /// DEBUG command - debugging utilities (stub)
 pub fn cmdDebug(
     allocator: std.mem.Allocator,
@@ -419,4 +455,89 @@ test "cmdDebug - HELP subcommand" {
 
     // Should contain help text
     try std.testing.expect(std.mem.indexOf(u8, result, "OBJECT") != null);
+}
+
+test "cmdSelect - database 0 is accepted" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "SELECT", "0" };
+    const result = try cmdSelect(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "cmdSelect - other databases are rejected" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "SELECT", "1" };
+    const result = try cmdSelect(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR DB index is out of range"));
+}
+
+test "cmdSelect - negative index rejected" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "SELECT", "-1" };
+    const result = try cmdSelect(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR DB index is out of range"));
+}
+
+test "cmdSelect - invalid argument" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "SELECT", "abc" };
+    const result = try cmdSelect(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR invalid DB index"));
+}
+
+test "cmdSelect - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{"SELECT"};
+    const result = try cmdSelect(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
 }

@@ -241,3 +241,127 @@ test "SHUTDOWN command - rejects invalid modifier" {
     // Should return error
     try testing.expect(std.mem.startsWith(u8, response, "-ERR syntax error"));
 }
+
+test "SELECT command - database 0 is accepted" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Send SELECT 0 command
+    try stream.writeAll("*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n");
+
+    // Read response
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const response = buf[0..n];
+
+    // Should return +OK
+    try testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "SELECT command - other databases are rejected" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Send SELECT 1 command
+    try stream.writeAll("*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n");
+
+    // Read response
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const response = buf[0..n];
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR DB index is out of range"));
+}
+
+test "SELECT command - negative index rejected" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Send SELECT -1 command
+    try stream.writeAll("*2\r\n$6\r\nSELECT\r\n$2\r\n-1\r\n");
+
+    // Read response
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const response = buf[0..n];
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR DB index is out of range"));
+}
+
+test "SELECT command - invalid argument" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Send SELECT with non-numeric argument
+    try stream.writeAll("*2\r\n$6\r\nSELECT\r\n$3\r\nabc\r\n");
+
+    // Read response
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const response = buf[0..n];
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR invalid DB index"));
+}
+
+test "SELECT command - wrong number of arguments" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Send SELECT with no argument
+    try stream.writeAll("*1\r\n$6\r\nSELECT\r\n");
+
+    // Read response
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const response = buf[0..n];
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR wrong number of arguments"));
+}
+
+test "SELECT command - data persists across SELECT 0" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    var buf: [1024]u8 = undefined;
+
+    // Set a key
+    try stream.writeAll("*3\r\n$3\r\nSET\r\n$7\r\nselectkey\r\n$10\r\nselectval\r\n");
+    _ = try stream.read(&buf);
+
+    // SELECT 0 (should be no-op)
+    try stream.writeAll("*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n");
+    const n1 = try stream.read(&buf);
+    try testing.expectEqualStrings("+OK\r\n", buf[0..n1]);
+
+    // Verify key still exists
+    try stream.writeAll("*2\r\n$3\r\nGET\r\n$9\r\nselectkey\r\n");
+    const n2 = try stream.read(&buf);
+    const response = buf[0..n2];
+    try testing.expectEqualStrings("$10\r\nselectval\r\n", response);
+
+    // Cleanup
+    try stream.writeAll("*2\r\n$3\r\nDEL\r\n$9\r\nselectkey\r\n");
+    _ = try stream.read(&buf);
+}

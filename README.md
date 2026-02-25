@@ -435,12 +435,13 @@ redis-cli -p 6379
 
 **Note**: The CLUSTER commands provide Redis-compatible interfaces for cluster mode, but Zoltraak operates as a single standalone node. Most commands return stub values indicating a single-node cluster. CLUSTER KEYSLOT correctly implements the Redis CRC16 hash slot algorithm with hash tag support (e.g., `{foo}bar` uses "foo" for hashing), which is useful for understanding key distribution even in standalone mode.
 
-### Utility Commands (Iteration 39)
+### Utility Commands (Iterations 39-40)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
 | ECHO | `ECHO message` | Returns the given message |
 | QUIT | `QUIT` | Close the connection (returns OK then server closes connection) |
+| SELECT | `SELECT index` | Select the database by index (only DB 0 supported, single-database mode) |
 | TIME | `TIME` | Returns the current Unix timestamp in seconds and microseconds |
 | LASTSAVE | `LASTSAVE` | Returns Unix timestamp of the last successful RDB save to disk |
 | MONITOR | `MONITOR` | Enable real-time command monitoring (stub: returns OK, monitoring not implemented) |
@@ -448,7 +449,7 @@ redis-cli -p 6379
 | DEBUG HELP | `DEBUG HELP` | Show help for DEBUG command |
 | SHUTDOWN | `SHUTDOWN [NOSAVE\|SAVE]` | Request graceful server shutdown (stub: returns OK, doesn't actually shut down) |
 
-**Note**: MONITOR and SHUTDOWN are stub implementations that return OK for Redis compatibility but do not perform actual monitoring or shutdown operations.
+**Note**: MONITOR and SHUTDOWN are stub implementations that return OK for Redis compatibility but do not perform actual monitoring or shutdown operations. SELECT only accepts database index 0 (Zoltraak uses a single-database architecture).
 
 ## Example Session
 
@@ -534,7 +535,7 @@ OK
 
 ## Project Status
 
-Iterations 1–39 are complete.
+Iterations 1–40 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -563,6 +564,7 @@ Iterations 1–39 are complete.
 - Iteration 37: ACL (Access Control List) basic stubs - ACL WHOAMI/LIST/USERS/GETUSER/SETUSER/DELUSER/CAT/HELP commands (stub implementation - authentication not enforced, always uses "default" user)
 - Iteration 38: CLUSTER basic stubs - CLUSTER SLOTS/NODES/INFO/MYID/KEYSLOT/COUNTKEYSINSLOT/GETKEYSINSLOT/HELP commands (stub implementation - single standalone node, KEYSLOT implements full CRC16 hash slot algorithm with hash tag support)
 - Iteration 39: Utility commands - ECHO, QUIT, TIME, LASTSAVE, MONITOR, DEBUG (OBJECT, HELP), SHUTDOWN commands for server management and debugging (MONITOR and SHUTDOWN are stubs)
+- Iteration 40: SELECT command - database selection (single-database mode, only DB 0 supported for Redis client compatibility)
 
 ### Roadmap
 
