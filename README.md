@@ -435,6 +435,21 @@ redis-cli -p 6379
 
 **Note**: The CLUSTER commands provide Redis-compatible interfaces for cluster mode, but Zoltraak operates as a single standalone node. Most commands return stub values indicating a single-node cluster. CLUSTER KEYSLOT correctly implements the Redis CRC16 hash slot algorithm with hash tag support (e.g., `{foo}bar` uses "foo" for hashing), which is useful for understanding key distribution even in standalone mode.
 
+### Utility Commands (Iteration 39)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| ECHO | `ECHO message` | Returns the given message |
+| QUIT | `QUIT` | Close the connection (returns OK then server closes connection) |
+| TIME | `TIME` | Returns the current Unix timestamp in seconds and microseconds |
+| LASTSAVE | `LASTSAVE` | Returns Unix timestamp of the last successful RDB save to disk |
+| MONITOR | `MONITOR` | Enable real-time command monitoring (stub: returns OK, monitoring not implemented) |
+| DEBUG OBJECT | `DEBUG OBJECT key` | Show low-level info about key and associated value |
+| DEBUG HELP | `DEBUG HELP` | Show help for DEBUG command |
+| SHUTDOWN | `SHUTDOWN [NOSAVE\|SAVE]` | Request graceful server shutdown (stub: returns OK, doesn't actually shut down) |
+
+**Note**: MONITOR and SHUTDOWN are stub implementations that return OK for Redis compatibility but do not perform actual monitoring or shutdown operations.
+
 ## Example Session
 
 ```
@@ -519,7 +534,7 @@ OK
 
 ## Project Status
 
-Iterations 1–38 are complete.
+Iterations 1–39 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -547,6 +562,7 @@ Iterations 1–38 are complete.
 - Iteration 36: Basic scripting support - EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH/HELP commands with SHA1 script caching (stub implementation - returns nil, full Lua execution pending)
 - Iteration 37: ACL (Access Control List) basic stubs - ACL WHOAMI/LIST/USERS/GETUSER/SETUSER/DELUSER/CAT/HELP commands (stub implementation - authentication not enforced, always uses "default" user)
 - Iteration 38: CLUSTER basic stubs - CLUSTER SLOTS/NODES/INFO/MYID/KEYSLOT/COUNTKEYSINSLOT/GETKEYSINSLOT/HELP commands (stub implementation - single standalone node, KEYSLOT implements full CRC16 hash slot algorithm with hash tag support)
+- Iteration 39: Utility commands - ECHO, QUIT, TIME, LASTSAVE, MONITOR, DEBUG (OBJECT, HELP), SHUTDOWN commands for server management and debugging (MONITOR and SHUTDOWN are stubs)
 
 ### Roadmap
 

@@ -351,6 +351,7 @@ pub const Storage = struct {
     data: std.StringHashMap(Value),
     config: *Config,
     mutex: std.Thread.Mutex,
+    last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -372,6 +373,7 @@ pub const Storage = struct {
             .data = std.StringHashMap(Value).init(allocator),
             .config = cfg,
             .mutex = std.Thread.Mutex{},
+            .last_save_time = 0, // Will be updated on first save
         };
 
         return storage;
@@ -6123,6 +6125,20 @@ pub const Storage = struct {
             },
             else => return error.WrongType,
         }
+    }
+
+    /// Get the Unix timestamp (seconds) of the last successful RDB save
+    pub fn getLastSaveTime(self: *Storage) i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.last_save_time;
+    }
+
+    /// Update the last save time to current Unix timestamp
+    pub fn updateLastSaveTime(self: *Storage) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.last_save_time = @divFloor(std.time.milliTimestamp(), 1000);
     }
 };
 

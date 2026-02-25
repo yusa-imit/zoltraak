@@ -140,6 +140,9 @@ pub const Persistence = struct {
 
         try std.fs.cwd().writeFile(.{ .sub_path = tmp_path, .data = buf.items });
         try std.fs.cwd().rename(tmp_path, path);
+
+        // Update last save time on successful save
+        storage.updateLastSaveTime();
     }
 
     /// Load a snapshot from the given file path into storage.

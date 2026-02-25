@@ -29,6 +29,7 @@ const scripting_cmds = @import("scripting.zig");
 const scripting_mod = @import("../storage/scripting.zig");
 const acl_cmds = @import("acl.zig");
 const cluster_cmds = @import("cluster.zig");
+const utility_cmds = @import("utility.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 pub const ScriptStore = scripting_mod.ScriptStore;
@@ -877,6 +878,85 @@ pub fn executeCommand(
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown ACL subcommand '{s}'", .{subcmd});
                 break :blk try w.writeError(err_msg);
             }
+        }
+        // Utility commands
+        else if (std.mem.eql(u8, cmd_upper, "ECHO")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdEcho(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "QUIT")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdQuit(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "TIME")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdTime(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "LASTSAVE")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdLastsave(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "SHUTDOWN")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdShutdown(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "MONITOR")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdMonitor(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "DEBUG")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdDebug(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
