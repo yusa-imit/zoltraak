@@ -1849,6 +1849,432 @@ test "sorted_sets - BZPOPMIN returns from first non-empty sorted set" {
     try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na") != null);
 }
 
+/// ZUNION numkeys key [key ...] [WITHSCORES]
+/// Return the union of multiple sorted sets
+pub fn cmdZunion(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zunion' command");
+    }
+
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (args.len < 2 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[2 .. 2 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    // Check for WITHSCORES option
+    var with_scores = false;
+    if (args.len > 2 + numkeys) {
+        const opt = switch (args[2 + numkeys]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_opt = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(upper_opt);
+        if (std.mem.eql(u8, upper_opt, "WITHSCORES")) {
+            with_scores = true;
+        }
+    }
+
+    const members = storage.zunion(allocator, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer {
+        for (members) |m| allocator.free(m.member);
+        allocator.free(members);
+    }
+
+    if (with_scores) {
+        if (protocol_version == .RESP3) {
+            // Return as RESP3 map: member -> score
+            var pairs = try std.ArrayList(MapPair).initCapacity(allocator, members.len);
+            defer pairs.deinit(allocator);
+            for (members) |sm| {
+                var score_buf: [32]u8 = undefined;
+                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                try pairs.append(allocator, MapPair{
+                    .key = RespValue{ .bulk_string = sm.member },
+                    .value = RespValue{ .bulk_string = score_str },
+                });
+            }
+            return w.writeMap(pairs.items);
+        } else {
+            // Return flat array: [member1, score1, member2, score2, ...]
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
+            defer resp_values.deinit(allocator);
+            for (members) |sm| {
+                var score_buf: [32]u8 = undefined;
+                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+                try resp_values.append(allocator, RespValue{ .bulk_string = score_str });
+            }
+            return w.writeArray(resp_values.items);
+        }
+    } else {
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+        defer resp_values.deinit(allocator);
+        for (members) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+        }
+        return w.writeArray(resp_values.items);
+    }
+}
+
+/// ZINTER numkeys key [key ...] [WITHSCORES]
+/// Return the intersection of multiple sorted sets
+pub fn cmdZinter(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zinter' command");
+    }
+
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (args.len < 2 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[2 .. 2 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    // Check for WITHSCORES option
+    var with_scores = false;
+    if (args.len > 2 + numkeys) {
+        const opt = switch (args[2 + numkeys]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_opt = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(upper_opt);
+        if (std.mem.eql(u8, upper_opt, "WITHSCORES")) {
+            with_scores = true;
+        }
+    }
+
+    const members = storage.zinter(allocator, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer {
+        for (members) |m| allocator.free(m.member);
+        allocator.free(members);
+    }
+
+    if (with_scores) {
+        if (protocol_version == .RESP3) {
+            // Return as RESP3 map: member -> score
+            var pairs = try std.ArrayList(MapPair).initCapacity(allocator, members.len);
+            defer pairs.deinit(allocator);
+            for (members) |sm| {
+                var score_buf: [32]u8 = undefined;
+                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                try pairs.append(allocator, MapPair{
+                    .key = RespValue{ .bulk_string = sm.member },
+                    .value = RespValue{ .bulk_string = score_str },
+                });
+            }
+            return w.writeMap(pairs.items);
+        } else {
+            // Return flat array: [member1, score1, member2, score2, ...]
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
+            defer resp_values.deinit(allocator);
+            for (members) |sm| {
+                var score_buf: [32]u8 = undefined;
+                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+                try resp_values.append(allocator, RespValue{ .bulk_string = score_str });
+            }
+            return w.writeArray(resp_values.items);
+        }
+    } else {
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+        defer resp_values.deinit(allocator);
+        for (members) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+        }
+        return w.writeArray(resp_values.items);
+    }
+}
+
+/// ZDIFF numkeys key [key ...] [WITHSCORES]
+/// Return the difference of multiple sorted sets
+pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zdiff' command");
+    }
+
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (args.len < 2 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[2 .. 2 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    // Check for WITHSCORES option
+    var with_scores = false;
+    if (args.len > 2 + numkeys) {
+        const opt = switch (args[2 + numkeys]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_opt = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(upper_opt);
+        if (std.mem.eql(u8, upper_opt, "WITHSCORES")) {
+            with_scores = true;
+        }
+    }
+
+    const members = storage.zdiff(allocator, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer {
+        for (members) |m| allocator.free(m.member);
+        allocator.free(members);
+    }
+
+    if (with_scores) {
+        if (protocol_version == .RESP3) {
+            // Return as RESP3 map: member -> score
+            var pairs = try std.ArrayList(MapPair).initCapacity(allocator, members.len);
+            defer pairs.deinit(allocator);
+            for (members) |sm| {
+                var score_buf: [32]u8 = undefined;
+                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                try pairs.append(allocator, MapPair{
+                    .key = RespValue{ .bulk_string = sm.member },
+                    .value = RespValue{ .bulk_string = score_str },
+                });
+            }
+            return w.writeMap(pairs.items);
+        } else {
+            // Return flat array: [member1, score1, member2, score2, ...]
+            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
+            defer resp_values.deinit(allocator);
+            for (members) |sm| {
+                var score_buf: [32]u8 = undefined;
+                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+                try resp_values.append(allocator, RespValue{ .bulk_string = score_str });
+            }
+            return w.writeArray(resp_values.items);
+        }
+    } else {
+        var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+        defer resp_values.deinit(allocator);
+        for (members) |sm| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
+        }
+        return w.writeArray(resp_values.items);
+    }
+}
+
+/// ZUNIONSTORE destination numkeys key [key ...]
+/// Store union of sorted sets in destination
+pub fn cmdZunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zunionstore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+
+    const numkeys_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (args.len < 3 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[3 .. 3 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.zunionstore(allocator, dest, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
+/// ZINTERSTORE destination numkeys key [key ...]
+/// Store intersection of sorted sets in destination
+pub fn cmdZinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zinterstore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+
+    const numkeys_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (args.len < 3 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[3 .. 3 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.zinterstore(allocator, dest, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
+/// ZDIFFSTORE destination numkeys key [key ...]
+/// Store difference of sorted sets in destination
+pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zdiffstore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination"),
+    };
+
+    const numkeys_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (args.len < 3 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (args[3 .. 3 + numkeys]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    const count = storage.zdiffstore(allocator, dest, keys.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
 test "sorted_sets - BZPOPMAX returns from first non-empty sorted set" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);

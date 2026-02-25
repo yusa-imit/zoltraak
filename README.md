@@ -138,7 +138,7 @@ redis-cli -p 6379
 | SDIFFSTORE | `SDIFFSTORE dest key [key ...]` | Store difference result |
 | SSCAN | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate set members |
 
-### Hash Commands (Iteration 4)
+### Hash Commands (Iterations 4, 42)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -150,6 +150,7 @@ redis-cli -p 6379
 | HVALS | `HVALS key` | Get all values |
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
+| HSTRLEN | `HSTRLEN key field` | Get string length of hash field value (returns 0 if field doesn't exist) |
 
 ### Replication Commands (Iteration 10)
 
@@ -318,7 +319,7 @@ redis-cli -p 6379
 | TOUCH | `TOUCH key [key ...]` | Update last access time of keys (returns count of touched keys) |
 | MOVE | `MOVE key db` | Move key to another database (stub: always returns 0, single-DB only) |
 
-### Sorted Set Commands (Iterations 5, 11, 12)
+### Sorted Set Commands (Iterations 5, 11, 12, 42)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -341,6 +342,12 @@ redis-cli -p 6379
 | BZPOPMAX | `BZPOPMAX key [key ...] timeout` | Blocking pop maximum from first non-empty sorted set |
 | ZRANDMEMBER | `ZRANDMEMBER key [count [WITHSCORES]]` | Return random members |
 | ZSCAN | `ZSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate sorted set members |
+| ZUNION | `ZUNION numkeys key [key ...] [WITHSCORES]` | Return the union of multiple sorted sets (scores are summed) |
+| ZINTER | `ZINTER numkeys key [key ...] [WITHSCORES]` | Return the intersection of multiple sorted sets (scores are summed) |
+| ZDIFF | `ZDIFF numkeys key [key ...] [WITHSCORES]` | Return the difference of sorted sets (first minus others) |
+| ZUNIONSTORE | `ZUNIONSTORE destination numkeys key [key ...]` | Store union of sorted sets in destination, returns member count |
+| ZINTERSTORE | `ZINTERSTORE destination numkeys key [key ...]` | Store intersection of sorted sets in destination, returns member count |
+| ZDIFFSTORE | `ZDIFFSTORE destination numkeys key [key ...]` | Store difference of sorted sets in destination, returns member count |
 
 ### Geospatial Commands (Iteration 25)
 
@@ -536,7 +543,7 @@ OK
 
 ## Project Status
 
-Iterations 1–41 are complete.
+Iterations 1–42 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -567,6 +574,7 @@ Iterations 1–41 are complete.
 - Iteration 39: Utility commands - ECHO, QUIT, TIME, LASTSAVE, MONITOR, DEBUG (OBJECT, HELP), SHUTDOWN commands for server management and debugging (MONITOR and SHUTDOWN are stubs)
 - Iteration 40: SELECT command - database selection (single-database mode, only DB 0 supported for Redis client compatibility)
 - Iteration 41: SWAPDB command - database swapping (stub implementation - single-database mode, only SWAPDB 0 0 supported as no-op)
+- Iteration 42: Advanced sorted set operations and hash string length - ZUNION/ZINTER/ZDIFF (set-like operations on sorted sets with score aggregation), ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE (store results), HSTRLEN (hash field value string length)
 
 ### Roadmap
 

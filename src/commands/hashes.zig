@@ -1017,3 +1017,93 @@ test "cmdHgetall - RESP3 empty hash returns empty map" {
     // Should return empty RESP3 map: %0\r\n
     try std.testing.expectEqualStrings("%0\r\n", response);
 }
+
+/// HSTRLEN key field
+/// Returns the string length of the value associated with field in the hash stored at key.
+/// If the key or the field do not exist, 0 is returned.
+pub fn cmdHstrlen(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'hstrlen' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const field = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid field"),
+    };
+
+    const len = storage.hstrlen(key, field) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(len));
+}
+
+test "cmdHstrlen - returns length of hash field value" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a field with a value
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "Hello World" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Get string length
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSTRLEN" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try cmdHstrlen(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // "Hello World" has 11 characters
+    try std.testing.expectEqualStrings(":11\r\n", response);
+}
+
+test "cmdHstrlen - returns 0 for non-existent field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSTRLEN" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "nonexistent" },
+    };
+    const response = try cmdHstrlen(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "cmdHstrlen - returns 0 for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSTRLEN" },
+        .{ .bulk_string = "nonexistent" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try cmdHstrlen(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":0\r\n", response);
+}

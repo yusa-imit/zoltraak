@@ -423,6 +423,8 @@ pub fn executeCommand(
             break :blk try hashes.cmdHincrbyfloat(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HSETNX")) {
             break :blk try hashes.cmdHsetnx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HSTRLEN")) {
+            break :blk try hashes.cmdHstrlen(allocator, storage, array);
         }
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {
@@ -489,6 +491,21 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZrevrangebyscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANDMEMBER")) {
             break :blk try sorted_sets.cmdZrandmember(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZUNION")) {
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZunion(allocator, storage, array, protocol_version);
+        } else if (std.mem.eql(u8, cmd_upper, "ZINTER")) {
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZinter(allocator, storage, array, protocol_version);
+        } else if (std.mem.eql(u8, cmd_upper, "ZDIFF")) {
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZdiff(allocator, storage, array, protocol_version);
+        } else if (std.mem.eql(u8, cmd_upper, "ZUNIONSTORE")) {
+            break :blk try sorted_sets.cmdZunionstore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZINTERSTORE")) {
+            break :blk try sorted_sets.cmdZinterstore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZDIFFSTORE")) {
+            break :blk try sorted_sets.cmdZdiffstore(allocator, storage, array);
         }
         // String range commands
         else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {

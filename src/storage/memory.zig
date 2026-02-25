@@ -2481,6 +2481,40 @@ pub const Storage = struct {
         }
     }
 
+    /// Get the string length of the value associated with field in the hash.
+    /// Returns 0 if the field does not exist.
+    /// Returns error.WrongType if key is not a hash.
+    pub fn hstrlen(
+        self: *Storage,
+        key: []const u8,
+        field: []const u8,
+    ) error{WrongType}!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                if (hash_val.data.get(field)) |value| {
+                    return value.len;
+                } else {
+                    return 0;
+                }
+            },
+            else => return error.WrongType,
+        }
+    }
+
     /// Get rank (0-based index) of member in sorted set
     /// If reverse is true, return rank from end (ZREVRANK)
     /// Returns null if key or member does not exist
@@ -4557,6 +4591,333 @@ pub const Storage = struct {
             },
             else => return error.WrongType,
         }
+    }
+
+    // ── Sorted Set Set-Like Operations ────────────────────────────────────────
+
+    /// Compute union of sorted sets at keys with optional aggregation and weights.
+    /// Returns owned slice of ScoredMember. For duplicate members across sets, scores are aggregated.
+    /// Non-existent keys are treated as empty sorted sets.
+    /// Returns error.WrongType if any key is not a sorted set.
+    pub fn zunion(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Accumulate members and their summed scores
+        var score_map = std.StringHashMap(f64).init(allocator);
+        defer score_map.deinit();
+
+        for (keys) |key| {
+            const entry = self.data.getEntry(key) orelse continue;
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+            switch (entry.value_ptr.*) {
+                .sorted_set => |*zset| {
+                    var it = zset.members.iterator();
+                    while (it.next()) |kv| {
+                        const member = kv.key_ptr.*;
+                        const score = kv.value_ptr.*;
+                        if (score_map.get(member)) |existing| {
+                            try score_map.put(member, existing + score);
+                        } else {
+                            try score_map.put(member, score);
+                        }
+                    }
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        // Build result sorted by score
+        var result = try allocator.alloc(Value.ScoredMember, score_map.count());
+        errdefer allocator.free(result);
+        var i: usize = 0;
+        var it = score_map.iterator();
+        while (it.next()) |kv| : (i += 1) {
+            result[i] = Value.ScoredMember{
+                .score = kv.value_ptr.*,
+                .member = try allocator.dupe(u8, kv.key_ptr.*),
+            };
+        }
+
+        // Sort by score (ascending), then lexicographically
+        std.mem.sort(Value.ScoredMember, result, {}, struct {
+            fn lessThan(_: void, a: Value.ScoredMember, b: Value.ScoredMember) bool {
+                if (a.score < b.score) return true;
+                if (a.score > b.score) return false;
+                return std.mem.lessThan(u8, a.member, b.member);
+            }
+        }.lessThan);
+
+        return result;
+    }
+
+    /// Compute intersection of sorted sets at keys with optional aggregation and weights.
+    /// Returns owned slice of ScoredMember present in all sets. For duplicate members, scores are summed.
+    /// Non-existent keys are treated as empty sorted sets (result is empty).
+    /// Returns error.WrongType if any key is not a sorted set.
+    pub fn zinter(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (keys.len == 0) return try allocator.alloc(Value.ScoredMember, 0);
+
+        // Find the first sorted set to seed candidates
+        var first_zset: ?*Value.SortedSetValue = null;
+        for (keys) |key| {
+            const entry = self.data.getEntry(key) orelse {
+                // Key missing = empty set, intersection is empty
+                return try allocator.alloc(Value.ScoredMember, 0);
+            };
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                return try allocator.alloc(Value.ScoredMember, 0);
+            }
+            switch (entry.value_ptr.*) {
+                .sorted_set => |*zs| {
+                    first_zset = zs;
+                    break;
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        const first = first_zset orelse return try allocator.alloc(Value.ScoredMember, 0);
+
+        // For each candidate in first set, check membership in all other sets
+        // Accumulate scores for members present in all sets
+        var score_map = std.StringHashMap(f64).init(allocator);
+        defer score_map.deinit();
+
+        var it = first.members.iterator();
+        outer: while (it.next()) |kv| {
+            const member = kv.key_ptr.*;
+            var total_score = kv.value_ptr.*;
+
+            // Check in all remaining keys
+            for (keys[1..]) |key| {
+                const entry = self.data.getEntry(key) orelse continue :outer;
+                if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue :outer;
+                switch (entry.value_ptr.*) {
+                    .sorted_set => |*zs| {
+                        if (zs.members.get(member)) |score| {
+                            total_score += score;
+                        } else {
+                            continue :outer;
+                        }
+                    },
+                    else => return error.WrongType,
+                }
+            }
+
+            // Member exists in all sets, add to result
+            try score_map.put(member, total_score);
+        }
+
+        // Build result sorted by score
+        var result = try allocator.alloc(Value.ScoredMember, score_map.count());
+        errdefer allocator.free(result);
+        var idx: usize = 0;
+        var result_it = score_map.iterator();
+        while (result_it.next()) |kv| : (idx += 1) {
+            result[idx] = Value.ScoredMember{
+                .score = kv.value_ptr.*,
+                .member = try allocator.dupe(u8, kv.key_ptr.*),
+            };
+        }
+
+        // Sort by score (ascending), then lexicographically
+        std.mem.sort(Value.ScoredMember, result, {}, struct {
+            fn lessThan(_: void, a: Value.ScoredMember, b: Value.ScoredMember) bool {
+                if (a.score < b.score) return true;
+                if (a.score > b.score) return false;
+                return std.mem.lessThan(u8, a.member, b.member);
+            }
+        }.lessThan);
+
+        return result;
+    }
+
+    /// Compute difference of sorted sets: first set minus all other sets.
+    /// Returns owned slice of ScoredMember from first set not present in any other set.
+    /// Non-existent keys are treated as empty sorted sets.
+    /// Returns error.WrongType if any key is not a sorted set.
+    pub fn zdiff(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]Value.ScoredMember {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (keys.len == 0) return try allocator.alloc(Value.ScoredMember, 0);
+
+        // Get the first sorted set
+        const first_entry = self.data.getEntry(keys[0]) orelse {
+            return try allocator.alloc(Value.ScoredMember, 0);
+        };
+        if (first_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return try allocator.alloc(Value.ScoredMember, 0);
+        }
+
+        const first_zset = switch (first_entry.value_ptr.*) {
+            .sorted_set => |*zs| zs,
+            else => return error.WrongType,
+        };
+
+        // Validate remaining keys are sorted sets
+        for (keys[1..]) |key| {
+            const entry = self.data.getEntry(key) orelse continue;
+            if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+            switch (entry.value_ptr.*) {
+                .sorted_set => {},
+                else => return error.WrongType,
+            }
+        }
+
+        // Build result: members from first set not in any other set
+        var result_list = std.ArrayList(Value.ScoredMember){
+            .items = &.{},
+            .capacity = 0,
+        };
+        defer result_list.deinit(allocator);
+
+        var it = first_zset.members.iterator();
+        outer: while (it.next()) |kv| {
+            const member = kv.key_ptr.*;
+            const score = kv.value_ptr.*;
+
+            // Check if member exists in any of the remaining sets
+            for (keys[1..]) |key| {
+                const entry = self.data.getEntry(key) orelse continue;
+                if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+                switch (entry.value_ptr.*) {
+                    .sorted_set => |*zs| {
+                        if (zs.members.contains(member)) continue :outer;
+                    },
+                    else => {},
+                }
+            }
+
+            // Member not in any other set, add to result
+            try result_list.append(allocator, Value.ScoredMember{
+                .score = score,
+                .member = try allocator.dupe(u8, member),
+            });
+        }
+
+        return try result_list.toOwnedSlice(allocator);
+    }
+
+    /// Store union of sorted sets at keys into destination.
+    /// Returns count of members in result set.
+    /// Returns error.WrongType if any key is not a sorted set.
+    pub fn zunionstore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        keys: []const []const u8,
+    ) !usize {
+        const members = try self.zunion(allocator, keys);
+        defer {
+            for (members) |m| allocator.free(m.member);
+            allocator.free(members);
+        }
+
+        // Delete destination if it exists
+        _ = self.del(&[_][]const u8{dest});
+
+        if (members.len == 0) return 0;
+
+        // Create new sorted set
+        var scores = try std.ArrayList(f64).initCapacity(allocator, members.len);
+        defer scores.deinit(allocator);
+        var member_strings = try std.ArrayList([]const u8).initCapacity(allocator, members.len);
+        defer member_strings.deinit(allocator);
+
+        for (members) |sm| {
+            try scores.append(allocator, sm.score);
+            try member_strings.append(allocator, sm.member);
+        }
+
+        _ = try self.zadd(dest, scores.items, member_strings.items, 0, null);
+        return members.len;
+    }
+
+    /// Store intersection of sorted sets at keys into destination.
+    /// Returns count of members in result set.
+    /// Returns error.WrongType if any key is not a sorted set.
+    pub fn zinterstore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        keys: []const []const u8,
+    ) !usize {
+        const members = try self.zinter(allocator, keys);
+        defer {
+            for (members) |m| allocator.free(m.member);
+            allocator.free(members);
+        }
+
+        // Delete destination if it exists
+        _ = self.del(&[_][]const u8{dest});
+
+        if (members.len == 0) return 0;
+
+        // Create new sorted set
+        var scores = try std.ArrayList(f64).initCapacity(allocator, members.len);
+        defer scores.deinit(allocator);
+        var member_strings = try std.ArrayList([]const u8).initCapacity(allocator, members.len);
+        defer member_strings.deinit(allocator);
+
+        for (members) |sm| {
+            try scores.append(allocator, sm.score);
+            try member_strings.append(allocator, sm.member);
+        }
+
+        _ = try self.zadd(dest, scores.items, member_strings.items, 0, null);
+        return members.len;
+    }
+
+    /// Store difference of sorted sets (first minus others) into destination.
+    /// Returns count of members in result set.
+    /// Returns error.WrongType if any key is not a sorted set.
+    pub fn zdiffstore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        keys: []const []const u8,
+    ) !usize {
+        const members = try self.zdiff(allocator, keys);
+        defer {
+            for (members) |m| allocator.free(m.member);
+            allocator.free(members);
+        }
+
+        // Delete destination if it exists
+        _ = self.del(&[_][]const u8{dest});
+
+        if (members.len == 0) return 0;
+
+        // Create new sorted set
+        var scores = try std.ArrayList(f64).initCapacity(allocator, members.len);
+        defer scores.deinit(allocator);
+        var member_strings = try std.ArrayList([]const u8).initCapacity(allocator, members.len);
+        defer member_strings.deinit(allocator);
+
+        for (members) |sm| {
+            try scores.append(allocator, sm.score);
+            try member_strings.append(allocator, sm.member);
+        }
+
+        _ = try self.zadd(dest, scores.items, member_strings.items, 0, null);
+        return members.len;
     }
 
     // ── String range operations ───────────────────────────────────────────────
