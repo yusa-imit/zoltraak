@@ -280,7 +280,7 @@ redis-cli -p 6379
 | GETRANGE | `GETRANGE key start end` | Get substring of string value (alias: SUBSTR) |
 | SETRANGE | `SETRANGE key offset value` | Overwrite bytes at offset, returns new length |
 
-### Bit Operations (Iteration 20)
+### Bit Operations (Iterations 20, 44)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -288,6 +288,8 @@ redis-cli -p 6379
 | GETBIT | `GETBIT key offset` | Returns the bit value at offset |
 | BITCOUNT | `BITCOUNT key [start end]` | Count set bits in string (optionally within byte range) |
 | BITOP | `BITOP operation destkey key [key ...]` | Perform bitwise operation (AND, OR, XOR, NOT) between strings |
+| BITFIELD | `BITFIELD key [GET type offset] [SET type offset value] [INCRBY type offset increment] [OVERFLOW WRAP\|SAT\|FAIL]` | Perform arbitrary bitfield integer operations on strings (supports signed/unsigned integers from 1 to 64 bits) |
+| BITFIELD_RO | `BITFIELD_RO key [GET type offset] [GET type offset ...]` | Read-only variant of BITFIELD (only GET operations allowed) |
 
 ### Key Management Commands (Iteration 21)
 
@@ -549,7 +551,7 @@ OK
 
 ## Project Status
 
-Iterations 1–43 are complete.
+Iterations 1–44 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -582,6 +584,7 @@ Iterations 1–43 are complete.
 - Iteration 41: SWAPDB command - database swapping (stub implementation - single-database mode, only SWAPDB 0 0 supported as no-op)
 - Iteration 42: Advanced sorted set operations and hash string length - ZUNION/ZINTER/ZDIFF (set-like operations on sorted sets with score aggregation), ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE (store results), HSTRLEN (hash field value string length)
 - Iteration 43: Sorted set range removal and lexicographical operations - ZREMRANGEBYRANK/ZREMRANGEBYSCORE/ZREMRANGEBYLEX (range deletion by rank/score/lex), ZRANGEBYLEX/ZREVRANGEBYLEX (lexicographical range queries for equal-score members), ZLEXCOUNT (count members in lex range)
+- Iteration 44: Bitfield operations - BITFIELD (arbitrary bitfield integer operations with GET/SET/INCRBY and WRAP/SAT/FAIL overflow modes), BITFIELD_RO (read-only variant) - supports signed and unsigned integers from 1 to 64 bits
 
 ### Roadmap
 

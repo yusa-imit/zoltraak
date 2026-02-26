@@ -20,6 +20,7 @@ const client_cmds = @import("client.zig");
 const config_cmds = @import("config.zig");
 const command_cmds = @import("command.zig");
 const bits_cmds = @import("bits.zig");
+const bitfield_cmds = @import("bitfield.zig");
 const geo_cmds = @import("geo.zig");
 const hll_cmds = @import("hyperloglog.zig");
 const introspection_cmds = @import("introspection.zig");
@@ -146,7 +147,7 @@ pub fn executeCommand(
                 "BLMOVE",     "BLMPOP",
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
                 "BZPOPMAX",   "SETRANGE",
-                "SETBIT",     "BITOP",
+                "SETBIT",     "BITOP",      "BITFIELD",
                 "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
                 "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
@@ -213,7 +214,7 @@ pub fn executeCommand(
             "BLMOVE",     "BLMPOP",
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
             "BZPOPMAX",   "SETRANGE",
-            "SETBIT",     "BITOP",
+            "SETBIT",     "BITOP",      "BITFIELD",
             "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
             "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
@@ -534,6 +535,10 @@ pub fn executeCommand(
             break :blk try cmdBitcount(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITOP")) {
             break :blk try cmdBitop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BITFIELD")) {
+            break :blk try bitfield_cmds.cmdBitfield(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BITFIELD_RO")) {
+            break :blk try bitfield_cmds.cmdBitfieldRo(allocator, storage, array);
         }
         // Stream commands
         else if (std.mem.eql(u8, cmd_upper, "XADD")) {
