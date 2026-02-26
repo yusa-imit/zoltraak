@@ -319,7 +319,7 @@ redis-cli -p 6379
 | TOUCH | `TOUCH key [key ...]` | Update last access time of keys (returns count of touched keys) |
 | MOVE | `MOVE key db` | Move key to another database (stub: always returns 0, single-DB only) |
 
-### Sorted Set Commands (Iterations 5, 11, 12, 42)
+### Sorted Set Commands (Iterations 5, 11, 12, 42, 43)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -329,18 +329,24 @@ redis-cli -p 6379
 | ZREVRANGE | `ZREVRANGE key start stop [WITHSCORES]` | Get range in reverse order |
 | ZRANGEBYSCORE | `ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]` | Get members by score range |
 | ZREVRANGEBYSCORE | `ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]` | Get members by score descending |
+| ZRANGEBYLEX | `ZRANGEBYLEX key min max [LIMIT offset count]` | Return members in lexicographical range (for equal scores) |
+| ZREVRANGEBYLEX | `ZREVRANGEBYLEX key max min [LIMIT offset count]` | Return members in reverse lexicographical range |
 | ZSCORE | `ZSCORE key member` | Get score of member |
 | ZMSCORE | `ZMSCORE key member [member ...]` | Get scores for multiple members |
 | ZCARD | `ZCARD key` | Get number of members |
 | ZRANK | `ZRANK key member` | Get rank of member (ascending) |
 | ZREVRANK | `ZREVRANK key member` | Get rank of member (descending) |
 | ZCOUNT | `ZCOUNT key min max` | Count members in score range |
+| ZLEXCOUNT | `ZLEXCOUNT key min max` | Count members in lexicographical range |
 | ZINCRBY | `ZINCRBY key increment member` | Increment score of member |
 | ZPOPMIN | `ZPOPMIN key [count]` | Remove and return lowest-score members |
 | ZPOPMAX | `ZPOPMAX key [count]` | Remove and return highest-score members |
 | BZPOPMIN | `BZPOPMIN key [key ...] timeout` | Blocking pop minimum from first non-empty sorted set |
 | BZPOPMAX | `BZPOPMAX key [key ...] timeout` | Blocking pop maximum from first non-empty sorted set |
 | ZRANDMEMBER | `ZRANDMEMBER key [count [WITHSCORES]]` | Return random members |
+| ZREMRANGEBYRANK | `ZREMRANGEBYRANK key start stop` | Remove all members in a sorted set within the given rank range |
+| ZREMRANGEBYSCORE | `ZREMRANGEBYSCORE key min max` | Remove all members in a sorted set within the given score range |
+| ZREMRANGEBYLEX | `ZREMRANGEBYLEX key min max` | Remove all members in a sorted set within the given lexicographical range |
 | ZSCAN | `ZSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate sorted set members |
 | ZUNION | `ZUNION numkeys key [key ...] [WITHSCORES]` | Return the union of multiple sorted sets (scores are summed) |
 | ZINTER | `ZINTER numkeys key [key ...] [WITHSCORES]` | Return the intersection of multiple sorted sets (scores are summed) |
@@ -543,7 +549,7 @@ OK
 
 ## Project Status
 
-Iterations 1–42 are complete.
+Iterations 1–43 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -575,6 +581,7 @@ Iterations 1–42 are complete.
 - Iteration 40: SELECT command - database selection (single-database mode, only DB 0 supported for Redis client compatibility)
 - Iteration 41: SWAPDB command - database swapping (stub implementation - single-database mode, only SWAPDB 0 0 supported as no-op)
 - Iteration 42: Advanced sorted set operations and hash string length - ZUNION/ZINTER/ZDIFF (set-like operations on sorted sets with score aggregation), ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE (store results), HSTRLEN (hash field value string length)
+- Iteration 43: Sorted set range removal and lexicographical operations - ZREMRANGEBYRANK/ZREMRANGEBYSCORE/ZREMRANGEBYLEX (range deletion by rank/score/lex), ZRANGEBYLEX/ZREVRANGEBYLEX (lexicographical range queries for equal-score members), ZLEXCOUNT (count members in lex range)
 
 ### Roadmap
 

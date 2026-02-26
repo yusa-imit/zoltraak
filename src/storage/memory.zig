@@ -345,6 +345,66 @@ pub const Value = union(ValueType) {
     }
 };
 
+// ── Lexicographical range helpers for sorted sets ─────────────────────────
+
+/// Lexicographical range boundary type
+const LexRangeType = enum {
+    neg_infinity, // "-" represents negative infinity
+    pos_infinity, // "+" represents positive infinity
+    inclusive, // "[value" inclusive boundary
+    exclusive, // "(value" exclusive boundary
+};
+
+/// Parsed lexicographical range boundary
+const LexRange = struct {
+    type: LexRangeType,
+    value: []const u8, // Empty for infinity types
+};
+
+/// Parse a lexicographical range string (e.g., "-", "+", "[abc", "(xyz")
+fn parseLexRange(s: []const u8) !LexRange {
+    if (s.len == 0) return error.InvalidLexRange;
+
+    if (std.mem.eql(u8, s, "-")) {
+        return LexRange{ .type = .neg_infinity, .value = "" };
+    }
+    if (std.mem.eql(u8, s, "+")) {
+        return LexRange{ .type = .pos_infinity, .value = "" };
+    }
+
+    if (s[0] == '[' and s.len > 1) {
+        return LexRange{ .type = .inclusive, .value = s[1..] };
+    }
+    if (s[0] == '(' and s.len > 1) {
+        return LexRange{ .type = .exclusive, .value = s[1..] };
+    }
+
+    return error.InvalidLexRange;
+}
+
+/// Check if a member is within the lexicographical range [min, max]
+fn inLexRange(member: []const u8, min: LexRange, max: LexRange) bool {
+    // Check min boundary
+    const min_ok = switch (min.type) {
+        .neg_infinity => true,
+        .pos_infinity => false,
+        .inclusive => std.mem.order(u8, member, min.value) != .lt,
+        .exclusive => std.mem.order(u8, member, min.value) == .gt,
+    };
+
+    if (!min_ok) return false;
+
+    // Check max boundary
+    const max_ok = switch (max.type) {
+        .neg_infinity => false,
+        .pos_infinity => true,
+        .inclusive => std.mem.order(u8, member, max.value) != .gt,
+        .exclusive => std.mem.order(u8, member, max.value) == .lt,
+    };
+
+    return max_ok;
+}
+
 /// Thread-safe in-memory storage engine with TTL support
 pub const Storage = struct {
     allocator: std.mem.Allocator,
@@ -4918,6 +4978,389 @@ pub const Storage = struct {
 
         _ = try self.zadd(dest, scores.items, member_strings.items, 0, null);
         return members.len;
+    }
+
+    /// Remove all members in a sorted set within the given rank range [start, stop]
+    /// Supports negative indices (-1 = last element)
+    /// Returns the number of elements removed
+    pub fn zremrangebyrank(
+        self: *Storage,
+        key: []const u8,
+        start: i64,
+        stop: i64,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const len = @as(i64, @intCast(zset.sorted_list.items.len));
+                if (len == 0) return 0;
+
+                // Normalize negative indices
+                const norm_start: i64 = if (start < 0) @max(len + start, 0) else @min(start, len - 1);
+                const norm_stop: i64 = if (stop < 0) @max(len + stop, -1) else @min(stop, len - 1);
+
+                if (norm_start > norm_stop or norm_start >= len) return 0;
+
+                const start_idx = @as(usize, @intCast(norm_start));
+                const stop_idx = @as(usize, @intCast(norm_stop));
+                const count = stop_idx - start_idx + 1;
+
+                // Collect members to remove
+                var to_remove = try std.ArrayList([]const u8).initCapacity(self.allocator, count);
+                defer to_remove.deinit(self.allocator);
+
+                var i: usize = start_idx;
+                while (i <= stop_idx and i < zset.sorted_list.items.len) : (i += 1) {
+                    try to_remove.append(self.allocator, zset.sorted_list.items[i].member);
+                }
+
+                // Remove from both structures
+                var removed: usize = 0;
+                for (to_remove.items) |member| {
+                    // Remove from hash map (frees the key)
+                    if (zset.members.fetchRemove(member)) |kv| {
+                        self.allocator.free(kv.key);
+                        removed += 1;
+                    }
+                }
+
+                // Remove from sorted list (in reverse to maintain indices)
+                var j: usize = stop_idx + 1;
+                while (j > start_idx) {
+                    j -= 1;
+                    _ = zset.sorted_list.orderedRemove(j);
+                }
+
+                // Auto-delete if sorted set becomes empty
+                if (zset.members.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return removed;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Remove all members in a sorted set within the given score range [min, max]
+    /// Supports exclusive ranges with "(" prefix
+    /// Returns the number of elements removed
+    pub fn zremrangebyscore(
+        self: *Storage,
+        key: []const u8,
+        min: f64,
+        max: f64,
+        min_exclusive: bool,
+        max_exclusive: bool,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                // Collect members to remove
+                var to_remove = std.ArrayList([]const u8){};
+                defer to_remove.deinit(self.allocator);
+
+                for (zset.sorted_list.items) |item| {
+                    const in_range = if (min_exclusive and item.score <= min) false else if (max_exclusive and item.score >= max) false else item.score >= min and item.score <= max;
+
+                    if (in_range) {
+                        try to_remove.append(self.allocator, item.member);
+                    }
+                }
+
+                // Remove from both structures
+                var removed: usize = 0;
+                for (to_remove.items) |member| {
+                    // Remove from sorted list
+                    for (zset.sorted_list.items, 0..) |item, idx| {
+                        if (std.mem.eql(u8, item.member, member)) {
+                            _ = zset.sorted_list.orderedRemove(idx);
+                            break;
+                        }
+                    }
+                    // Remove from hash map (frees the key)
+                    if (zset.members.fetchRemove(member)) |kv| {
+                        self.allocator.free(kv.key);
+                        removed += 1;
+                    }
+                }
+
+                // Auto-delete if sorted set becomes empty
+                if (zset.members.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return removed;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Remove all members in a sorted set within the given lexicographical range
+    /// min and max can be "-" (neg infinity), "+" (pos infinity), "[" (inclusive), or "(" (exclusive) prefix
+    /// Returns the number of elements removed
+    pub fn zremrangebylex(
+        self: *Storage,
+        key: []const u8,
+        min: []const u8,
+        max: []const u8,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                // Parse min/max
+                const min_info = try parseLexRange(min);
+                const max_info = try parseLexRange(max);
+
+                // Collect members to remove
+                var to_remove = std.ArrayList([]const u8){};
+                defer to_remove.deinit(self.allocator);
+
+                for (zset.sorted_list.items) |item| {
+                    if (!inLexRange(item.member, min_info, max_info)) continue;
+                    try to_remove.append(self.allocator, item.member);
+                }
+
+                // Remove from both structures
+                var removed: usize = 0;
+                for (to_remove.items) |member| {
+                    // Remove from sorted list
+                    for (zset.sorted_list.items, 0..) |item, idx| {
+                        if (std.mem.eql(u8, item.member, member)) {
+                            _ = zset.sorted_list.orderedRemove(idx);
+                            break;
+                        }
+                    }
+                    // Remove from hash map (frees the key)
+                    if (zset.members.fetchRemove(member)) |kv| {
+                        self.allocator.free(kv.key);
+                        removed += 1;
+                    }
+                }
+
+                // Auto-delete if sorted set becomes empty
+                if (zset.members.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return removed;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get members in sorted set within the given lexicographical range
+    /// min and max can be "-" (neg infinity), "+" (pos infinity), "[" (inclusive), or "(" (exclusive) prefix
+    /// Returns owned slice that caller must free (both the slice and each member string)
+    pub fn zrangebylex(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        min: []const u8,
+        max: []const u8,
+        offset: ?usize,
+        count: ?usize,
+    ) ![][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse {
+            return try allocator.alloc([]const u8, 0);
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return try allocator.alloc([]const u8, 0);
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                // Parse min/max
+                const min_info = try parseLexRange(min);
+                const max_info = try parseLexRange(max);
+
+                // Collect matching members
+                var result = std.ArrayList([]const u8){};
+                defer result.deinit(allocator);
+
+                var skip = offset orelse 0;
+                var remaining = count orelse std.math.maxInt(usize);
+
+                for (zset.sorted_list.items) |item| {
+                    if (!inLexRange(item.member, min_info, max_info)) continue;
+
+                    if (skip > 0) {
+                        skip -= 1;
+                        continue;
+                    }
+
+                    if (remaining == 0) break;
+
+                    try result.append(allocator, try allocator.dupe(u8, item.member));
+                    remaining -= 1;
+                }
+
+                return try result.toOwnedSlice(allocator);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get members in reverse order within the given lexicographical range
+    /// Returns owned slice that caller must free
+    pub fn zrevrangebylex(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        max: []const u8,
+        min: []const u8,
+        offset: ?usize,
+        count: ?usize,
+    ) ![][]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse {
+            return try allocator.alloc([]const u8, 0);
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return try allocator.alloc([]const u8, 0);
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                // Parse min/max
+                const min_info = try parseLexRange(min);
+                const max_info = try parseLexRange(max);
+
+                // Collect matching members in reverse
+                var result = std.ArrayList([]const u8){};
+                defer result.deinit(allocator);
+
+                var skip = offset orelse 0;
+                var remaining = count orelse std.math.maxInt(usize);
+
+                var i: usize = zset.sorted_list.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const item = zset.sorted_list.items[i];
+
+                    if (!inLexRange(item.member, min_info, max_info)) continue;
+
+                    if (skip > 0) {
+                        skip -= 1;
+                        continue;
+                    }
+
+                    if (remaining == 0) break;
+
+                    try result.append(allocator, try allocator.dupe(u8, item.member));
+                    remaining -= 1;
+                }
+
+                return try result.toOwnedSlice(allocator);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Count members within the given lexicographical range
+    pub fn zlexcount(
+        self: *Storage,
+        key: []const u8,
+        min: []const u8,
+        max: []const u8,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const min_info = try parseLexRange(min);
+                const max_info = try parseLexRange(max);
+
+                var count: usize = 0;
+                for (zset.sorted_list.items) |item| {
+                    if (inLexRange(item.member, min_info, max_info)) {
+                        count += 1;
+                    }
+                }
+                return count;
+            },
+            else => return error.WrongType,
+        }
     }
 
     // ── String range operations ───────────────────────────────────────────────

@@ -506,6 +506,18 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZinterstore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZDIFFSTORE")) {
             break :blk try sorted_sets.cmdZdiffstore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREMRANGEBYRANK")) {
+            break :blk try sorted_sets.cmdZremrangebyrank(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREMRANGEBYSCORE")) {
+            break :blk try sorted_sets.cmdZremrangebyscore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREMRANGEBYLEX")) {
+            break :blk try sorted_sets.cmdZremrangebylex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYLEX")) {
+            break :blk try sorted_sets.cmdZrangebylex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGEBYLEX")) {
+            break :blk try sorted_sets.cmdZrevrangebylex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZLEXCOUNT")) {
+            break :blk try sorted_sets.cmdZlexcount(allocator, storage, array);
         }
         // String range commands
         else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {

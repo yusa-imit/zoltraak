@@ -2275,6 +2275,354 @@ pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
     return w.writeInteger(@intCast(count));
 }
 
+/// ZREMRANGEBYRANK key start stop
+/// Remove all members in a sorted set within the given ranks
+pub fn cmdZremrangebyrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'zremrangebyrank' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const start_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid start index"),
+    };
+    const start = std.fmt.parseInt(i64, start_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    const stop_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid stop index"),
+    };
+    const stop = std.fmt.parseInt(i64, stop_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    const removed = storage.zremrangebyrank(key, start, stop) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(removed));
+}
+
+/// ZREMRANGEBYSCORE key min max
+/// Remove all members in a sorted set within the given scores
+pub fn cmdZremrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'zremrangebyscore' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const min_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min score"),
+    };
+
+    const max_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid max score"),
+    };
+
+    // Parse min/max with exclusive support
+    const min_exclusive = min_str.len > 0 and min_str[0] == '(';
+    const max_exclusive = max_str.len > 0 and max_str[0] == '(';
+
+    const min_val = if (min_exclusive) min_str[1..] else min_str;
+    const max_val = if (max_exclusive) max_str[1..] else max_str;
+
+    const min = parseScore(min_val) catch {
+        return w.writeError("ERR min or max is not a float");
+    };
+    const max = parseScore(max_val) catch {
+        return w.writeError("ERR min or max is not a float");
+    };
+
+    const removed = storage.zremrangebyscore(key, min, max, min_exclusive, max_exclusive) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(removed));
+}
+
+/// ZREMRANGEBYLEX key min max
+/// Remove all members in a sorted set between the given lexicographical range
+pub fn cmdZremrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'zremrangebylex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const min = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min"),
+    };
+
+    const max = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid max"),
+    };
+
+    const removed = storage.zremrangebylex(key, min, max) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        if (err == error.InvalidLexRange) {
+            return w.writeError("ERR min or max not valid string range item");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(removed));
+}
+
+/// ZRANGEBYLEX key min max [LIMIT offset count]
+/// Return members in a sorted set within the given lexicographical range
+pub fn cmdZrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zrangebylex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const min = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min"),
+    };
+
+    const max = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid max"),
+    };
+
+    var offset: ?usize = null;
+    var count: ?usize = null;
+
+    // Parse LIMIT option
+    var i: usize = 4;
+    while (i < args.len) {
+        const arg_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        const upper_arg = try std.ascii.allocUpperString(allocator, arg_str);
+        defer allocator.free(upper_arg);
+
+        if (std.mem.eql(u8, upper_arg, "LIMIT")) {
+            if (i + 2 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+
+            const offset_str = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            offset = std.fmt.parseInt(usize, offset_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+
+            const count_str = switch (args[i + 2]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            count = std.fmt.parseInt(usize, count_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+
+            i += 3;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const members = storage.zrangebylex(allocator, key, min, max, offset, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        if (err == error.InvalidLexRange) {
+            return w.writeError("ERR min or max not valid string range item");
+        }
+        return err;
+    };
+    defer {
+        for (members) |m| allocator.free(m);
+        allocator.free(members);
+    }
+
+    // Convert to RespValue array
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+    defer resp_values.deinit(allocator);
+
+    for (members) |member| {
+        try resp_values.append(allocator, RespValue{ .bulk_string = member });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// ZREVRANGEBYLEX key max min [LIMIT offset count]
+/// Return members in a sorted set within the given lexicographical range in reverse order
+pub fn cmdZrevrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zrevrangebylex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const max = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid max"),
+    };
+
+    const min = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min"),
+    };
+
+    var offset: ?usize = null;
+    var count: ?usize = null;
+
+    // Parse LIMIT option
+    var i: usize = 4;
+    while (i < args.len) {
+        const arg_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        const upper_arg = try std.ascii.allocUpperString(allocator, arg_str);
+        defer allocator.free(upper_arg);
+
+        if (std.mem.eql(u8, upper_arg, "LIMIT")) {
+            if (i + 2 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+
+            const offset_str = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            offset = std.fmt.parseInt(usize, offset_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+
+            const count_str = switch (args[i + 2]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            count = std.fmt.parseInt(usize, count_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+
+            i += 3;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const members = storage.zrevrangebylex(allocator, key, max, min, offset, count) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        if (err == error.InvalidLexRange) {
+            return w.writeError("ERR min or max not valid string range item");
+        }
+        return err;
+    };
+    defer {
+        for (members) |m| allocator.free(m);
+        allocator.free(members);
+    }
+
+    // Convert to RespValue array
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
+    defer resp_values.deinit(allocator);
+
+    for (members) |member| {
+        try resp_values.append(allocator, RespValue{ .bulk_string = member });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// ZLEXCOUNT key min max
+/// Count members in a sorted set within the given lexicographical range
+pub fn cmdZlexcount(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'zlexcount' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const min = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid min"),
+    };
+
+    const max = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid max"),
+    };
+
+    const count = storage.zlexcount(key, min, max) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        if (err == error.InvalidLexRange) {
+            return w.writeError("ERR min or max not valid string range item");
+        }
+        return err;
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
 test "sorted_sets - BZPOPMAX returns from first non-empty sorted set" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
