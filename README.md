@@ -65,7 +65,7 @@ redis-cli -p 6379
 
 ## Supported Commands
 
-### String Commands (Iterations 1, 19)
+### String Commands (Iterations 1, 19, 45)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -90,6 +90,7 @@ redis-cli -p 6379
 | MGET | `MGET key [key ...]` | Get values of multiple keys |
 | MSET | `MSET key value [key value ...]` | Set multiple keys to multiple values |
 | MSETNX | `MSETNX key value [key value ...]` | Set multiple keys only if none exist |
+| LCS | `LCS key1 key2 [LEN]` | Find the longest common subsequence between two strings (returns LCS string by default, length with LEN option) |
 
 ### List Commands (Iterations 2, 11, 18)
 
@@ -551,7 +552,7 @@ OK
 
 ## Project Status
 
-Iterations 1–44 are complete.
+Iterations 1–45 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -585,6 +586,7 @@ Iterations 1–44 are complete.
 - Iteration 42: Advanced sorted set operations and hash string length - ZUNION/ZINTER/ZDIFF (set-like operations on sorted sets with score aggregation), ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE (store results), HSTRLEN (hash field value string length)
 - Iteration 43: Sorted set range removal and lexicographical operations - ZREMRANGEBYRANK/ZREMRANGEBYSCORE/ZREMRANGEBYLEX (range deletion by rank/score/lex), ZRANGEBYLEX/ZREVRANGEBYLEX (lexicographical range queries for equal-score members), ZLEXCOUNT (count members in lex range)
 - Iteration 44: Bitfield operations - BITFIELD (arbitrary bitfield integer operations with GET/SET/INCRBY and WRAP/SAT/FAIL overflow modes), BITFIELD_RO (read-only variant) - supports signed and unsigned integers from 1 to 64 bits
+- Iteration 45: LCS (Longest Common Subsequence) command - LCS key1 key2 [LEN] for string comparison, returns the longest common subsequence string or its length
 
 ### Roadmap
 

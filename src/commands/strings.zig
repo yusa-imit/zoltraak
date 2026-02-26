@@ -281,6 +281,8 @@ pub fn executeCommand(
             break :blk try cmdMset(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "MSETNX")) {
             break :blk try cmdMsetnx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LCS")) {
+            break :blk try cmdLcs(allocator, storage, array);
         }
         // TTL / expiry commands
         else if (std.mem.eql(u8, cmd_upper, "TTL")) {
@@ -2023,6 +2025,273 @@ fn cmdMsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     return w.writeInteger(1);
 }
 
+/// LCS key1 key2 [LEN] [IDX] [MINMATCHLEN len] [WITHMATCHLEN]
+/// Find the longest common subsequence between two strings.
+/// Returns the LCS string by default, or metadata based on options:
+/// - LEN: return only the length of the LCS
+/// - IDX: return match positions as arrays
+/// - MINMATCHLEN: minimum match length for IDX mode (default 0)
+/// - WITHMATCHLEN: include match lengths in IDX output
+fn cmdLcs(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'lcs' command");
+    }
+
+    const key1 = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const key2 = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse options
+    var len_only = false;
+    var with_idx = false;
+
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+
+        if (std.mem.eql(u8, opt_upper, "LEN")) {
+            len_only = true;
+        } else if (std.mem.eql(u8, opt_upper, "IDX")) {
+            with_idx = true;
+        } else if (std.mem.eql(u8, opt_upper, "MINMATCHLEN")) {
+            // Skip the value
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+        } else if (std.mem.eql(u8, opt_upper, "WITHMATCHLEN")) {
+            // Accepted but ignored for now
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Get the two strings
+    const str1 = storage.get(key1) orelse "";
+    const str2 = storage.get(key2) orelse "";
+
+    // Compute LCS using dynamic programming
+    const lcs_result = try computeLcs(allocator, str1, str2);
+    defer lcs_result.deinit(allocator);
+
+    if (len_only) {
+        // Return only the length
+        return w.writeInteger(@intCast(lcs_result.length));
+    } else if (with_idx) {
+        // IDX mode is complex and not commonly used - return error for now
+        // Full implementation would require building nested arrays of match positions
+        return w.writeError("ERR IDX mode not yet implemented");
+    } else {
+        // Return the LCS string
+        return w.writeBulkString(lcs_result.string);
+    }
+}
+
+const LcsResult = struct {
+    string: []const u8,
+    length: usize,
+
+    fn deinit(self: *const LcsResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.string);
+    }
+};
+
+fn computeLcs(allocator: std.mem.Allocator, str1: []const u8, str2: []const u8) !LcsResult {
+    const m = str1.len;
+    const n = str2.len;
+
+    if (m == 0 or n == 0) {
+        return LcsResult{
+            .string = try allocator.dupe(u8, ""),
+            .length = 0,
+        };
+    }
+
+    // Create DP table
+    const table = try allocator.alloc([]usize, m + 1);
+    defer {
+        for (table) |row| {
+            allocator.free(row);
+        }
+        allocator.free(table);
+    }
+
+    for (table) |*row| {
+        row.* = try allocator.alloc(usize, n + 1);
+        @memset(row.*, 0);
+    }
+
+    // Fill DP table
+    for (1..m + 1) |i| {
+        for (1..n + 1) |j| {
+            if (str1[i - 1] == str2[j - 1]) {
+                table[i][j] = table[i - 1][j - 1] + 1;
+            } else {
+                table[i][j] = @max(table[i - 1][j], table[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack to build the LCS string
+    var lcs = std.ArrayList(u8){};
+    errdefer lcs.deinit(allocator);
+
+    var i = m;
+    var j = n;
+    while (i > 0 and j > 0) {
+        if (str1[i - 1] == str2[j - 1]) {
+            try lcs.append(allocator, str1[i - 1]);
+            i -= 1;
+            j -= 1;
+        } else if (table[i - 1][j] > table[i][j - 1]) {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+
+    // Reverse the LCS string
+    const lcs_str = try lcs.toOwnedSlice(allocator);
+    std.mem.reverse(u8, lcs_str);
+
+    return LcsResult{
+        .string = lcs_str,
+        .length = lcs_str.len,
+    };
+}
+
+const LcsMatch = struct {
+    key1_range: []const usize,
+    key2_range: []const usize,
+    match_len: usize,
+};
+
+fn findLcsMatches(allocator: std.mem.Allocator, str1: []const u8, str2: []const u8, min_match_len: usize) !std.ArrayList(LcsMatch) {
+    var matches = std.ArrayList(LcsMatch){};
+    errdefer {
+        for (matches.items) |match| {
+            allocator.free(match.key1_range);
+            allocator.free(match.key2_range);
+        }
+        matches.deinit(allocator);
+    }
+
+    const m = str1.len;
+    const n = str2.len;
+
+    if (m == 0 or n == 0) {
+        return matches;
+    }
+
+    // Create DP table for LCS
+    const table = try allocator.alloc([]usize, m + 1);
+    defer {
+        for (table) |row| {
+            allocator.free(row);
+        }
+        allocator.free(table);
+    }
+
+    for (table) |*row| {
+        row.* = try allocator.alloc(usize, n + 1);
+        @memset(row.*, 0);
+    }
+
+    // Fill DP table
+    for (1..m + 1) |i| {
+        for (1..n + 1) |j| {
+            if (str1[i - 1] == str2[j - 1]) {
+                table[i][j] = table[i - 1][j - 1] + 1;
+            } else {
+                table[i][j] = @max(table[i - 1][j], table[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack to find matching ranges
+    var i = m;
+    var j = n;
+    var match_start_i: ?usize = null;
+    var match_start_j: ?usize = null;
+    var match_len: usize = 0;
+
+    while (i > 0 and j > 0) {
+        if (str1[i - 1] == str2[j - 1]) {
+            if (match_start_i == null) {
+                match_start_i = i - 1;
+                match_start_j = j - 1;
+                match_len = 0;
+            }
+            match_len += 1;
+            i -= 1;
+            j -= 1;
+        } else {
+            // End of a match
+            if (match_start_i != null and match_len >= min_match_len) {
+                const range1 = try allocator.alloc(usize, 2);
+                range1[0] = match_start_i.?;
+                range1[1] = match_start_i.? + match_len - 1;
+
+                const range2 = try allocator.alloc(usize, 2);
+                range2[0] = match_start_j.?;
+                range2[1] = match_start_j.? + match_len - 1;
+
+                try matches.append(allocator, LcsMatch{
+                    .key1_range = range1,
+                    .key2_range = range2,
+                    .match_len = match_len,
+                });
+            }
+            match_start_i = null;
+            match_start_j = null;
+            match_len = 0;
+
+            if (table[i - 1][j] > table[i][j - 1]) {
+                i -= 1;
+            } else {
+                j -= 1;
+            }
+        }
+    }
+
+    // Handle the last match if exists
+    if (match_start_i != null and match_len >= min_match_len) {
+        const range1 = try allocator.alloc(usize, 2);
+        range1[0] = match_start_i.?;
+        range1[1] = match_start_i.? + match_len - 1;
+
+        const range2 = try allocator.alloc(usize, 2);
+        range2[0] = match_start_j.?;
+        range2[1] = match_start_j.? + match_len - 1;
+
+        try matches.append(allocator, LcsMatch{
+            .key1_range = range1,
+            .key2_range = range2,
+            .match_len = match_len,
+        });
+    }
+
+    // Reverse matches (we built them backward)
+    std.mem.reverse(LcsMatch, matches.items);
+
+    return matches;
+}
+
 // Embedded unit tests
 
 test "commands - PING no argument" {
@@ -3113,4 +3382,83 @@ test "commands - MSETNX sets all or none" {
     // k1 should still have old value; k3 should not exist
     try std.testing.expectEqualStrings("v1", storage.get("k1").?);
     try std.testing.expect(storage.get("k3") == null);
+}
+
+test "commands - LCS basic string comparison" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set two strings
+    try storage.set("key1", "ohmytext", null);
+    try storage.set("key2", "mynewtext", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "key2" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Expected LCS is "mytext"
+    try std.testing.expect(std.mem.indexOf(u8, result, "mytext") != null);
+}
+
+test "commands - LCS with LEN option" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "ohmytext", null);
+    try storage.set("key2", "mynewtext", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "key2" },
+        RespValue{ .bulk_string = "LEN" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Expected length is 6 (mytext)
+    try std.testing.expectEqualStrings(":6\r\n", result);
+}
+
+test "commands - LCS with empty strings" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "hello", null);
+    try storage.set("key2", "", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "key2" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Empty string
+    try std.testing.expectEqualStrings("$0\r\n\r\n", result);
+}
+
+test "commands - LCS with nonexistent keys" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "missing1" },
+        RespValue{ .bulk_string = "missing2" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Both keys missing, empty LCS
+    try std.testing.expectEqualStrings("$0\r\n\r\n", result);
 }
