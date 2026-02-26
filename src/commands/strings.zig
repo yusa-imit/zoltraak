@@ -2053,6 +2053,8 @@ fn cmdLcs(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     // Parse options
     var len_only = false;
     var with_idx = false;
+    var min_match_len: usize = 0;
+    var with_match_len = false;
 
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
@@ -2069,13 +2071,20 @@ fn cmdLcs(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         } else if (std.mem.eql(u8, opt_upper, "IDX")) {
             with_idx = true;
         } else if (std.mem.eql(u8, opt_upper, "MINMATCHLEN")) {
-            // Skip the value
+            // Parse the value
             i += 1;
             if (i >= args.len) {
                 return w.writeError("ERR syntax error");
             }
+            const val_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            min_match_len = std.fmt.parseInt(usize, val_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
         } else if (std.mem.eql(u8, opt_upper, "WITHMATCHLEN")) {
-            // Accepted but ignored for now
+            with_match_len = true;
         } else {
             return w.writeError("ERR syntax error");
         }
@@ -2093,9 +2102,83 @@ fn cmdLcs(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         // Return only the length
         return w.writeInteger(@intCast(lcs_result.length));
     } else if (with_idx) {
-        // IDX mode is complex and not commonly used - return error for now
-        // Full implementation would require building nested arrays of match positions
-        return w.writeError("ERR IDX mode not yet implemented");
+        // IDX mode: return match positions
+        var matches = try findLcsMatches(allocator, str1, str2, min_match_len);
+        defer {
+            for (matches.items) |match| {
+                allocator.free(match.key1_range);
+                allocator.free(match.key2_range);
+            }
+            matches.deinit(allocator);
+        }
+
+        // Format: map with "matches" key containing array of match arrays, and "len" key
+        // Redis format:
+        // 1) "matches"
+        // 2) 1) 1) 1) 4  (key1 start)
+        //          2) 7  (key1 end)
+        //       2) 1) 5  (key2 start)
+        //          2) 8  (key2 end)
+        //       3) 4     (match len - only if WITHMATCHLEN)
+        // 3) "len"
+        // 4) 11 (total LCS length)
+
+        var result = std.ArrayList(u8){};
+        errdefer result.deinit(allocator);
+
+        // Start with a map containing "matches" and "len"
+        try result.appendSlice(allocator, "*2\r\n"); // 2 elements in outer array
+
+        // First element: "matches" key
+        try result.appendSlice(allocator, "$7\r\nmatches\r\n");
+
+        // Second element: array of matches
+        const match_count_str = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{matches.items.len});
+        defer allocator.free(match_count_str);
+        try result.appendSlice(allocator, match_count_str);
+
+        // Each match is an array of 2 or 3 elements (key1_range, key2_range, optional match_len)
+        const elements: usize = if (with_match_len) 3 else 2;
+        for (matches.items) |match| {
+            const elem_str = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{elements});
+            defer allocator.free(elem_str);
+            try result.appendSlice(allocator, elem_str);
+
+            // key1_range: [start, end]
+            try result.appendSlice(allocator, "*2\r\n");
+            const start1_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{match.key1_range[0]});
+            defer allocator.free(start1_str);
+            try result.appendSlice(allocator, start1_str);
+            const end1_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{match.key1_range[1]});
+            defer allocator.free(end1_str);
+            try result.appendSlice(allocator, end1_str);
+
+            // key2_range: [start, end]
+            try result.appendSlice(allocator, "*2\r\n");
+            const start2_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{match.key2_range[0]});
+            defer allocator.free(start2_str);
+            try result.appendSlice(allocator, start2_str);
+            const end2_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{match.key2_range[1]});
+            defer allocator.free(end2_str);
+            try result.appendSlice(allocator, end2_str);
+
+            // Optional match_len
+            if (with_match_len) {
+                const len_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{match.match_len});
+                defer allocator.free(len_str);
+                try result.appendSlice(allocator, len_str);
+            }
+        }
+
+        // "len" key
+        try result.appendSlice(allocator, "$3\r\nlen\r\n");
+
+        // Total LCS length value
+        const len_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{lcs_result.length});
+        defer allocator.free(len_str);
+        try result.appendSlice(allocator, len_str);
+
+        return try result.toOwnedSlice(allocator);
     } else {
         // Return the LCS string
         return w.writeBulkString(lcs_result.string);
@@ -3461,4 +3544,77 @@ test "commands - LCS with nonexistent keys" {
 
     // Both keys missing, empty LCS
     try std.testing.expectEqualStrings("$0\r\n\r\n", result);
+}
+
+test "commands - LCS with IDX option" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set two strings with a clear pattern
+    try storage.set("key1", "ohmytext", null);
+    try storage.set("key2", "mynewtext", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "key2" },
+        RespValue{ .bulk_string = "IDX" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return array with "matches" and "len" keys
+    try std.testing.expect(std.mem.indexOf(u8, result, "matches") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "len") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":6\r\n") != null); // LCS length is 6
+}
+
+test "commands - LCS with IDX and WITHMATCHLEN options" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "ohmytext", null);
+    try storage.set("key2", "mynewtext", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "key2" },
+        RespValue{ .bulk_string = "IDX" },
+        RespValue{ .bulk_string = "WITHMATCHLEN" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should include match lengths in the output
+    try std.testing.expect(std.mem.indexOf(u8, result, "matches") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "len") != null);
+    // Should have 3 elements per match (key1_range, key2_range, match_len)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*3\r\n") != null);
+}
+
+test "commands - LCS with IDX and MINMATCHLEN options" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "ohmytext", null);
+    try storage.set("key2", "mynewtext", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LCS" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "key2" },
+        RespValue{ .bulk_string = "IDX" },
+        RespValue{ .bulk_string = "MINMATCHLEN" },
+        RespValue{ .bulk_string = "3" },
+    };
+    const result = try cmdLcs(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should filter out matches shorter than 3 characters
+    try std.testing.expect(std.mem.indexOf(u8, result, "matches") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "len") != null);
 }

@@ -6293,3 +6293,150 @@ test "HELLO - protocol persists across commands" {
         try testing.expectEqualStrings("+PONG\r\n", response);
     }
 }
+
+// ============================================================================
+// LCS Command Tests (Iteration 46 - IDX mode)
+// ============================================================================
+
+test "LCS - basic string comparison" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set two strings
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key1", "ohmytext" });
+        defer testing.allocator.free(response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key2", "mynewtext" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LCS", "key1", "key2" });
+    defer testing.allocator.free(response);
+
+    // Expected LCS is "mytext"
+    try testing.expect(std.mem.indexOf(u8, response, "mytext") != null);
+}
+
+test "LCS - with LEN option" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key1", "ohmytext" });
+        defer testing.allocator.free(response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key2", "mynewtext" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LCS", "key1", "key2", "LEN" });
+    defer testing.allocator.free(response);
+
+    // Expected length is 6 (mytext)
+    try testing.expectEqualStrings(":6\r\n", response);
+}
+
+test "LCS - with IDX option" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key1", "ohmytext" });
+        defer testing.allocator.free(response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key2", "mynewtext" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LCS", "key1", "key2", "IDX" });
+    defer testing.allocator.free(response);
+
+    // Should contain "matches" and "len" keys
+    try testing.expect(std.mem.indexOf(u8, response, "matches") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "len") != null);
+    try testing.expect(std.mem.indexOf(u8, response, ":6\r\n") != null); // LCS length is 6
+}
+
+test "LCS - with IDX and WITHMATCHLEN options" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key1", "ohmytext" });
+        defer testing.allocator.free(response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key2", "mynewtext" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LCS", "key1", "key2", "IDX", "WITHMATCHLEN" });
+    defer testing.allocator.free(response);
+
+    // Should include match lengths (3 elements per match)
+    try testing.expect(std.mem.indexOf(u8, response, "matches") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "*3\r\n") != null);
+}
+
+test "LCS - with IDX and MINMATCHLEN options" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key1", "ohmytext" });
+        defer testing.allocator.free(response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key2", "mynewtext" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LCS", "key1", "key2", "IDX", "MINMATCHLEN", "3" });
+    defer testing.allocator.free(response);
+
+    // Should filter matches by minimum length
+    try testing.expect(std.mem.indexOf(u8, response, "matches") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "len") != null);
+}
+
+test "LCS - empty string returns empty result" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key1", "hello" });
+        defer testing.allocator.free(response);
+    }
+    {
+        const response = try client.sendCommand(&[_][]const u8{ "SET", "key2", "" });
+        defer testing.allocator.free(response);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "LCS", "key1", "key2" });
+    defer testing.allocator.free(response);
+
+    // Empty LCS
+    try testing.expectEqualStrings("$0\r\n\r\n", response);
+}
