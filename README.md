@@ -65,7 +65,7 @@ redis-cli -p 6379
 
 ## Supported Commands
 
-### String Commands (Iterations 1, 19, 45)
+### String Commands (Iterations 1, 19, 45-47)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -90,6 +90,7 @@ redis-cli -p 6379
 | MGET | `MGET key [key ...]` | Get values of multiple keys |
 | MSET | `MSET key value [key value ...]` | Set multiple keys to multiple values |
 | MSETNX | `MSETNX key value [key value ...]` | Set multiple keys only if none exist |
+| MSETEX | `MSETEX numkeys key value [key value ...] [NX\|XX] [EX seconds\|PX ms\|EXAT ts\|PXAT ts\|KEEPTTL]` | Atomically set multiple keys with optional shared expiration (returns 1 if all set, 0 otherwise) |
 | LCS | `LCS key1 key2 [LEN]` | Find the longest common subsequence between two strings (returns LCS string by default, length with LEN option) |
 
 ### List Commands (Iterations 2, 11, 18)
@@ -552,7 +553,7 @@ OK
 
 ## Project Status
 
-Iterations 1–45 are complete.
+Iterations 1–46 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -587,6 +588,8 @@ Iterations 1–45 are complete.
 - Iteration 43: Sorted set range removal and lexicographical operations - ZREMRANGEBYRANK/ZREMRANGEBYSCORE/ZREMRANGEBYLEX (range deletion by rank/score/lex), ZRANGEBYLEX/ZREVRANGEBYLEX (lexicographical range queries for equal-score members), ZLEXCOUNT (count members in lex range)
 - Iteration 44: Bitfield operations - BITFIELD (arbitrary bitfield integer operations with GET/SET/INCRBY and WRAP/SAT/FAIL overflow modes), BITFIELD_RO (read-only variant) - supports signed and unsigned integers from 1 to 64 bits
 - Iteration 45: LCS (Longest Common Subsequence) command - LCS key1 key2 [LEN] for string comparison, returns the longest common subsequence string or its length
+- Iteration 46: LCS IDX mode - LCS key1 key2 IDX [MINMATCHLEN len] [WITHMATCHLEN] returns match positions as arrays with "matches" (key1_range, key2_range, optional match_len) and "len" keys
+- Iteration 47: MSETEX command - MSETEX numkeys key value [key value ...] [NX|XX] [EX/PX/EXAT/PXAT/KEEPTTL] atomically sets multiple keys with optional shared expiration (new Redis 8.4+ command)
 
 ### Roadmap
 

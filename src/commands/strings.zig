@@ -138,7 +138,8 @@ pub fn executeCommand(
                 "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
                 "APPEND",     "GETSET",     "GETDEL",     "GETEX",
                 "SETNX",      "SETEX",      "PSETEX",
-                "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
+                "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
+                "UNLINK",
                 "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
                 "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
@@ -205,7 +206,8 @@ pub fn executeCommand(
             "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
             "APPEND",     "GETSET",     "GETDEL",     "GETEX",
             "SETNX",      "SETEX",      "PSETEX",
-            "MSET",       "MSETNX",     "RENAME",     "RENAMENX",   "UNLINK",
+            "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
+            "UNLINK",
             "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
             "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
@@ -281,6 +283,8 @@ pub fn executeCommand(
             break :blk try cmdMset(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "MSETNX")) {
             break :blk try cmdMsetnx(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "MSETEX")) {
+            break :blk try cmdMsetex(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LCS")) {
             break :blk try cmdLcs(allocator, storage, array);
         }
@@ -2025,6 +2029,192 @@ fn cmdMsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     return w.writeInteger(1);
 }
 
+/// MSETEX numkeys key value [key value ...] [NX | XX] [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL]
+/// Atomically sets multiple string keys with optional shared expiration.
+/// - numkeys: number of key-value pairs to set
+/// - NX: only set if NONE of the keys exist
+/// - XX: only set if ALL of the keys exist
+/// - EX/PX/EXAT/PXAT/KEEPTTL: expiration options (mutually exclusive)
+/// Returns 1 if all keys were set, 0 if none were set.
+fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'msetex' command");
+    }
+
+    // Parse numkeys
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a valid integer");
+    };
+
+    if (numkeys == 0) {
+        return w.writeError("ERR numkeys must be positive");
+    }
+
+    // Must have at least numkeys*2 arguments for key-value pairs
+    const expected_min_args = 2 + numkeys * 2;
+    if (args.len < expected_min_args) {
+        return w.writeError("ERR wrong number of arguments for 'msetex' command");
+    }
+
+    // Parse key-value pairs
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+    var values = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer values.deinit(allocator);
+
+    var i: usize = 2;
+    var count: usize = 0;
+    while (count < numkeys) : (count += 1) {
+        if (i >= args.len) {
+            return w.writeError("ERR wrong number of arguments for 'msetex' command");
+        }
+
+        const key = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        const value = switch (args[i + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid value"),
+        };
+
+        try keys.append(allocator, key);
+        try values.append(allocator, value);
+        i += 2;
+    }
+
+    // Parse options
+    var nx_flag = false;
+    var xx_flag = false;
+    var expires_at: ?i64 = null;
+    var keepttl_flag = false;
+
+    while (i < args.len) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+
+        if (std.mem.eql(u8, opt_upper, "NX")) {
+            if (xx_flag) {
+                return w.writeError("ERR NX and XX options at the same time are not compatible");
+            }
+            nx_flag = true;
+            i += 1;
+        } else if (std.mem.eql(u8, opt_upper, "XX")) {
+            if (nx_flag) {
+                return w.writeError("ERR NX and XX options at the same time are not compatible");
+            }
+            xx_flag = true;
+            i += 1;
+        } else if (std.mem.eql(u8, opt_upper, "KEEPTTL")) {
+            if (expires_at != null) {
+                return w.writeError("ERR KEEPTTL and expiration options at the same time are not compatible");
+            }
+            keepttl_flag = true;
+            i += 1;
+        } else if (std.mem.eql(u8, opt_upper, "EX")) {
+            if (keepttl_flag or expires_at != null) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const seconds_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            const seconds = std.fmt.parseInt(i64, seconds_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            if (seconds <= 0) {
+                return w.writeError("ERR invalid expire time in 'msetex' command");
+            }
+            expires_at = std.time.milliTimestamp() + (seconds * 1000);
+            i += 1;
+        } else if (std.mem.eql(u8, opt_upper, "PX")) {
+            if (keepttl_flag or expires_at != null) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const millis_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            const millis = std.fmt.parseInt(i64, millis_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            if (millis <= 0) {
+                return w.writeError("ERR invalid expire time in 'msetex' command");
+            }
+            expires_at = std.time.milliTimestamp() + millis;
+            i += 1;
+        } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
+            if (keepttl_flag or expires_at != null) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const timestamp_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            const timestamp = std.fmt.parseInt(i64, timestamp_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            expires_at = timestamp * 1000;
+            i += 1;
+        } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
+            if (keepttl_flag or expires_at != null) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const timestamp_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            const timestamp = std.fmt.parseInt(i64, timestamp_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            expires_at = timestamp;
+            i += 1;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Execute msetex
+    const success = try storage.msetex(
+        keys.items,
+        values.items,
+        expires_at,
+        nx_flag,
+        xx_flag,
+        keepttl_flag,
+    );
+
+    return w.writeInteger(if (success) 1 else 0);
+}
+
 /// LCS key1 key2 [LEN] [IDX] [MINMATCHLEN len] [WITHMATCHLEN]
 /// Find the longest common subsequence between two strings.
 /// Returns the LCS string by default, or metadata based on options:
@@ -3465,6 +3655,184 @@ test "commands - MSETNX sets all or none" {
     // k1 should still have old value; k3 should not exist
     try std.testing.expectEqualStrings("v1", storage.get("k1").?);
     try std.testing.expect(storage.get("k3") == null);
+}
+
+test "commands - MSETEX basic operation" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "3" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "v1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "k3" },
+        RespValue{ .bulk_string = "v3" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Verify all keys were set
+    try std.testing.expectEqualStrings("v1", storage.get("k1").?);
+    try std.testing.expectEqualStrings("v2", storage.get("k2").?);
+    try std.testing.expectEqualStrings("v3", storage.get("k3").?);
+}
+
+test "commands - MSETEX with EX option" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "v1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "EX" },
+        RespValue{ .bulk_string = "100" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Keys should exist
+    try std.testing.expect(storage.get("k1") != null);
+    try std.testing.expect(storage.get("k2") != null);
+}
+
+test "commands - MSETEX with NX flag succeeds" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "v1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "NX" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Both keys should be set
+    try std.testing.expectEqualStrings("v1", storage.get("k1").?);
+    try std.testing.expectEqualStrings("v2", storage.get("k2").?);
+}
+
+test "commands - MSETEX with NX flag fails when key exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Pre-existing key
+    try storage.set("k1", "old", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "new1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "NX" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+
+    // k1 should still have old value; k2 should not exist
+    try std.testing.expectEqualStrings("old", storage.get("k1").?);
+    try std.testing.expect(storage.get("k2") == null);
+}
+
+test "commands - MSETEX with XX flag succeeds when all keys exist" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Pre-existing keys
+    try storage.set("k1", "old1", null);
+    try storage.set("k2", "old2", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "new1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "new2" },
+        RespValue{ .bulk_string = "XX" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Both keys should have new values
+    try std.testing.expectEqualStrings("new1", storage.get("k1").?);
+    try std.testing.expectEqualStrings("new2", storage.get("k2").?);
+}
+
+test "commands - MSETEX with XX flag fails when any key missing" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Only k1 exists
+    try storage.set("k1", "old", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "new1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "XX" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+
+    // k1 should still have old value
+    try std.testing.expectEqualStrings("old", storage.get("k1").?);
+}
+
+test "commands - MSETEX with KEEPTTL preserves existing TTL" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set k1 with expiry
+    const future = std.time.milliTimestamp() + 100000;
+    try storage.set("k1", "old", future);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "MSETEX" },
+        RespValue{ .bulk_string = "2" }, // numkeys
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "new1" },
+        RespValue{ .bulk_string = "k2" },
+        RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "KEEPTTL" },
+    };
+    const result = try cmdMsetex(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // k1 should have new value and still have TTL
+    try std.testing.expectEqualStrings("new1", storage.get("k1").?);
+    const ttl = storage.getTtlMs("k1");
+    try std.testing.expect(ttl > 0);
 }
 
 test "commands - LCS basic string comparison" {

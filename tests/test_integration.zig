@@ -6440,3 +6440,232 @@ test "LCS - empty string returns empty result" {
     // Empty LCS
     try testing.expectEqualStrings("$0\r\n\r\n", response);
 }
+
+// ============================================================================
+// MSETEX Command Tests (Iteration 47)
+// ============================================================================
+
+test "MSETEX - basic operation" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "3", "k1", "v1", "k2", "v2", "k3", "v3" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    // Verify keys were set
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$2\r\nv1\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k2" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$2\r\nv2\r\n", r);
+    }
+}
+
+test "MSETEX - with EX option" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "v1", "k2", "v2", "EX", "100" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    // Keys should exist
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$2\r\nv1\r\n", r);
+    }
+
+    // Should have TTL
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "TTL", "k1" });
+        defer testing.allocator.free(r);
+        // TTL should be positive (around 100 seconds)
+        try testing.expect(r[0] == ':');
+    }
+}
+
+test "MSETEX - with NX succeeds when keys absent" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "v1", "k2", "v2", "NX" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$2\r\nv1\r\n", r);
+    }
+}
+
+test "MSETEX - with NX fails when any key exists" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set one key
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "k1", "old" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "new1", "k2", "v2", "NX" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+
+    // k1 should still have old value
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$3\r\nold\r\n", r);
+    }
+
+    // k2 should not exist
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k2" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$-1\r\n", r);
+    }
+}
+
+test "MSETEX - with XX succeeds when all keys exist" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set both keys
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "k1", "old1" });
+        defer testing.allocator.free(r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "k2", "old2" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "new1", "k2", "new2", "XX" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    // Both keys should have new values
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$4\r\nnew1\r\n", r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k2" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$4\r\nnew2\r\n", r);
+    }
+}
+
+test "MSETEX - with XX fails when any key missing" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set only k1
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "k1", "old" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "new1", "k2", "v2", "XX" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+
+    // k1 should still have old value
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$3\r\nold\r\n", r);
+    }
+}
+
+test "MSETEX - with KEEPTTL preserves existing TTL" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set k1 with expiry
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "SET", "k1", "old", "EX", "100" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "new1", "k2", "v2", "KEEPTTL" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    // k1 should have new value
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "GET", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expectEqualStrings("$4\r\nnew1\r\n", r);
+    }
+
+    // k1 should still have TTL
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "TTL", "k1" });
+        defer testing.allocator.free(r);
+        try testing.expect(r[0] == ':');
+    }
+}
+
+test "MSETEX - invalid numkeys" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "abc", "k1", "v1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(response[0] == '-');
+}
+
+test "MSETEX - NX and XX together fails" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "MSETEX", "2", "k1", "v1", "k2", "v2", "NX", "XX" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(response[0] == '-');
+}

@@ -512,6 +512,103 @@ pub const Storage = struct {
         }
     }
 
+    /// Atomically set multiple keys with optional shared expiration
+    /// If nx_flag is true, only set if NONE of the keys exist
+    /// If xx_flag is true, only set if ALL of the keys exist
+    /// If keepttl_flag is true, preserve existing TTLs
+    /// Returns true if all keys were set, false otherwise
+    pub fn msetex(
+        self: *Storage,
+        keys: []const []const u8,
+        values: []const []const u8,
+        expires_at: ?i64,
+        nx_flag: bool,
+        xx_flag: bool,
+        keepttl_flag: bool,
+    ) !bool {
+        if (keys.len != values.len) return error.InvalidArgument;
+        if (keys.len == 0) return false;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+
+        // Phase 1: Check conditions (NX or XX)
+        if (nx_flag) {
+            // NX: fail if ANY key exists
+            for (keys) |key| {
+                const entry = self.data.getEntry(key);
+                if (entry) |e| {
+                    // Key exists and not expired
+                    if (!e.value_ptr.isExpired(now)) {
+                        return false;
+                    }
+                }
+            }
+        } else if (xx_flag) {
+            // XX: fail if ANY key doesn't exist
+            for (keys) |key| {
+                const entry = self.data.getEntry(key);
+                if (entry) |e| {
+                    if (e.value_ptr.isExpired(now)) {
+                        return false; // Expired = doesn't exist
+                    }
+                } else {
+                    return false; // Doesn't exist
+                }
+            }
+        }
+
+        // Phase 2: Set all keys atomically
+        for (keys, values) |key, value| {
+            const owned_value = try self.allocator.dupe(u8, value);
+            errdefer self.allocator.free(owned_value);
+
+            // Determine expiration time
+            var final_expires_at: ?i64 = expires_at;
+            if (keepttl_flag) {
+                // Keep existing TTL if key exists
+                if (self.data.getEntry(key)) |entry| {
+                    if (!entry.value_ptr.isExpired(now)) {
+                        final_expires_at = switch (entry.value_ptr.*) {
+                            .string => |s| s.expires_at,
+                            .list => |l| l.expires_at,
+                            .set => |s| s.expires_at,
+                            .hash => |h| h.expires_at,
+                            .sorted_set => |z| z.expires_at,
+                            .stream => |st| st.expires_at,
+                            .hyperloglog => |hll| hll.expires_at,
+                        };
+                    }
+                }
+            }
+
+            const new_value = Value{
+                .string = .{
+                    .data = owned_value,
+                    .expires_at = final_expires_at,
+                },
+            };
+
+            // Check if key already exists
+            if (self.data.getEntry(key)) |entry| {
+                // Key exists - free old value and update
+                var old_value = entry.value_ptr.*;
+                old_value.deinit(self.allocator);
+                entry.value_ptr.* = new_value;
+            } else {
+                // New key - copy key and insert
+                const owned_key = try self.allocator.dupe(u8, key);
+                errdefer self.allocator.free(owned_key);
+
+                try self.data.put(owned_key, new_value);
+            }
+        }
+
+        return true;
+    }
+
     /// Get string value for key
     /// Returns null if key doesn't exist, is expired, or is not a string
     /// Expired keys are lazily deleted
