@@ -1914,6 +1914,135 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 }
 
+/// LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]
+/// Pops elements from the first non-empty list key from the list of provided key names.
+/// Elements are popped from either the left or right of the first non-empty list.
+/// Returns array [key, [elements...]] or null if all lists are empty.
+pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'lmpop' command");
+    }
+
+    // Parse numkeys
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys is not an integer or out of range"),
+    };
+    const numkeys = std.fmt.parseInt(i64, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys is not an integer or out of range");
+    };
+    if (numkeys <= 0) {
+        return w.writeError("ERR numkeys should be greater than 0");
+    }
+
+    const numkeys_usize = @as(usize, @intCast(numkeys));
+    if (args.len < 2 + numkeys_usize + 1) {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Parse direction (LEFT or RIGHT)
+    const direction_idx = 2 + numkeys_usize;
+    const direction = switch (args[direction_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const pop_left = if (std.mem.eql(u8, direction, "LEFT"))
+        true
+    else if (std.mem.eql(u8, direction, "RIGHT"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    // Parse optional COUNT
+    var count: usize = 1;
+    if (args.len > direction_idx + 1) {
+        if (args.len < direction_idx + 3) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_keyword = switch (args[direction_idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (!std.mem.eql(u8, count_keyword, "COUNT")) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_str = switch (args[direction_idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR count is not an integer or out of range"),
+        };
+        const count_i64 = std.fmt.parseInt(i64, count_str, 10) catch {
+            return w.writeError("ERR count is not an integer or out of range");
+        };
+        if (count_i64 <= 0) {
+            return w.writeError("ERR count should be greater than 0");
+        }
+        count = @as(usize, @intCast(count_i64));
+    }
+
+    // Try to pop from each key in order
+    for (args[2 .. 2 + numkeys_usize]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try popping from this key
+        const result = if (pop_left)
+            (try storage.lpop(allocator, key, count)) orelse continue
+        else
+            (try storage.rpop(allocator, key, count)) orelse continue;
+
+        defer {
+            for (result) |elem| allocator.free(elem);
+            allocator.free(result);
+        }
+
+        if (result.len > 0) {
+            // Return [key, [elements...]]
+            var elements = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
+            defer elements.deinit(allocator);
+            for (result) |elem| {
+                try elements.append(allocator, RespValue{ .bulk_string = elem });
+            }
+
+            var outer = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+            defer outer.deinit(allocator);
+            try outer.append(allocator, RespValue{ .bulk_string = key });
+
+            // Build array response for elements
+            var inner_buf = std.ArrayList(u8){};
+            defer inner_buf.deinit(allocator);
+            const inner_writer = inner_buf.writer(allocator);
+            try inner_writer.print("*{d}\r\n", .{elements.items.len});
+            for (elements.items) |elem| {
+                const bs = switch (elem) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+                try inner_writer.print("${d}\r\n{s}\r\n", .{ bs.len, bs });
+            }
+
+            const inner_str = try inner_buf.toOwnedSlice(allocator);
+            defer allocator.free(inner_str);
+
+            // Manually build response: *2\r\n$<keylen>\r\n<key>\r\n<inner>
+            var final_buf = std.ArrayList(u8){};
+            defer final_buf.deinit(allocator);
+            const final_writer = final_buf.writer(allocator);
+            try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, inner_str });
+
+            return try final_buf.toOwnedSlice(allocator);
+        }
+    }
+
+    // All lists were empty
+    return w.writeNull();
+}
+
 /// BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]
 /// Blocking version of LMPOP - pops elements from the first non-empty list.
 /// In this single-threaded implementation, behaves as immediate check (timeout=0).
@@ -2189,6 +2318,94 @@ test "lists - BLMOVE on empty source returns null" {
         RespValue{ .bulk_string = "0.5" },
     };
     const result = try cmdBlmove(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "lists - LMPOP pops from first non-empty list with LEFT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create two lists, second one has data
+    const setup_args1 = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+    };
+    const setup_result1 = try cmdRpush(allocator, storage, &setup_args1);
+    defer allocator.free(setup_result1);
+
+    // Test LMPOP from multiple keys
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LMPOP" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "list2" },
+        RespValue{ .bulk_string = "LEFT" },
+    };
+
+    const result = try cmdLmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [list2, [a]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "list2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na\r\n") != null);
+}
+
+test "lists - LMPOP pops from first non-empty list with RIGHT and COUNT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "RPUSH" },
+        RespValue{ .bulk_string = "mylist" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "c" },
+        RespValue{ .bulk_string = "d" },
+    };
+    const setup_result = try cmdRpush(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test LMPOP with COUNT 2
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LMPOP" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "mylist" },
+        RespValue{ .bulk_string = "RIGHT" },
+        RespValue{ .bulk_string = "COUNT" },
+        RespValue{ .bulk_string = "2" },
+    };
+
+    const result = try cmdLmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [mylist, [d, c]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "mylist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nd\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nc\r\n") != null);
+}
+
+test "lists - LMPOP on all empty lists returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "LMPOP" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "empty1" },
+        RespValue{ .bulk_string = "empty2" },
+        RespValue{ .bulk_string = "LEFT" },
+    };
+
+    const result = try cmdLmpop(allocator, storage, &args);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);

@@ -93,7 +93,7 @@ redis-cli -p 6379
 | MSETEX | `MSETEX numkeys key value [key value ...] [NX\|XX] [EX seconds\|PX ms\|EXAT ts\|PXAT ts\|KEEPTTL]` | Atomically set multiple keys with optional shared expiration (returns 1 if all set, 0 otherwise) |
 | LCS | `LCS key1 key2 [LEN]` | Find the longest common subsequence between two strings (returns LCS string by default, length with LEN option) |
 
-### List Commands (Iterations 2, 11, 18)
+### List Commands (Iterations 2, 11, 18, 49)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -113,6 +113,7 @@ redis-cli -p 6379
 | LPOS | `LPOS key element [RANK rank] [COUNT num] [MAXLEN len]` | Find positions of element |
 | LMOVE | `LMOVE source dest LEFT\|RIGHT LEFT\|RIGHT` | Atomically move element |
 | RPOPLPUSH | `RPOPLPUSH source dest` | Pop from tail, push to head (legacy) |
+| LMPOP | `LMPOP numkeys key [key ...] LEFT\|RIGHT [COUNT count]` | Multi-pop from first non-empty list |
 | BLPOP | `BLPOP key [key ...] timeout` | Blocking pop from head |
 | BRPOP | `BRPOP key [key ...] timeout` | Blocking pop from tail |
 | BLMOVE | `BLMOVE source dest LEFT\|RIGHT LEFT\|RIGHT timeout` | Blocking move element |
@@ -324,7 +325,7 @@ redis-cli -p 6379
 | TOUCH | `TOUCH key [key ...]` | Update last access time of keys (returns count of touched keys) |
 | MOVE | `MOVE key db` | Move key to another database (stub: always returns 0, single-DB only) |
 
-### Sorted Set Commands (Iterations 5, 11, 12, 42, 43)
+### Sorted Set Commands (Iterations 5, 11, 12, 42, 43, 49)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -346,8 +347,10 @@ redis-cli -p 6379
 | ZINCRBY | `ZINCRBY key increment member` | Increment score of member |
 | ZPOPMIN | `ZPOPMIN key [count]` | Remove and return lowest-score members |
 | ZPOPMAX | `ZPOPMAX key [count]` | Remove and return highest-score members |
+| ZMPOP | `ZMPOP numkeys key [key ...] MIN\|MAX [COUNT count]` | Multi-pop from first non-empty sorted set |
 | BZPOPMIN | `BZPOPMIN key [key ...] timeout` | Blocking pop minimum from first non-empty sorted set |
 | BZPOPMAX | `BZPOPMAX key [key ...] timeout` | Blocking pop maximum from first non-empty sorted set |
+| BZMPOP | `BZMPOP timeout numkeys key [key ...] MIN\|MAX [COUNT count]` | Blocking multi-pop from first non-empty sorted set |
 | ZRANDMEMBER | `ZRANDMEMBER key [count [WITHSCORES]]` | Return random members |
 | ZREMRANGEBYRANK | `ZREMRANGEBYRANK key start stop` | Remove all members in a sorted set within the given rank range |
 | ZREMRANGEBYSCORE | `ZREMRANGEBYSCORE key min max` | Remove all members in a sorted set within the given score range |
@@ -554,7 +557,7 @@ OK
 
 ## Project Status
 
-Iterations 1–48 are complete.
+Iterations 1–49 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -592,6 +595,7 @@ Iterations 1–48 are complete.
 - Iteration 46: LCS IDX mode - LCS key1 key2 IDX [MINMATCHLEN len] [WITHMATCHLEN] returns match positions as arrays with "matches" (key1_range, key2_range, optional match_len) and "len" keys
 - Iteration 47: MSETEX command - MSETEX numkeys key value [key value ...] [NX|XX] [EX/PX/EXAT/PXAT/KEEPTTL] atomically sets multiple keys with optional shared expiration (new Redis 8.4+ command)
 - Iteration 48: HRANDFIELD command - HRANDFIELD key [count [WITHVALUES]] returns random field(s) from hash (single field without count, array with count, field-value pairs with WITHVALUES, RESP3 map support)
+- Iteration 49: Multi-pop commands (Redis 7.0+) - LMPOP (non-blocking list multi-pop), ZMPOP (sorted set multi-pop with MIN/MAX), BZMPOP (blocking sorted set multi-pop) - unified pop operations from multiple keys
 
 ### Roadmap
 

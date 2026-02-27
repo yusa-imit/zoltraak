@@ -1683,6 +1683,270 @@ test "cmdZcount - exclusive bounds" {
     try std.testing.expectEqualStrings(":2\r\n", response);
 }
 
+/// ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]
+/// Pops members with the highest or lowest scores from the first non-empty sorted set.
+/// Returns array [key, [member, score, ...]] or null if all sorted sets are empty.
+pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'zmpop' command");
+    }
+
+    // Parse numkeys
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys is not an integer or out of range"),
+    };
+    const numkeys = std.fmt.parseInt(i64, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys is not an integer or out of range");
+    };
+    if (numkeys <= 0) {
+        return w.writeError("ERR numkeys should be greater than 0");
+    }
+
+    const numkeys_usize = @as(usize, @intCast(numkeys));
+    if (args.len < 2 + numkeys_usize + 1) {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Parse modifier (MIN or MAX)
+    const modifier_idx = 2 + numkeys_usize;
+    const modifier = switch (args[modifier_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const pop_min = if (std.mem.eql(u8, modifier, "MIN"))
+        true
+    else if (std.mem.eql(u8, modifier, "MAX"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    // Parse optional COUNT
+    var count: usize = 1;
+    if (args.len > modifier_idx + 1) {
+        if (args.len < modifier_idx + 3) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_keyword = switch (args[modifier_idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (!std.mem.eql(u8, count_keyword, "COUNT")) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_str = switch (args[modifier_idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR count is not an integer or out of range"),
+        };
+        const count_i64 = std.fmt.parseInt(i64, count_str, 10) catch {
+            return w.writeError("ERR count is not an integer or out of range");
+        };
+        if (count_i64 <= 0) {
+            return w.writeError("ERR count should be greater than 0");
+        }
+        count = @as(usize, @intCast(count_i64));
+    }
+
+    // Try to pop from each key in order
+    for (args[2 .. 2 + numkeys_usize]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try popping from this key
+        const popped = if (pop_min)
+            storage.zpopmin(allocator, key, count)
+        else
+            storage.zpopmax(allocator, key, count);
+
+        const members = (popped catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        }) orelse continue;
+
+        defer {
+            for (members) |sm| allocator.free(sm.member);
+            allocator.free(members);
+        }
+
+        if (members.len > 0) {
+            // Return [key, [member, score, ...]]
+            // Build member-score array
+            var member_score_buf = std.ArrayList(u8){};
+            defer member_score_buf.deinit(allocator);
+            const ms_writer = member_score_buf.writer(allocator);
+
+            // Array of member-score pairs
+            try ms_writer.print("*{d}\r\n", .{members.len * 2});
+            for (members) |sm| {
+                try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
+
+                var score_buf: [64]u8 = undefined;
+                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+            }
+
+            const ms_str = try member_score_buf.toOwnedSlice(allocator);
+            defer allocator.free(ms_str);
+
+            // Build final response: *2\r\n$<keylen>\r\n<key>\r\n<member_score_array>
+            var final_buf = std.ArrayList(u8){};
+            defer final_buf.deinit(allocator);
+            const final_writer = final_buf.writer(allocator);
+            try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, ms_str });
+
+            return try final_buf.toOwnedSlice(allocator);
+        }
+    }
+
+    // All sorted sets were empty
+    return w.writeNull();
+}
+
+/// BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]
+/// Blocking version of ZMPOP - pops members from the first non-empty sorted set.
+/// In this single-threaded implementation, behaves as immediate check (timeout=0).
+/// Returns array [key, [member, score, ...]] or null if all sorted sets are empty.
+pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'bzmpop' command");
+    }
+
+    // Parse timeout
+    const timeout_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR timeout is not a float or out of range"),
+    };
+    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    // Parse numkeys
+    const numkeys_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys is not an integer or out of range"),
+    };
+    const numkeys = std.fmt.parseInt(i64, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys is not an integer or out of range");
+    };
+    if (numkeys <= 0) {
+        return w.writeError("ERR numkeys should be greater than 0");
+    }
+
+    const numkeys_usize = @as(usize, @intCast(numkeys));
+    if (args.len < 3 + numkeys_usize + 1) {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Parse modifier (MIN or MAX)
+    const modifier_idx = 3 + numkeys_usize;
+    const modifier = switch (args[modifier_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const pop_min = if (std.mem.eql(u8, modifier, "MIN"))
+        true
+    else if (std.mem.eql(u8, modifier, "MAX"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    // Parse optional COUNT
+    var count: usize = 1;
+    if (args.len > modifier_idx + 1) {
+        if (args.len < modifier_idx + 3) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_keyword = switch (args[modifier_idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (!std.mem.eql(u8, count_keyword, "COUNT")) {
+            return w.writeError("ERR syntax error");
+        }
+        const count_str = switch (args[modifier_idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR count is not an integer or out of range"),
+        };
+        const count_i64 = std.fmt.parseInt(i64, count_str, 10) catch {
+            return w.writeError("ERR count is not an integer or out of range");
+        };
+        if (count_i64 <= 0) {
+            return w.writeError("ERR count should be greater than 0");
+        }
+        count = @as(usize, @intCast(count_i64));
+    }
+
+    // Try to pop from each key in order
+    for (args[3 .. 3 + numkeys_usize]) |arg| {
+        const key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        // Try popping from this key
+        const popped = if (pop_min)
+            storage.zpopmin(allocator, key, count)
+        else
+            storage.zpopmax(allocator, key, count);
+
+        const members = (popped catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        }) orelse continue;
+
+        defer {
+            for (members) |sm| allocator.free(sm.member);
+            allocator.free(members);
+        }
+
+        if (members.len > 0) {
+            // Return [key, [member, score, ...]]
+            // Build member-score array
+            var member_score_buf = std.ArrayList(u8){};
+            defer member_score_buf.deinit(allocator);
+            const ms_writer = member_score_buf.writer(allocator);
+
+            // Array of member-score pairs
+            try ms_writer.print("*{d}\r\n", .{members.len * 2});
+            for (members) |sm| {
+                try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
+
+                var score_buf: [64]u8 = undefined;
+                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+            }
+
+            const ms_str = try member_score_buf.toOwnedSlice(allocator);
+            defer allocator.free(ms_str);
+
+            // Build final response: *2\r\n$<keylen>\r\n<key>\r\n<member_score_array>
+            var final_buf = std.ArrayList(u8){};
+            defer final_buf.deinit(allocator);
+            const final_writer = final_buf.writer(allocator);
+            try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, ms_str });
+
+            return try final_buf.toOwnedSlice(allocator);
+        }
+    }
+
+    // All sorted sets were empty
+    return w.writeNull();
+}
+
 /// BZPOPMIN key [key ...] timeout
 /// Blocking version of ZPOPMIN - pops lowest-score member from first non-empty sorted set.
 /// In this single-threaded implementation, behaves as immediate check (timeout=0).
@@ -1813,6 +2077,177 @@ pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     // All sorted sets empty - return null
     return w.writeNull();
+}
+
+// ── Unit tests for ZMPOP/BZMPOP commands ──────────────────────────────────────
+
+test "sorted_sets - ZMPOP pops min from first non-empty sorted set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "1.0" },
+        RespValue{ .bulk_string = "one" },
+        RespValue{ .bulk_string = "2.0" },
+        RespValue{ .bulk_string = "two" },
+        RespValue{ .bulk_string = "3.0" },
+        RespValue{ .bulk_string = "three" },
+    };
+    const setup_result = try cmdZadd(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test ZMPOP MIN
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZMPOP" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "MIN" },
+    };
+
+    const result = try cmdZmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [myzset, [one, 1]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "one") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "1") != null);
+}
+
+test "sorted_sets - ZMPOP pops max with COUNT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "1.0" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2.0" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "3.0" },
+        RespValue{ .bulk_string = "c" },
+        RespValue{ .bulk_string = "4.0" },
+        RespValue{ .bulk_string = "d" },
+    };
+    const setup_result = try cmdZadd(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test ZMPOP MAX COUNT 2
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZMPOP" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "MAX" },
+        RespValue{ .bulk_string = "COUNT" },
+        RespValue{ .bulk_string = "2" },
+    };
+
+    const result = try cmdZmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [myzset, [d, 4, c, 3]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "d") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "c") != null);
+}
+
+test "sorted_sets - ZMPOP on all empty sorted sets returns null" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZMPOP" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "empty1" },
+        RespValue{ .bulk_string = "empty2" },
+        RespValue{ .bulk_string = "MIN" },
+    };
+
+    const result = try cmdZmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "sorted_sets - BZMPOP pops min from first non-empty sorted set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "10.0" },
+        RespValue{ .bulk_string = "ten" },
+        RespValue{ .bulk_string = "20.0" },
+        RespValue{ .bulk_string = "twenty" },
+    };
+    const setup_result = try cmdZadd(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test BZMPOP (should behave like ZMPOP with timeout ignored)
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BZMPOP" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "MIN" },
+    };
+
+    const result = try cmdBzmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [zset2, [ten, 10]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "zset2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "ten") != null);
+}
+
+test "sorted_sets - BZMPOP with MAX and COUNT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "1.0" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2.0" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "3.0" },
+        RespValue{ .bulk_string = "c" },
+    };
+    const setup_result = try cmdZadd(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test BZMPOP MAX COUNT 2
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BZMPOP" },
+        RespValue{ .bulk_string = "1.5" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "MAX" },
+        RespValue{ .bulk_string = "COUNT" },
+        RespValue{ .bulk_string = "2" },
+    };
+
+    const result = try cmdBzmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return [myzset, [c, 3, b, 2]]
+    try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nc\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb\r\n") != null);
 }
 
 // ── Unit tests for blocking sorted set commands ──────────────────────────────

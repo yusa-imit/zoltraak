@@ -145,9 +145,9 @@ pub fn executeCommand(
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-                "BLMOVE",     "BLMPOP",
-                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
-                "BZPOPMAX",   "SETRANGE",
+                "BLMOVE",     "LMPOP",      "BLMPOP",
+                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
+                "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
                 "SETBIT",     "BITOP",      "BITFIELD",
                 "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
                 "XCLAIM",     "XAUTOCLAIM",
@@ -213,9 +213,9 @@ pub fn executeCommand(
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-            "BLMOVE",     "BLMPOP",
-            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "BZPOPMIN",
-            "BZPOPMAX",   "SETRANGE",
+            "BLMOVE",     "LMPOP",      "BLMPOP",
+            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
+            "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
             "SETBIT",     "BITOP",      "BITFIELD",
             "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
             "XCLAIM",     "XAUTOCLAIM",
@@ -371,6 +371,8 @@ pub fn executeCommand(
             break :blk try lists.cmdBrpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BLMOVE")) {
             break :blk try lists.cmdBlmove(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "LMPOP")) {
+            break :blk try lists.cmdLmpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BLMPOP")) {
             break :blk try lists.cmdBlmpop(allocator, storage, array);
         }
@@ -488,10 +490,14 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZpopmin(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZPOPMAX")) {
             break :blk try sorted_sets.cmdZpopmax(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZMPOP")) {
+            break :blk try sorted_sets.cmdZmpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BZPOPMIN")) {
             break :blk try sorted_sets.cmdBzpopmin(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BZPOPMAX")) {
             break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BZMPOP")) {
+            break :blk try sorted_sets.cmdBzmpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
             break :blk try sorted_sets.cmdZmscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGE")) {
