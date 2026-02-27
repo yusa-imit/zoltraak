@@ -384,6 +384,50 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 3. 마이그레이션 완료 후 `status: DONE`으로 변경하고 커밋한다
 4. `zig build test` 통과 확인 필수
 
+### sailor 이슈 발행 프로토콜
+
+sailor 라이브러리를 사용하는 중 버그를 발견하거나, 필요한 기능이 없을 때 GitHub Issue를 발행한다.
+
+**버그 발행**:
+```bash
+gh issue create --repo yusa-imit/sailor \
+  --title "bug: <간단한 설명>" \
+  --label "bug,from:zoltraak" \
+  --body "## 증상
+<어떤 문제가 발생했는지>
+
+## 재현 방법
+<코드 또는 단계>
+
+## 기대 동작
+<어떻게 동작해야 하는지>
+
+## 환경
+- sailor 버전: <version>
+- Zig 버전: 0.15.x
+- OS: <os>"
+```
+
+**기능 요청 발행**:
+```bash
+gh issue create --repo yusa-imit/sailor \
+  --title "feat: <필요한 기능>" \
+  --label "feature-request,from:zoltraak" \
+  --body "## 필요한 이유
+<zoltraak에서 왜 이 기능이 필요한지>
+
+## 제안하는 API
+<원하는 함수 시그니처나 사용 예시>
+
+## 현재 워크어라운드
+<없으면 '없음'>"
+```
+
+**발행 조건**:
+- sailor의 기존 API로 해결할 수 없는 문제일 때만 발행
+- 동일한 이슈가 이미 열려있는지 먼저 확인: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
+- 이슈 발행 후 현재 작업으로 복귀 (sailor 수정을 직접 하지 않음)
+
 ### v0.1.0 — arg, color (status: PENDING)
 
 sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
