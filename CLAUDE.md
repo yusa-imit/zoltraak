@@ -439,7 +439,7 @@ gh issue create --repo yusa-imit/sailor \
 - [x] 기존 테스트 전체 통과 확인
 - [x] 커밋: `refactor: migrate arg parsing to sailor v0.1.0`
 
-### v0.2.0 — repl (status: PENDING)
+### v0.2.0 — REPL (status: READY))
 
 **작업 내용**:
 - [ ] `zoltraak-cli` 바이너리 추가 (build.zig에 별도 executable)
