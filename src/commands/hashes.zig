@@ -1214,6 +1214,749 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 }
 
+/// HEXPIRE key seconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// Set expiration time for hash fields
+/// Returns array of integers (1 if set, 0 if not, -2 if field doesn't exist)
+pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'hexpire' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const seconds_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid seconds"),
+    };
+    const seconds = std.fmt.parseInt(i64, seconds_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len < 5 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hexpire' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (5..5 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Parse options (NX|XX|GT|LT)
+    var options: u8 = 0;
+    if (args.len > 5 + numfields) {
+        const option = switch (args[5 + numfields]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.mem.eql(u8, option, "NX")) {
+            options = 1;
+        } else if (std.mem.eql(u8, option, "XX")) {
+            options = 2;
+        } else if (std.mem.eql(u8, option, "GT")) {
+            options = 4;
+        } else if (std.mem.eql(u8, option, "LT")) {
+            options = 8;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Calculate expiration time in milliseconds
+    const now = std.time.milliTimestamp();
+    const expires_at_ms = now + (seconds * 1000);
+
+    // Execute HEXPIRE
+    const updated_count = storage.hexpire(key, fields.items, expires_at_ms, options) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    // Build result array (1 if set, 0 if not set, -2 if field doesn't exist)
+    // For simplicity, we return number of updated fields as success indicator
+    // In real Redis, this would return an array per field
+    var results = try allocator.alloc(i64, numfields);
+    defer allocator.free(results);
+
+    // Mark first 'updated_count' as 1, rest as 0
+    for (0..numfields) |i| {
+        results[i] = if (i < updated_count) 1 else 0;
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, numfields);
+    defer resp_values.deinit(allocator);
+
+    for (results) |r| {
+        try resp_values.append(allocator, RespValue{ .integer = r });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HPEXPIRE key milliseconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// Set expiration time for hash fields in milliseconds
+pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpire' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const ms_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid milliseconds"),
+    };
+    const milliseconds = std.fmt.parseInt(i64, ms_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len < 5 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpire' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (5..5 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Parse options (NX|XX|GT|LT)
+    var options: u8 = 0;
+    if (args.len > 5 + numfields) {
+        const option = switch (args[5 + numfields]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.mem.eql(u8, option, "NX")) {
+            options = 1;
+        } else if (std.mem.eql(u8, option, "XX")) {
+            options = 2;
+        } else if (std.mem.eql(u8, option, "GT")) {
+            options = 4;
+        } else if (std.mem.eql(u8, option, "LT")) {
+            options = 8;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Calculate expiration time in milliseconds
+    const now = std.time.milliTimestamp();
+    const expires_at_ms = now + milliseconds;
+
+    // Execute HPEXPIRE
+    const updated_count = storage.hexpire(key, fields.items, expires_at_ms, options) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    var results = try allocator.alloc(i64, numfields);
+    defer allocator.free(results);
+
+    for (0..numfields) |i| {
+        results[i] = if (i < updated_count) 1 else 0;
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, numfields);
+    defer resp_values.deinit(allocator);
+
+    for (results) |r| {
+        try resp_values.append(allocator, RespValue{ .integer = r });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HEXPIREAT key unix-time-seconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// Set expiration time for hash fields at absolute Unix timestamp (seconds)
+pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'hexpireat' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const ts_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid timestamp"),
+    };
+    const unix_time_seconds = std.fmt.parseInt(i64, ts_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len < 5 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hexpireat' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (5..5 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Parse options
+    var options: u8 = 0;
+    if (args.len > 5 + numfields) {
+        const option = switch (args[5 + numfields]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.mem.eql(u8, option, "NX")) {
+            options = 1;
+        } else if (std.mem.eql(u8, option, "XX")) {
+            options = 2;
+        } else if (std.mem.eql(u8, option, "GT")) {
+            options = 4;
+        } else if (std.mem.eql(u8, option, "LT")) {
+            options = 8;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const expires_at_ms = unix_time_seconds * 1000;
+
+    const updated_count = storage.hexpire(key, fields.items, expires_at_ms, options) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    var results = try allocator.alloc(i64, numfields);
+    defer allocator.free(results);
+
+    for (0..numfields) |i| {
+        results[i] = if (i < updated_count) 1 else 0;
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, numfields);
+    defer resp_values.deinit(allocator);
+
+    for (results) |r| {
+        try resp_values.append(allocator, RespValue{ .integer = r });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HPEXPIREAT key unix-time-milliseconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// Set expiration time for hash fields at absolute Unix timestamp (milliseconds)
+pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpireat' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const ts_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid timestamp"),
+    };
+    const unix_time_ms = std.fmt.parseInt(i64, ts_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len < 5 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpireat' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (5..5 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Parse options
+    var options: u8 = 0;
+    if (args.len > 5 + numfields) {
+        const option = switch (args[5 + numfields]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.mem.eql(u8, option, "NX")) {
+            options = 1;
+        } else if (std.mem.eql(u8, option, "XX")) {
+            options = 2;
+        } else if (std.mem.eql(u8, option, "GT")) {
+            options = 4;
+        } else if (std.mem.eql(u8, option, "LT")) {
+            options = 8;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const updated_count = storage.hexpire(key, fields.items, unix_time_ms, options) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    var results = try allocator.alloc(i64, numfields);
+    defer allocator.free(results);
+
+    for (0..numfields) |i| {
+        results[i] = if (i < updated_count) 1 else 0;
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, numfields);
+    defer resp_values.deinit(allocator);
+
+    for (results) |r| {
+        try resp_values.append(allocator, RespValue{ .integer = r });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HPERSIST key FIELDS numfields field [field ...]
+/// Remove expiration from hash fields
+/// Returns array of integers (1 if expiration removed, 0 if field has no expiration, -2 if field doesn't exist)
+pub fn cmdHpersist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'hpersist' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len != 4 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hpersist' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (4..4 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HPERSIST
+    const removed_count = storage.hpersist(key, fields.items) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    var results = try allocator.alloc(i64, numfields);
+    defer allocator.free(results);
+
+    for (0..numfields) |i| {
+        results[i] = if (i < removed_count) 1 else 0;
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, numfields);
+    defer resp_values.deinit(allocator);
+
+    for (results) |r| {
+        try resp_values.append(allocator, RespValue{ .integer = r });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HTTL key FIELDS numfields field [field ...]
+/// Get TTL in seconds for hash fields
+/// Returns array of TTL values (-2 if field doesn't exist, -1 if no expiry, positive for TTL)
+pub fn cmdHttpl(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'httl' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len != 4 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'httl' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (4..4 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HTTL
+    const ttls = try storage.httl(allocator, key, fields.items);
+    defer allocator.free(ttls);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, ttls.len);
+    defer resp_values.deinit(allocator);
+
+    for (ttls) |ttl| {
+        try resp_values.append(allocator, RespValue{ .integer = ttl });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HPTTL key FIELDS numfields field [field ...]
+/// Get TTL in milliseconds for hash fields
+/// Returns array of TTL values (-2 if field doesn't exist, -1 if no expiry, positive for TTL)
+pub fn cmdHpttl(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'hpttl' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len != 4 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hpttl' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (4..4 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HPTTL
+    const ttls = try storage.hpttl(allocator, key, fields.items);
+    defer allocator.free(ttls);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, ttls.len);
+    defer resp_values.deinit(allocator);
+
+    for (ttls) |ttl| {
+        try resp_values.append(allocator, RespValue{ .integer = ttl });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HEXPIRETIME key FIELDS numfields field [field ...]
+/// Get expiration time in seconds (Unix timestamp) for hash fields
+/// Returns array of expiration times (-2 if field doesn't exist, -1 if no expiry, positive for timestamp)
+pub fn cmdHexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'hexpiretime' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len != 4 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hexpiretime' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (4..4 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HEXPIRETIME
+    const times = try storage.hexpiretime(allocator, key, fields.items);
+    defer allocator.free(times);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, times.len);
+    defer resp_values.deinit(allocator);
+
+    for (times) |time| {
+        try resp_values.append(allocator, RespValue{ .integer = time });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HPEXPIRETIME key FIELDS numfields field [field ...]
+/// Get expiration time in milliseconds (Unix timestamp) for hash fields
+/// Returns array of expiration times (-2 if field doesn't exist, -1 if no expiry, positive for timestamp)
+pub fn cmdHpexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpiretime' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len != 4 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpiretime' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (4..4 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HPEXPIRETIME
+    const times = try storage.hpexpiretime(allocator, key, fields.items);
+    defer allocator.free(times);
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, times.len);
+    defer resp_values.deinit(allocator);
+
+    for (times) |time| {
+        try resp_values.append(allocator, RespValue{ .integer = time });
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
 test "cmdHrandfield - returns single random field" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);

@@ -2877,6 +2877,247 @@ pub const Storage = struct {
         }
     }
 
+    /// Set expiration time for hash fields
+    /// options: bit flags (NX=1, XX=2, GT=4, LT=8)
+    /// Returns number of fields successfully updated
+    /// Returns error.WrongType if key is not a hash
+    pub fn hexpire(
+        self: *Storage,
+        key: []const u8,
+        fields: []const []const u8,
+        expires_at_ms: i64,
+        options: u8,
+    ) error{WrongType}!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                const nx_flag = (options & 1) != 0; // NX: set expiry only if field has no expiry
+                const xx_flag = (options & 2) != 0; // XX: set expiry only if field has expiry
+                const gt_flag = (options & 4) != 0; // GT: set expiry only if new expiry > current
+                const lt_flag = (options & 8) != 0; // LT: set expiry only if new expiry < current
+
+                var count: usize = 0;
+                for (fields) |field| {
+                    if (hash_val.data.getEntry(field)) |field_entry| {
+                        const field_val_ptr = field_entry.value_ptr;
+                        const current_expiry = field_val_ptr.expires_at;
+
+                        // Apply option flags
+                        if (nx_flag and current_expiry != null) continue;
+                        if (xx_flag and current_expiry == null) continue;
+                        if (gt_flag and current_expiry != null and expires_at_ms <= current_expiry.?) continue;
+                        if (lt_flag and current_expiry != null and expires_at_ms >= current_expiry.?) continue;
+
+                        field_val_ptr.expires_at = expires_at_ms;
+                        count += 1;
+                    }
+                }
+                return count;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Remove expiration from hash fields
+    /// Returns number of fields with expiration removed
+    /// Returns error.WrongType if key is not a hash
+    pub fn hpersist(
+        self: *Storage,
+        key: []const u8,
+        fields: []const []const u8,
+    ) error{WrongType}!usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                var count: usize = 0;
+                for (fields) |field| {
+                    if (hash_val.data.getEntry(field)) |field_entry| {
+                        if (field_entry.value_ptr.expires_at != null) {
+                            field_entry.value_ptr.expires_at = null;
+                            count += 1;
+                        }
+                    }
+                }
+                return count;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get TTL in milliseconds for hash fields
+    /// Returns array of TTL values (-2 if field doesn't exist, -1 if no expiry, positive for TTL)
+    /// Caller must free the returned slice
+    /// Returns error.WrongType if key is not a hash
+    pub fn hpttl(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        fields: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try allocator.alloc(i64, fields.len);
+
+        const entry = self.data.getEntry(key) orelse {
+            // Key doesn't exist - all fields return -2
+            for (result) |*r| r.* = -2;
+            return result;
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            // Key expired - all fields return -2
+            for (result) |*r| r.* = -2;
+            return result;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                const now = getCurrentTimestamp();
+                for (fields, 0..) |field, i| {
+                    if (hash_val.data.get(field)) |field_val| {
+                        if (field_val.expires_at) |expires_at| {
+                            const ttl = expires_at - now;
+                            result[i] = if (ttl > 0) ttl else -2; // Expired
+                        } else {
+                            result[i] = -1; // No expiry
+                        }
+                    } else {
+                        result[i] = -2; // Field doesn't exist
+                    }
+                }
+                return result;
+            },
+            else => {
+                allocator.free(result);
+                return error.WrongType;
+            },
+        }
+    }
+
+    /// Get TTL in seconds for hash fields
+    /// Returns array of TTL values (-2 if field doesn't exist, -1 if no expiry, positive for TTL)
+    /// Caller must free the returned slice
+    /// Returns error.WrongType if key is not a hash
+    pub fn httl(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        fields: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]i64 {
+        const ttls_ms = try self.hpttl(allocator, key, fields);
+        // Convert milliseconds to seconds
+        for (ttls_ms) |*ttl| {
+            if (ttl.* > 0) {
+                ttl.* = @divFloor(ttl.*, 1000);
+            }
+        }
+        return ttls_ms;
+    }
+
+    /// Get expiration time in milliseconds (Unix timestamp) for hash fields
+    /// Returns array of expiration times (-2 if field doesn't exist, -1 if no expiry, positive for timestamp)
+    /// Caller must free the returned slice
+    /// Returns error.WrongType if key is not a hash
+    pub fn hpexpiretime(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        fields: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try allocator.alloc(i64, fields.len);
+
+        const entry = self.data.getEntry(key) orelse {
+            for (result) |*r| r.* = -2;
+            return result;
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            for (result) |*r| r.* = -2;
+            return result;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                for (fields, 0..) |field, i| {
+                    if (hash_val.data.get(field)) |field_val| {
+                        if (field_val.expires_at) |expires_at| {
+                            result[i] = expires_at;
+                        } else {
+                            result[i] = -1; // No expiry
+                        }
+                    } else {
+                        result[i] = -2; // Field doesn't exist
+                    }
+                }
+                return result;
+            },
+            else => {
+                allocator.free(result);
+                return error.WrongType;
+            },
+        }
+    }
+
+    /// Get expiration time in seconds (Unix timestamp) for hash fields
+    /// Returns array of expiration times (-2 if field doesn't exist, -1 if no expiry, positive for timestamp)
+    /// Caller must free the returned slice
+    /// Returns error.WrongType if key is not a hash
+    pub fn hexpiretime(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        fields: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]i64 {
+        const times_ms = try self.hpexpiretime(allocator, key, fields);
+        // Convert milliseconds to seconds
+        for (times_ms) |*t| {
+            if (t.* > 0) {
+                t.* = @divFloor(t.*, 1000);
+            }
+        }
+        return times_ms;
+    }
+
     /// Get rank (0-based index) of member in sorted set
     /// If reverse is true, return rank from end (ZREVRANK)
     /// Returns null if key or member does not exist

@@ -437,6 +437,24 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "HRANDFIELD")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try hashes.cmdHrandfield(allocator, storage, array, protocol_version);
+        } else if (std.mem.eql(u8, cmd_upper, "HEXPIRE")) {
+            break :blk try hashes.cmdHexpire(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HPEXPIRE")) {
+            break :blk try hashes.cmdHpexpire(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HEXPIREAT")) {
+            break :blk try hashes.cmdHexpireat(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HPEXPIREAT")) {
+            break :blk try hashes.cmdHpexpireat(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HPERSIST")) {
+            break :blk try hashes.cmdHpersist(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HTTL")) {
+            break :blk try hashes.cmdHttpl(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HPTTL")) {
+            break :blk try hashes.cmdHpttl(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HEXPIRETIME")) {
+            break :blk try hashes.cmdHexpiretime(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HPEXPIRETIME")) {
+            break :blk try hashes.cmdHpexpiretime(allocator, storage, array);
         }
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {

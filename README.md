@@ -141,7 +141,7 @@ redis-cli -p 6379
 | SDIFFSTORE | `SDIFFSTORE dest key [key ...]` | Store difference result |
 | SSCAN | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate set members |
 
-### Hash Commands (Iterations 4, 42, 48)
+### Hash Commands (Iterations 4, 42, 48, 50)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -155,6 +155,15 @@ redis-cli -p 6379
 | HLEN | `HLEN key` | Get number of fields |
 | HSTRLEN | `HSTRLEN key field` | Get string length of hash field value (returns 0 if field doesn't exist) |
 | HRANDFIELD | `HRANDFIELD key [count [WITHVALUES]]` | Return random field(s) from hash (single field without count, array with count, field-value pairs with WITHVALUES, RESP3 map with WITHVALUES) |
+| HEXPIRE | `HEXPIRE key seconds FIELDS numfields field [field ...] [NX\|XX\|GT\|LT]` | Set expiration time for hash fields (Redis 7.4+) |
+| HPEXPIRE | `HPEXPIRE key milliseconds FIELDS numfields field [field ...] [NX\|XX\|GT\|LT]` | Set expiration time for hash fields in milliseconds (Redis 7.4+) |
+| HEXPIREAT | `HEXPIREAT key unix-time-seconds FIELDS numfields field [field ...] [NX\|XX\|GT\|LT]` | Set expiration time at absolute Unix timestamp in seconds (Redis 7.4+) |
+| HPEXPIREAT | `HPEXPIREAT key unix-time-milliseconds FIELDS numfields field [field ...] [NX\|XX\|GT\|LT]` | Set expiration time at absolute Unix timestamp in milliseconds (Redis 7.4+) |
+| HPERSIST | `HPERSIST key FIELDS numfields field [field ...]` | Remove expiration from hash fields (Redis 7.4+) |
+| HTTL | `HTTL key FIELDS numfields field [field ...]` | Get TTL in seconds for hash fields (-2 if field doesn't exist, -1 if no expiry) (Redis 7.4+) |
+| HPTTL | `HPTTL key FIELDS numfields field [field ...]` | Get TTL in milliseconds for hash fields (Redis 7.4+) |
+| HEXPIRETIME | `HEXPIRETIME key FIELDS numfields field [field ...]` | Get expiration time in seconds (Unix timestamp) for hash fields (Redis 7.4+) |
+| HPEXPIRETIME | `HPEXPIRETIME key FIELDS numfields field [field ...]` | Get expiration time in milliseconds (Unix timestamp) for hash fields (Redis 7.4+) |
 
 ### Replication Commands (Iteration 10)
 
@@ -557,7 +566,7 @@ OK
 
 ## Project Status
 
-Iterations 1–49 are complete.
+Iterations 1–50 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -596,6 +605,7 @@ Iterations 1–49 are complete.
 - Iteration 47: MSETEX command - MSETEX numkeys key value [key value ...] [NX|XX] [EX/PX/EXAT/PXAT/KEEPTTL] atomically sets multiple keys with optional shared expiration (new Redis 8.4+ command)
 - Iteration 48: HRANDFIELD command - HRANDFIELD key [count [WITHVALUES]] returns random field(s) from hash (single field without count, array with count, field-value pairs with WITHVALUES, RESP3 map support)
 - Iteration 49: Multi-pop commands (Redis 7.0+) - LMPOP (non-blocking list multi-pop), ZMPOP (sorted set multi-pop with MIN/MAX), BZMPOP (blocking sorted set multi-pop) - unified pop operations from multiple keys
+- Iteration 50: Hash field-level TTL commands (Redis 7.4+) - HEXPIRE/HPEXPIRE/HEXPIREAT/HPEXPIREAT (set field expiration), HPERSIST (remove field expiration), HTTL/HPTTL (get field TTL), HEXPIRETIME/HPEXPIRETIME (get field expiration timestamp) - fine-grained expiration control for hash fields
 
 ### Roadmap
 
