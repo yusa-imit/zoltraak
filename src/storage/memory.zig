@@ -66,18 +66,29 @@ pub const Value = union(ValueType) {
         }
     };
 
-    /// Hash value with optional expiration
-    /// Maps field names to values
+    /// Hash field value with optional per-field expiration
+    pub const FieldValue = struct {
+        data: []const u8,
+        expires_at: ?i64, // Unix timestamp in milliseconds, null = no expiration
+
+        pub fn deinit(self: *FieldValue, allocator: std.mem.Allocator) void {
+            allocator.free(self.data);
+        }
+    };
+
+    /// Hash value with optional key-level expiration and per-field expiration
+    /// Maps field names to field values (data + optional TTL)
     pub const HashValue = struct {
-        data: std.StringHashMap([]const u8),
-        expires_at: ?i64,
+        data: std.StringHashMap(FieldValue),
+        expires_at: ?i64, // Key-level expiration
 
         pub fn deinit(self: *HashValue, allocator: std.mem.Allocator) void {
             // Free all field names (keys) and field values
             var it = self.data.iterator();
             while (it.next()) |entry| {
                 allocator.free(entry.key_ptr.*);
-                allocator.free(entry.value_ptr.*);
+                var field_val = entry.value_ptr.*;
+                field_val.deinit(allocator);
             }
             self.data.deinit();
         }
@@ -1700,17 +1711,23 @@ pub const Storage = struct {
                             const owned_value = try self.allocator.dupe(u8, value);
                             errdefer self.allocator.free(owned_value);
 
-                            try hash_val.data.put(owned_field, owned_value);
+                            try hash_val.data.put(owned_field, Value.FieldValue{
+                                .data = owned_value,
+                                .expires_at = null, // No field-level expiration by default
+                            });
                             added_count += 1;
                         } else {
                             // Existing field - free old value, set new one
-                            const old_value = hash_val.data.get(field).?;
-                            self.allocator.free(old_value);
+                            const old_field_val = hash_val.data.get(field).?;
+                            self.allocator.free(old_field_val.data);
 
                             const owned_value = try self.allocator.dupe(u8, value);
                             errdefer self.allocator.free(owned_value);
 
-                            try hash_val.data.put(field, owned_value);
+                            try hash_val.data.put(field, Value.FieldValue{
+                                .data = owned_value,
+                                .expires_at = old_field_val.expires_at, // Preserve field expiration
+                            });
                         }
                     }
                     return added_count;
@@ -1719,12 +1736,13 @@ pub const Storage = struct {
             }
         } else {
             // Create new hash
-            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            var hash_map = std.StringHashMap(Value.FieldValue).init(self.allocator);
             errdefer {
                 var it = hash_map.iterator();
                 while (it.next()) |entry| {
                     self.allocator.free(entry.key_ptr.*);
-                    self.allocator.free(entry.value_ptr.*);
+                    var field_val = entry.value_ptr.*;
+                    field_val.deinit(self.allocator);
                 }
                 hash_map.deinit();
             }
@@ -1737,7 +1755,10 @@ pub const Storage = struct {
                 const owned_value = try self.allocator.dupe(u8, value);
                 errdefer self.allocator.free(owned_value);
 
-                try hash_map.put(owned_field, owned_value);
+                try hash_map.put(owned_field, Value.FieldValue{
+                    .data = owned_value,
+                    .expires_at = null,
+                });
                 added_count += 1;
             }
 
@@ -1779,7 +1800,15 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .hash => |*hash_val| {
-                return hash_val.data.get(field);
+                const field_val = hash_val.data.get(field) orelse return null;
+                // Check field expiration
+                if (field_val.expires_at) |expires_at| {
+                    if (expires_at <= getCurrentTimestamp()) {
+                        // Field expired - return null (lazy cleanup will remove it later)
+                        return null;
+                    }
+                }
+                return field_val.data;
             },
             else => return null,
         }
@@ -1806,7 +1835,8 @@ pub const Storage = struct {
                 for (fields) |field| {
                     if (hash_val.data.fetchRemove(field)) |kv| {
                         self.allocator.free(kv.key);
-                        self.allocator.free(kv.value);
+                        var field_val = kv.value;
+                        field_val.deinit(self.allocator);
                         deleted_count += 1;
                     }
                 }
@@ -1858,11 +1888,22 @@ pub const Storage = struct {
                 var it = hash_val.data.iterator();
                 var i: usize = 0;
                 while (it.next()) |pair| {
+                    // Skip expired fields
+                    if (pair.value_ptr.*.expires_at) |expires_at| {
+                        if (expires_at <= getCurrentTimestamp()) {
+                            continue;
+                        }
+                    }
                     result[i] = pair.key_ptr.*;
-                    result[i + 1] = pair.value_ptr.*;
+                    result[i + 1] = pair.value_ptr.*.data;
                     i += 2;
                 }
 
+                // Resize if we skipped expired fields
+                if (i < result.len) {
+                    const resized = try allocator.realloc(result, i);
+                    return resized;
+                }
                 return result;
             },
             else => return null,
@@ -1939,10 +1980,22 @@ pub const Storage = struct {
 
                 var it = hash_val.data.valueIterator();
                 var i: usize = 0;
-                while (it.next()) |value_ptr| : (i += 1) {
-                    result[i] = value_ptr.*;
+                while (it.next()) |value_ptr| {
+                    // Skip expired fields
+                    if (value_ptr.*.expires_at) |expires_at| {
+                        if (expires_at <= getCurrentTimestamp()) {
+                            continue;
+                        }
+                    }
+                    result[i] = value_ptr.*.data;
+                    i += 1;
                 }
 
+                // Resize if we skipped expired fields
+                if (i < result.len) {
+                    const resized = try allocator.realloc(result, i);
+                    return resized;
+                }
                 return result;
             },
             else => return null,
@@ -2463,7 +2516,8 @@ pub const Storage = struct {
         if (self.data.getEntry(key)) |entry| {
             switch (entry.value_ptr.*) {
                 .hash => |*hash_val| {
-                    const current_str = hash_val.data.get(field) orelse "0";
+                    const field_val = hash_val.data.get(field);
+                    const current_str = if (field_val) |fv| fv.data else "0";
                     const current = std.fmt.parseInt(i64, current_str, 10) catch return error.InvalidValue;
                     const new_value = current + increment;
 
@@ -2476,13 +2530,19 @@ pub const Storage = struct {
                     if (hash_val.data.contains(field)) {
                         // Free old value string
                         const old_val = hash_val.data.get(field).?;
-                        self.allocator.free(old_val);
-                        try hash_val.data.put(field, owned_new);
+                        self.allocator.free(old_val.data);
+                        try hash_val.data.put(field, Value.FieldValue{
+                            .data = owned_new,
+                            .expires_at = old_val.expires_at, // Preserve field expiration
+                        });
                     } else {
                         // New field: duplicate key
                         const owned_field = try allocator.dupe(u8, field);
                         errdefer allocator.free(owned_field);
-                        try hash_val.data.put(owned_field, owned_new);
+                        try hash_val.data.put(owned_field, Value.FieldValue{
+                            .data = owned_new,
+                            .expires_at = null,
+                        });
                     }
                     return new_value;
                 },
@@ -2490,12 +2550,13 @@ pub const Storage = struct {
             }
         } else {
             // Create new hash with single field
-            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            var hash_map = std.StringHashMap(Value.FieldValue).init(self.allocator);
             errdefer {
                 var it = hash_map.iterator();
                 while (it.next()) |e| {
                     self.allocator.free(e.key_ptr.*);
-                    self.allocator.free(e.value_ptr.*);
+                    var field_val = e.value_ptr.*;
+                    field_val.deinit(self.allocator);
                 }
                 hash_map.deinit();
             }
@@ -2506,7 +2567,10 @@ pub const Storage = struct {
             errdefer self.allocator.free(owned_field);
             const owned_value = try self.allocator.dupe(u8, new_str);
             errdefer self.allocator.free(owned_value);
-            try hash_map.put(owned_field, owned_value);
+            try hash_map.put(owned_field, Value.FieldValue{
+                .data = owned_value,
+                .expires_at = null,
+            });
 
             const owned_key = try self.allocator.dupe(u8, key);
             errdefer self.allocator.free(owned_key);
@@ -2535,7 +2599,8 @@ pub const Storage = struct {
         if (self.data.getEntry(key)) |entry| {
             switch (entry.value_ptr.*) {
                 .hash => |*hash_val| {
-                    const current_str = hash_val.data.get(field) orelse "0";
+                    const field_val = hash_val.data.get(field);
+                    const current_str = if (field_val) |fv| fv.data else "0";
                     const current = std.fmt.parseFloat(f64, current_str) catch return error.InvalidValue;
                     const new_value = current + increment;
 
@@ -2547,24 +2612,31 @@ pub const Storage = struct {
 
                     if (hash_val.data.contains(field)) {
                         const old_val = hash_val.data.get(field).?;
-                        self.allocator.free(old_val);
-                        try hash_val.data.put(field, owned_new);
+                        self.allocator.free(old_val.data);
+                        try hash_val.data.put(field, Value.FieldValue{
+                            .data = owned_new,
+                            .expires_at = old_val.expires_at,
+                        });
                     } else {
                         const owned_field = try allocator.dupe(u8, field);
                         errdefer allocator.free(owned_field);
-                        try hash_val.data.put(owned_field, owned_new);
+                        try hash_val.data.put(owned_field, Value.FieldValue{
+                            .data = owned_new,
+                            .expires_at = null,
+                        });
                     }
                     return new_value;
                 },
                 else => return error.WrongType,
             }
         } else {
-            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            var hash_map = std.StringHashMap(Value.FieldValue).init(self.allocator);
             errdefer {
                 var it = hash_map.iterator();
                 while (it.next()) |e| {
                     self.allocator.free(e.key_ptr.*);
-                    self.allocator.free(e.value_ptr.*);
+                    var field_val = e.value_ptr.*;
+                    field_val.deinit(self.allocator);
                 }
                 hash_map.deinit();
             }
@@ -2575,7 +2647,10 @@ pub const Storage = struct {
             errdefer self.allocator.free(owned_field);
             const owned_value = try self.allocator.dupe(u8, new_str);
             errdefer self.allocator.free(owned_value);
-            try hash_map.put(owned_field, owned_value);
+            try hash_map.put(owned_field, Value.FieldValue{
+                .data = owned_value,
+                .expires_at = null,
+            });
 
             const owned_key = try self.allocator.dupe(u8, key);
             errdefer self.allocator.free(owned_key);
@@ -2608,18 +2683,22 @@ pub const Storage = struct {
                     errdefer self.allocator.free(owned_field);
                     const owned_value = try self.allocator.dupe(u8, value);
                     errdefer self.allocator.free(owned_value);
-                    try hash_val.data.put(owned_field, owned_value);
+                    try hash_val.data.put(owned_field, Value.FieldValue{
+                        .data = owned_value,
+                        .expires_at = null,
+                    });
                     return true;
                 },
                 else => return error.WrongType,
             }
         } else {
-            var hash_map = std.StringHashMap([]const u8).init(self.allocator);
+            var hash_map = std.StringHashMap(Value.FieldValue).init(self.allocator);
             errdefer {
                 var it = hash_map.iterator();
                 while (it.next()) |e| {
                     self.allocator.free(e.key_ptr.*);
-                    self.allocator.free(e.value_ptr.*);
+                    var field_val = e.value_ptr.*;
+                    field_val.deinit(self.allocator);
                 }
                 hash_map.deinit();
             }
@@ -2627,7 +2706,10 @@ pub const Storage = struct {
             errdefer self.allocator.free(owned_field);
             const owned_value = try self.allocator.dupe(u8, value);
             errdefer self.allocator.free(owned_value);
-            try hash_map.put(owned_field, owned_value);
+            try hash_map.put(owned_field, Value.FieldValue{
+                .data = owned_value,
+                .expires_at = null,
+            });
 
             const owned_key = try self.allocator.dupe(u8, key);
             errdefer self.allocator.free(owned_key);
@@ -2662,8 +2744,14 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .hash => |*hash_val| {
-                if (hash_val.data.get(field)) |value| {
-                    return value.len;
+                if (hash_val.data.get(field)) |field_val| {
+                    // Check field expiration
+                    if (field_val.expires_at) |expires_at| {
+                        if (expires_at <= getCurrentTimestamp()) {
+                            return 0; // Expired field
+                        }
+                    }
+                    return field_val.data.len;
                 } else {
                     return 0;
                 }
@@ -2750,7 +2838,7 @@ pub const Storage = struct {
                             const field = all_fields.items[idx];
                             if (with_values) {
                                 result[i * 2] = field;
-                                result[i * 2 + 1] = hash_val.data.get(field).?;
+                                result[i * 2 + 1] = hash_val.data.get(field).?.data;
                             } else {
                                 result[i] = field;
                             }
@@ -2772,7 +2860,7 @@ pub const Storage = struct {
                                     const field = all_fields.items[candidate];
                                     if (with_values) {
                                         result[i * 2] = field;
-                                        result[i * 2 + 1] = hash_val.data.get(field).?;
+                                        result[i * 2 + 1] = hash_val.data.get(field).?.data;
                                     } else {
                                         result[i] = field;
                                     }
@@ -3682,7 +3770,7 @@ pub const Storage = struct {
                 var hit = h.data.iterator();
                 while (hit.next()) |e| {
                     try writeBlob(w, e.key_ptr.*);
-                    try writeBlob(w, e.value_ptr.*);
+                    try writeBlob(w, e.value_ptr.*.data);
                 }
             },
             .sorted_set => |z| {
@@ -3819,12 +3907,13 @@ pub const Storage = struct {
                 const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
                 pos += 4;
 
-                var hash = std.StringHashMap([]const u8).init(self.allocator);
+                var hash = std.StringHashMap(Value.FieldValue).init(self.allocator);
                 errdefer {
                     var it = hash.iterator();
                     while (it.next()) |e| {
                         self.allocator.free(e.key_ptr.*);
-                        self.allocator.free(e.value_ptr.*);
+                        var field_val = e.value_ptr.*;
+                        field_val.deinit(self.allocator);
                     }
                     hash.deinit();
                 }
@@ -3833,7 +3922,10 @@ pub const Storage = struct {
                 while (i < count) : (i += 1) {
                     const field = try readBlob(payload, &pos, self.allocator);
                     const val = try readBlob(payload, &pos, self.allocator);
-                    try hash.put(field, val);
+                    try hash.put(field, Value.FieldValue{
+                        .data = val,
+                        .expires_at = null, // No per-field expiration in RDB format yet
+                    });
                 }
 
                 value = Value{ .hash = .{ .data = hash, .expires_at = expires_at } };
@@ -4020,20 +4112,24 @@ pub const Storage = struct {
                 break :blk Value{ .set = .{ .data = set_copy, .expires_at = s.expires_at } };
             },
             .hash => |h| blk: {
-                var hash_copy = std.StringHashMap([]const u8).init(self.allocator);
+                var hash_copy = std.StringHashMap(Value.FieldValue).init(self.allocator);
                 errdefer {
                     var it = hash_copy.iterator();
                     while (it.next()) |e| {
                         self.allocator.free(e.key_ptr.*);
-                        self.allocator.free(e.value_ptr.*);
+                        var field_val = e.value_ptr.*;
+                        field_val.deinit(self.allocator);
                     }
                     hash_copy.deinit();
                 }
                 var it = h.data.iterator();
                 while (it.next()) |e| {
                     const field_copy = try self.allocator.dupe(u8, e.key_ptr.*);
-                    const val_copy = try self.allocator.dupe(u8, e.value_ptr.*);
-                    try hash_copy.put(field_copy, val_copy);
+                    const val_copy = try self.allocator.dupe(u8, e.value_ptr.*.data);
+                    try hash_copy.put(field_copy, Value.FieldValue{
+                        .data = val_copy,
+                        .expires_at = e.value_ptr.*.expires_at, // Preserve field expiration
+                    });
                 }
                 break :blk Value{ .hash = .{ .data = hash_copy, .expires_at = h.expires_at } };
             },

@@ -206,7 +206,7 @@ pub const Aof = struct {
                     var hit = h.data.iterator();
                     while (hit.next()) |e| {
                         try hargs.append(allocator, e.key_ptr.*);
-                        try hargs.append(allocator, e.value_ptr.*);
+                        try hargs.append(allocator, e.value_ptr.*.data);
                     }
                     if (hargs.items.len > 2) try writeRespArgs(w, hargs.items);
                     if (expires_at) |exp| {

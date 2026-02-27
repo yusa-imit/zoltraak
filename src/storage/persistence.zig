@@ -103,7 +103,7 @@ pub const Persistence = struct {
                     var hit = h.data.iterator();
                     while (hit.next()) |e| {
                         try writeBlob(w, e.key_ptr.*);
-                        try writeBlob(w, e.value_ptr.*);
+                        try writeBlob(w, e.value_ptr.*.data);
                     }
                 },
                 .sorted_set => |z| {
@@ -431,7 +431,7 @@ pub const Persistence = struct {
                     var hit = h.data.iterator();
                     while (hit.next()) |e| {
                         try writeBlob(w, e.key_ptr.*);
-                        try writeBlob(w, e.value_ptr.*);
+                        try writeBlob(w, e.value_ptr.*.data);
                     }
                 },
                 .sorted_set => |z| {
