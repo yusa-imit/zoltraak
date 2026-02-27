@@ -428,7 +428,7 @@ gh issue create --repo yusa-imit/sailor \
 - 동일한 이슈가 이미 열려있는지 먼저 확인: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
 - 이슈 발행 후 현재 작업으로 복귀 (sailor 수정을 직접 하지 않음)
 
-### v0.1.0 — arg, color (status: PENDING)
+### v0.1.0 — arg, color (status: READY)
 
 sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
 
