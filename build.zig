@@ -5,6 +5,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Import sailor dependency
+    const sailor_dep = b.dependency("sailor", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const sailor_mod = sailor_dep.module("sailor");
+
     // Executable: zoltraak
     const exe = b.addExecutable(.{
         .name = "zoltraak",
@@ -14,6 +21,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addImport("sailor", sailor_mod);
 
     // Install step
     b.installArtifact(exe);
@@ -38,6 +46,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    unit_tests.root_module.addImport("sailor", sailor_mod);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sailor = @import("sailor");
 const server_mod = @import("server.zig");
 
 // Re-export modules for testing
@@ -21,14 +22,14 @@ const Config = server_mod.Config;
 fn printUsage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [OPTIONS]\n\n", .{program_name});
     std.debug.print("Options:\n", .{});
-    std.debug.print("  --host HOST              Bind address (default: 127.0.0.1)\n", .{});
-    std.debug.print("  --port PORT              Listen port (default: 6379)\n", .{});
-    std.debug.print("  --replicaof HOST PORT    Replicate from primary at HOST:PORT\n", .{});
-    std.debug.print("  --help                   Show this help message\n", .{});
+    std.debug.print("  --host HOST                Bind address (default: 127.0.0.1)\n", .{});
+    std.debug.print("  -p, --port PORT            Listen port (default: 6379)\n", .{});
+    std.debug.print("  --replicaof HOST:PORT      Replicate from primary at HOST:PORT\n", .{});
+    std.debug.print("  -h, --help                 Show this help message\n", .{});
     std.debug.print("\n", .{});
     std.debug.print("Examples:\n", .{});
     std.debug.print("  {s} --host 0.0.0.0 --port 6380\n", .{program_name});
-    std.debug.print("  {s} --port 6380 --replicaof 127.0.0.1 6379\n", .{program_name});
+    std.debug.print("  {s} --port 6380 --replicaof 127.0.0.1:6379\n", .{program_name});
 }
 
 /// Parsed command-line arguments, including owned strings that must be freed.
@@ -47,8 +48,45 @@ const ParsedArgs = struct {
 
 /// Parse command-line arguments into a Config.
 fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
+    // Define flags using sailor
+    const flags = [_]sailor.arg.FlagDef{
+        .{ .name = "help", .short = 'h', .type = .bool, .help = "Show this help message" },
+        .{ .name = "host", .type = .string, .default = "127.0.0.1", .help = "Bind address (default: 127.0.0.1)" },
+        .{ .name = "port", .short = 'p', .type = .int, .default = "6379", .help = "Listen port (default: 6379)" },
+        .{ .name = "replicaof", .type = .string, .help = "Replicate from primary at HOST:PORT (format: HOST:PORT)" },
+    };
+
+    // Initialize parser
+    var parser = sailor.arg.Parser(&flags).init(allocator);
+    defer parser.deinit();
+
+    // Get args (skip program name)
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
+    _ = args.next(); // Skip program name
+
+    // Collect args into slice
+    var arg_list = std.ArrayList([]const u8){};
+    defer arg_list.deinit(allocator);
+    while (args.next()) |arg| {
+        try arg_list.append(allocator, arg);
+    }
+
+    // Parse with sailor
+    parser.parse(arg_list.items) catch |err| {
+        if (err == error.UnknownFlag) {
+            std.debug.print("Error: unknown option\n", .{});
+            std.debug.print("Use --help for usage information\n", .{});
+            return error.InvalidArgument;
+        }
+        return err;
+    };
+
+    // Check for --help
+    if (parser.getBool("help", false)) {
+        printUsage("zoltraak");
+        std.process.exit(0);
+    }
 
     var parsed = ParsedArgs{
         .config = Config{},
@@ -56,48 +94,33 @@ fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
         .replicaof_host_owned = null,
     };
 
-    // Skip program name
-    _ = args.next();
+    // Get host
+    const host = parser.getString("host", "127.0.0.1");
+    parsed.host_owned = try allocator.dupe(u8, host);
+    parsed.config.host = parsed.host_owned.?;
 
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            printUsage("zoltraak");
-            std.process.exit(0);
-        } else if (std.mem.eql(u8, arg, "--host")) {
-            const host = args.next() orelse {
-                std.debug.print("Error: --host requires an argument\n", .{});
+    // Get port
+    parsed.config.port = @intCast(parser.getInt("port", 6379));
+
+    // Handle --replicaof if provided
+    if (parser.get("replicaof")) |replica_val| {
+        const replica_str = try replica_val.asString();
+
+        // Parse HOST:PORT format
+        if (std.mem.indexOf(u8, replica_str, ":")) |colon_pos| {
+            const host_part = replica_str[0..colon_pos];
+            const port_part = replica_str[colon_pos + 1 ..];
+
+            const port = std.fmt.parseInt(u16, port_part, 10) catch {
+                std.debug.print("Error: invalid port in --replicaof '{s}'\n", .{replica_str});
                 return error.InvalidArgument;
             };
-            parsed.host_owned = try allocator.dupe(u8, host);
-            parsed.config.host = parsed.host_owned.?;
-        } else if (std.mem.eql(u8, arg, "--port")) {
-            const port_str = args.next() orelse {
-                std.debug.print("Error: --port requires an argument\n", .{});
-                return error.InvalidArgument;
-            };
-            parsed.config.port = std.fmt.parseInt(u16, port_str, 10) catch {
-                std.debug.print("Error: invalid port number '{s}'\n", .{port_str});
-                return error.InvalidArgument;
-            };
-        } else if (std.mem.eql(u8, arg, "--replicaof")) {
-            const host = args.next() orelse {
-                std.debug.print("Error: --replicaof requires HOST PORT arguments\n", .{});
-                return error.InvalidArgument;
-            };
-            const port_str = args.next() orelse {
-                std.debug.print("Error: --replicaof requires HOST PORT arguments\n", .{});
-                return error.InvalidArgument;
-            };
-            const port = std.fmt.parseInt(u16, port_str, 10) catch {
-                std.debug.print("Error: invalid port number '{s}'\n", .{port_str});
-                return error.InvalidArgument;
-            };
-            parsed.replicaof_host_owned = try allocator.dupe(u8, host);
+
+            parsed.replicaof_host_owned = try allocator.dupe(u8, host_part);
             parsed.config.replicaof_host = parsed.replicaof_host_owned.?;
             parsed.config.replicaof_port = port;
         } else {
-            std.debug.print("Error: unknown option '{s}'\n", .{arg});
-            std.debug.print("Use --help for usage information\n", .{});
+            std.debug.print("Error: --replicaof requires HOST:PORT format (e.g., 127.0.0.1:6379)\n", .{});
             return error.InvalidArgument;
         }
     }

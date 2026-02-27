@@ -428,18 +428,16 @@ gh issue create --repo yusa-imit/sailor \
 - 동일한 이슈가 이미 열려있는지 먼저 확인: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
 - 이슈 발행 후 현재 작업으로 복귀 (sailor 수정을 직접 하지 않음)
 
-### v0.1.0 — arg, color (status: READY)
-
-sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
+### v0.1.0 — arg, color (status: DONE)
 
 **작업 내용**:
-- [ ] `build.zig.zon`에 sailor 의존성 추가
-- [ ] `build.zig`에서 sailor 모듈 import 설정
-- [ ] `src/main.zig`의 `parseArgs()` 함수 (49-106줄) → `sailor.arg` 교체
-- [ ] `ParsedArgs` 구조체를 sailor 파싱 결과로 대체
-- [ ] 서버 시작 로그에 `sailor.color` 적용 (`std.debug.print` → 색상 출력)
-- [ ] 기존 테스트 전체 통과 확인
-- [ ] 커밋: `refactor: migrate arg parsing to sailor v0.1.0`
+- [x] `build.zig.zon`에 sailor 의존성 추가
+- [x] `build.zig`에서 sailor 모듈 import 설정
+- [x] `src/main.zig`의 `parseArgs()` 함수 → `sailor.arg` 교체
+- [x] `ParsedArgs` 구조체를 sailor 파싱 결과로 대체 (--replicaof는 HOST:PORT 형식으로 변경)
+- [x] 서버 시작 로그에 색상 출력 적용 (ANSI escape codes 사용)
+- [x] 기존 테스트 전체 통과 확인
+- [x] 커밋: `refactor: migrate arg parsing to sailor v0.1.0`
 
 ### v0.2.0 — repl (status: PENDING)
 

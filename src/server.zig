@@ -1,4 +1,5 @@
 const std = @import("std");
+const sailor = @import("sailor");
 const protocol = @import("protocol/parser.zig");
 const writer_mod = @import("protocol/writer.zig");
 const commands = @import("commands/strings.zig");
@@ -116,14 +117,26 @@ pub const Server = struct {
 
         self.running.store(true, .monotonic);
 
-        std.debug.print("Zoltraak server starting...\n", .{});
-        std.debug.print("Listening on {s}:{d}\n", .{ self.config.host, self.config.port });
+        // Colored startup logs using ANSI escape codes
+        const cyan_bold = "\x1b[1;36m";
+        const green = "\x1b[32m";
+        const magenta = "\x1b[35m";
+        const yellow = "\x1b[33m";
+        const green_bold = "\x1b[1;32m";
+        const reset = "\x1b[0m";
+
+        std.debug.print("{s}Zoltraak{s} server starting...\n", .{ cyan_bold, reset });
+        std.debug.print("Listening on {s}{s}:{d}{s}\n", .{ green, self.config.host, self.config.port, reset });
         const role_str: []const u8 = switch (self.repl.role) {
             .primary => "primary",
             .replica => "replica",
         };
-        std.debug.print("Role: {s}\n", .{role_str});
-        std.debug.print("Ready to accept connections.\n", .{});
+        const role_color = switch (self.repl.role) {
+            .primary => magenta,
+            .replica => yellow,
+        };
+        std.debug.print("Role: {s}{s}{s}\n", .{ role_color, role_str, reset });
+        std.debug.print("{s}Ready to accept connections.{s}\n", .{ green_bold, reset });
 
         // Accept connections (single-threaded)
         while (self.running.load(.monotonic)) {
