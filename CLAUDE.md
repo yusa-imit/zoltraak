@@ -370,6 +370,61 @@ When working with agents:
     ### Issues / Blockers
     - [발생한 문제 또는 미해결 이슈]
 
+---
+
+## Sailor Migration
+
+zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점진적으로 도입한다.
+각 버전이 READY 상태가 되면, 해당 세션에서 마이그레이션을 수행한다.
+
+### 마이그레이션 프로토콜
+
+1. 세션 시작 시 이 섹션을 확인한다
+2. `status: READY`인 미완료 마이그레이션이 있으면, 현재 작업보다 **우선** 수행한다
+3. 마이그레이션 완료 후 `status: DONE`으로 변경하고 커밋한다
+4. `zig build test` 통과 확인 필수
+
+### v0.1.0 — arg, color (status: PENDING)
+
+sailor가 v0.1.0을 릴리즈하면 status가 READY로 변경된다.
+
+**작업 내용**:
+- [ ] `build.zig.zon`에 sailor 의존성 추가
+- [ ] `build.zig`에서 sailor 모듈 import 설정
+- [ ] `src/main.zig`의 `parseArgs()` 함수 (49-106줄) → `sailor.arg` 교체
+- [ ] `ParsedArgs` 구조체를 sailor 파싱 결과로 대체
+- [ ] 서버 시작 로그에 `sailor.color` 적용 (`std.debug.print` → 색상 출력)
+- [ ] 기존 테스트 전체 통과 확인
+- [ ] 커밋: `refactor: migrate arg parsing to sailor v0.1.0`
+
+### v0.2.0 — repl (status: PENDING)
+
+**작업 내용**:
+- [ ] `zoltraak-cli` 바이너리 추가 (build.zig에 별도 executable)
+- [ ] `sailor.repl`로 interactive redis-cli 구현
+  - 프롬프트: `127.0.0.1:6379> `
+  - 히스토리: `~/.zoltraak_history`
+  - 자동완성: Redis 커맨드 목록
+- [ ] RESP 프로토콜로 서버에 연결, 명령 전송/응답 표시
+- [ ] 커밋: `feat: add zoltraak-cli with sailor.repl`
+
+### v0.3.0 — fmt (status: PENDING)
+
+**작업 내용**:
+- [ ] redis-cli 응답 포매팅에 `sailor.fmt` 적용
+- [ ] `--raw` / `--csv` / `--json` 출력 모드 지원
+- [ ] 커밋: `feat: add output formatting modes to zoltraak-cli`
+
+### v0.4.0 — tui (status: PENDING)
+
+**작업 내용**:
+- [ ] `zoltraak-cli --tui` 모드 추가
+- [ ] `sailor.tui` 위젯으로 키 브라우저 구현 (List + Table + StatusBar)
+- [ ] 실시간 키 값 조회/수정 인터페이스
+- [ ] 커밋: `feat: add TUI key browser to zoltraak-cli`
+
+---
+
 ## Resources
 
 - [Zig Documentation](https://ziglang.org/documentation/master/)
