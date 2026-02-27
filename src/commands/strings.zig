@@ -432,6 +432,9 @@ pub fn executeCommand(
             break :blk try hashes.cmdHsetnx(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HSTRLEN")) {
             break :blk try hashes.cmdHstrlen(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HRANDFIELD")) {
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try hashes.cmdHrandfield(allocator, storage, array, protocol_version);
         }
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {

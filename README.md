@@ -140,7 +140,7 @@ redis-cli -p 6379
 | SDIFFSTORE | `SDIFFSTORE dest key [key ...]` | Store difference result |
 | SSCAN | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate set members |
 
-### Hash Commands (Iterations 4, 42)
+### Hash Commands (Iterations 4, 42, 48)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -153,6 +153,7 @@ redis-cli -p 6379
 | HEXISTS | `HEXISTS key field` | Check if field exists |
 | HLEN | `HLEN key` | Get number of fields |
 | HSTRLEN | `HSTRLEN key field` | Get string length of hash field value (returns 0 if field doesn't exist) |
+| HRANDFIELD | `HRANDFIELD key [count [WITHVALUES]]` | Return random field(s) from hash (single field without count, array with count, field-value pairs with WITHVALUES, RESP3 map with WITHVALUES) |
 
 ### Replication Commands (Iteration 10)
 
@@ -553,7 +554,7 @@ OK
 
 ## Project Status
 
-Iterations 1–46 are complete.
+Iterations 1–48 are complete.
 - Iteration 12: 22 commands (SCAN family, SPOP, SRANDMEMBER, SMOVE, SMISMEMBER, SINTERCARD, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER, GETRANGE, SETRANGE, OBJECT subcommands)
 - Iteration 13: 4 CLIENT commands (CLIENT ID, CLIENT GETNAME, CLIENT SETNAME, CLIENT LIST)
 - Iteration 14: 5 CONFIG commands (CONFIG GET, CONFIG SET, CONFIG REWRITE, CONFIG RESETSTAT, CONFIG HELP) with 10 configuration parameters
@@ -590,6 +591,7 @@ Iterations 1–46 are complete.
 - Iteration 45: LCS (Longest Common Subsequence) command - LCS key1 key2 [LEN] for string comparison, returns the longest common subsequence string or its length
 - Iteration 46: LCS IDX mode - LCS key1 key2 IDX [MINMATCHLEN len] [WITHMATCHLEN] returns match positions as arrays with "matches" (key1_range, key2_range, optional match_len) and "len" keys
 - Iteration 47: MSETEX command - MSETEX numkeys key value [key value ...] [NX|XX] [EX/PX/EXAT/PXAT/KEEPTTL] atomically sets multiple keys with optional shared expiration (new Redis 8.4+ command)
+- Iteration 48: HRANDFIELD command - HRANDFIELD key [count [WITHVALUES]] returns random field(s) from hash (single field without count, array with count, field-value pairs with WITHVALUES, RESP3 map support)
 
 ### Roadmap
 

@@ -1107,3 +1107,185 @@ test "cmdHstrlen - returns 0 for non-existent key" {
 
     try std.testing.expectEqualStrings(":0\r\n", response);
 }
+
+/// HRANDFIELD key [count [WITHVALUES]]
+/// Return random field(s) from a hash
+/// Returns bulk string (single field), array of fields, or array of field-value pairs
+pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 4) {
+        return w.writeError("ERR wrong number of arguments for 'hrandfield' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var count: ?i64 = null;
+    var with_values = false;
+
+    if (args.len >= 3) {
+        count = switch (args[2]) {
+            .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            },
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+
+        if (args.len == 4) {
+            const opt = switch (args[3]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+
+            if (std.ascii.eqlIgnoreCase(opt, "withvalues")) {
+                with_values = true;
+            } else {
+                return w.writeError("ERR syntax error");
+            }
+        }
+    }
+
+    const result = storage.hrandfield(allocator, key, count, with_values) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+    defer {
+        if (result) |r| allocator.free(r);
+    }
+
+    if (result) |fields| {
+        if (count == null) {
+            // Single field without count
+            if (fields.len > 0) {
+                return w.writeBulkString(fields[0]);
+            } else {
+                return w.writeNull();
+            }
+        } else {
+            // Multiple fields - return array
+            if (with_values) {
+                // Return array of field-value pairs
+                // For RESP3 with protocol_version == RESP3, return a map
+                if (protocol_version == .RESP3) {
+                    // Build map pairs
+                    var pairs = try std.ArrayList(MapPair).initCapacity(allocator, fields.len / 2);
+                    defer pairs.deinit(allocator);
+
+                    var i: usize = 0;
+                    while (i < fields.len) : (i += 2) {
+                        try pairs.append(allocator, .{
+                            .key = .{ .bulk_string = fields[i] },
+                            .value = .{ .bulk_string = fields[i + 1] },
+                        });
+                    }
+
+                    return w.writeMap(pairs.items);
+                } else {
+                    // RESP2: flat array - convert to RespValue
+                    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
+                    defer resp_values.deinit(allocator);
+
+                    for (fields) |field| {
+                        try resp_values.append(allocator, RespValue{ .bulk_string = field });
+                    }
+
+                    return w.writeArray(resp_values.items);
+                }
+            } else {
+                // Return array of fields - convert to RespValue
+                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
+                defer resp_values.deinit(allocator);
+
+                for (fields) |field| {
+                    try resp_values.append(allocator, RespValue{ .bulk_string = field });
+                }
+
+                return w.writeArray(resp_values.items);
+            }
+        }
+    } else {
+        return w.writeNull();
+    }
+}
+
+test "cmdHrandfield - returns single random field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up hash with fields
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+        .{ .bulk_string = "field3" },
+        .{ .bulk_string = "value3" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Get single random field
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "myhash" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    // Should return a bulk string (one of the fields)
+    try std.testing.expect(std.mem.startsWith(u8, response, "$"));
+}
+
+test "cmdHrandfield - returns multiple random fields with count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up hash with fields
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+        .{ .bulk_string = "field3" },
+        .{ .bulk_string = "value3" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Get 2 random fields
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "2" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    // Should return an array
+    try std.testing.expect(std.mem.startsWith(u8, response, "*"));
+}
+
+test "cmdHrandfield - returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "nonexistent" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("$-1\r\n", response);
+}

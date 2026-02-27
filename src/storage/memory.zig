@@ -2672,6 +2672,123 @@ pub const Storage = struct {
         }
     }
 
+    /// Return random field(s) from hash
+    /// If count is null, returns a single field
+    /// If count is positive, returns up to count distinct fields (no repeats)
+    /// If count is negative, may return repeated fields (allows duplicates)
+    /// If with_values is true, returns field-value pairs (field1, value1, field2, value2, ...)
+    /// Otherwise returns just fields
+    /// Returns null if key doesn't exist
+    /// Caller must free the returned slice
+    pub fn hrandfield(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        count: ?i64,
+        with_values: bool,
+    ) error{ WrongType, OutOfMemory }!?[]const []const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                const hash_size = hash_val.data.count();
+                if (hash_size == 0) {
+                    return null;
+                }
+
+                if (count == null) {
+                    // Return single random field
+                    const idx = @as(usize, @intCast(@mod(std.time.nanoTimestamp(), @as(i128, @intCast(hash_size)))));
+                    var it = hash_val.data.iterator();
+                    var current: usize = 0;
+                    while (it.next()) |entry_item| {
+                        if (current == idx) {
+                            var result = try allocator.alloc([]const u8, 1);
+                            result[0] = entry_item.key_ptr.*;
+                            return result;
+                        }
+                        current += 1;
+                    }
+                    return null;
+                } else {
+                    const count_val = count.?;
+                    const abs_count = if (count_val < 0) -count_val else count_val;
+                    const allow_duplicates = count_val < 0;
+
+                    // Collect all fields into an array
+                    var all_fields = try std.ArrayList([]const u8).initCapacity(allocator, hash_size);
+                    defer all_fields.deinit(allocator);
+
+                    var it = hash_val.data.iterator();
+                    while (it.next()) |entry_item| {
+                        try all_fields.append(allocator, entry_item.key_ptr.*);
+                    }
+
+                    // Determine how many to return
+                    const result_count = if (allow_duplicates) @as(usize, @intCast(abs_count)) else @min(@as(usize, @intCast(abs_count)), hash_size);
+
+                    // Build result
+                    const result_size = if (with_values) result_count * 2 else result_count;
+                    var result = try allocator.alloc([]const u8, result_size);
+
+                    if (allow_duplicates) {
+                        // Can have repeats - just pick randomly
+                        for (0..result_count) |i| {
+                            const idx = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(i)), @as(i128, @intCast(hash_size)))));
+                            const field = all_fields.items[idx];
+                            if (with_values) {
+                                result[i * 2] = field;
+                                result[i * 2 + 1] = hash_val.data.get(field).?;
+                            } else {
+                                result[i] = field;
+                            }
+                        }
+                    } else {
+                        // No repeats - use simple random selection with visited tracking
+                        var visited = try allocator.alloc(bool, hash_size);
+                        defer allocator.free(visited);
+                        @memset(visited, false);
+
+                        for (0..result_count) |i| {
+                            const rnd = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(i)), @as(i128, @intCast(hash_size)))));
+                            // Find next unvisited starting at rnd
+                            var j: usize = 0;
+                            while (j < hash_size) : (j += 1) {
+                                const candidate = (rnd + j) % hash_size;
+                                if (!visited[candidate]) {
+                                    visited[candidate] = true;
+                                    const field = all_fields.items[candidate];
+                                    if (with_values) {
+                                        result[i * 2] = field;
+                                        result[i * 2 + 1] = hash_val.data.get(field).?;
+                                    } else {
+                                        result[i] = field;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    return result;
+                }
+            },
+            else => return error.WrongType,
+        }
+    }
+
     /// Get rank (0-based index) of member in sorted set
     /// If reverse is true, return rank from end (ZREVRANK)
     /// Returns null if key or member does not exist
