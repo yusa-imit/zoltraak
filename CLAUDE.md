@@ -544,6 +544,19 @@ gh issue create --repo yusa-imit/sailor \
 - [ ] 상태 알림: `Notification`으로 커넥션 성공/실패 토스트
 - [ ] 커밋: `feat: add advanced TUI features with sailor v0.5.0`
 
+### v1.0.0 — production ready (status: READY)
+
+**첫 안정 릴리즈**: 모든 기능 완성, 종합 문서화 포함
+
+**작업 내용**:
+- [ ] `build.zig.zon`에 sailor v1.0.0 의존성 업데이트
+- [ ] [Getting Started Guide](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/GUIDE.md) 참조하여 모범 사례 적용
+- [ ] [API Reference](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/API.md) 기반으로 기존 코드 리팩토링
+- [ ] 테마 시스템 활용: Redis TUI에 다크/라이트 모드 또는 커스텀 컬러 스킴
+- [ ] 애니메이션 효과 추가 (선택사항): 키 값 로딩, 커넥션 상태 전환
+- [ ] 기존 테스트 전체 통과 확인
+- [ ] 커밋: `feat: upgrade to sailor v1.0.0 with theming and polish`
+
 ---
 
 ## Resources
