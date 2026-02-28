@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     });
     const sailor_mod = sailor_dep.module("sailor");
 
-    // Executable: zoltraak
+    // Executable: zoltraak (server)
     const exe = b.addExecutable(.{
         .name = "zoltraak",
         .root_module = b.createModule(.{
@@ -23,8 +23,20 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("sailor", sailor_mod);
 
-    // Install step
+    // Executable: zoltraak-cli (REPL client)
+    const cli = b.addExecutable(.{
+        .name = "zoltraak-cli",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    cli.root_module.addImport("sailor", sailor_mod);
+
+    // Install both executables
     b.installArtifact(exe);
+    b.installArtifact(cli);
 
     // Run step
     const run_cmd = b.addRunArtifact(exe);

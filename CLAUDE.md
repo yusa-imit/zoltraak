@@ -439,16 +439,19 @@ gh issue create --repo yusa-imit/sailor \
 - [x] 기존 테스트 전체 통과 확인
 - [x] 커밋: `refactor: migrate arg parsing to sailor v0.1.0`
 
-### v0.2.0 — REPL (status: READY))
+### v0.2.0 — REPL (status: DONE)
 
 **작업 내용**:
-- [ ] `zoltraak-cli` 바이너리 추가 (build.zig에 별도 executable)
-- [ ] `sailor.repl`로 interactive redis-cli 구현
-  - 프롬프트: `127.0.0.1:6379> `
-  - 히스토리: `~/.zoltraak_history`
-  - 자동완성: Redis 커맨드 목록
-- [ ] RESP 프로토콜로 서버에 연결, 명령 전송/응답 표시
-- [ ] 커밋: `feat: add zoltraak-cli with sailor.repl`
+- [x] `zoltraak-cli` 바이너리 추가 (build.zig에 별도 executable)
+- [x] `sailor.arg`로 CLI 인자 파싱 (`--host`, `--port`)
+- [x] 간단한 REPL 구현 (프롬프트: `127.0.0.1:6379> `)
+- [x] RESP 프로토콜로 서버에 연결, 명령 전송/응답 표시
+- [x] 커밋: `feat: add zoltraak-cli with sailor v0.2.0`
+
+**주의사항**:
+- sailor v0.2.0의 `repl` 모듈은 Zig 0.15.x와 호환되지 않음 (GitHub Issue #2 발행)
+- `sailor.arg`만 사용하고 REPL은 자체 구현으로 대체
+- 향후 sailor가 Zig 0.15 호환성을 지원하면 `sailor.repl`로 전환 예정
 
 ### v0.3.0 — fmt (status: PENDING)
 
