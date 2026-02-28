@@ -1,346 +1,265 @@
 # CLAUDE.md
 
-This file provides guidance for Claude Code when working with the Zoltraak codebase.
+Zoltraak — Redis-compatible in-memory data store written in Zig.
 
-## Project Overview
+## Project Status
 
-Zoltraak is a Redis-compatible in-memory data store written in Zig. The goal is to provide a drop-in replacement for Redis with improved performance and memory efficiency.
+**Current: v0.1.0 — Iterations 1-50 complete (150+ Redis commands)**
+**Target: v1.0 — 100% Redis compatibility (500+ commands)**
+**Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-## Claude Team Features
+### Completed (Iterations 1-50)
 
-This project can leverage Claude Team capabilities for enhanced collaboration:
+| Range | Features |
+|-------|----------|
+| 1-5 | Core data structures: Strings, Lists, Sets, Hashes, Sorted Sets |
+| 6-7 | Persistence: RDB snapshots, AOF logging |
+| 8 | Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB) |
+| 9 | Transactions (MULTI/EXEC/DISCARD/WATCH/UNWATCH) |
+| 10 | Replication (REPLICAOF, REPLCONF, PSYNC, WAIT) |
+| 11-12 | Extended Set/SortedSet commands, SCAN family, OBJECT |
+| 13-15 | CLIENT, CONFIG, COMMAND introspection |
+| 16-17, 24, 27-28 | Streams + consumer groups (XADD through XAUTOCLAIM) |
+| 18-19 | Extended String/List commands (LPOS, LMOVE, LCS, MGET, etc.) |
+| 20, 44 | Bit operations (SETBIT through BITFIELD_RO) |
+| 21, 23 | Key management (TTL, EXPIRE, DUMP, RESTORE, COPY, TOUCH) |
+| 25 | Geospatial (GEOADD, GEOPOS, GEODIST, GEOHASH, GEORADIUS, GEOSEARCH) |
+| 26 | HyperLogLog (PFADD, PFCOUNT, PFMERGE) |
+| 29-30 | Server introspection (MEMORY, SLOWLOG stubs, INFO) |
+| 31-35 | RESP3 protocol + per-connection negotiation (HELLO) |
+| 36 | Scripting stubs (EVAL, EVALSHA, SCRIPT LOAD/EXISTS/FLUSH) |
+| 37 | ACL stubs (WHOAMI, LIST, USERS, GETUSER, SETUSER, DELUSER, CAT) |
+| 38 | Cluster stubs (SLOTS, NODES, INFO, MYID, KEYSLOT) |
+| 39-41 | Utility (ECHO, QUIT, SELECT, SWAPDB, TIME, MONITOR, DEBUG, SHUTDOWN) |
+| 42-43 | Extended SortedSet (ZRANGEBYLEX, ZREVRANGEBYLEX, ZINTERCARD, SINTERCARD) |
+| 45-47 | MSETEX, LCS, GETRANGE/SETRANGE enhancements |
+| 48 | HRANDFIELD |
+| 49 | LMPOP, ZMPOP, BZMPOP |
+| 50 | Hash field-level TTL (HEXPIRE, HPEXPIRE, HTTL, HPTTL, etc.) |
 
-- **Shared Projects**: This codebase can be shared across team members in Claude Team, allowing multiple developers to collaborate with consistent context and project knowledge
-- **Persistent Memory**: Claude Code maintains project-specific memory across sessions, learning from patterns, conventions, and decisions made during development
-- **Team Knowledge Base**: Architectural decisions, implementation patterns, and project-specific conventions are preserved and accessible to all team members
-- **Collaborative Workflows**: Team members can build on each other's work with shared context about the codebase structure, coding standards, and development practices
-- **Consistent Code Quality**: Shared understanding of project guidelines ensures consistent code style and architecture across all contributions
+### Known stubs (need real implementation for 1.0)
 
-When working with Claude Code on this project, the AI will maintain awareness of project patterns, previous decisions, and team preferences to provide more contextual and consistent assistance.
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values), blocking commands (immediate-return).
 
-## Development Status
+---
 
-**완료된 이터레이션**:
-- Iteration 1: String commands (PING, SET, GET, DEL, EXISTS) + key expiration
-- Iteration 2: List commands (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
-- Iteration 3: Set commands (SADD, SREM, SISMEMBER, SMEMBERS, SCARD)
-- Iteration 4: Hash commands (HSET, HGET, HDEL, HGETALL, HKEYS, HVALS, HEXISTS, HLEN)
-- Iteration 5: Sorted Set commands (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD)
-- Iteration 6: Persistence — RDB snapshots (SAVE, BGSAVE, DBSIZE, FLUSHDB, FLUSHALL) + auto-load on startup
-
-**남은 로드맵** (우선순위 순):
-1. Persistence — AOF logging
-2. Pub/Sub messaging
-3. Pub/Sub messaging
-4. Transactions (MULTI/EXEC)
-5. Replication
-
-## Build Commands
+## Build & Run
 
 ```bash
-# Build the project
-zig build
-
-# Run tests
-zig build test
-
-# Build with optimizations
-zig build -Doptimize=ReleaseFast
-
-# Build and run
-zig build run
-
-# Clean build artifacts
-rm -rf zig-out .zig-cache
+zig build                          # Build
+zig build -Doptimize=ReleaseFast   # Release build
+zig build run                      # Build and run server
+zig build test                     # All tests (unit + integration)
+zig build test-integration         # Integration tests only
+./zig-out/bin/zoltraak             # Start server (default 127.0.0.1:6379)
+./zig-out/bin/zoltraak --host 0.0.0.0 --port 6380
+./zig-out/bin/zoltraak-cli         # REPL client
+redis-cli -p 6379                  # Connect with standard redis-cli
 ```
+
+---
 
 ## Project Structure
 
 ```
 zoltraak/
 ├── src/
-│   ├── main.zig          # Entry point
-│   ├── server.zig        # TCP server implementation
-│   ├── protocol/         # RESP protocol handling
-│   │   ├── parser.zig    # RESP parser
-│   │   └── writer.zig    # RESP response writer
-│   ├── commands/         # Command implementations
-│   │   ├── strings.zig   # String commands (GET, SET, etc.)
-│   │   ├── lists.zig     # List commands
-│   │   ├── sets.zig      # Set commands
-│   │   ├── hashes.zig    # Hash commands
-│   │   └── sorted_sets.zig
-│   ├── storage/          # Data storage layer
-│   │   ├── memory.zig    # In-memory storage
-│   │   └── persistence.zig
-│   └── utils/            # Utility functions
-├── build.zig             # Build configuration
-├── build.zig.zon         # Package dependencies
-└── tests/                # Integration tests
+│   ├── main.zig                 # Server entry point
+│   ├── server.zig               # TCP server, command routing
+│   ├── cli.zig                  # REPL client (zoltraak-cli)
+│   ├── protocol/
+│   │   ├── parser.zig           # RESP2/RESP3 parser
+│   │   └── writer.zig           # RESP2/RESP3 response writer
+│   ├── commands/                # Command handlers (26 files)
+│   │   ├── strings.zig          # String commands
+│   │   ├── lists.zig            # List commands
+│   │   ├── sets.zig             # Set commands
+│   │   ├── hashes.zig           # Hash commands
+│   │   ├── sorted_sets.zig      # Sorted set commands
+│   │   ├── streams.zig          # Stream commands
+│   │   ├── streams_advanced.zig # Consumer groups, XCLAIM, XAUTOCLAIM
+│   │   ├── geo.zig              # Geospatial commands
+│   │   ├── hyperloglog.zig      # HyperLogLog commands
+│   │   ├── bits.zig             # SETBIT, GETBIT, BITCOUNT, BITOP
+│   │   ├── bitfield.zig         # BITFIELD, BITFIELD_RO
+│   │   ├── keys.zig             # Key management (TTL, EXPIRE, SCAN, etc.)
+│   │   ├── transactions.zig     # MULTI/EXEC/WATCH
+│   │   ├── pubsub.zig           # Pub/Sub commands
+│   │   ├── replication.zig      # REPLICAOF, REPLCONF, PSYNC
+│   │   ├── client.zig           # CLIENT subcommands
+│   │   ├── config.zig           # CONFIG subcommands
+│   │   ├── command.zig          # COMMAND introspection
+│   │   ├── info.zig             # INFO command
+│   │   ├── scripting.zig        # EVAL/EVALSHA stubs
+│   │   ├── acl.zig              # ACL stubs
+│   │   ├── cluster.zig          # Cluster stubs
+│   │   ├── utility.zig          # ECHO, QUIT, SELECT, TIME, etc.
+│   │   ├── server_commands.zig  # SAVE, BGSAVE, FLUSHDB, etc.
+│   │   └── introspection.zig    # OBJECT, DEBUG
+│   └── storage/                 # Data layer
+│       ├── memory.zig           # Core storage engine (tagged union Value)
+│       ├── persistence.zig      # RDB persistence
+│       ├── aof.zig              # AOF logging
+│       ├── config.zig           # Runtime configuration
+│       ├── replication.zig      # Replication state
+│       ├── pubsub.zig           # Pub/Sub state
+│       ├── acl.zig              # ACL storage (stub)
+│       └── scripting.zig        # Script cache
+├── tests/                       # Integration tests
+│   ├── test_integration.zig     # Main integration suite
+│   ├── test_key_management.zig
+│   ├── test_hash_field_ttl.zig
+│   ├── test_resp3.zig
+│   ├── test_bitfield.zig
+│   ├── test_client.zig
+│   ├── test_utility.zig
+│   └── integration_test.sh      # Shell-based tests (redis-cli)
+├── docs/
+│   └── PRD.md                   # 1.0 product requirements (18 phases)
+├── .claude/
+│   └── agents/                  # 9 specialized agents
+├── build.zig                    # Build config (sailor dependency)
+├── build.zig.zon                # Package manifest (Zig 0.15+, sailor v0.4.0)
+└── README.md                    # User-facing documentation
 ```
 
-## Development Guidelines
+---
 
-### Zig Conventions
-- Use `std.mem.Allocator` for all allocations
-- Prefer `errdefer` for cleanup on error paths
-- Use `comptime` for compile-time computations where beneficial
-- Follow Zig's naming conventions: snake_case for functions and variables, PascalCase for types
+## Zig Guidelines
 
-**Zig 0.15 API 참고사항**:
-- `ArrayListUnmanaged` 사용 — mutation 메서드가 allocator를 첫 번째 인자로 받음
-- `std.io.getStdOut().writer(&buf)` + `.interface.print()` — 종료 전 flush 필수
-- `std.builtin.Type` 태그는 소문자: `.int`, `.@"struct"` 등
-- `b.createModule()` 로 빌드 시스템 실행/테스트 타겟 생성
+### Conventions
+- `std.mem.Allocator` for all allocations
+- `errdefer` for cleanup on error paths
+- `comptime` for compile-time computations where beneficial
+- snake_case for functions/variables, PascalCase for types
 
-### Code Style
-- Keep functions focused and small
-- Document public APIs with doc comments (`///`)
-- Use meaningful variable names
-- Avoid `anytype` unless necessary for generic code
+### Zig 0.15 API Notes
+- `ArrayListUnmanaged` — mutation methods take allocator as first arg
+- `std.io.getStdOut().writer(&buf)` + `.interface.print()` — flush before exit
+- `std.builtin.Type` tags are lowercase: `.int`, `.@"struct"`, etc.
+- `b.createModule()` for build system execution/test targets
 
 ### Memory Management
-- The server uses an arena allocator for per-request allocations
-- Long-lived data uses a general purpose allocator
-- Always free allocations in the same scope or defer cleanup
+- Arena allocator for per-request allocations
+- General purpose allocator for long-lived data
+- Always free in same scope or defer cleanup
+- `std.testing.allocator` in tests for leak detection
 
 ### Error Handling
-- Use Zig's error unions (`!`) for fallible operations
-- Provide meaningful error types in `error` sets
+- Use Zig error unions (`!`) for fallible operations
+- Provide meaningful error types — no `anyerror`
 - Log errors at appropriate levels before returning
 
-## Key Components
+---
 
-### RESP Protocol
-The Redis Serialization Protocol is implemented in `src/protocol/`. Key types:
-- Simple Strings: `+OK\r\n`
-- Errors: `-ERR message\r\n`
-- Integers: `:1000\r\n`
-- Bulk Strings: `$6\r\nfoobar\r\n`
-- Arrays: `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n`
+## Redis Command Implementation Pattern
 
-### Command Processing
-1. Parse incoming RESP data
-2. Route to appropriate command handler
-3. Execute command against storage
-4. Return RESP-formatted response
+1. **Storage layer** (`src/storage/memory.zig`): Add data type variant to `Value` tagged union, implement operations
+2. **Command handlers** (`src/commands/<type>.zig`): Parse args → validate → execute against storage → format RESP response
+3. **Command routing** (`src/server.zig`): Register in dispatch table
+4. **WRONGTYPE errors**: Always check type match before operating
+5. **RESP3 awareness**: Return native RESP3 types (maps, sets) when protocol version is 3
 
-### Storage Engine
-- Hash map based key-value store
-- Type-tagged values for different data structures
-- Expiration handled via lazy deletion + active expiration
+---
 
-## Testing
+## Development Cycle (8 Phases)
 
-```bash
-# Run all tests (unit + integration)
-zig build test
+Each iteration follows this workflow. One iteration = one feature/command group. No scope creep.
 
-# Run only integration tests
-zig build test-integration
+### Phase 1 — Planning
+**Agent**: `redis-spec-analyzer`
+- Analyze Redis spec for target commands
+- Document command syntax, return types, error conditions, edge cases
+- Cross-reference with redis.io/commands
 
-# Run specific test file
-zig test src/protocol/parser.zig
+### Phase 2 — Implementation + Unit Tests
+**Agents**: `zig-implementor` + `unit-test-writer` (parallel)
+- Implement in `src/commands/`, `src/storage/`
+- Embed unit tests at end of source files (Zig convention)
+- All tests pass with `zig build test`
+- **Gate**: compiles, unit tests pass, no memory leaks
 
-# Run with verbose output
-zig build test -- --verbose
+### Phase 3 — Code Quality Review
+**Agents**: `zig-quality-reviewer` → `code-reviewer` (sequential)
+- Zig review: memory safety, error handling, idioms, doc comments
+- Architecture review: separation of concerns, API design, maintainability
+- **Gate**: Critical issues → BLOCK. Important issues → FIX or BLOCK.
 
-# Run shell-based integration tests (requires server running)
-./tests/integration_test.sh
-```
+### Phase 4 — Integration Testing
+**Agent**: `integration-test-orchestrator`
+- Create E2E RESP protocol tests in `tests/` directory
+- Test full request-response cycles and command interactions
+- **Gate**: all integration tests pass
 
-## Debugging
+### Phase 5 — Validation
+**Agents**: `redis-compatibility-validator` + `performance-validator` (parallel)
+- Differential testing vs real Redis (byte-by-byte RESP comparison)
+- redis-benchmark throughput/latency comparison
+- **Gate**: compatibility >= 95%, performance >= 70% of Redis, regression < 10%
 
-```bash
-# Build with debug info
-zig build -Doptimize=Debug
+### Phase 6 — Documentation
+- Update README.md command tables
+- Update CLAUDE.md if new patterns emerged
 
-# Use LLDB for debugging
-lldb ./zig-out/bin/zoltraak
-```
+### Phase 7 — Cleanup
+- Delete temporary spec/summary documents
+- Remove debug prints, TODO comments
+- **Kill all background processes**: `pkill -f zoltraak 2>/dev/null; sleep 1`
+- Verify port 6379 is free: `lsof -ti :6379 | xargs kill 2>/dev/null`
 
-## Performance Considerations
+### Phase 8 — Commit
+**Agent**: `git-commit-push`
+- Commit format: `feat(<scope>): implement Iteration N — <description>`
+- Push to origin/main
 
-- Use `std.ArrayList` with pre-allocated capacity for known sizes
-- Avoid unnecessary allocations in hot paths
-- Use `@prefetch` for predictable memory access patterns
-- Profile with `zig build -Doptimize=ReleaseFast` for accurate benchmarks
+### Failure Handling
 
-## Common Tasks
+| Phase | Action |
+|-------|--------|
+| 1 (Planning) | Request clarification, retry with more context |
+| 2 (Implementation) | Review errors, attempt fix, retry |
+| 3 (Quality) | Apply fixes, re-run review. Never skip. |
+| 4 (Integration) | Fix tests or implementation, retry |
+| 5 (Validation) | Fix compatibility/performance, re-run. Never skip. |
+| 6-8 | Investigate and escalate if needed |
 
-### Adding a New Command
-1. Create handler function in appropriate `src/commands/*.zig` file
-2. Register command in the command router
-3. Add tests for the new command
-4. Update documentation
+### Agent Coordination
 
-### Implementing a Data Structure
-1. Define the type in `src/storage/`
-2. Implement required operations
-3. Add type tag to value enum
-4. Create command handlers
-
-## Dependencies
-
-This project aims for minimal external dependencies, relying primarily on Zig's standard library.
-
-## Agent Architecture
-
-Zoltraak uses a sophisticated multi-agent development workflow with specialized agents for planning, implementation, quality review, testing, and validation. This architecture ensures high code quality, Redis compatibility, and performance standards.
-
-### Development Workflow (8 Phases)
-
-The `dev-cycle-orchestrator` coordinates complete development cycles through 8 phases:
-
-1. **Planning**: `redis-spec-analyzer` analyzes Redis specifications and validates compliance
-2. **Implementation + Unit Tests**: `zig-implementor` + `unit-test-writer` create code with embedded tests
-3. **Code Quality Review**: `zig-quality-reviewer` + `code-reviewer` ensure quality at technical and architectural levels
-4. **Integration Testing**: `integration-test-orchestrator` creates end-to-end RESP protocol tests
-5. **Validation**: `redis-compatibility-validator` + `performance-validator` verify Redis compatibility and performance
-6. **Documentation**: Documentation updates
-7. **Cleanup**: Remove temporary files
-8. **Commit**: `git-commit-push` commits and pushes changes
-
-### Phase 1 Agents (Current)
-
-**Planning & Analysis:**
-- `redis-spec-analyzer`: Plans iterations with deep Redis spec validation
-
-**Implementation:**
-- `zig-implementor`: Implements features following Zig conventions (renamed from spec-implementor)
-- `unit-test-writer`: Embeds unit tests in source files (Zig convention)
-
-**Quality Assurance:**
-- `zig-quality-reviewer`: Reviews Zig code for memory safety, error handling, and idioms
-- `code-reviewer`: Reviews architectural design and maintainability
-
-**Testing:**
-- `integration-test-orchestrator`: Creates end-to-end integration tests (refocused from integration-test-generator)
-
-**Validation:**
-- `redis-compatibility-validator`: Differential testing against real Redis
-- `performance-validator`: Zig profiling + redis-benchmark comparison (merged from 3 agents)
-
-**Version Control:**
-- `git-commit-push`: Manages commits and pushes
-
-**Orchestration:**
-- `dev-cycle-orchestrator`: Coordinates the 8-phase workflow
+| Phase | Agent(s) | Execution |
+|-------|----------|-----------|
+| 1 | redis-spec-analyzer | Solo |
+| 2 | zig-implementor + unit-test-writer | Parallel |
+| 3 | zig-quality-reviewer → code-reviewer | Sequential |
+| 4 | integration-test-orchestrator | Solo |
+| 5 | redis-compatibility-validator + performance-validator | Parallel |
+| 6-7 | Orchestrator direct | Solo |
+| 8 | git-commit-push | Solo |
 
 ### Phase 2 Agents (Planned)
 
-The following agents are approved for Phase 2 implementation:
-- `documentation-writer`: Automated documentation updates
+- `documentation-writer`: Automated doc updates
 - `zig-build-maintainer`: Safe build.zig management
-- `redis-subsystem-planner`: Plans complex subsystems (Pub/Sub, Transactions, Persistence)
-- `redis-command-validator`: Validates command arguments and options
-- `ci-validator`: CI/CD integration and pre-commit checks
-- `bug-investigator`: Systematic debugging when tests fail
-- `resp-protocol-specialist`: RESP3 protocol implementation
+- `redis-subsystem-planner`: Plans complex subsystems
+- `redis-command-validator`: Validates command arguments
+- `ci-validator`: CI/CD integration
+- `bug-investigator`: Systematic debugging on test failures
+- `resp-protocol-specialist`: RESP3 protocol edge cases
 
-### Quality Gates
-
-The workflow includes multiple quality gates to prevent issues:
-
-**Phase 3 Gate (Code Quality)**:
-- Blocks on critical Zig issues (memory leaks, anyerror usage)
-- Blocks on important architectural problems
-- Must pass before testing
-
-**Phase 5 Gate (Validation)**:
-- Blocks if Redis compatibility < 95%
-- Blocks if performance < 70% of Redis
-- Blocks if performance regression > 10%
-- Must pass before commit
-
-### Testing Strategy
-
-**Unit Tests (Embedded)**:
-- Written by `unit-test-writer`
-- Embedded in source files (Zig convention)
-- Test individual functions in isolation
-- Use `std.testing.allocator` for leak detection
-
-**Integration Tests (Separate Files)**:
-- Written by `integration-test-orchestrator`
-- Located in `tests/` directory
-- Test end-to-end RESP protocol flows
-- Verify command interactions
-
-**Compatibility Tests**:
-- Performed by `redis-compatibility-validator`
-- Differential testing against real Redis
-- Byte-by-byte RESP comparison
-- Client library compatibility (redis-py, node-redis, etc.)
-
-**Performance Tests**:
-- Performed by `performance-validator`
-- redis-benchmark comparison
-- Zig memory profiling
-- Hot path analysis
-
-### Agent Invocation
-
-To use an agent for a task:
-```
-<Use the redis-spec-analyzer agent to plan the next iteration>
-<Use the zig-implementor agent to implement the ZADD command>
-<Use the redis-compatibility-validator agent to verify HSET compatibility>
-```
-
-Or invoke the orchestrator for complete workflows:
-```
-<Use the dev-cycle-orchestrator to implement the INCR command end-to-end>
-```
-
-### Agent Development Guidelines
-
-When working with agents:
-- Agents have specific responsibilities - don't overlap
-- Orchestrator coordinates sequential and parallel execution
-- Quality gates must pass - never skip reviews or validation
-- Unit tests are embedded, integration tests are separate
-- Always validate against Redis specifications
+---
 
 ## Autonomous Session Protocol
 
 자동화 세션(cron job 등)에서는 다음 프로토콜을 실행한다.
 
 **컨텍스트 복원** — 세션 시작 시 읽을 파일:
-1. `CLAUDE.md` — 프로젝트 규칙, 코딩 표준, 에이전트 아키텍처
-2. `ORCHESTRATOR.md` — 8단계 개발 사이클 오케스트레이션 프로토콜
-3. `README.md` — 현재 로드맵, 지원 명령어, 프로젝트 상태
+1. `CLAUDE.md` — 프로젝트 규칙, 개발 사이클, 에이전트 아키텍처
+2. `README.md` — 지원 명령어, 프로젝트 상태
+3. `docs/PRD.md` — 1.0 로드맵, 다음 구현 대상 확인
 
 **작업 선택 규칙**:
-- 로드맵 순서를 엄격히 따름
-- 사이클당 하나의 데이터 구조 또는 기능만 구현
+- PRD.md의 Phase 순서를 따름 (Phase 1 → Phase 2 → ...)
+- 사이클당 하나의 이터레이션만 구현
 - 이전 세션의 미완료 작업(빌드 실패, 테스트 실패)이 있으면 먼저 수정
-
-**8단계 실행 사이클**:
-
-| Phase | 내용 |
-|-------|------|
-| 1. 상태 파악 & 계획 | git log, `zig build` 확인 → Redis 명령어 사양 분석 → 구현 계획 |
-| 2. 구현 + 유닛 테스트 | Storage layer → Command handlers → Command routing → 유닛 테스트 |
-| 3. 코드 품질 리뷰 | 메모리 안전성, 에러 처리, 아키텍처 일관성 검사 |
-| 4. 통합 테스트 | `tests/test_integration.zig`에 RESP 프로토콜 E2E 테스트 추가 |
-| 5. 호환성 검증 | RESP 응답 포맷·에러 메시지가 Redis와 일치하는지 확인 |
-| 6. 문서화 | README.md 지원 명령어 테이블 업데이트 |
-| 7. 정리 | 임시 파일 제거, 디버그 프린트·TODO 주석 정리, **모든 백그라운드 프로세스 종료** (`pkill -f zoltraak; lsof -ti :6379 \| xargs kill`) |
-| 8. 커밋 & 푸시 | `feat(<scope>): implement Redis <Type> commands` 형식으로 커밋 후 `git push` 실행 |
-
-**Redis 명령어 구현 패턴**:
-1. **Storage layer** (`src/storage/memory.zig`): `Value` tagged union에 새 데이터 타입 추가, 저장 연산 구현
-2. **Command handlers** (`src/commands/<type>.zig`): args 파싱 → 검증 → storage 실행 → RESP 응답 포맷
-3. **Command routing** (`src/server.zig`): 명령어 디스패치 테이블에 등록
-4. **WRONGTYPE 에러**: 타입 불일치 시 반드시 처리
-
-**프로세스 정리 규칙** (필수):
-- 사이클 중 시작한 모든 백그라운드 프로세스(서버, 테스트 러너 등)는 사이클 종료 전에 반드시 종료해야 함
-- 서버를 시작한 경우 (`./zig-out/bin/zoltraak &` 등), 테스트 완료 후 `kill` 또는 `pkill`로 반드시 정리
-- `zig build test` 실행 시 통합 테스트가 서버를 spawn할 수 있으므로, 테스트가 끝나면 `pkill -f 'zig-out/bin/zoltraak'`로 잔여 프로세스 정리
-- 포트 6379에 바인딩된 프로세스가 남아있지 않도록 `lsof -ti :6379 | xargs kill` 로 확인
-- **사이클의 마지막 단계(커밋 전)에서 반드시 실행**: `pkill -f zoltraak 2>/dev/null; sleep 1`
 
 **안전 규칙**:
 - Force push 및 파괴적 git 명령어 금지
@@ -348,14 +267,18 @@ When working with agents:
 - 동일 에러 3회 시도 후 지속 시 문서화하고 다음 항목으로 이동
 - 스코프 크리프 금지: 사이클당 하나의 이터레이션만 구현
 - 기존 테스트가 반드시 계속 통과해야 함
-- 외부 의존성 없음: Zig 표준 라이브러리만 사용
-- `zig build test`가 60초 이상 걸리면 hang으로 간주하고 강제 종료 후 `zig build`(컴파일만)으로 대체
+- `zig build test`가 60초 이상 걸리면 hang으로 간주하고 강제 종료
+
+**프로세스 정리 (필수)**:
+- 사이클 중 시작한 모든 백그라운드 프로세스는 사이클 종료 전에 반드시 종료
+- 커밋 전 마지막 단계: `pkill -f zoltraak 2>/dev/null; sleep 1`
+- 포트 확인: `lsof -ti :6379 | xargs kill 2>/dev/null`
 
 **세션 요약 템플릿**:
 
     ## Session Summary
     ### Iteration
-    - [완료한 이터레이션, 예: "Iteration 4: Hash Commands"]
+    - [완료한 이터레이션]
     ### Commands Implemented
     - [추가된 Redis 명령어 목록]
     ### Files Changed
@@ -376,191 +299,64 @@ When working with agents:
 
 ### 마이너 릴리즈 (v0.X.0)
 
-phase의 모든 모듈이 완성되었을 때 자율적으로 릴리즈를 수행한다.
+Phase의 모든 모듈이 완성되었을 때 자율적으로 릴리즈를 수행한다.
 
 **릴리즈 조건 (ALL must be true)**:
-1. 현재 phase의 체크리스트 항목이 **모두 완료** (`[x]`)
+1. 현재 phase의 체크리스트 항목이 모두 완료
 2. `zig build test` — 전체 통과, 0 failures
 3. 크로스 컴파일 타겟 빌드 성공
-4. `bug` 라벨 이슈가 **0개** (open)
+4. `bug` 라벨 이슈가 0개 (open)
 
 **릴리즈 절차**:
 1. `build.zig.zon`의 version 업데이트
-2. CLAUDE.md phase 체크리스트에 완료 표시
-3. 커밋: `chore: bump version to v0.X.0`
-4. 태그: `git tag -a v0.X.0 -m "Release v0.X.0: <phase 요약>"`
-5. 푸시: `git push && git push origin v0.X.0`
-6. GitHub Release: `gh release create v0.X.0 --title "v0.X.0: <phase 요약>" --notes "<릴리즈 노트>"`
-7. 관련 이슈 닫기: `gh issue close <number> --comment "Resolved in v0.X.0"`
-8. Discord 알림: `openclaw message send --channel discord --target user:264745080709971968 --message "[zoltraak] Released v0.X.0 — <요약>"`
+2. 커밋: `chore: bump version to v0.X.0`
+3. 태그: `git tag -a v0.X.0 -m "Release v0.X.0: <phase 요약>"`
+4. 푸시: `git push && git push origin v0.X.0`
+5. GitHub Release: `gh release create v0.X.0 --title "v0.X.0" --notes "<릴리즈 노트>"`
+6. 관련 이슈 닫기
+7. Discord 알림: `openclaw message send --channel discord --target user:264745080709971968 --message "[zoltraak] Released v0.X.0 — <요약>"`
 
 ### 패치 릴리즈 (v0.X.Y)
 
-버그 수정 시 패치 릴리즈를 즉시 발행한다.
-
-**트리거 조건**:
-- 사용자 보고 버그가 수정된 커밋이 존재하지만 릴리즈 태그가 없을 때
-- 빌드/테스트 실패를 수정한 커밋
-- 크로스 컴파일 깨짐을 수정한 커밋
-
-**패치 vs 마이너 판단**:
-- 버그 수정만 포함 → PATCH (v0.X.Y)
-- 새 기능 포함 → MINOR (v0.X+1.0)
-
-**버전 규칙**:
-- PATCH 번호만 증가 (예: v0.1.0 → v0.1.1)
-- `build.zig.zon` version 수정 불필요 — 태그만으로 충분
-- 기능 커밋을 패치에 포함하지 않음
-
-**패치 릴리즈 절차**:
-1. 버그 수정 커밋 식별
-2. `zig build test` 통과 확인
-3. 태그: `git tag -a v0.X.Y <commit-hash> -m "Release v0.X.Y: <수정 요약>"`
-4. 푸시: `git push origin v0.X.Y`
-5. GitHub Release: `gh release create v0.X.Y --title "v0.X.Y: <요약>" --notes "<릴리즈 노트>"`
-6. 관련 이슈에 릴리즈 코멘트 추가
-7. Discord 알림
+버그 수정 시 패치 릴리즈를 즉시 발행한다. PATCH 번호만 증가. 기능 커밋을 패치에 포함하지 않음.
 
 ---
 
 ## Sailor Migration
 
 zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점진적으로 도입한다.
-각 버전이 READY 상태가 되면, 해당 세션에서 마이그레이션을 수행한다.
 
-### 마이그레이션 프로토콜
-
-1. 세션 시작 시 이 섹션을 확인한다
-2. `status: READY`인 미완료 마이그레이션이 있으면, 현재 작업보다 **우선** 수행한다
-3. 마이그레이션 완료 후 `status: DONE`으로 변경하고 커밋한다
+**마이그레이션 프로토콜**:
+1. 세션 시작 시 이 섹션을 확인
+2. `status: READY`인 미완료 마이그레이션이 있으면 현재 작업보다 우선 수행
+3. 마이그레이션 완료 후 `status: DONE`으로 변경하고 커밋
 4. `zig build test` 통과 확인 필수
 
-### sailor 이슈 발행 프로토콜
+**로컬 워크어라운드 금지**: sailor에 버그가 있으면 로컬 우회 금지. 반드시 `gh issue create --repo yusa-imit/sailor`로 발행하고 수정을 기다린다.
 
-sailor 라이브러리를 사용하는 중 버그를 발견하거나, 필요한 기능이 없을 때 GitHub Issue를 발행한다.
+### v0.1.0 — arg, color (DONE)
+### v0.2.0 — REPL (DONE)
+- sailor v0.2.0의 `repl` 모듈은 Zig 0.15.x 미호환 (Issue #2). `sailor.arg`만 사용, REPL은 자체 구현.
+### v0.3.0 — fmt (DONE)
+### v0.4.0 — tui (DONE)
 
-**버그 발행**:
-```bash
-gh issue create --repo yusa-imit/sailor \
-  --title "bug: <간단한 설명>" \
-  --label "bug,from:zoltraak" \
-  --body "## 증상
-<어떤 문제가 발생했는지>
+### v0.5.0 — advanced widgets (READY)
+- v0.5.1 패치 사용 권장 (sailor#3~#6 수정됨)
+- [ ] Tree 위젯으로 계층적 키 브라우징
+- [ ] LineChart로 메모리/커넥션 메트릭 대시보드
+- [ ] Dialog 위젯으로 DEL 명령 확인 프롬프트
+- [ ] Notification으로 커넥션 상태 토스트
 
-## 재현 방법
-<코드 또는 단계>
-
-## 기대 동작
-<어떻게 동작해야 하는지>
-
-## 환경
-- sailor 버전: <version>
-- Zig 버전: 0.15.x
-- OS: <os>"
-```
-
-**기능 요청 발행**:
-```bash
-gh issue create --repo yusa-imit/sailor \
-  --title "feat: <필요한 기능>" \
-  --label "feature-request,from:zoltraak" \
-  --body "## 필요한 이유
-<zoltraak에서 왜 이 기능이 필요한지>
-
-## 제안하는 API
-<원하는 함수 시그니처나 사용 예시>
-
-## 현재 워크어라운드
-<없으면 '없음'>"
-```
-
-**발행 조건**:
-- sailor의 기존 API로 해결할 수 없는 문제일 때만 발행
-- 동일한 이슈가 이미 열려있는지 먼저 확인: `gh issue list --repo yusa-imit/sailor --state open --search "<keyword>"`
-- 이슈 발행 후 현재 작업으로 복귀 (sailor 수정을 직접 하지 않음)
-
-**로컬 워크어라운드 금지 (CRITICAL)**:
-- sailor에 버그가 있으면 **절대로 로컬에서 자체 구현으로 우회하지 않는다**
-- 반드시 sailor repo에 이슈를 발행하고, sailor 에이전트가 수정할 때까지 기다린다
-- sailor 에이전트(cron job)가 `from:*` 라벨 이슈를 최우선으로 처리한다
-- 수정이 릴리스되면 `zig fetch --save`로 sailor 의존성을 업데이트한다
-- 해당 기능이 아직 안 되면 그 기능을 사용하는 코드를 작성하지 않고 다른 작업으로 넘어간다
-
-### v0.1.0 — arg, color (status: DONE)
-
-**작업 내용**:
-- [x] `build.zig.zon`에 sailor 의존성 추가
-- [x] `build.zig`에서 sailor 모듈 import 설정
-- [x] `src/main.zig`의 `parseArgs()` 함수 → `sailor.arg` 교체
-- [x] `ParsedArgs` 구조체를 sailor 파싱 결과로 대체 (--replicaof는 HOST:PORT 형식으로 변경)
-- [x] 서버 시작 로그에 색상 출력 적용 (ANSI escape codes 사용)
-- [x] 기존 테스트 전체 통과 확인
-- [x] 커밋: `refactor: migrate arg parsing to sailor v0.1.0`
-
-### v0.2.0 — REPL (status: DONE)
-
-**작업 내용**:
-- [x] `zoltraak-cli` 바이너리 추가 (build.zig에 별도 executable)
-- [x] `sailor.arg`로 CLI 인자 파싱 (`--host`, `--port`)
-- [x] 간단한 REPL 구현 (프롬프트: `127.0.0.1:6379> `)
-- [x] RESP 프로토콜로 서버에 연결, 명령 전송/응답 표시
-- [x] 커밋: `feat: add zoltraak-cli with sailor v0.2.0`
-
-**주의사항**:
-- sailor v0.2.0의 `repl` 모듈은 Zig 0.15.x와 호환되지 않음 (GitHub Issue #2 발행)
-- `sailor.arg`만 사용하고 REPL은 자체 구현으로 대체
-- 향후 sailor가 Zig 0.15 호환성을 지원하면 `sailor.repl`로 전환 예정
-
-### v0.3.0 — fmt (status: DONE)
-
-**작업 내용**:
-- [x] redis-cli 응답 포매팅에 `sailor.fmt` 적용
-- [x] `--raw` / `--csv` / `--json` 출력 모드 지원
-- [x] 커밋: `feat: add output formatting modes to zoltraak-cli`
-
-### v0.4.0 — tui (status: DONE)
-
-**작업 내용**:
-- [x] `zoltraak-cli --tui` 모드 추가
-- [x] `sailor.tui` 위젯으로 키 브라우저 구현 (Terminal, Frame, Buffer, custom widgets)
-- [x] 실시간 키 값 조회/수정 인터페이스
-- [x] 커밋: `feat: add TUI key browser to zoltraak-cli`
-
-**주의사항**:
-- sailor v0.4.0 TUI는 `Terminal`, `Frame`, `Buffer` 구조 사용 (App 없음)
-- 커스텀 렌더링 함수 구현: renderKeyList, renderKeyDetails
-- raw terminal control로 직접 ANSI escape code 사용
-- 키 네비게이션: j/k (vi-style), q (quit), r (refresh)
-
-### v0.5.0 — advanced widgets (status: READY)
-
-**v0.5.1 패치 사용 권장**: sailor#3~#6 버그 수정됨 — `zig fetch --save`로 v0.5.1 업데이트
-
-**작업 내용**:
-- [ ] `build.zig.zon`에 sailor v0.5.1 의존성 업데이트
-- [ ] Redis 키 트리: `Tree` 위젯으로 계층적 키 브라우징
-- [ ] 실시간 모니터링: `LineChart`로 메모리/커넥션 메트릭 대시보드
-- [ ] 키 삭제 확인: `Dialog` 위젯으로 `DEL` 명령 프롬프트
-- [ ] 상태 알림: `Notification`으로 커넥션 성공/실패 토스트
-- [ ] 커밋: `feat: add advanced TUI features with sailor v0.5.0`
-
-### v1.0.0 — production ready (status: READY)
-
-**첫 안정 릴리즈**: 모든 기능 완성, 종합 문서화 포함
-
-**작업 내용**:
-- [ ] `build.zig.zon`에 sailor v1.0.0 의존성 업데이트
-- [ ] [Getting Started Guide](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/GUIDE.md) 참조하여 모범 사례 적용
-- [ ] [API Reference](https://github.com/yusa-imit/sailor/blob/v1.0.0/docs/API.md) 기반으로 기존 코드 리팩토링
-- [ ] 테마 시스템 활용: Redis TUI에 다크/라이트 모드 또는 커스텀 컬러 스킴
-- [ ] 애니메이션 효과 추가 (선택사항): 키 값 로딩, 커넥션 상태 전환
-- [ ] 기존 테스트 전체 통과 확인
-- [ ] 커밋: `feat: upgrade to sailor v1.0.0 with theming and polish`
+### v1.0.0 — production ready (READY)
+- [ ] sailor v1.0.0 의존성 업데이트
+- [ ] Getting Started Guide / API Reference 기반 리팩토링
+- [ ] 테마 시스템 (다크/라이트 모드)
 
 ---
 
 ## Resources
 
-- [Zig Documentation](https://ziglang.org/documentation/master/)
 - [Redis Commands](https://redis.io/commands/)
-- [RESP Protocol Specification](https://redis.io/docs/latest/develop/reference/protocol-spec/)
+- [RESP Protocol Spec](https://redis.io/docs/latest/develop/reference/protocol-spec/)
+- [Zig Documentation](https://ziglang.org/documentation/master/)
+- [Zoltraak 1.0 PRD](docs/PRD.md)
