@@ -453,7 +453,7 @@ gh issue create --repo yusa-imit/sailor \
 - `sailor.arg`만 사용하고 REPL은 자체 구현으로 대체
 - 향후 sailor가 Zig 0.15 호환성을 지원하면 `sailor.repl`로 전환 예정
 
-### v0.3.0 — fmt (status: PENDING)
+### v0.3.0 — fmt (status: READY)
 
 **작업 내용**:
 - [ ] redis-cli 응답 포매팅에 `sailor.fmt` 적용
