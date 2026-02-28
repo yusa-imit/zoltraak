@@ -2,10 +2,29 @@ const std = @import("std");
 const sailor = @import("sailor");
 const net = std.net;
 
+// Output format enum
+const OutputFormat = enum {
+    normal,
+    raw,
+    csv,
+    json,
+
+    pub fn fromString(s: []const u8) ?OutputFormat {
+        if (std.mem.eql(u8, s, "normal")) return .normal;
+        if (std.mem.eql(u8, s, "raw")) return .raw;
+        if (std.mem.eql(u8, s, "csv")) return .csv;
+        if (std.mem.eql(u8, s, "json")) return .json;
+        return null;
+    }
+};
+
 // Define CLI flags
 const flags = [_]sailor.arg.FlagDef{
     .{ .name = "host", .short = 'h', .type = .string, .default = "127.0.0.1", .help = "Server hostname" },
     .{ .name = "port", .short = 'p', .type = .string, .default = "6379", .help = "Server port" },
+    .{ .name = "raw", .short = 'r', .type = .bool, .default = "false", .help = "Output raw RESP data without formatting" },
+    .{ .name = "csv", .short = 'c', .type = .bool, .default = "false", .help = "Output data in CSV format" },
+    .{ .name = "json", .short = 'j', .type = .bool, .default = "false", .help = "Output data in JSON format" },
 };
 
 pub fn main() !void {
@@ -27,6 +46,16 @@ pub fn main() !void {
     const host = parser.getString("host", "127.0.0.1");
     const port_str = parser.getString("port", "6379");
     const port = try std.fmt.parseInt(u16, port_str, 10);
+
+    // Determine output format
+    var output_format = OutputFormat.normal;
+    if (parser.getBool("raw", false)) {
+        output_format = .raw;
+    } else if (parser.getBool("csv", false)) {
+        output_format = .csv;
+    } else if (parser.getBool("json", false)) {
+        output_format = .json;
+    }
 
     // Connect to Zoltraak server
     const address = try net.Address.parseIp(host, port);
@@ -87,7 +116,7 @@ pub fn main() !void {
         }
 
         // Display response
-        try displayResponse(read_buffer[0..response_len]);
+        try displayResponse(read_buffer[0..response_len], output_format);
     }
 
     std.debug.print("Bye!\n", .{});
@@ -122,12 +151,40 @@ fn sendCommand(stream: net.Stream, cmd: []const u8) !void {
     try stream.writeAll(fbs.getWritten());
 }
 
-fn displayResponse(data: []const u8) !void {
-    var pos: usize = 0;
-    while (pos < data.len) {
-        const result = try parseRespValue(data, pos);
-        try printRespValue(result.value, 0);
-        pos = result.next_pos;
+fn displayResponse(data: []const u8, format: OutputFormat) !void {
+    switch (format) {
+        .raw => {
+            // Raw mode: just print the RESP data as-is
+            std.debug.print("{s}", .{data});
+        },
+        .normal => {
+            // Normal mode: parse and format nicely
+            var pos: usize = 0;
+            while (pos < data.len) {
+                const result = try parseRespValue(data, pos);
+                try printRespValue(result.value, 0);
+                pos = result.next_pos;
+            }
+        },
+        .csv => {
+            // CSV mode: flatten to CSV format
+            var pos: usize = 0;
+            while (pos < data.len) {
+                const result = try parseRespValue(data, pos);
+                try printRespValueCsv(result.value);
+                pos = result.next_pos;
+            }
+        },
+        .json => {
+            // JSON mode: convert to JSON
+            var pos: usize = 0;
+            while (pos < data.len) {
+                const result = try parseRespValue(data, pos);
+                try printRespValueJson(result.value);
+                std.debug.print("\n", .{});
+                pos = result.next_pos;
+            }
+        },
     }
 }
 
@@ -269,6 +326,97 @@ fn printRespValue(value: RespValue, indent: usize) !void {
                     else => try printRespValue(arr[i], 0),
                 }
             }
+        },
+    }
+}
+
+fn printRespValueCsv(value: RespValue) !void {
+    switch (value) {
+        .simple_string => |s| std.debug.print("{s}\n", .{s}),
+        .error_msg => |e| std.debug.print("ERROR,\"{s}\"\n", .{e}),
+        .integer => |i| std.debug.print("{d}\n", .{i}),
+        .bulk_string => |maybe_s| {
+            if (maybe_s) |s| {
+                // Escape quotes in CSV
+                var needs_quotes = false;
+                for (s) |ch| {
+                    if (ch == ',' or ch == '"' or ch == '\n' or ch == '\r') {
+                        needs_quotes = true;
+                        break;
+                    }
+                }
+
+                if (needs_quotes) {
+                    std.debug.print("\"", .{});
+                    for (s) |ch| {
+                        if (ch == '"') {
+                            std.debug.print("\"\"", .{}); // Escape quotes by doubling
+                        } else {
+                            std.debug.print("{c}", .{ch});
+                        }
+                    }
+                    std.debug.print("\"\n", .{});
+                } else {
+                    std.debug.print("{s}\n", .{s});
+                }
+            } else {
+                std.debug.print("\n", .{});
+            }
+        },
+        .array => |arr| {
+            var i: usize = 0;
+            while (i < arr.len) : (i += 1) {
+                if (i > 0) std.debug.print(",", .{});
+
+                switch (arr[i]) {
+                    .simple_string => |s| std.debug.print("{s}", .{s}),
+                    .bulk_string => |maybe_s| {
+                        if (maybe_s) |s| std.debug.print("\"{s}\"", .{s});
+                    },
+                    .integer => |n| std.debug.print("{d}", .{n}),
+                    .error_msg => |e| std.debug.print("\"ERROR:{s}\"", .{e}),
+                    .array => {}, // Skip nested arrays in CSV
+                }
+            }
+            std.debug.print("\n", .{});
+        },
+    }
+}
+
+fn printRespValueJson(value: RespValue) error{}!void {
+    switch (value) {
+        .simple_string => |s| std.debug.print("\"{s}\"", .{s}),
+        .error_msg => |e| {
+            std.debug.print("{{\"error\":\"{s}\"}}", .{e});
+        },
+        .integer => |i| std.debug.print("{d}", .{i}),
+        .bulk_string => |maybe_s| {
+            if (maybe_s) |s| {
+                std.debug.print("\"", .{});
+                // Escape special characters for JSON
+                for (s) |ch| {
+                    switch (ch) {
+                        '"' => std.debug.print("\\\"", .{}),
+                        '\\' => std.debug.print("\\\\", .{}),
+                        '\n' => std.debug.print("\\n", .{}),
+                        '\r' => std.debug.print("\\r", .{}),
+                        '\t' => std.debug.print("\\t", .{}),
+                        else => std.debug.print("{c}", .{ch}),
+                    }
+                }
+                std.debug.print("\"", .{});
+            } else {
+                std.debug.print("null", .{});
+            }
+        },
+        .array => |arr| {
+            std.debug.print("[", .{});
+            var i: usize = 0;
+            while (i < arr.len) : (i += 1) {
+                if (i > 0) std.debug.print(",", .{});
+                try printRespValueJson(arr[i]);
+            }
+            std.debug.print("]", .{});
         },
     }
 }
