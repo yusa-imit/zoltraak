@@ -348,6 +348,8 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - [ ] Notification으로 커넥션 상태 토스트
 
 ### v1.0.0 — production ready (READY)
+**v1.0.1 패치**: 크로스 컴파일 수정 (API 변경 없음)
+
 - [ ] sailor v1.0.0 의존성 업데이트
 - [ ] Getting Started Guide / API Reference 기반 리팩토링
 - [ ] 테마 시스템 (다크/라이트 모드)
