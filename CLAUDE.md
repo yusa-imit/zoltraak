@@ -467,13 +467,19 @@ gh issue create --repo yusa-imit/sailor \
 - [x] `--raw` / `--csv` / `--json` 출력 모드 지원
 - [x] 커밋: `feat: add output formatting modes to zoltraak-cli`
 
-### v0.4.0 — tui (status: READY)
+### v0.4.0 — tui (status: DONE)
 
 **작업 내용**:
-- [ ] `zoltraak-cli --tui` 모드 추가
-- [ ] `sailor.tui` 위젯으로 키 브라우저 구현 (List + Table + StatusBar)
-- [ ] 실시간 키 값 조회/수정 인터페이스
-- [ ] 커밋: `feat: add TUI key browser to zoltraak-cli`
+- [x] `zoltraak-cli --tui` 모드 추가
+- [x] `sailor.tui` 위젯으로 키 브라우저 구현 (Terminal, Frame, Buffer, custom widgets)
+- [x] 실시간 키 값 조회/수정 인터페이스
+- [x] 커밋: `feat: add TUI key browser to zoltraak-cli`
+
+**주의사항**:
+- sailor v0.4.0 TUI는 `Terminal`, `Frame`, `Buffer` 구조 사용 (App 없음)
+- 커스텀 렌더링 함수 구현: renderKeyList, renderKeyDetails
+- raw terminal control로 직접 ANSI escape code 사용
+- 키 네비게이션: j/k (vi-style), q (quit), r (refresh)
 
 ### v0.5.0 — advanced widgets (status: READY)
 
