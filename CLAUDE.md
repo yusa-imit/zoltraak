@@ -372,6 +372,57 @@ When working with agents:
 
 ---
 
+## Release & Patch Policy
+
+### 마이너 릴리즈 (v0.X.0)
+
+phase의 모든 모듈이 완성되었을 때 자율적으로 릴리즈를 수행한다.
+
+**릴리즈 조건 (ALL must be true)**:
+1. 현재 phase의 체크리스트 항목이 **모두 완료** (`[x]`)
+2. `zig build test` — 전체 통과, 0 failures
+3. 크로스 컴파일 타겟 빌드 성공
+4. `bug` 라벨 이슈가 **0개** (open)
+
+**릴리즈 절차**:
+1. `build.zig.zon`의 version 업데이트
+2. CLAUDE.md phase 체크리스트에 완료 표시
+3. 커밋: `chore: bump version to v0.X.0`
+4. 태그: `git tag -a v0.X.0 -m "Release v0.X.0: <phase 요약>"`
+5. 푸시: `git push && git push origin v0.X.0`
+6. GitHub Release: `gh release create v0.X.0 --title "v0.X.0: <phase 요약>" --notes "<릴리즈 노트>"`
+7. 관련 이슈 닫기: `gh issue close <number> --comment "Resolved in v0.X.0"`
+8. Discord 알림: `openclaw message send --channel discord --target user:264745080709971968 --message "[zoltraak] Released v0.X.0 — <요약>"`
+
+### 패치 릴리즈 (v0.X.Y)
+
+버그 수정 시 패치 릴리즈를 즉시 발행한다.
+
+**트리거 조건**:
+- 사용자 보고 버그가 수정된 커밋이 존재하지만 릴리즈 태그가 없을 때
+- 빌드/테스트 실패를 수정한 커밋
+- 크로스 컴파일 깨짐을 수정한 커밋
+
+**패치 vs 마이너 판단**:
+- 버그 수정만 포함 → PATCH (v0.X.Y)
+- 새 기능 포함 → MINOR (v0.X+1.0)
+
+**버전 규칙**:
+- PATCH 번호만 증가 (예: v0.1.0 → v0.1.1)
+- `build.zig.zon` version 수정 불필요 — 태그만으로 충분
+- 기능 커밋을 패치에 포함하지 않음
+
+**패치 릴리즈 절차**:
+1. 버그 수정 커밋 식별
+2. `zig build test` 통과 확인
+3. 태그: `git tag -a v0.X.Y <commit-hash> -m "Release v0.X.Y: <수정 요약>"`
+4. 푸시: `git push origin v0.X.Y`
+5. GitHub Release: `gh release create v0.X.Y --title "v0.X.Y: <요약>" --notes "<릴리즈 노트>"`
+6. 관련 이슈에 릴리즈 코멘트 추가
+7. Discord 알림
+
+---
+
 ## Sailor Migration
 
 zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점진적으로 도입한다.
