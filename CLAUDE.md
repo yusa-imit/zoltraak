@@ -460,7 +460,7 @@ gh issue create --repo yusa-imit/sailor \
 - [ ] `--raw` / `--csv` / `--json` 출력 모드 지원
 - [ ] 커밋: `feat: add output formatting modes to zoltraak-cli`
 
-### v0.4.0 — tui (status: PENDING)
+### v0.4.0 — tui (status: READY)
 
 **작업 내용**:
 - [ ] `zoltraak-cli --tui` 모드 추가
