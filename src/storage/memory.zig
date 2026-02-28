@@ -3118,6 +3118,296 @@ pub const Storage = struct {
         return times_ms;
     }
 
+    /// HGETDEL — Atomically get hash field values and delete the fields
+    /// Returns array of values (null for non-existent fields)
+    /// Automatically deletes the hash key when all fields are removed
+    /// Caller must free the returned slice and all string values within it
+    /// Returns error.WrongType if key is not a hash
+    pub fn hgetdel(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        fields: []const []const u8,
+    ) error{ WrongType, OutOfMemory }![]?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Allocate result array
+        const values = try allocator.alloc(?[]const u8, fields.len);
+        errdefer allocator.free(values);
+
+        const entry = self.data.getEntry(key) orelse {
+            // Key doesn't exist - return all nulls
+            for (values) |*v| v.* = null;
+            return values;
+        };
+
+        // Check key expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            for (values) |*v| v.* = null;
+            return values;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                // First pass: clone values for fields that exist
+                for (fields, 0..) |field, i| {
+                    if (hash_val.data.get(field)) |field_val| {
+                        // Check field expiration
+                        if (field_val.expires_at) |exp_time| {
+                            if (getCurrentTimestamp() >= exp_time) {
+                                // Field expired
+                                values[i] = null;
+                                continue;
+                            }
+                        }
+                        // Clone the value before we delete it
+                        values[i] = try allocator.dupe(u8, field_val.data);
+                    } else {
+                        values[i] = null;
+                    }
+                }
+
+                // Second pass: delete the fields
+                for (fields) |field| {
+                    if (hash_val.data.fetchRemove(field)) |removed| {
+                        self.allocator.free(removed.key);
+                        var field_val = removed.value;
+                        field_val.deinit(self.allocator);
+                    }
+                }
+
+                // Auto-cleanup: if hash is now empty, remove the key
+                if (hash_val.data.count() == 0) {
+                    const owned_key = entry.key_ptr.*;
+                    var value = entry.value_ptr.*;
+                    _ = self.data.remove(key);
+                    self.allocator.free(owned_key);
+                    value.deinit(self.allocator);
+                }
+
+                return values;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// HGETEX — Atomically get hash field values and set/update field expiration
+    /// Returns array of values (null for non-existent fields)
+    /// Caller must free the returned slice and all string values within it
+    /// Returns error.WrongType if key is not a hash
+    pub fn hgetex(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        fields: []const []const u8,
+        expires_at_ms: ?i64, // null means PERSIST (remove expiration)
+    ) error{ WrongType, OutOfMemory }![]?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Allocate result array
+        const values = try allocator.alloc(?[]const u8, fields.len);
+        errdefer allocator.free(values);
+
+        const entry = self.data.getEntry(key) orelse {
+            // Key doesn't exist - return all nulls
+            for (values) |*v| v.* = null;
+            return values;
+        };
+
+        // Check key expiration
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            for (values) |*v| v.* = null;
+            return values;
+        }
+
+        switch (entry.value_ptr.*) {
+            .hash => |*hash_val| {
+                // Get values and update expiration
+                for (fields, 0..) |field, i| {
+                    if (hash_val.data.getEntry(field)) |field_entry| {
+                        // Check field expiration
+                        if (field_entry.value_ptr.expires_at) |exp_time| {
+                            if (getCurrentTimestamp() >= exp_time) {
+                                // Field expired
+                                values[i] = null;
+                                continue;
+                            }
+                        }
+                        // Clone the value
+                        values[i] = try allocator.dupe(u8, field_entry.value_ptr.data);
+                        // Update expiration
+                        field_entry.value_ptr.expires_at = expires_at_ms;
+                    } else {
+                        values[i] = null;
+                    }
+                }
+
+                return values;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// HSETEX — Atomically set hash fields with values and expiration
+    /// Returns 1 if all fields were set, 0 if conditional (fnx/fxx) failed
+    /// fnx: all fields must NOT exist (Field-Not-eXists)
+    /// fxx: all fields must exist (Field-eXists-eXists)
+    /// keep_ttl: preserve existing field TTL for updated fields, null for new fields
+    /// expires_at_ms: expiration time (null for no expiration, unless keep_ttl is true)
+    /// Returns error.WrongType if key exists but is not a hash
+    pub fn hsetex(
+        self: *Storage,
+        key: []const u8,
+        fields: []const []const u8,
+        values: []const []const u8,
+        fnx: bool, // Field-Not-eXists (all must be new)
+        fxx: bool, // Field-eXists-eXists (all must exist)
+        keep_ttl: bool, // Preserve existing field TTL
+        expires_at_ms: ?i64, // null for no expiration
+        expires_at: ?i64, // Key-level expiration (for new hashes)
+    ) error{ WrongType, OutOfMemory }!u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key);
+
+        if (entry) |kv_entry| {
+            // Check key expiration
+            if (kv_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                const owned_key = kv_entry.key_ptr.*;
+                var value = kv_entry.value_ptr.*;
+                _ = self.data.remove(key);
+                self.allocator.free(owned_key);
+                value.deinit(self.allocator);
+                // Fall through to create new hash
+            } else {
+                switch (kv_entry.value_ptr.*) {
+                    .hash => |*hash_val| {
+                        // Validate FNX/FXX conditions
+                        if (fnx) {
+                            // FNX: all fields must NOT exist
+                            for (fields) |field| {
+                                if (hash_val.data.contains(field)) {
+                                    // At least one field exists, fail
+                                    return 0;
+                                }
+                            }
+                        }
+
+                        if (fxx) {
+                            // FXX: all fields must exist
+                            for (fields) |field| {
+                                if (!hash_val.data.contains(field)) {
+                                    // At least one field doesn't exist, fail
+                                    return 0;
+                                }
+                            }
+                        }
+
+                        // All conditions met - set the fields
+                        for (fields, 0..) |field, i| {
+                            const is_new = !hash_val.data.contains(field);
+
+                            // Determine field expiration
+                            const field_expiration = if (keep_ttl and !is_new)
+                                // KEEPTTL: preserve existing expiration for updated fields
+                                hash_val.data.get(field).?.expires_at
+                            else
+                                // Use provided expiration (or null for new fields when keep_ttl is true)
+                                expires_at_ms;
+
+                            if (is_new) {
+                                // New field - duplicate both
+                                const owned_field = try self.allocator.dupe(u8, field);
+                                errdefer self.allocator.free(owned_field);
+
+                                const owned_value = try self.allocator.dupe(u8, values[i]);
+                                errdefer self.allocator.free(owned_value);
+
+                                try hash_val.data.put(owned_field, Value.FieldValue{
+                                    .data = owned_value,
+                                    .expires_at = if (keep_ttl) null else field_expiration,
+                                });
+                            } else {
+                                // Existing field - free old value, set new one
+                                const old_field_val = hash_val.data.get(field).?;
+                                self.allocator.free(old_field_val.data);
+
+                                const owned_value = try self.allocator.dupe(u8, values[i]);
+                                errdefer self.allocator.free(owned_value);
+
+                                try hash_val.data.put(field, Value.FieldValue{
+                                    .data = owned_value,
+                                    .expires_at = field_expiration,
+                                });
+                            }
+                        }
+
+                        return 1;
+                    },
+                    else => return error.WrongType,
+                }
+            }
+        }
+
+        // Create new hash (either key doesn't exist or was expired)
+        if (fxx) {
+            // FXX requires all fields to exist, but hash doesn't exist
+            return 0;
+        }
+
+        var hash_map = std.StringHashMap(Value.FieldValue).init(self.allocator);
+        errdefer {
+            var it = hash_map.iterator();
+            while (it.next()) |hash_entry| {
+                self.allocator.free(hash_entry.key_ptr.*);
+                var field_val = hash_entry.value_ptr.*;
+                field_val.deinit(self.allocator);
+            }
+            hash_map.deinit();
+        }
+
+        // Add all field-value pairs
+        for (fields, 0..) |field, i| {
+            const owned_field = try self.allocator.dupe(u8, field);
+            errdefer self.allocator.free(owned_field);
+
+            const owned_value = try self.allocator.dupe(u8, values[i]);
+            errdefer self.allocator.free(owned_value);
+
+            const field_expiration = if (keep_ttl) null else expires_at_ms;
+
+            try hash_map.put(owned_field, Value.FieldValue{
+                .data = owned_value,
+                .expires_at = field_expiration,
+            });
+        }
+
+        const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
+
+        try self.data.put(owned_key, Value{
+            .hash = .{
+                .data = hash_map,
+                .expires_at = expires_at,
+            },
+        });
+
+        return 1;
+    }
+
     /// Get rank (0-based index) of member in sorted set
     /// If reverse is true, return rank from end (ZREVRANK)
     /// Returns null if key or member does not exist

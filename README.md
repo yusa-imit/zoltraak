@@ -141,7 +141,7 @@ redis-cli -p 6379
 | SDIFFSTORE | `SDIFFSTORE dest key [key ...]` | Store difference result |
 | SSCAN | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterate set members |
 
-### Hash Commands (Iterations 4, 42, 48, 50)
+### Hash Commands (Iterations 4, 42, 48, 50, 52)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -164,6 +164,9 @@ redis-cli -p 6379
 | HPTTL | `HPTTL key FIELDS numfields field [field ...]` | Get TTL in milliseconds for hash fields (Redis 7.4+) |
 | HEXPIRETIME | `HEXPIRETIME key FIELDS numfields field [field ...]` | Get expiration time in seconds (Unix timestamp) for hash fields (Redis 7.4+) |
 | HPEXPIRETIME | `HPEXPIRETIME key FIELDS numfields field [field ...]` | Get expiration time in milliseconds (Unix timestamp) for hash fields (Redis 7.4+) |
+| HGETDEL | `HGETDEL key FIELDS numfields field [field ...]` | Atomically get hash field values and delete the fields (returns array of values, auto-deletes hash when all fields removed) |
+| HGETEX | `HGETEX key [EX\|PX\|EXAT\|PXAT\|PERSIST] FIELDS numfields field [field ...]` | Atomically get hash field values and set/update field expiration (returns array of values) |
+| HSETEX | `HSETEX key [FNX\|FXX] [EX\|PX\|EXAT\|PXAT\|KEEPTTL] FIELDS numfields field value [field value ...]` | Atomically set hash fields with values and expiration (returns 1 if all set, 0 if conditional failed) |
 
 ### Replication Commands (Iteration 10)
 
@@ -606,6 +609,7 @@ Iterations 1–50 are complete.
 - Iteration 48: HRANDFIELD command - HRANDFIELD key [count [WITHVALUES]] returns random field(s) from hash (single field without count, array with count, field-value pairs with WITHVALUES, RESP3 map support)
 - Iteration 49: Multi-pop commands (Redis 7.0+) - LMPOP (non-blocking list multi-pop), ZMPOP (sorted set multi-pop with MIN/MAX), BZMPOP (blocking sorted set multi-pop) - unified pop operations from multiple keys
 - Iteration 50: Hash field-level TTL commands (Redis 7.4+) - HEXPIRE/HPEXPIRE/HEXPIREAT/HPEXPIREAT (set field expiration), HPERSIST (remove field expiration), HTTL/HPTTL (get field TTL), HEXPIRETIME/HPEXPIRETIME (get field expiration timestamp) - fine-grained expiration control for hash fields
+- Iteration 52: Hash atomic commands (Redis 8.0+) - HGETDEL (atomically get and delete fields), HGETEX (atomically get and set field expiration), HSETEX (atomically set fields with expiration and conditionals FNX/FXX/KEEPTTL) - Phase 1.1 core hash command gaps from PRD
 
 ### Roadmap
 

@@ -142,6 +142,7 @@ pub fn executeCommand(
                 "UNLINK",
                 "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
                 "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
+                "HGETDEL",    "HGETEX",     "HSETEX",
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
@@ -210,6 +211,7 @@ pub fn executeCommand(
             "UNLINK",
             "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
             "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
+            "HGETDEL",    "HGETEX",     "HSETEX",
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
@@ -455,6 +457,12 @@ pub fn executeCommand(
             break :blk try hashes.cmdHexpiretime(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HPEXPIRETIME")) {
             break :blk try hashes.cmdHpexpiretime(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HGETDEL")) {
+            break :blk try hashes.cmdHgetdel(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HGETEX")) {
+            break :blk try hashes.cmdHgetex(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HSETEX")) {
+            break :blk try hashes.cmdHsetex(allocator, storage, array);
         }
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {

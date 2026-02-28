@@ -1957,6 +1957,385 @@ pub fn cmdHpexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []
     return w.writeArray(resp_values.items);
 }
 
+/// HGETDEL key FIELDS numfields field [field ...]
+/// Atomically gets hash field values and deletes the fields
+/// Returns array of values (nil for non-existent fields)
+pub fn cmdHgetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'hgetdel' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    if (args.len != 4 + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hgetdel' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (4..4 + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HGETDEL
+    const values = storage.hgetdel(allocator, key, fields.items) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+    defer {
+        for (values) |val| {
+            if (val) |v| allocator.free(v);
+        }
+        allocator.free(values);
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, values.len);
+    defer resp_values.deinit(allocator);
+
+    for (values) |val| {
+        if (val) |v| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = v });
+        } else {
+            try resp_values.append(allocator, RespValue{ .null_bulk_string = {} });
+        }
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HGETEX key [EX|PX|EXAT|PXAT|PERSIST] FIELDS numfields field [field ...]
+/// Atomically gets hash field values and sets/updates field expiration
+/// Returns array of values (nil for non-existent fields)
+pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'hgetex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var arg_idx: usize = 2;
+    var expires_at_ms: ?i64 = null;
+    var has_expiration_option = false;
+
+    // Parse optional expiration options
+    while (arg_idx < args.len) {
+        const arg = switch (args[arg_idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.mem.eql(u8, arg, "FIELDS")) {
+            break; // Found FIELDS keyword, stop parsing options
+        }
+
+        if (std.mem.eql(u8, arg, "EX") or std.mem.eql(u8, arg, "PX") or
+            std.mem.eql(u8, arg, "EXAT") or std.mem.eql(u8, arg, "PXAT") or
+            std.mem.eql(u8, arg, "PERSIST"))
+        {
+            if (has_expiration_option) {
+                return w.writeError("ERR EX, PX, EXAT, PXAT, and PERSIST are mutually exclusive");
+            }
+            has_expiration_option = true;
+
+            if (std.mem.eql(u8, arg, "PERSIST")) {
+                expires_at_ms = null;
+                arg_idx += 1;
+            } else {
+                if (arg_idx + 1 >= args.len) {
+                    return w.writeError("ERR syntax error");
+                }
+
+                const time_str = switch (args[arg_idx + 1]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+
+                const time_value = std.fmt.parseInt(i64, time_str, 10) catch {
+                    return w.writeError("ERR value is not an integer or out of range");
+                };
+
+                if (time_value < 0) {
+                    return w.writeError("ERR invalid expire time");
+                }
+
+                if (std.mem.eql(u8, arg, "EX")) {
+                    expires_at_ms = Storage.getCurrentTimestamp() + (time_value * 1000);
+                } else if (std.mem.eql(u8, arg, "PX")) {
+                    expires_at_ms = Storage.getCurrentTimestamp() + time_value;
+                } else if (std.mem.eql(u8, arg, "EXAT")) {
+                    expires_at_ms = time_value * 1000;
+                } else if (std.mem.eql(u8, arg, "PXAT")) {
+                    expires_at_ms = time_value;
+                }
+
+                arg_idx += 2;
+            }
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Parse FIELDS keyword
+    if (arg_idx >= args.len) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const fields_keyword = switch (args[arg_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+    arg_idx += 1;
+
+    if (arg_idx >= args.len) {
+        return w.writeError("ERR wrong number of arguments for 'hgetex' command");
+    }
+
+    const numfields_str = switch (args[arg_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+    arg_idx += 1;
+
+    if (args.len != arg_idx + numfields) {
+        return w.writeError("ERR wrong number of arguments for 'hgetex' command");
+    }
+
+    // Extract fields
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    for (arg_idx..arg_idx + numfields) |i| {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+    }
+
+    // Execute HGETEX
+    const values = storage.hgetex(allocator, key, fields.items, expires_at_ms) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+    defer {
+        for (values) |val| {
+            if (val) |v| allocator.free(v);
+        }
+        allocator.free(values);
+    }
+
+    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, values.len);
+    defer resp_values.deinit(allocator);
+
+    for (values) |val| {
+        if (val) |v| {
+            try resp_values.append(allocator, RespValue{ .bulk_string = v });
+        } else {
+            try resp_values.append(allocator, RespValue{ .null_bulk_string = {} });
+        }
+    }
+
+    return w.writeArray(resp_values.items);
+}
+
+/// HSETEX key [FNX|FXX] [EX|PX|EXAT|PXAT|KEEPTTL] FIELDS numfields field value [field value ...]
+/// Atomically sets hash fields with values and expiration
+/// Returns 1 if all fields were set, 0 if conditional (fnx/fxx) failed
+pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'hsetex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    var arg_idx: usize = 2;
+    var fnx = false;
+    var fxx = false;
+    var keep_ttl = false;
+    var expires_at_ms: ?i64 = null;
+    var has_conditional = false;
+    var has_expiration_option = false;
+
+    // Parse optional flags and expiration options
+    while (arg_idx < args.len) {
+        const arg = switch (args[arg_idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.mem.eql(u8, arg, "FIELDS")) {
+            break; // Found FIELDS keyword, stop parsing options
+        }
+
+        if (std.mem.eql(u8, arg, "FNX")) {
+            if (has_conditional) {
+                return w.writeError("ERR FNX and FXX are mutually exclusive");
+            }
+            fnx = true;
+            has_conditional = true;
+            arg_idx += 1;
+        } else if (std.mem.eql(u8, arg, "FXX")) {
+            if (has_conditional) {
+                return w.writeError("ERR FNX and FXX are mutually exclusive");
+            }
+            fxx = true;
+            has_conditional = true;
+            arg_idx += 1;
+        } else if (std.mem.eql(u8, arg, "EX") or std.mem.eql(u8, arg, "PX") or
+            std.mem.eql(u8, arg, "EXAT") or std.mem.eql(u8, arg, "PXAT") or
+            std.mem.eql(u8, arg, "KEEPTTL"))
+        {
+            if (has_expiration_option) {
+                return w.writeError("ERR EX, PX, EXAT, PXAT, and KEEPTTL are mutually exclusive");
+            }
+            has_expiration_option = true;
+
+            if (std.mem.eql(u8, arg, "KEEPTTL")) {
+                keep_ttl = true;
+                arg_idx += 1;
+            } else {
+                if (arg_idx + 1 >= args.len) {
+                    return w.writeError("ERR syntax error");
+                }
+
+                const time_str = switch (args[arg_idx + 1]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+
+                const time_value = std.fmt.parseInt(i64, time_str, 10) catch {
+                    return w.writeError("ERR value is not an integer or out of range");
+                };
+
+                if (time_value < 0) {
+                    return w.writeError("ERR invalid expire time");
+                }
+
+                if (std.mem.eql(u8, arg, "EX")) {
+                    expires_at_ms = Storage.getCurrentTimestamp() + (time_value * 1000);
+                } else if (std.mem.eql(u8, arg, "PX")) {
+                    expires_at_ms = Storage.getCurrentTimestamp() + time_value;
+                } else if (std.mem.eql(u8, arg, "EXAT")) {
+                    expires_at_ms = time_value * 1000;
+                } else if (std.mem.eql(u8, arg, "PXAT")) {
+                    expires_at_ms = time_value;
+                }
+
+                arg_idx += 2;
+            }
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Parse FIELDS keyword
+    if (arg_idx >= args.len) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const fields_keyword = switch (args[arg_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+    arg_idx += 1;
+
+    if (arg_idx >= args.len) {
+        return w.writeError("ERR wrong number of arguments for 'hsetex' command");
+    }
+
+    const numfields_str = switch (args[arg_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numfields"),
+    };
+    const numfields = std.fmt.parseInt(usize, numfields_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+    arg_idx += 1;
+
+    if (args.len != arg_idx + (numfields * 2)) {
+        return w.writeError("ERR wrong number of arguments for 'hsetex' command");
+    }
+
+    // Extract fields and values
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer fields.deinit(allocator);
+
+    var values = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
+    defer values.deinit(allocator);
+
+    for (0..numfields) |i| {
+        const field = switch (args[arg_idx + (i * 2)]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        try fields.append(allocator, field);
+
+        const value = switch (args[arg_idx + (i * 2) + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid value"),
+        };
+        try values.append(allocator, value);
+    }
+
+    // Execute HSETEX
+    const result = storage.hsetex(key, fields.items, values.items, fnx, fxx, keep_ttl, expires_at_ms, null) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+
+    return w.writeInteger(result);
+}
+
 test "cmdHrandfield - returns single random field" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
@@ -2031,4 +2410,448 @@ test "cmdHrandfield - returns null for non-existent key" {
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("$-1\r\n", response);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Iteration 52: HGETDEL, HGETEX, HSETEX Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+test "cmdHgetdel - basic operation" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Execute HGETDEL
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETDEL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try cmdHgetdel(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return array with value1
+    try std.testing.expect(std.mem.indexOf(u8, response, "value1") != null);
+
+    // Verify field was deleted
+    const get_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get_response = try cmdHget(allocator, storage, &get_args);
+    defer allocator.free(get_response);
+    try std.testing.expectEqualStrings("$-1\r\n", get_response);
+
+    // Verify other field still exists
+    const get2_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field2" },
+    };
+    const get2_response = try cmdHget(allocator, storage, &get2_args);
+    defer allocator.free(get2_response);
+    try std.testing.expect(std.mem.indexOf(u8, get2_response, "value2") != null);
+}
+
+test "cmdHgetdel - deletes key when all fields removed" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash with one field
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Execute HGETDEL on the only field
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETDEL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try cmdHgetdel(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Verify key no longer exists via HLEN
+    const len_args = [_]RespValue{
+        .{ .bulk_string = "HLEN" },
+        .{ .bulk_string = "myhash" },
+    };
+    const len_response = try cmdHlen(allocator, storage, &len_args);
+    defer allocator.free(len_response);
+    try std.testing.expectEqualStrings(":0\r\n", len_response);
+}
+
+test "cmdHgetex - sets expiration with EX" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Execute HGETEX with EX
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "EX" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try cmdHgetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return value1
+    try std.testing.expect(std.mem.indexOf(u8, response, "value1") != null);
+
+    // Verify field has TTL
+    const ttl_args = [_]RespValue{
+        .{ .bulk_string = "HPTTL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const ttl_response = try cmdHpttl(allocator, storage, &ttl_args);
+    defer allocator.free(ttl_response);
+    // Should have positive TTL (around 60000ms)
+    try std.testing.expect(std.mem.indexOf(u8, ttl_response, ":") != null);
+}
+
+test "cmdHgetex - PERSIST removes expiration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash with field expiration
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const expire_args = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    _ = try cmdHexpire(allocator, storage, &expire_args);
+
+    // Execute HGETEX with PERSIST
+    const args = [_]RespValue{
+        .{ .bulk_string = "HGETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "PERSIST" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try cmdHgetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Verify field has no TTL
+    const ttl_args = [_]RespValue{
+        .{ .bulk_string = "HTTL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const ttl_response = try cmdHttpl(allocator, storage, &ttl_args);
+    defer allocator.free(ttl_response);
+    // Should return -1 (no expiry)
+    try std.testing.expect(std.mem.indexOf(u8, ttl_response, ":-1") != null);
+}
+
+test "cmdHsetex - basic operation with EX" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Execute HSETEX
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "EX" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+    };
+    const response = try cmdHsetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return :1 (all set)
+    try std.testing.expectEqualStrings(":1\r\n", response);
+
+    // Verify values are set
+    const get_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get_response = try cmdHget(allocator, storage, &get_args);
+    defer allocator.free(get_response);
+    try std.testing.expect(std.mem.indexOf(u8, get_response, "value1") != null);
+
+    // Verify fields have TTL
+    const ttl_args = [_]RespValue{
+        .{ .bulk_string = "HPTTL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const ttl_response = try cmdHpttl(allocator, storage, &ttl_args);
+    defer allocator.free(ttl_response);
+    try std.testing.expect(std.mem.indexOf(u8, ttl_response, ":") != null);
+}
+
+test "cmdHsetex - FNX succeeds when fields don't exist" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Execute HSETEX with FNX (field-not-exists)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FNX" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    const response = try cmdHsetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return :1 (success)
+    try std.testing.expectEqualStrings(":1\r\n", response);
+}
+
+test "cmdHsetex - FNX fails when field exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash with field
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Execute HSETEX with FNX (should fail)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FNX" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "newvalue" },
+    };
+    const response = try cmdHsetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return :0 (failed)
+    try std.testing.expectEqualStrings(":0\r\n", response);
+
+    // Verify original value unchanged
+    const get_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get_response = try cmdHget(allocator, storage, &get_args);
+    defer allocator.free(get_response);
+    try std.testing.expect(std.mem.indexOf(u8, get_response, "value1") != null);
+}
+
+test "cmdHsetex - FXX succeeds when field exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash with field
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Execute HSETEX with FXX (field-exists-exists)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FXX" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "newvalue" },
+    };
+    const response = try cmdHsetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return :1 (success)
+    try std.testing.expectEqualStrings(":1\r\n", response);
+
+    // Verify value was updated
+    const get_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get_response = try cmdHget(allocator, storage, &get_args);
+    defer allocator.free(get_response);
+    try std.testing.expect(std.mem.indexOf(u8, get_response, "newvalue") != null);
+}
+
+test "cmdHsetex - FXX fails when field doesn't exist" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Execute HSETEX with FXX on non-existent field (should fail)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FXX" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    const response = try cmdHsetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return :0 (failed)
+    try std.testing.expectEqualStrings(":0\r\n", response);
+
+    // Verify field was not created
+    const get_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get_response = try cmdHget(allocator, storage, &get_args);
+    defer allocator.free(get_response);
+    try std.testing.expectEqualStrings("$-1\r\n", get_response);
+}
+
+test "cmdHsetex - KEEPTTL preserves existing field TTL" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: create hash with field and expiration
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const expire_args = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    _ = try cmdHexpire(allocator, storage, &expire_args);
+
+    // Get TTL before update
+    const ttl_before_args = [_]RespValue{
+        .{ .bulk_string = "HTTL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const ttl_before = try cmdHttpl(allocator, storage, &ttl_before_args);
+    defer allocator.free(ttl_before);
+
+    // Execute HSETEX with KEEPTTL
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSETEX" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "KEEPTTL" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "newvalue" },
+    };
+    const response = try cmdHsetex(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return :1
+    try std.testing.expectEqualStrings(":1\r\n", response);
+
+    // Verify value was updated
+    const get_args = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get_response = try cmdHget(allocator, storage, &get_args);
+    defer allocator.free(get_response);
+    try std.testing.expect(std.mem.indexOf(u8, get_response, "newvalue") != null);
+
+    // Verify TTL was preserved (should still be around 60)
+    const ttl_after_args = [_]RespValue{
+        .{ .bulk_string = "HTTL" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const ttl_after = try cmdHttpl(allocator, storage, &ttl_after_args);
+    defer allocator.free(ttl_after);
+
+    // Should have positive TTL
+    try std.testing.expect(std.mem.indexOf(u8, ttl_after, ":") != null);
+    try std.testing.expect(!std.mem.eql(u8, ttl_after, ":-1\r\n"));
 }
