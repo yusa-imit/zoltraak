@@ -468,6 +468,16 @@ gh issue create --repo yusa-imit/sailor \
 - [ ] 실시간 키 값 조회/수정 인터페이스
 - [ ] 커밋: `feat: add TUI key browser to zoltraak-cli`
 
+### v0.5.0 — advanced widgets (status: READY)
+
+**작업 내용**:
+- [ ] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
+- [ ] Redis 키 트리: `Tree` 위젯으로 계층적 키 브라우징
+- [ ] 실시간 모니터링: `LineChart`로 메모리/커넥션 메트릭 대시보드
+- [ ] 키 삭제 확인: `Dialog` 위젯으로 `DEL` 명령 프롬프트
+- [ ] 상태 알림: `Notification`으로 커넥션 성공/실패 토스트
+- [ ] 커밋: `feat: add advanced TUI features with sailor v0.5.0`
+
 ---
 
 ## Resources
