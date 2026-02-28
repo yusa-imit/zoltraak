@@ -483,8 +483,10 @@ gh issue create --repo yusa-imit/sailor \
 
 ### v0.5.0 — advanced widgets (status: READY)
 
+**v0.5.1 패치 사용 권장**: sailor#3~#6 버그 수정됨 — `zig fetch --save`로 v0.5.1 업데이트
+
 **작업 내용**:
-- [ ] `build.zig.zon`에 sailor v0.5.0 의존성 업데이트
+- [ ] `build.zig.zon`에 sailor v0.5.1 의존성 업데이트
 - [ ] Redis 키 트리: `Tree` 위젯으로 계층적 키 브라우징
 - [ ] 실시간 모니터링: `LineChart`로 메모리/커넥션 메트릭 대시보드
 - [ ] 키 삭제 확인: `Dialog` 위젯으로 `DEL` 명령 프롬프트
