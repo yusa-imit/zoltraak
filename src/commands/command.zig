@@ -26,6 +26,7 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "getbit", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "bitcount", .arity = -2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "bitop", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 3, .last_key = -1, .step = 1 },
+    .{ .name = "bitpos", .arity = -3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "bitfield", .arity = -2, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "bitfield_ro", .arity = -2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
 

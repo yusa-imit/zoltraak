@@ -6053,6 +6053,107 @@ test "BITCOUNT - empty string" {
     try testing.expectEqualStrings(":0\r\n", response);
 }
 
+test "BITPOS - find first set bit" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set bit 8 (byte 1, bit 0) to 1
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "8", "1" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":8\r\n", response);
+}
+
+test "BITPOS - find first clear bit" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set all bits in byte 0
+    for (0..8) |i| {
+        const offset_str = try std.fmt.allocPrint(testing.allocator, "{d}", .{i});
+        defer testing.allocator.free(offset_str);
+        _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", offset_str, "1" });
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "0" });
+    defer testing.allocator.free(response);
+
+    // First clear bit should be at position 8 (byte 1, bit 0)
+    try testing.expectEqualStrings(":8\r\n", response);
+}
+
+test "BITPOS - with byte range" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set bit 16 (byte 2, bit 0) to 1
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "16", "1" });
+
+    // Search in bytes 0-1, should not find (returns -1)
+    const response1 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1", "0", "1" });
+    defer testing.allocator.free(response1);
+    try testing.expectEqualStrings(":-1\r\n", response1);
+
+    // Search in byte 2, should find bit 16
+    const response2 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1", "2", "2" });
+    defer testing.allocator.free(response2);
+    try testing.expectEqualStrings(":16\r\n", response2);
+}
+
+test "BITPOS - non-existent key searching for 1" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITPOS", "nonexistent", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expectEqualStrings(":-1\r\n", response);
+}
+
+test "BITPOS - non-existent key searching for 0" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITPOS", "nonexistent", "0" });
+    defer testing.allocator.free(response);
+
+    // Non-existent key has all zero bits, so first 0 is at position 0
+    try testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "BITPOS - wrong type error" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create a list
+    _ = try client.sendCommand(&[_][]const u8{ "LPUSH", "mylist", "value" });
+
+    const response = try client.sendCommand(&[_][]const u8{ "BITPOS", "mylist", "1" });
+    defer testing.allocator.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
+}
+
 // ============================================================================
 // INFO Command Tests (Iteration 30)
 // ============================================================================

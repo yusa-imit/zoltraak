@@ -568,6 +568,8 @@ pub fn executeCommand(
             break :blk try cmdBitcount(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITOP")) {
             break :blk try cmdBitop(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "BITPOS")) {
+            break :blk try cmdBitpos(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITFIELD")) {
             break :blk try bitfield_cmds.cmdBitfield(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITFIELD_RO")) {
@@ -3312,6 +3314,60 @@ pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     };
 
     return w.writeInteger(@intCast(result_len));
+}
+
+pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3 or args.len > 5) {
+        return w.writeError("ERR wrong number of arguments for 'bitpos' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const bit_int = switch (args[2]) {
+        .bulk_string => |s| std.fmt.parseInt(u8, s, 10) catch {
+            return w.writeError("ERR bit must be 0 or 1");
+        },
+        else => return w.writeError("ERR bit must be 0 or 1"),
+    };
+
+    if (bit_int > 1) {
+        return w.writeError("ERR bit must be 0 or 1");
+    }
+
+    const bit: u1 = @intCast(bit_int);
+
+    const start: ?i64 = if (args.len >= 4) blk: {
+        break :blk switch (args[3]) {
+            .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            },
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+    } else null;
+
+    const end: ?i64 = if (args.len == 5) blk: {
+        break :blk switch (args[4]) {
+            .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            },
+            else => return w.writeError("ERR value is not an integer or out of range"),
+        };
+    } else null;
+
+    const position = storage.bitpos(key, bit, start, end) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    return w.writeInteger(position);
 }
 
 // ── New command unit tests ─────────────────────────────────────────────────

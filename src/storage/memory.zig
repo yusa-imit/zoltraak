@@ -6310,6 +6310,84 @@ pub const Storage = struct {
         return result_len;
     }
 
+    /// Find first bit set to 0 or 1 in a string
+    /// bit: 0 or 1 to search for
+    /// start/end: byte range (supports negative indices)
+    /// Returns bit position (0-based) or -1 if not found
+    pub fn bitpos(
+        self: *Storage,
+        key: []const u8,
+        bit: u1,
+        start: ?i64,
+        end: ?i64,
+    ) error{WrongType}!i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.data.get(key)) |value| {
+            if (value.isExpired(getCurrentTimestamp())) {
+                // Expired key - treat as non-existent
+                // If searching for 0, first bit (position 0) is 0
+                // If searching for 1, not found
+                return if (bit == 0) 0 else -1;
+            }
+
+            switch (value) {
+                .string => |sv| {
+                    if (sv.data.len == 0) {
+                        return if (bit == 0) 0 else -1;
+                    }
+
+                    const len: i64 = @intCast(sv.data.len);
+                    const start_idx = if (start) |s| blk: {
+                        const idx = if (s < 0) len + s else s;
+                        break :blk @max(0, @min(idx, len - 1));
+                    } else 0;
+                    const end_idx = if (end) |e| blk: {
+                        const idx = if (e < 0) len + e else e;
+                        break :blk @max(0, @min(idx, len - 1));
+                    } else len - 1;
+
+                    if (start_idx > end_idx) {
+                        return -1;
+                    }
+
+                    const start_u: usize = @intCast(start_idx);
+                    const end_u: usize = @intCast(end_idx);
+
+                    // Search byte by byte
+                    for (sv.data[start_u .. end_u + 1], start_u..) |byte, byte_idx| {
+                        // Check each bit in the byte
+                        var bit_idx: u3 = 0;
+                        while (bit_idx < 8) : (bit_idx += 1) {
+                            const current_bit: u1 = @intCast((byte >> (7 - bit_idx)) & 1);
+                            if (current_bit == bit) {
+                                const pos: i64 = @intCast(byte_idx * 8 + bit_idx);
+                                return pos;
+                            }
+                        }
+                    }
+
+                    // Not found in range
+                    // Special case: if searching for 0 and end is not specified,
+                    // return position after last byte
+                    if (bit == 0 and end == null) {
+                        const pos: i64 = @intCast(sv.data.len * 8);
+                        return pos;
+                    }
+
+                    return -1;
+                },
+                else => return error.WrongType,
+            }
+        }
+
+        // Key doesn't exist
+        // If searching for 0, first bit (position 0) is 0
+        // If searching for 1, not found
+        return if (bit == 0) 0 else -1;
+    }
+
     // ── Stream operations ─────────────────────────────────────────────────────
 
     /// Add entry to stream with auto-generated or explicit ID.
