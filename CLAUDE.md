@@ -423,6 +423,17 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - [ ] Getting Started Guide / API Reference 기반 리팩토링
 - [ ] 테마 시스템 (다크/라이트 모드)
 
+### v1.0.3 — bug fix release (READY)
+
+**sailor v1.0.3 released** (2026-03-02) — Zig 0.15.2 compatibility patch
+
+- **Bug fix**: Tree widget ArrayList API updated for Zig 0.15.2
+- **Impact on zoltraak**: None (zoltraak doesn't use Tree widget yet)
+- [ ] `build.zig.zon`에 sailor v1.0.3 의존성 업데이트 (optional)
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Optional upgrade. Tree widget fix affects v0.5.0 advanced widgets migration only.
+
 ---
 
 ## Resources
