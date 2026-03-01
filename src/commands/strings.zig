@@ -498,6 +498,8 @@ pub fn executeCommand(
             break :blk try keys_cmds.cmdSscan(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZSCAN")) {
             break :blk try keys_cmds.cmdZscan(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SORT")) {
+            break :blk try keys_cmds.cmdSort(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "OBJECT")) {
             break :blk try keys_cmds.cmdObject(allocator, storage, array);
         }

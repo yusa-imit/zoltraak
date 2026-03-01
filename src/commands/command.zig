@@ -135,6 +135,9 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     // Scan commands
     .{ .name = "scan", .arity = -2, .flags = &.{ "readonly", "random" }, .first_key = 0, .last_key = 0, .step = 0 },
 
+    // Sort command
+    .{ .name = "sort", .arity = -2, .flags = &.{ "readonly", "movablekeys" }, .first_key = 1, .last_key = 1, .step = 1 },
+
     // Object commands
     .{ .name = "object", .arity = -2, .flags = &.{ "readonly", "random" }, .first_key = 2, .last_key = 2, .step = 1 },
 

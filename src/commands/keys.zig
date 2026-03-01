@@ -1122,6 +1122,324 @@ pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     return buf.toOwnedSlice(allocator);
 }
 
+// ── SORT command ──────────────────────────────────────────────────────────────
+
+/// SORT key [BY pattern] [LIMIT offset count] [GET pattern ...] [ASC|DESC] [ALPHA] [STORE destination]
+/// Sort elements in a list, set, or sorted set
+pub fn cmdSort(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'sort' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse options
+    var by_pattern: ?[]const u8 = null;
+    var get_patterns: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer get_patterns.deinit(allocator);
+    var limit_offset: ?usize = null;
+    var limit_count: ?usize = null;
+    var descending = false;
+    var alpha = false;
+    var store_dest: ?[]const u8 = null;
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const opt = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const opt_upper = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(opt_upper);
+
+        if (std.mem.eql(u8, opt_upper, "BY")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            by_pattern = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, opt_upper, "GET")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const pattern = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            try get_patterns.append(allocator, pattern);
+        } else if (std.mem.eql(u8, opt_upper, "LIMIT")) {
+            i += 1;
+            if (i + 1 >= args.len) return w.writeError("ERR syntax error");
+            const offset_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            i += 1;
+            const count_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            limit_offset = std.fmt.parseInt(usize, offset_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            limit_count = std.fmt.parseInt(usize, count_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.mem.eql(u8, opt_upper, "ASC")) {
+            descending = false;
+        } else if (std.mem.eql(u8, opt_upper, "DESC")) {
+            descending = true;
+        } else if (std.mem.eql(u8, opt_upper, "ALPHA")) {
+            alpha = true;
+        } else if (std.mem.eql(u8, opt_upper, "STORE")) {
+            i += 1;
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            store_dest = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Load elements based on type
+    const vtype = storage.getType(key) orelse {
+        // Key doesn't exist - return empty array or 0 if STORE
+        if (store_dest) |dest| {
+            _ = storage.del(&[_][]const u8{dest});
+            return w.writeInteger(0);
+        }
+        return w.writeArray(null);
+    };
+
+    var elements: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer {
+        for (elements.items) |elem| allocator.free(elem);
+        elements.deinit(allocator);
+    }
+
+    switch (vtype) {
+        .list => {
+            const list_items = (try storage.lrange(allocator, key, 0, -1)) orelse &[_][]const u8{};
+            defer allocator.free(list_items);
+            for (list_items) |item| {
+                const owned = try allocator.dupe(u8, item);
+                try elements.append(allocator, owned);
+            }
+        },
+        .set => {
+            const members = (try storage.smembers(allocator, key)) orelse &[_][]const u8{};
+            defer allocator.free(members);
+            for (members) |member| {
+                const owned = try allocator.dupe(u8, member);
+                try elements.append(allocator, owned);
+            }
+        },
+        .sorted_set => {
+            const members = (try storage.zrange(allocator, key, 0, -1, false)) orelse &[_][]const u8{};
+            defer allocator.free(members);
+            for (members) |member| {
+                const owned = try allocator.dupe(u8, member);
+                try elements.append(allocator, owned);
+            }
+        },
+        else => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+    }
+
+    // If BY nosort, skip sorting
+    const skip_sort = if (by_pattern) |pat| std.mem.eql(u8, pat, "nosort") else false;
+
+    if (!skip_sort) {
+        // Build sort weights
+        var weights: std.ArrayList(?f64) = .{ .items = &.{}, .capacity = 0 };
+        defer weights.deinit(allocator);
+
+        for (elements.items) |elem| {
+            var weight: ?f64 = null;
+            if (by_pattern) |pattern| {
+                const lookup_key = try expandPattern(allocator, pattern, elem);
+                defer allocator.free(lookup_key);
+                weight = try fetchWeight(allocator, storage, lookup_key);
+            } else {
+                // Use element itself as weight
+                if (alpha) {
+                    // Lexicographic sorting - assign arbitrary weight, will use actual value in comparison
+                    weight = 0.0;
+                } else {
+                    weight = std.fmt.parseFloat(f64, elem) catch null;
+                }
+            }
+            try weights.append(allocator, weight);
+        }
+
+        // Sort using insertion sort with weights
+        const n = elements.items.len;
+        var j: usize = 1;
+        while (j < n) : (j += 1) {
+            const key_elem = elements.items[j];
+            const key_weight = weights.items[j];
+            var k: usize = j;
+            while (k > 0) : (k -= 1) {
+                const cmp = compareElements(elements.items[k - 1], key_elem, weights.items[k - 1], key_weight, alpha, descending);
+                if (cmp <= 0) break;
+                elements.items[k] = elements.items[k - 1];
+                weights.items[k] = weights.items[k - 1];
+            }
+            elements.items[k] = key_elem;
+            weights.items[k] = key_weight;
+        }
+    }
+
+    // Apply LIMIT
+    var final_elements: []const []const u8 = elements.items;
+    if (limit_offset) |offset| {
+        const start = @min(offset, elements.items.len);
+        const end = if (limit_count) |cnt| @min(start + cnt, elements.items.len) else elements.items.len;
+        final_elements = elements.items[start..end];
+    }
+
+    // Build result (either elements themselves or GET results)
+    var result: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
+    defer {
+        for (result.items) |r| allocator.free(r);
+        result.deinit(allocator);
+    }
+
+    if (get_patterns.items.len > 0) {
+        // Multiple GET patterns per element
+        for (final_elements) |elem| {
+            for (get_patterns.items) |pattern| {
+                if (std.mem.eql(u8, pattern, "#")) {
+                    // Special pattern: return element itself
+                    const owned = try allocator.dupe(u8, elem);
+                    try result.append(allocator, owned);
+                } else {
+                    const lookup_key = try expandPattern(allocator, pattern, elem);
+                    defer allocator.free(lookup_key);
+                    const value = try fetchValue(allocator, storage, lookup_key);
+                    try result.append(allocator, value orelse try allocator.dupe(u8, ""));
+                }
+            }
+        }
+    } else {
+        // No GET patterns - return elements themselves
+        for (final_elements) |elem| {
+            const owned = try allocator.dupe(u8, elem);
+            try result.append(allocator, owned);
+        }
+    }
+
+    // STORE or return
+    if (store_dest) |dest| {
+        // Delete existing key
+        _ = storage.del(&[_][]const u8{dest});
+        // Store as list
+        for (result.items) |item| {
+            _ = try storage.rpush(dest, &[_][]const u8{item}, null);
+        }
+        return w.writeInteger(@as(i64, @intCast(result.items.len)));
+    } else {
+        // Build RESP array response manually
+        var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
+        defer buf.deinit(allocator);
+        const header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{result.items.len});
+        defer allocator.free(header);
+        try buf.appendSlice(allocator, header);
+        for (result.items) |item| {
+            const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
+            defer allocator.free(item_resp);
+            try buf.appendSlice(allocator, item_resp);
+        }
+        return buf.toOwnedSlice(allocator);
+    }
+}
+
+/// Expand pattern by replacing * with element
+fn expandPattern(allocator: std.mem.Allocator, pattern: []const u8, element: []const u8) ![]const u8 {
+    const star_pos = std.mem.indexOf(u8, pattern, "*") orelse return allocator.dupe(u8, pattern);
+    var result: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, pattern[0..star_pos]);
+    try result.appendSlice(allocator, element);
+    try result.appendSlice(allocator, pattern[star_pos + 1 ..]);
+    return result.toOwnedSlice(allocator);
+}
+
+/// Fetch weight from external key (or hash field)
+fn fetchWeight(allocator: std.mem.Allocator, storage: *Storage, lookup_key: []const u8) !?f64 {
+    _ = allocator;
+    // Check for hash field syntax: key->field
+    if (std.mem.indexOf(u8, lookup_key, "->")) |arrow_pos| {
+        const key = lookup_key[0..arrow_pos];
+        const field = lookup_key[arrow_pos + 2 ..];
+        const val = storage.hget(key, field);
+        if (val) |v| {
+            return std.fmt.parseFloat(f64, v) catch null;
+        }
+        return null;
+    }
+
+    // Regular key lookup
+    const val = storage.get(lookup_key);
+    if (val) |v| {
+        return std.fmt.parseFloat(f64, v) catch null;
+    }
+    return null;
+}
+
+/// Fetch value from external key (or hash field) as string
+fn fetchValue(allocator: std.mem.Allocator, storage: *Storage, lookup_key: []const u8) !?[]const u8 {
+    // Check for hash field syntax: key->field
+    if (std.mem.indexOf(u8, lookup_key, "->")) |arrow_pos| {
+        const key = lookup_key[0..arrow_pos];
+        const field = lookup_key[arrow_pos + 2 ..];
+        const val = storage.hget(key, field);
+        if (val) |v| {
+            const owned = try allocator.dupe(u8, v);
+            return owned;
+        }
+        return null;
+    }
+
+    // Regular key lookup
+    const val = storage.get(lookup_key);
+    if (val) |v| {
+        const owned = try allocator.dupe(u8, v);
+        return owned;
+    }
+    return null;
+}
+
+/// Compare two elements for sorting
+fn compareElements(a: []const u8, b: []const u8, weight_a: ?f64, weight_b: ?f64, alpha: bool, descending: bool) i8 {
+    var cmp: i8 = 0;
+
+    if (alpha) {
+        // Lexicographic comparison
+        cmp = if (std.mem.order(u8, a, b) == .lt) -1 else if (std.mem.order(u8, a, b) == .gt) 1 else 0;
+    } else {
+        // Numeric comparison using weights
+        const wa = weight_a orelse std.math.inf(f64);
+        const wb = weight_b orelse std.math.inf(f64);
+        if (wa < wb) {
+            cmp = -1;
+        } else if (wa > wb) {
+            cmp = 1;
+        } else {
+            cmp = 0;
+        }
+    }
+
+    return if (descending) -cmp else cmp;
+}
+
 // ── OBJECT subcommands ────────────────────────────────────────────────────────
 
 /// OBJECT ENCODING key | OBJECT REFCOUNT key | OBJECT IDLETIME key | OBJECT FREQ key | OBJECT HELP
