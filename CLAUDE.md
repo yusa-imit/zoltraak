@@ -434,6 +434,26 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Optional upgrade. Tree widget fix affects v0.5.0 advanced widgets migration only.
 
+### v1.1.0 — Accessibility & Internationalization (READY)
+
+**sailor v1.1.0 released** (2026-03-02) — Accessibility and i18n features
+
+- **New features**:
+  - Accessibility module (screen reader hints, semantic labels)
+  - Focus management system (tab order, focus ring)
+  - Keyboard navigation protocol (custom key bindings)
+  - Unicode width calculation (CJK, emoji proper sizing)
+  - Bidirectional text support (RTL rendering for Arabic/Hebrew)
+- **Impact on zoltraak**: Medium priority — improves Redis CLI experience
+  - Unicode width fixes critical for multi-language Redis keys/values
+  - Keyboard navigation enhances interactive CLI usability
+  - Accessibility features improve screen reader support
+- [ ] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트
+- [ ] 기존 테스트 전체 통과 확인
+- [ ] Consider keyboard bindings for Redis command history navigation
+
+**Note**: Non-breaking upgrade. Unicode improvements automatically benefit international Redis data display.
+
 ---
 
 ## Resources
