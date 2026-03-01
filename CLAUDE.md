@@ -256,8 +256,42 @@ Each iteration follows this workflow. One iteration = one feature/command group.
 2. `README.md` — 지원 명령어, 프로젝트 상태
 3. `docs/PRD.md` — 1.0 로드맵, 다음 구현 대상 확인
 
+**10단계 실행 사이클**:
+
+| Phase | 내용 | 비고 |
+|-------|------|------|
+| 1. 상태 파악 | git log, 빌드, 테스트 상태 점검 | PRD에서 다음 미완료 이터레이션 식별 |
+| 2. 이슈 확인 | `gh issue list --state open --limit 10` | 아래 **이슈 우선순위 프로토콜** 참조 |
+| 3. 계획 | 구현 전략을 내부적으로 수립 (텍스트 출력) | 비대화형 세션에서 plan mode 도구 사용 금지 |
+| 4. 구현 | Development Cycle 8 Phases 수행 (Planning → Commit) | 사이클당 하나의 이터레이션만 |
+| 5. 검증 | `zig build test` 전체 통과 확인 | 실패 시 수정 후 재시도 |
+| 6. 코드 리뷰 | 메모리 안전성, Redis 호환성, 테스트 커버리지 확인 | 이슈 발견 시 수정 후 재커밋 |
+| 7. 커밋 & 푸시 | `feat(<scope>): implement Iteration N — <description>` | `git add -A` 금지 |
+| 8. 릴리즈 판단 | 아래 **릴리즈 판단 기준** 확인 | 조건 충족 시 자율 릴리즈 수행 |
+| 9. 프로세스 정리 | `pkill -f zoltraak`, 포트 확인 | 백그라운드 프로세스 전부 종료 |
+| 10. 세션 요약 | 구조화된 요약 출력 | 아래 템플릿 참조 |
+
+### 이슈 우선순위 프로토콜
+
+세션 시작 시 GitHub Issues를 확인하고 우선순위를 결정한다:
+
+```bash
+gh issue list --state open --limit 10 --json number,title,labels,createdAt
+```
+
+| 우선순위 | 조건 | 행동 |
+|---------|------|------|
+| 1 (최우선) | `bug` 라벨 | 다른 작업보다 항상 우선 처리 |
+| 2 (높음) | `feature-request` + 현재 이터레이션 범위 내 | 현재 작업과 병행 |
+| 3 (낮음) | `feature-request` + 미래 범위 | 적어두고 넘어감 |
+
+- 이슈 처리 후: `gh issue close <number> --comment "Fixed in <commit-hash>"`
+- bug 라벨 이슈가 있으면 새 이터레이션 구현보다 반드시 먼저 수정한다
+- bug 수정은 별도 커밋: `fix(<scope>): <description>`
+
 **작업 선택 규칙**:
-- PRD.md의 Phase 순서를 따름 (Phase 1 → Phase 2 → ...)
+- bug 이슈가 있으면 → 버그 수정 우선
+- bug 없으면 → PRD.md의 Phase 순서를 따름 (Phase 1 → Phase 2 → ...)
 - 사이클당 하나의 이터레이션만 구현
 - 이전 세션의 미완료 작업(빌드 실패, 테스트 실패)이 있으면 먼저 수정
 
@@ -288,6 +322,10 @@ Each iteration follows this workflow. One iteration = one feature/command group.
     - Integration tests: [수, 상태]
     ### Redis Compatibility
     - [호환성 검증 결과]
+    ### Issues Resolved
+    - [처리한 GitHub Issues (번호, 제목)]
+    ### Release
+    - [릴리즈 수행 여부 및 버전]
     ### Next Priority
     - [다음 사이클에서 구현할 내용]
     ### Issues / Blockers
@@ -297,28 +335,59 @@ Each iteration follows this workflow. One iteration = one feature/command group.
 
 ## Release & Patch Policy
 
-### 마이너 릴리즈 (v0.X.0)
+세션 사이클의 Phase 8(릴리즈 판단)에서 아래 조건을 확인하고, 충족 시 자율적으로 릴리즈를 수행한다.
 
-Phase의 모든 모듈이 완성되었을 때 자율적으로 릴리즈를 수행한다.
+### 릴리즈 판단 기준
 
-**릴리즈 조건 (ALL must be true)**:
-1. 현재 phase의 체크리스트 항목이 모두 완료
-2. `zig build test` — 전체 통과, 0 failures
-3. 크로스 컴파일 타겟 빌드 성공
+**패치 릴리즈 (v0.1.X)** — 다음 중 하나라도 해당하면 즉시 발행:
+- 사용자 보고 버그를 수정한 커밋이 마지막 릴리즈 태그 이후에 존재
+- 빌드/테스트 실패 수정
+- Redis 호환성 깨짐 수정
+
+**마이너 릴리즈 (v0.X.0)** — 다음 조건을 모두 충족 시 발행:
+1. 마지막 릴리즈 이후 새로운 Redis 명령어 그룹이 구현됨 (최소 20개 이상의 새 명령어)
+2. 해당 명령어에 대한 테스트가 작성되어 있음
+3. `zig build test` — 전체 통과, 0 failures
 4. `bug` 라벨 이슈가 0개 (open)
 
-**릴리즈 절차**:
+**메이저 릴리즈 (v1.0.0)** — 500+ Redis 명령어 구현 완료 + 사용자 승인
+
+### 릴리즈 조건 확인 방법
+
+```bash
+# 마지막 태그 이후 커밋 확인
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [ -n "$LAST_TAG" ]; then
+  git log ${LAST_TAG}..HEAD --oneline
+else
+  git log --oneline -20
+fi
+
+# open bug 이슈 확인
+gh issue list --state open --label bug --limit 5
+```
+
+### 릴리즈 절차
+
 1. `build.zig.zon`의 version 업데이트
 2. 커밋: `chore: bump version to v0.X.0`
-3. 태그: `git tag -a v0.X.0 -m "Release v0.X.0: <phase 요약>"`
+3. 태그: `git tag -a v0.X.0 -m "Release v0.X.0: <릴리즈 요약>"`
 4. 푸시: `git push && git push origin v0.X.0`
-5. GitHub Release: `gh release create v0.X.0 --title "v0.X.0" --notes "<릴리즈 노트>"`
-6. 관련 이슈 닫기
+5. GitHub Release: `gh release create v0.X.0 --title "v0.X.0: <요약>" --notes "<릴리즈 노트>"`
+6. 관련 이슈 닫기: `gh issue close <number> --comment "Resolved in v0.X.0"`
 7. Discord 알림: `openclaw message send --channel discord --target user:264745080709971968 --message "[zoltraak] Released v0.X.0 — <요약>"`
 
-### 패치 릴리즈 (v0.X.Y)
+### 패치 릴리즈 절차
 
 버그 수정 시 패치 릴리즈를 즉시 발행한다. PATCH 번호만 증가. 기능 커밋을 패치에 포함하지 않음.
+
+1. 버그 수정 커밋 식별
+2. `zig build test` 통과 확인
+3. 태그: `git tag -a v0.X.Y <commit-hash> -m "Release v0.X.Y: <수정 요약>"`
+4. 푸시: `git push origin v0.X.Y`
+5. GitHub Release: `gh release create v0.X.Y --title "v0.X.Y: <요약>" --notes "<릴리즈 노트>"`
+6. 관련 이슈에 릴리즈 코멘트 추가
+7. Discord 알림
 
 ---
 
