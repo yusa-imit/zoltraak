@@ -462,3 +462,26 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - [RESP Protocol Spec](https://redis.io/docs/latest/develop/reference/protocol-spec/)
 - [Zig Documentation](https://ziglang.org/documentation/master/)
 - [Zoltraak 1.0 PRD](docs/PRD.md)
+
+### v1.2.0 — Layout & Composition (READY)
+
+**sailor v1.2.0 released** (2026-03-02) — Advanced layout and composition features
+
+- **New features**:
+  - Grid layout system (CSS Grid-inspired 2D constraint solver)
+  - ScrollView widget (virtual scrolling for large content)
+  - Overlay/z-index system (non-modal popups, tooltips, dropdown menus)
+  - Widget composition helpers (split panes, resizable borders)
+  - Responsive breakpoints (adaptive layouts based on terminal size)
+- **Impact on zoltraak**: High priority — enables interactive TUI features
+  - Grid layout for multi-pane prompt editor UI
+  - ScrollView for long prompt history and chat logs
+  - Overlay system for context menus and tooltips
+  - Split panes for side-by-side prompt editing and preview
+  - Responsive layouts for different terminal sizes
+- [ ] `build.zig.zon`에 sailor v1.2.0 의존성 업데이트
+- [ ] (Optional) Implement multi-pane TUI for prompt editing workflow
+- [ ] (Optional) Add ScrollView for prompt history browser
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Layout features enable future interactive TUI prompt editor and chat interface.
