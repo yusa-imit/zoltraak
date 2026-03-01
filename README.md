@@ -356,6 +356,8 @@ redis-cli -p 6379
 | ZREVRANK | `ZREVRANK key member` | Get rank of member (descending) |
 | ZCOUNT | `ZCOUNT key min max` | Count members in score range |
 | ZLEXCOUNT | `ZLEXCOUNT key min max` | Count members in lexicographical range |
+| ZRANGESTORE | `ZRANGESTORE dest source start stop [WITHSCORES]` | Store ZRANGE result in destination sorted set, returns count of members stored |
+| ZINTERCARD | `ZINTERCARD numkeys key [key ...] [LIMIT limit]` | Return cardinality of intersection of sorted sets (up to limit if specified) |
 | ZINCRBY | `ZINCRBY key increment member` | Increment score of member |
 | ZPOPMIN | `ZPOPMIN key [count]` | Remove and return lowest-score members |
 | ZPOPMAX | `ZPOPMAX key [count]` | Remove and return highest-score members |
@@ -610,6 +612,7 @@ Iterations 1–50 are complete.
 - Iteration 49: Multi-pop commands (Redis 7.0+) - LMPOP (non-blocking list multi-pop), ZMPOP (sorted set multi-pop with MIN/MAX), BZMPOP (blocking sorted set multi-pop) - unified pop operations from multiple keys
 - Iteration 50: Hash field-level TTL commands (Redis 7.4+) - HEXPIRE/HPEXPIRE/HEXPIREAT/HPEXPIREAT (set field expiration), HPERSIST (remove field expiration), HTTL/HPTTL (get field TTL), HEXPIRETIME/HPEXPIRETIME (get field expiration timestamp) - fine-grained expiration control for hash fields
 - Iteration 52: Hash atomic commands (Redis 8.0+) - HGETDEL (atomically get and delete fields), HGETEX (atomically get and set field expiration), HSETEX (atomically set fields with expiration and conditionals FNX/FXX/KEEPTTL) - Phase 1.1 core hash command gaps from PRD
+- Iteration 53: Sorted set store and intersection cardinality — ZRANGESTORE (store ZRANGE result in destination key, returns member count), ZINTERCARD (count intersection cardinality with LIMIT support for early exit optimization)
 
 ### Roadmap
 

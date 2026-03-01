@@ -6204,6 +6204,189 @@ pub const Storage = struct {
         }
     }
 
+    /// Store ZRANGE result in destination sorted set
+    /// Returns number of members stored
+    /// Returns error.WrongType if source key is not a sorted set
+    pub fn zrangestore(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        dest: []const u8,
+        source: []const u8,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    ) !usize {
+        _ = allocator;
+        _ = with_scores;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(source) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.data.remove(source);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .sorted_set => |*zset| {
+                const len = zset.sorted_list.items.len;
+                if (len == 0) {
+                    // Empty source - delete destination if it exists
+                    if (self.data.getEntry(dest)) |dest_entry| {
+                        const dest_key = dest_entry.key_ptr.*;
+                        var dest_value = dest_entry.value_ptr.*;
+                        _ = self.data.remove(dest);
+                        self.allocator.free(dest_key);
+                        dest_value.deinit(self.allocator);
+                    }
+                    return 0;
+                }
+
+                // Normalize indices
+                const norm_start: i64 = if (start < 0)
+                    @max(0, @as(i64, @intCast(len)) + start)
+                else
+                    @min(start, @as(i64, @intCast(len)));
+
+                const norm_stop: i64 = if (stop < 0)
+                    @max(-1, @as(i64, @intCast(len)) + stop)
+                else
+                    @min(stop, @as(i64, @intCast(len)) - 1);
+
+                if (norm_start > norm_stop or norm_start >= @as(i64, @intCast(len))) {
+                    // Empty range - delete destination
+                    if (self.data.getEntry(dest)) |dest_entry| {
+                        const dest_key = dest_entry.key_ptr.*;
+                        var dest_value = dest_entry.value_ptr.*;
+                        _ = self.data.remove(dest);
+                        self.allocator.free(dest_key);
+                        dest_value.deinit(self.allocator);
+                    }
+                    return 0;
+                }
+
+                const u_start: usize = @intCast(norm_start);
+                const u_stop: usize = @intCast(norm_stop);
+
+                // Build destination sorted set
+                var dest_members = std.StringHashMap(f64).init(self.allocator);
+                errdefer {
+                    var it = dest_members.keyIterator();
+                    while (it.next()) |k| self.allocator.free(k.*);
+                    dest_members.deinit();
+                }
+
+                var dest_sorted: std.ArrayList(Value.ScoredMember) = .{
+                    .items = &.{},
+                    .capacity = 0,
+                };
+                errdefer dest_sorted.deinit(self.allocator);
+
+                for (zset.sorted_list.items[u_start .. u_stop + 1]) |item| {
+                    const owned_member = try self.allocator.dupe(u8, item.member);
+                    errdefer self.allocator.free(owned_member);
+                    try dest_members.put(owned_member, item.score);
+                    const stored_key = dest_members.getKey(item.member).?;
+                    try insertSortedMember(&dest_sorted, item.score, stored_key, self.allocator);
+                }
+
+                const member_count = dest_members.count();
+
+                // Delete existing destination if it exists
+                if (self.data.getEntry(dest)) |dest_entry| {
+                    const dest_key = dest_entry.key_ptr.*;
+                    var dest_value = dest_entry.value_ptr.*;
+                    _ = self.data.remove(dest);
+                    self.allocator.free(dest_key);
+                    dest_value.deinit(self.allocator);
+                }
+
+                // Store new destination
+                const owned_dest = try self.allocator.dupe(u8, dest);
+                errdefer self.allocator.free(owned_dest);
+                try self.data.put(owned_dest, Value{
+                    .sorted_set = .{
+                        .members = dest_members,
+                        .sorted_list = dest_sorted,
+                        .expires_at = null,
+                    },
+                });
+
+                return member_count;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Count intersection of multiple sorted sets with optional limit
+    /// Returns cardinality of intersection up to limit (0 = no limit)
+    /// Returns error.WrongType if any key is not a sorted set
+    pub fn zintercard(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        keys: []const []const u8,
+        limit: usize,
+    ) !usize {
+        _ = allocator;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (keys.len == 0) return 0;
+
+        // Get first set as baseline
+        const first_entry = self.data.getEntry(keys[0]) orelse return 0;
+        if (first_entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return 0;
+        }
+
+        const first_zset = switch (first_entry.value_ptr.*) {
+            .sorted_set => |*z| z,
+            else => return error.WrongType,
+        };
+
+        var count: usize = 0;
+        const effective_limit = if (limit == 0) std.math.maxInt(usize) else limit;
+
+        // For each member in first set, check if it exists in all other sets
+        for (first_zset.sorted_list.items) |item| {
+            if (count >= effective_limit) break;
+
+            var in_all = true;
+            for (keys[1..]) |key| {
+                const entry = self.data.getEntry(key) orelse {
+                    in_all = false;
+                    break;
+                };
+
+                if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+                    in_all = false;
+                    break;
+                }
+
+                switch (entry.value_ptr.*) {
+                    .sorted_set => |*zset| {
+                        if (!zset.members.contains(item.member)) {
+                            in_all = false;
+                            break;
+                        }
+                    },
+                    else => return error.WrongType,
+                }
+            }
+
+            if (in_all) {
+                count += 1;
+            }
+        }
+
+        return count;
+    }
+
     // ── String range operations ───────────────────────────────────────────────
 
     /// Get range of string value bytes. Negative indices supported.

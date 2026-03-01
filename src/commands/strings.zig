@@ -144,6 +144,7 @@ pub fn executeCommand(
                 "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
                 "HGETDEL",    "HGETEX",     "HSETEX",
                 "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
+                "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
                 "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
                 "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
                 "BLMOVE",     "LMPOP",      "BLMPOP",
@@ -213,6 +214,7 @@ pub fn executeCommand(
             "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
             "HGETDEL",    "HGETEX",     "HSETEX",
             "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
+            "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
             "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
             "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
             "BLMOVE",     "LMPOP",      "BLMPOP",
@@ -560,6 +562,10 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZrevrangebylex(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZLEXCOUNT")) {
             break :blk try sorted_sets.cmdZlexcount(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZRANGESTORE")) {
+            break :blk try sorted_sets.cmdZrangestore(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "ZINTERCARD")) {
+            break :blk try sorted_sets.cmdZintercard(allocator, storage, array);
         }
         // String range commands
         else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {

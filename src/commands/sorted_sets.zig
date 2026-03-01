@@ -1120,6 +1120,140 @@ pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 }
 
+/// ZRANGESTORE dest source start stop [WITHSCORES]
+/// Store a range of members from a sorted set into a destination sorted set
+/// Returns integer - count of members stored
+pub fn cmdZrangestore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'zrangestore' command");
+    }
+
+    const dest = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination key"),
+    };
+
+    const source = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid source key"),
+    };
+
+    const start_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid start index"),
+    };
+    const start = std.fmt.parseInt(i64, start_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    const stop_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid stop index"),
+    };
+    const stop = std.fmt.parseInt(i64, stop_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Check for WITHSCORES option (though it doesn't affect storage, just parsing)
+    var with_scores = false;
+    if (args.len >= 6) {
+        const opt = switch (args[5]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_opt = try std.ascii.allocUpperString(allocator, opt);
+        defer allocator.free(upper_opt);
+        if (std.mem.eql(u8, upper_opt, "WITHSCORES")) {
+            with_scores = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    const count = storage.zrangestore(allocator, dest, source, start, stop, with_scores) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
+/// ZINTERCARD numkeys key [key ...] [LIMIT limit]
+/// Return the cardinality of the intersection of multiple sorted sets
+/// Returns integer - intersection count (up to limit if specified)
+pub fn cmdZintercard(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'zintercard' command");
+    }
+
+    const numkeys_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR numkeys must be a number"),
+    };
+    const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
+        return w.writeError("ERR numkeys must be a number");
+    };
+
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zintercard' command");
+    }
+
+    if (args.len < 2 + numkeys) {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Collect keys
+    var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
+    defer keys.deinit(allocator);
+
+    for (0..numkeys) |i| {
+        const key = switch (args[2 + i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+        try keys.append(allocator, key);
+    }
+
+    // Parse LIMIT option if present
+    var limit: usize = 0; // 0 means no limit
+    if (args.len > 2 + numkeys) {
+        if (args.len < 2 + numkeys + 2) {
+            return w.writeError("ERR syntax error");
+        }
+        const limit_keyword = switch (args[2 + numkeys]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const upper_keyword = try std.ascii.allocUpperString(allocator, limit_keyword);
+        defer allocator.free(upper_keyword);
+
+        if (!std.mem.eql(u8, upper_keyword, "LIMIT")) {
+            return w.writeError("ERR syntax error");
+        }
+
+        const limit_str = switch (args[2 + numkeys + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR limit must be a number"),
+        };
+        limit = std.fmt.parseInt(usize, limit_str, 10) catch {
+            return w.writeError("ERR limit must be a number");
+        };
+    }
+
+    const count = storage.zintercard(allocator, keys.items, limit) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => return err,
+    };
+
+    return w.writeInteger(@intCast(count));
+}
+
 // Embedded unit tests
 
 test "cmdZadd - basic add" {
@@ -2282,6 +2416,225 @@ test "sorted_sets - BZPOPMIN returns from first non-empty sorted set" {
     try std.testing.expect(std.mem.indexOf(u8, result, "*3\r\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "zset2") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na") != null);
+}
+
+// ── Unit tests for ZRANGESTORE and ZINTERCARD ────────────────────────────────
+
+test "sorted_sets - ZRANGESTORE basic range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: Add sorted set
+    const setup = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "source" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "3" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup);
+
+    // Test ZRANGESTORE
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZRANGESTORE" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "source" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdZrangestore(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return 2
+    try std.testing.expectEqualStrings(":2\r\n", result);
+
+    // Verify destination has correct members
+    const check_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZRANGE" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "-1" },
+    };
+    const check_result = try cmdZrange(allocator, storage, &check_args, .RESP2);
+    defer allocator.free(check_result);
+    try std.testing.expect(std.mem.indexOf(u8, check_result, "$1\r\na") != null);
+    try std.testing.expect(std.mem.indexOf(u8, check_result, "$1\r\nb") != null);
+}
+
+test "sorted_sets - ZRANGESTORE empty range deletes destination" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: Add sorted set and destination
+    const setup1 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "source" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup1);
+
+    const setup2 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "old" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup2);
+
+    // Test ZRANGESTORE with empty range
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZRANGESTORE" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "source" },
+        RespValue{ .bulk_string = "5" },
+        RespValue{ .bulk_string = "10" },
+    };
+    const result = try cmdZrangestore(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return 0
+    try std.testing.expectEqualStrings(":0\r\n", result);
+
+    // Verify destination was deleted by checking ZCARD returns 0
+    const check_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZCARD" },
+        RespValue{ .bulk_string = "dest" },
+    };
+    const check_result = try cmdZcard(allocator, storage, &check_args);
+    defer allocator.free(check_result);
+    try std.testing.expectEqualStrings(":0\r\n", check_result);
+}
+
+test "sorted_sets - ZINTERCARD basic intersection" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: Add two sorted sets
+    const setup1 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "3" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup1);
+
+    const setup2 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "10" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "20" },
+        RespValue{ .bulk_string = "c" },
+        RespValue{ .bulk_string = "30" },
+        RespValue{ .bulk_string = "d" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup2);
+
+    // Test ZINTERCARD
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZINTERCARD" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+    };
+    const result = try cmdZintercard(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return 2 (b and c are common)
+    try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "sorted_sets - ZINTERCARD with LIMIT" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: Add two sorted sets with 3 common members
+    const setup1 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "3" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup1);
+
+    const setup2 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "10" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "20" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "30" },
+        RespValue{ .bulk_string = "c" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup2);
+
+    // Test ZINTERCARD with LIMIT 2
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZINTERCARD" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "LIMIT" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdZintercard(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return 2 (limited to 2 even though 3 are common)
+    try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "sorted_sets - ZINTERCARD no intersection" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: Add two sorted sets with no common members
+    const setup1 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "a" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup1);
+
+    const setup2 = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "zset2" },
+        RespValue{ .bulk_string = "10" },
+        RespValue{ .bulk_string = "b" },
+    };
+    _ = try cmdZadd(allocator, storage, &setup2);
+
+    // Test ZINTERCARD
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZINTERCARD" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "zset1" },
+        RespValue{ .bulk_string = "zset2" },
+    };
+    const result = try cmdZintercard(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return 0
+    try std.testing.expectEqualStrings(":0\r\n", result);
 }
 
 /// ZUNION numkeys key [key ...] [WITHSCORES]
