@@ -834,10 +834,52 @@ pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []c
         else => return w.writeError("ERR invalid subcommand"),
     };
 
-    if (!std.mem.eql(u8, subcommand, "STREAM")) {
+    // Route to appropriate XINFO subcommand handler
+    if (std.mem.eql(u8, subcommand, "CONSUMERS")) {
+        // XINFO CONSUMERS key groupname
+        if (args.len != 4) {
+            return w.writeError("ERR wrong number of arguments for 'xinfo consumers' command");
+        }
+
+        const key = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        const group_name = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid group name"),
+        };
+
+        const info = storage.xinfoConsumers(allocator, key, group_name) catch |err| switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
+            else => return err,
+        };
+        // info is already in RESP format, return it directly
+        return info;
+    } else if (std.mem.eql(u8, subcommand, "GROUPS")) {
+        // XINFO GROUPS key
+        if (args.len != 3) {
+            return w.writeError("ERR wrong number of arguments for 'xinfo groups' command");
+        }
+
+        const key = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        const info = storage.xinfoGroups(allocator, key) catch |err| switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
+        };
+        // info is already in RESP format, return it directly
+        return info;
+    } else if (!std.mem.eql(u8, subcommand, "STREAM")) {
         return w.writeError("ERR unknown XINFO subcommand");
     }
 
+    // XINFO STREAM handler
     const key = switch (args[2]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid key"),

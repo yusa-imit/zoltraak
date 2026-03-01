@@ -190,6 +190,9 @@ pub const Value = union(ValueType) {
     pub const Consumer = struct {
         name: []const u8,
         pending: std.ArrayList(StreamId), // IDs of messages pending acknowledgment
+        last_attempted_time: i64, // Milliseconds since epoch - last XREADGROUP/XCLAIM attempt (for 'idle')
+        last_successful_time: i64, // Milliseconds since epoch - last successful operation (for 'inactive')
+        creation_time: i64, // Milliseconds since epoch - consumer creation time
 
         pub fn deinit(self: *Consumer, allocator: std.mem.Allocator) void {
             allocator.free(self.name);
@@ -203,6 +206,9 @@ pub const Value = union(ValueType) {
         last_delivered_id: StreamId, // Last ID delivered to any consumer
         consumers: std.StringHashMap(Consumer), // consumer_name -> Consumer
         pending: std.ArrayList(PendingEntry), // All pending entries across all consumers
+        entries_read: u64, // Logical read counter - total entries delivered to this group
+        creation_time: i64, // Milliseconds since epoch - group creation time
+        arbitrary_start: bool, // True if group started at arbitrary position (affects lag calculation)
 
         pub fn deinit(self: *ConsumerGroup, allocator: std.mem.Allocator) void {
             allocator.free(self.name);
@@ -226,6 +232,7 @@ pub const Value = union(ValueType) {
         last_id: ?StreamId,
         expires_at: ?i64,
         consumer_groups: std.StringHashMap(ConsumerGroup), // group_name -> ConsumerGroup
+        entries_added: u64, // Total entries ever added to this stream (for lag calculation)
 
         pub fn deinit(self: *StreamValue, allocator: std.mem.Allocator) void {
             for (self.entries.items) |*entry| {
@@ -4541,6 +4548,7 @@ pub const Storage = struct {
                     .last_id = last_id,
                     .expires_at = expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                    .entries_added = @intCast(entries.items.len),
                 } };
             },
             0xFD => { // HyperLogLog
@@ -4713,6 +4721,7 @@ pub const Storage = struct {
                     .last_id = st.last_id,
                     .expires_at = st.expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                    .entries_added = st.entries_added,
                 } };
             },
             .hyperloglog => |hll| blk: {
@@ -6888,6 +6897,7 @@ pub const Storage = struct {
                     .last_id = null,
                     .expires_at = expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                    .entries_added = 0,
                 },
             };
         } else {
@@ -6901,6 +6911,7 @@ pub const Storage = struct {
                         .last_id = null,
                         .expires_at = expires_at,
                         .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                        .entries_added = 0,
                     },
                 };
             }
@@ -6938,6 +6949,7 @@ pub const Storage = struct {
                     .fields = owned_fields,
                 });
                 stream_val.last_id = id;
+                stream_val.entries_added += 1;
 
                 return id;
             },
@@ -7222,15 +7234,34 @@ pub const Storage = struct {
                 else
                     try Value.StreamId.parse(id_str, null);
 
+                // Determine if this is an arbitrary start (affects lag calculation)
+                // Arbitrary = not "0-0", not stream's first entry, not stream's last entry ("$")
+                const is_arbitrary = blk: {
+                    if (std.mem.eql(u8, id_str, "0")) break :blk false;
+                    if (std.mem.eql(u8, id_str, "$")) break :blk false;
+                    break :blk true;
+                };
+
+                // Calculate initial entries_read based on starting position
+                const initial_entries_read: u64 = if (std.mem.eql(u8, id_str, "$"))
+                    stream_val.entries_added
+                else
+                    0;
+
                 // Create consumer group
                 const owned_name = try self.allocator.dupe(u8, group_name);
                 errdefer self.allocator.free(owned_name);
+
+                const now_ms = std.time.milliTimestamp();
 
                 try stream_val.consumer_groups.put(owned_name, Value.ConsumerGroup{
                     .name = owned_name,
                     .last_delivered_id = starting_id,
                     .consumers = std.StringHashMap(Value.Consumer).init(self.allocator),
                     .pending = std.ArrayList(Value.PendingEntry){},
+                    .entries_read = initial_entries_read,
+                    .creation_time = now_ms,
+                    .arbitrary_start = is_arbitrary,
                 });
             },
             else => return error.WrongType,
@@ -7291,6 +7322,11 @@ pub const Storage = struct {
                     try Value.StreamId.parse(id_str, null);
 
                 group_ptr.last_delivered_id = new_id;
+
+                // Mark as arbitrary if not "0" or "$"
+                if (!std.mem.eql(u8, id_str, "0") and !std.mem.eql(u8, id_str, "$")) {
+                    group_ptr.arbitrary_start = true;
+                }
             },
             else => return error.WrongType,
         }
@@ -7326,9 +7362,14 @@ pub const Storage = struct {
                 const owned_consumer_name = try self.allocator.dupe(u8, consumer_name);
                 errdefer self.allocator.free(owned_consumer_name);
 
+                const now_ms = std.time.milliTimestamp();
+
                 try group_ptr.consumers.put(owned_consumer_name, Value.Consumer{
                     .name = owned_consumer_name,
                     .pending = std.ArrayList(Value.StreamId){},
+                    .last_attempted_time = now_ms,
+                    .last_successful_time = now_ms,
+                    .creation_time = now_ms,
                 });
 
                 return true;
@@ -7408,6 +7449,8 @@ pub const Storage = struct {
             .stream => |*stream_val| {
                 const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
 
+                const now_ms = std.time.milliTimestamp();
+
                 // Get or create consumer
                 const consumer_entry = try group_ptr.consumers.getOrPut(consumer_name);
                 if (!consumer_entry.found_existing) {
@@ -7416,8 +7459,14 @@ pub const Storage = struct {
                     consumer_entry.value_ptr.* = Value.Consumer{
                         .name = owned_consumer_name,
                         .pending = std.ArrayList(Value.StreamId){},
+                        .last_attempted_time = now_ms,
+                        .last_successful_time = now_ms,
+                        .creation_time = now_ms,
                     };
                 }
+
+                // Update last_attempted_time for every XREADGROUP call
+                consumer_entry.value_ptr.last_attempted_time = now_ms;
 
                 // Determine starting ID
                 const start_id = if (std.mem.eql(u8, id_str, ">")) blk: {
@@ -7478,6 +7527,10 @@ pub const Storage = struct {
                     result.deinit(allocator);
                     return null;
                 }
+
+                // Update last_successful_time and entries_read when messages were delivered
+                consumer_entry.value_ptr.last_successful_time = now_ms;
+                group_ptr.entries_read += result.items.len;
 
                 return result;
             },
@@ -7569,6 +7622,8 @@ pub const Storage = struct {
             .stream => |*stream_val| {
                 const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
 
+                const current_time = time orelse std.time.milliTimestamp();
+
                 // Ensure target consumer exists
                 const consumer_entry = try group_ptr.consumers.getOrPut(consumer_name);
                 if (!consumer_entry.found_existing) {
@@ -7577,10 +7632,14 @@ pub const Storage = struct {
                     consumer_entry.value_ptr.* = Value.Consumer{
                         .name = owned_consumer_name,
                         .pending = std.ArrayList(Value.StreamId){},
+                        .last_attempted_time = current_time,
+                        .last_successful_time = current_time,
+                        .creation_time = current_time,
                     };
                 }
 
-                const current_time = time orelse std.time.milliTimestamp();
+                // Update last_attempted_time for every XCLAIM call
+                consumer_entry.value_ptr.last_attempted_time = current_time;
                 var result = std.ArrayList(Value.StreamEntry){};
 
                 for (ids) |id_str| {
@@ -7688,6 +7747,9 @@ pub const Storage = struct {
                     return null;
                 }
 
+                // Update last_successful_time when messages were claimed
+                consumer_entry.value_ptr.last_successful_time = current_time;
+
                 return result;
             },
             else => return error.WrongType,
@@ -7720,6 +7782,8 @@ pub const Storage = struct {
             .stream => |*stream_val| {
                 const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
 
+                const current_time = std.time.milliTimestamp();
+
                 // Ensure target consumer exists
                 const consumer_entry = try group_ptr.consumers.getOrPut(consumer_name);
                 if (!consumer_entry.found_existing) {
@@ -7728,10 +7792,14 @@ pub const Storage = struct {
                     consumer_entry.value_ptr.* = Value.Consumer{
                         .name = owned_consumer_name,
                         .pending = std.ArrayList(Value.StreamId){},
+                        .last_attempted_time = current_time,
+                        .last_successful_time = current_time,
+                        .creation_time = current_time,
                     };
                 }
 
-                const current_time = std.time.milliTimestamp();
+                // Update last_attempted_time for every XAUTOCLAIM call
+                consumer_entry.value_ptr.last_attempted_time = current_time;
                 var result = std.ArrayList(Value.StreamEntry){};
                 var claimed_count: usize = 0;
                 var next_id_str: []const u8 = "0-0";
@@ -7816,6 +7884,11 @@ pub const Storage = struct {
                     }
 
                     claimed_count += 1;
+                }
+
+                // Update last_successful_time if any messages were claimed
+                if (claimed_count > 0) {
+                    consumer_entry.value_ptr.last_successful_time = current_time;
                 }
 
                 return .{
@@ -8133,6 +8206,141 @@ pub const Storage = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.last_save_time = @divFloor(std.time.milliTimestamp(), 1000);
+    }
+
+    /// Get consumer information for a group (XINFO CONSUMERS)
+    /// Returns array of consumers with name, pending, idle, inactive fields
+    pub fn xinfoConsumers(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        group_name: []const u8,
+    ) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoGroup;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoGroup;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                const now_ms = std.time.milliTimestamp();
+                var buf = std.ArrayList(u8){};
+                const writer = buf.writer(allocator);
+
+                // RESP array header for consumers
+                try writer.print("*{d}\r\n", .{group_ptr.consumers.count()});
+
+                // Iterate over consumers
+                var it = group_ptr.consumers.iterator();
+                while (it.next()) |cons_entry| {
+                    const consumer = cons_entry.value_ptr.*;
+
+                    // Each consumer is a flat array of 8 elements (4 fields × 2)
+                    try writer.writeAll("*8\r\n");
+
+                    // name
+                    try writer.writeAll("$4\r\nname\r\n");
+                    try writer.print("${d}\r\n{s}\r\n", .{ consumer.name.len, consumer.name });
+
+                    // pending
+                    try writer.writeAll("$7\r\npending\r\n");
+                    try writer.print(":{d}\r\n", .{consumer.pending.items.len});
+
+                    // idle (ms since last attempt)
+                    try writer.writeAll("$4\r\nidle\r\n");
+                    const idle_ms = now_ms - consumer.last_attempted_time;
+                    try writer.print(":{d}\r\n", .{idle_ms});
+
+                    // inactive (ms since last success)
+                    try writer.writeAll("$8\r\ninactive\r\n");
+                    const inactive_ms = now_ms - consumer.last_successful_time;
+                    try writer.print(":{d}\r\n", .{inactive_ms});
+                }
+
+                return try buf.toOwnedSlice(allocator);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Get consumer group information (XINFO GROUPS)
+    /// Returns array of groups with name, consumers, pending, last-delivered-id, entries-read, lag fields
+    pub fn xinfoGroups(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+    ) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse {
+            // Key not found - return empty array (different from CONSUMERS which returns NOGROUP)
+            return try allocator.dupe(u8, "*0\r\n");
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return try allocator.dupe(u8, "*0\r\n");
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                var buf = std.ArrayList(u8){};
+                const writer = buf.writer(allocator);
+
+                // RESP array header for groups
+                try writer.print("*{d}\r\n", .{stream_val.consumer_groups.count()});
+
+                // Iterate over groups
+                var it = stream_val.consumer_groups.iterator();
+                while (it.next()) |group_entry| {
+                    const group = group_entry.value_ptr.*;
+
+                    // Each group is a flat array of 12 elements (6 fields × 2)
+                    try writer.writeAll("*12\r\n");
+
+                    // name
+                    try writer.writeAll("$4\r\nname\r\n");
+                    try writer.print("${d}\r\n{s}\r\n", .{ group.name.len, group.name });
+
+                    // consumers
+                    try writer.writeAll("$9\r\nconsumers\r\n");
+                    try writer.print(":{d}\r\n", .{group.consumers.count()});
+
+                    // pending
+                    try writer.writeAll("$7\r\npending\r\n");
+                    try writer.print(":{d}\r\n", .{group.pending.items.len});
+
+                    // last-delivered-id
+                    try writer.writeAll("$17\r\nlast-delivered-id\r\n");
+                    const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ group.last_delivered_id.ms, group.last_delivered_id.seq });
+                    defer allocator.free(id_str);
+                    try writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
+
+                    // entries-read
+                    try writer.writeAll("$12\r\nentries-read\r\n");
+                    try writer.print(":{d}\r\n", .{group.entries_read});
+
+                    // lag (null if arbitrary start, otherwise stream.entries_added - group.entries_read)
+                    try writer.writeAll("$3\r\nlag\r\n");
+                    if (group.arbitrary_start) {
+                        // Lag is unavailable (null bulk string)
+                        try writer.writeAll("$-1\r\n");
+                    } else {
+                        const lag: i64 = @as(i64, @intCast(stream_val.entries_added)) - @as(i64, @intCast(group.entries_read));
+                        try writer.print(":{d}\r\n", .{lag});
+                    }
+                }
+
+                return try buf.toOwnedSlice(allocator);
+            },
+            else => return error.WrongType,
+        }
     }
 };
 
@@ -9773,6 +9981,106 @@ test "storage - dump and restore string" {
 
     const value = storage.get("newkey").?;
     try std.testing.expectEqualStrings("hello", value);
+}
+
+test "storage - xinfoConsumers returns consumer list with timing fields" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream and group
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    try storage.xgroupCreate("s", "g", "0");
+
+    // Create consumer via XREADGROUP
+    _ = try storage.xreadgroup(allocator, "g", "c1", "s", ">", null, false);
+
+    // Get consumer info
+    const info = try storage.xinfoConsumers(allocator, "s", "g");
+    defer allocator.free(info);
+
+    // Should contain consumer "c1" with pending, idle, inactive fields
+    try std.testing.expect(std.mem.indexOf(u8, info, "c1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "pending") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "idle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "inactive") != null);
+}
+
+test "storage - xinfoConsumers returns NOGROUP for missing group" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+
+    const result = storage.xinfoConsumers(allocator, "s", "nogroup");
+    try std.testing.expectError(error.NoGroup, result);
+}
+
+test "storage - xinfoGroups returns group list with lag" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream with 3 entries
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "1001-0", &fields, null);
+    _ = try storage.xadd("s", "1002-0", &fields, null);
+
+    // Create group starting at 0
+    try storage.xgroupCreate("s", "g", "0");
+
+    // Read 1 entry
+    if (try storage.xreadgroup(allocator, "g", "c1", "s", ">", 1, false)) |entries| {
+        for (entries.items) |*entry| {
+            entry.deinit(allocator);
+        }
+        entries.deinit(allocator);
+    }
+
+    // Get group info
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+
+    // Should contain group "g" with lag field
+    try std.testing.expect(std.mem.indexOf(u8, info, "name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "consumers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "pending") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "entries-read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "lag") != null);
+}
+
+test "storage - xinfoGroups lag is null for arbitrary start" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "2000-0", &fields, null);
+
+    // Create group at arbitrary position (not 0 or $)
+    try storage.xgroupCreate("s", "g", "1500-0");
+
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+
+    // Lag should be null ($-1 in RESP)
+    try std.testing.expect(std.mem.indexOf(u8, info, "$-1") != null);
+}
+
+test "storage - xinfoGroups returns empty array for missing key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const info = try storage.xinfoGroups(allocator, "nosuchkey");
+    defer allocator.free(info);
+
+    try std.testing.expectEqualStrings("*0\r\n", info);
 }
 
 test "storage - dump and restore list" {
