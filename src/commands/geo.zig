@@ -90,6 +90,34 @@ fn decodeGeohash(hash: u64) Coords {
     };
 }
 
+/// Constants for meter-to-degree conversion
+const METERS_PER_DEGREE_LAT = 111_320.0; // ~111.32 km per degree latitude
+
+/// Converts meters to degrees latitude
+fn metersToDegreeLat(meters: f64) f64 {
+    return meters / METERS_PER_DEGREE_LAT;
+}
+
+/// Converts meters to degrees longitude (latitude-dependent)
+fn metersToDegreeLon(meters: f64, latitude: f64) f64 {
+    const lat_rad = latitude * std.math.pi / 180.0;
+    return meters / (METERS_PER_DEGREE_LAT * @cos(lat_rad));
+}
+
+/// Checks if a point is within a rectangular box
+fn isInBox(point_lat: f64, point_lon: f64, center_lat: f64, center_lon: f64, width_meters: f64, height_meters: f64) bool {
+    const lat_delta = metersToDegreeLat(height_meters / 2.0);
+    const lon_delta = metersToDegreeLon(width_meters / 2.0, center_lat);
+
+    const min_lat = center_lat - lat_delta;
+    const max_lat = center_lat + lat_delta;
+    const min_lon = center_lon - lon_delta;
+    const max_lon = center_lon + lon_delta;
+
+    return point_lat >= min_lat and point_lat <= max_lat and
+        point_lon >= min_lon and point_lon <= max_lon;
+}
+
 /// Calculates distance between two points using Haversine formula
 fn haversineDistance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) f64 {
     const lat1_rad = lat1 * std.math.pi / 180.0;
@@ -631,7 +659,7 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return w.writeError("ERR syntax error");
     }
 
-    // Parse BY clause (BYRADIUS only)
+    // Parse BY clause (BYRADIUS or BYBOX)
     if (idx >= args.len) {
         return w.writeError("ERR syntax error");
     }
@@ -642,39 +670,92 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
     const by_upper = try std.ascii.allocUpperString(allocator, by_clause);
     defer allocator.free(by_upper);
 
-    if (!std.mem.eql(u8, by_upper, "BYRADIUS")) {
-        return w.writeError("ERR syntax error, BYRADIUS required (BYBOX not implemented)");
-    }
+    const SearchType = enum { byradius, bybox };
+    var search_type: SearchType = undefined;
+    var radius_meters: f64 = 0;
+    var width_meters: f64 = 0;
+    var height_meters: f64 = 0;
+    var unit_str: []const u8 = "";
 
-    if (idx + 2 >= args.len) {
-        return w.writeError("ERR syntax error");
-    }
+    if (std.mem.eql(u8, by_upper, "BYRADIUS")) {
+        search_type = .byradius;
 
-    const radius_str = switch (args[idx + 1]) {
-        .bulk_string => |s| s,
-        else => return w.writeError("ERR invalid radius"),
-    };
-    const unit = switch (args[idx + 2]) {
-        .bulk_string => |s| s,
-        else => return w.writeError("ERR invalid unit"),
-    };
+        if (idx + 2 >= args.len) {
+            return w.writeError("ERR syntax error");
+        }
 
-    var radius = std.fmt.parseFloat(f64, radius_str) catch {
-        return w.writeError("ERR invalid radius");
-    };
-    idx += 3;
+        const radius_str = switch (args[idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid radius"),
+        };
+        unit_str = switch (args[idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid unit"),
+        };
 
-    // Convert radius to meters
-    if (std.mem.eql(u8, unit, "m")) {
-        // meters (default)
-    } else if (std.mem.eql(u8, unit, "km")) {
-        radius *= 1000.0;
-    } else if (std.mem.eql(u8, unit, "mi")) {
-        radius *= 1609.34;
-    } else if (std.mem.eql(u8, unit, "ft")) {
-        radius *= 0.3048;
+        const radius = std.fmt.parseFloat(f64, radius_str) catch {
+            return w.writeError("ERR invalid radius");
+        };
+        idx += 3;
+
+        // Convert radius to meters
+        if (std.mem.eql(u8, unit_str, "m")) {
+            radius_meters = radius;
+        } else if (std.mem.eql(u8, unit_str, "km")) {
+            radius_meters = radius * 1000.0;
+        } else if (std.mem.eql(u8, unit_str, "mi")) {
+            radius_meters = radius * 1609.34;
+        } else if (std.mem.eql(u8, unit_str, "ft")) {
+            radius_meters = radius * 0.3048;
+        } else {
+            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        }
+    } else if (std.mem.eql(u8, by_upper, "BYBOX")) {
+        search_type = .bybox;
+
+        if (idx + 3 >= args.len) {
+            return w.writeError("ERR syntax error");
+        }
+
+        const width_str = switch (args[idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid width"),
+        };
+        const height_str = switch (args[idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid height"),
+        };
+        unit_str = switch (args[idx + 3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid unit"),
+        };
+
+        const width = std.fmt.parseFloat(f64, width_str) catch {
+            return w.writeError("ERR invalid width");
+        };
+        const height = std.fmt.parseFloat(f64, height_str) catch {
+            return w.writeError("ERR invalid height");
+        };
+        idx += 4;
+
+        // Convert dimensions to meters
+        if (std.mem.eql(u8, unit_str, "m")) {
+            width_meters = width;
+            height_meters = height;
+        } else if (std.mem.eql(u8, unit_str, "km")) {
+            width_meters = width * 1000.0;
+            height_meters = height * 1000.0;
+        } else if (std.mem.eql(u8, unit_str, "mi")) {
+            width_meters = width * 1609.34;
+            height_meters = height * 1609.34;
+        } else if (std.mem.eql(u8, unit_str, "ft")) {
+            width_meters = width * 0.3048;
+            height_meters = height * 0.3048;
+        } else {
+            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        }
     } else {
-        return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        return w.writeError("ERR syntax error");
     }
 
     // Parse options (same as GEORADIUS)
@@ -749,7 +830,12 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
             const coords = decodeGeohash(geohash);
             const distance = haversineDistance(lat, lon, coords.lat, coords.lon);
 
-            if (distance <= radius) {
+            const matches = switch (search_type) {
+                .byradius => distance <= radius_meters,
+                .bybox => isInBox(coords.lat, coords.lon, lat, lon, width_meters, height_meters),
+            };
+
+            if (matches) {
                 try results.append(allocator, .{
                     .member = member,
                     .distance = distance,
@@ -799,11 +885,11 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
         if (with_dist) {
             var dist = result.distance;
-            if (std.mem.eql(u8, unit, "km")) {
+            if (std.mem.eql(u8, unit_str, "km")) {
                 dist /= 1000.0;
-            } else if (std.mem.eql(u8, unit, "mi")) {
+            } else if (std.mem.eql(u8, unit_str, "mi")) {
                 dist /= 1609.34;
-            } else if (std.mem.eql(u8, unit, "ft")) {
+            } else if (std.mem.eql(u8, unit_str, "ft")) {
                 dist /= 0.3048;
             }
             var dist_buf: [64]u8 = undefined;
@@ -827,6 +913,354 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
         }
     }
 
+    return buf.toOwnedSlice(allocator);
+}
+
+/// GEOSEARCHSTORE destination source <FROMMEMBER member | FROMLONLAT lon lat>
+///   <BYRADIUS radius <M|KM|FT|MI> | BYBOX width height <M|KM|FT|MI>>
+///   [ASC|DESC] [COUNT count [ANY]] [STOREDIST]
+pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+
+    if (args.len < 6) {
+        return w.writeError("ERR wrong number of arguments for 'geosearchstore' command");
+    }
+
+    // Parse destination and source keys
+    const dest_key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination key"),
+    };
+    const key = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid source key"),
+    };
+
+    var idx: usize = 3;
+
+    // Parse FROM clause (FROMMEMBER or FROMLONLAT)
+    if (idx >= args.len) {
+        return w.writeError("ERR syntax error");
+    }
+    const from_clause = switch (args[idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    const from_upper = try std.ascii.allocUpperString(allocator, from_clause);
+    defer allocator.free(from_upper);
+
+    var lat: f64 = 0;
+    var lon: f64 = 0;
+
+    if (std.mem.eql(u8, from_upper, "FROMMEMBER")) {
+        if (idx + 1 >= args.len) {
+            return w.writeError("ERR syntax error");
+        }
+        const member = switch (args[idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid member"),
+        };
+        const score = storage.zscore(key, member) orelse {
+            // FROMMEMBER not found - return 0 and don't modify destination
+            var buf = std.ArrayList(u8){};
+            defer buf.deinit(allocator);
+            try buf.appendSlice(allocator, ":0\r\n");
+            return buf.toOwnedSlice(allocator);
+        };
+        const geohash: u64 = @intFromFloat(score);
+        const coords = decodeGeohash(geohash);
+        lat = coords.lat;
+        lon = coords.lon;
+        idx += 2;
+    } else if (std.mem.eql(u8, from_upper, "FROMLONLAT")) {
+        if (idx + 2 >= args.len) {
+            return w.writeError("ERR syntax error");
+        }
+        const lon_str = switch (args[idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid longitude"),
+        };
+        const lat_str = switch (args[idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid latitude"),
+        };
+        lon = std.fmt.parseFloat(f64, lon_str) catch {
+            return w.writeError("ERR invalid longitude");
+        };
+        lat = std.fmt.parseFloat(f64, lat_str) catch {
+            return w.writeError("ERR invalid latitude");
+        };
+        idx += 3;
+    } else {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Parse BY clause (BYRADIUS or BYBOX)
+    if (idx >= args.len) {
+        return w.writeError("ERR syntax error");
+    }
+    const by_clause = switch (args[idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    const by_upper = try std.ascii.allocUpperString(allocator, by_clause);
+    defer allocator.free(by_upper);
+
+    const SearchType = enum { byradius, bybox };
+    var search_type: SearchType = undefined;
+    var radius_meters: f64 = 0;
+    var width_meters: f64 = 0;
+    var height_meters: f64 = 0;
+    var unit_str: []const u8 = "";
+
+    if (std.mem.eql(u8, by_upper, "BYRADIUS")) {
+        search_type = .byradius;
+
+        if (idx + 2 >= args.len) {
+            return w.writeError("ERR syntax error");
+        }
+
+        const radius_str = switch (args[idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid radius"),
+        };
+        unit_str = switch (args[idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid unit"),
+        };
+
+        const radius = std.fmt.parseFloat(f64, radius_str) catch {
+            return w.writeError("ERR invalid radius");
+        };
+        idx += 3;
+
+        // Convert radius to meters
+        if (std.mem.eql(u8, unit_str, "m")) {
+            radius_meters = radius;
+        } else if (std.mem.eql(u8, unit_str, "km")) {
+            radius_meters = radius * 1000.0;
+        } else if (std.mem.eql(u8, unit_str, "mi")) {
+            radius_meters = radius * 1609.34;
+        } else if (std.mem.eql(u8, unit_str, "ft")) {
+            radius_meters = radius * 0.3048;
+        } else {
+            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        }
+    } else if (std.mem.eql(u8, by_upper, "BYBOX")) {
+        search_type = .bybox;
+
+        if (idx + 3 >= args.len) {
+            return w.writeError("ERR syntax error");
+        }
+
+        const width_str = switch (args[idx + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid width"),
+        };
+        const height_str = switch (args[idx + 2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid height"),
+        };
+        unit_str = switch (args[idx + 3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid unit"),
+        };
+
+        const width = std.fmt.parseFloat(f64, width_str) catch {
+            return w.writeError("ERR invalid width");
+        };
+        const height = std.fmt.parseFloat(f64, height_str) catch {
+            return w.writeError("ERR invalid height");
+        };
+        idx += 4;
+
+        // Convert dimensions to meters
+        if (std.mem.eql(u8, unit_str, "m")) {
+            width_meters = width;
+            height_meters = height;
+        } else if (std.mem.eql(u8, unit_str, "km")) {
+            width_meters = width * 1000.0;
+            height_meters = height * 1000.0;
+        } else if (std.mem.eql(u8, unit_str, "mi")) {
+            width_meters = width * 1609.34;
+            height_meters = height * 1609.34;
+        } else if (std.mem.eql(u8, unit_str, "ft")) {
+            width_meters = width * 0.3048;
+            height_meters = height * 0.3048;
+        } else {
+            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        }
+    } else {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Parse options
+    var count_limit: ?usize = null;
+    var sort_asc = false;
+    var sort_desc = false;
+    var store_dist = false;
+
+    while (idx < args.len) {
+        const arg_str = switch (args[idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        const arg_upper = try std.ascii.allocUpperString(allocator, arg_str);
+        defer allocator.free(arg_upper);
+
+        if (std.mem.eql(u8, arg_upper, "COUNT")) {
+            if (idx + 1 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const count_str = switch (args[idx + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid count"),
+            };
+            count_limit = std.fmt.parseInt(usize, count_str, 10) catch {
+                return w.writeError("ERR invalid count");
+            };
+            idx += 2;
+            // Skip ANY flag if present
+            if (idx < args.len) {
+                const next_arg = switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => continue,
+                };
+                const next_upper = try std.ascii.allocUpperString(allocator, next_arg);
+                defer allocator.free(next_upper);
+                if (std.mem.eql(u8, next_upper, "ANY")) {
+                    idx += 1;
+                }
+            }
+        } else if (std.mem.eql(u8, arg_upper, "ASC")) {
+            sort_asc = true;
+            idx += 1;
+        } else if (std.mem.eql(u8, arg_upper, "DESC")) {
+            sort_desc = true;
+            idx += 1;
+        } else if (std.mem.eql(u8, arg_upper, "STOREDIST")) {
+            store_dist = true;
+            idx += 1;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Get all members from source key
+    const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
+        // Source key doesn't exist - return 0
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, ":0\r\n");
+        return buf.toOwnedSlice(allocator);
+    };
+    defer {
+        for (all_members) |member| {
+            allocator.free(member);
+        }
+        allocator.free(all_members);
+    }
+
+    // Filter members
+    var results = std.ArrayList(GeoResult){};
+    defer results.deinit(allocator);
+
+    for (all_members) |member| {
+        if (storage.zscore(key, member)) |score| {
+            const geohash: u64 = @intFromFloat(score);
+            const coords = decodeGeohash(geohash);
+            const distance = haversineDistance(lat, lon, coords.lat, coords.lon);
+
+            const matches = switch (search_type) {
+                .byradius => distance <= radius_meters,
+                .bybox => isInBox(coords.lat, coords.lon, lat, lon, width_meters, height_meters),
+            };
+
+            if (matches) {
+                try results.append(allocator, .{
+                    .member = member,
+                    .distance = distance,
+                    .geohash = geohash,
+                    .coords = coords,
+                });
+            }
+        }
+    }
+
+    // Sort if requested
+    if (sort_asc or sort_desc) {
+        const Context = struct {
+            fn lessThan(_: void, a: GeoResult, b: GeoResult) bool {
+                return a.distance < b.distance;
+            }
+            fn greaterThan(_: void, a: GeoResult, b: GeoResult) bool {
+                return a.distance > b.distance;
+            }
+        };
+
+        if (sort_asc) {
+            std.mem.sort(GeoResult, results.items, {}, Context.lessThan);
+        } else {
+            std.mem.sort(GeoResult, results.items, {}, Context.greaterThan);
+        }
+    }
+
+    // Apply count limit
+    const result_count = if (count_limit) |limit| @min(limit, results.items.len) else results.items.len;
+
+    // Store results in destination key
+    if (result_count == 0) {
+        // Empty result set - delete destination if it exists
+        _ = storage.del(&[_][]const u8{dest_key});
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, ":0\r\n");
+        return buf.toOwnedSlice(allocator);
+    }
+
+    // Prepare members and scores for zadd
+    var members = std.ArrayList([]const u8){};
+    defer members.deinit(allocator);
+    var scores = std.ArrayList(f64){};
+    defer scores.deinit(allocator);
+
+    for (results.items[0..result_count]) |result| {
+        const member_copy = try allocator.dupe(u8, result.member);
+        try members.append(allocator, member_copy);
+
+        const score: f64 = if (store_dist) blk: {
+            // Store distance in specified unit
+            var dist = result.distance;
+            if (std.mem.eql(u8, unit_str, "km")) {
+                dist /= 1000.0;
+            } else if (std.mem.eql(u8, unit_str, "mi")) {
+                dist /= 1609.34;
+            } else if (std.mem.eql(u8, unit_str, "ft")) {
+                dist /= 0.3048;
+            }
+            break :blk dist;
+        } else blk: {
+            // Store geohash
+            break :blk @floatFromInt(result.geohash);
+        };
+        try scores.append(allocator, score);
+    }
+
+    // Clear destination key first (GEOSEARCHSTORE overwrites)
+    _ = storage.del(&[_][]const u8{dest_key});
+
+    // Store results
+    const added = try storage.zadd(dest_key, scores.items, members.items, 0, null);
+    _ = added; // We return the count, not added count
+
+    // Free member copies (zadd duplicates them internally)
+    for (members.items) |member| {
+        allocator.free(member);
+    }
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
+    try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{result_count});
     return buf.toOwnedSlice(allocator);
 }
 

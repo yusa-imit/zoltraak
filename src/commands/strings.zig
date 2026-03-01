@@ -799,6 +799,8 @@ pub fn executeCommand(
             break :blk try geo_cmds.cmdGeoradius(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
             break :blk try geo_cmds.cmdGeosearch(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCHSTORE")) {
+            break :blk try geo_cmds.cmdGeosearchstore(allocator, storage, array);
         }
         // HyperLogLog commands
         else if (std.mem.eql(u8, cmd_upper, "PFADD")) {
