@@ -6770,3 +6770,115 @@ test "MSETEX - NX and XX together fails" {
 
     try testing.expect(response[0] == '-');
 }
+
+test "XGROUP CREATECONSUMER - creates new consumer" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create stream and group
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XADD", "mystream", "*", "field", "value" });
+        defer testing.allocator.free(r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XGROUP", "CREATE", "mystream", "mygroup", "0" });
+        defer testing.allocator.free(r);
+    }
+
+    // Create consumer
+    const response = try client.sendCommand(&[_][]const u8{ "XGROUP", "CREATECONSUMER", "mystream", "mygroup", "consumer1" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":1\r\n", response); // Returns 1 for new consumer
+
+    // Create same consumer again
+    const response2 = try client.sendCommand(&[_][]const u8{ "XGROUP", "CREATECONSUMER", "mystream", "mygroup", "consumer1" });
+    defer testing.allocator.free(response2);
+    try testing.expectEqualStrings(":0\r\n", response2); // Returns 0 for existing consumer
+}
+
+test "XGROUP CREATECONSUMER - errors on missing key" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "XGROUP", "CREATECONSUMER", "nostream", "mygroup", "consumer1" });
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR no such key"));
+}
+
+test "XGROUP CREATECONSUMER - errors on missing group" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XADD", "mystream", "*", "field", "value" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "XGROUP", "CREATECONSUMER", "mystream", "nogroup", "consumer1" });
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.startsWith(u8, response, "-NOGROUP"));
+}
+
+test "XGROUP DELCONSUMER - removes consumer and returns pending count" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Create stream with entries and group
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XADD", "mystream", "*", "field", "value1" });
+        defer testing.allocator.free(r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XADD", "mystream", "*", "field", "value2" });
+        defer testing.allocator.free(r);
+    }
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XGROUP", "CREATE", "mystream", "mygroup", "0" });
+        defer testing.allocator.free(r);
+    }
+
+    // Read as consumer1 to create pending entries
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XREADGROUP", "GROUP", "mygroup", "consumer1", "COUNT", "10", "STREAMS", "mystream", ">" });
+        defer testing.allocator.free(r);
+    }
+
+    // Delete consumer should return pending count = 2
+    const response = try client.sendCommand(&[_][]const u8{ "XGROUP", "DELCONSUMER", "mystream", "mygroup", "consumer1" });
+    defer testing.allocator.free(response);
+    try testing.expectEqualStrings(":2\r\n", response);
+
+    // Deleting non-existent consumer should error
+    const response2 = try client.sendCommand(&[_][]const u8{ "XGROUP", "DELCONSUMER", "mystream", "mygroup", "consumer1" });
+    defer testing.allocator.free(response2);
+    try testing.expect(response2[0] == '-'); // Error response
+}
+
+test "XGROUP DELCONSUMER - errors on missing group" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    {
+        const r = try client.sendCommand(&[_][]const u8{ "XADD", "mystream", "*", "field", "value" });
+        defer testing.allocator.free(r);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "XGROUP", "DELCONSUMER", "mystream", "nogroup", "consumer1" });
+    defer testing.allocator.free(response);
+    try testing.expect(std.mem.startsWith(u8, response, "-NOGROUP"));
+}

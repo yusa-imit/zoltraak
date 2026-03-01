@@ -13,6 +13,8 @@ const StreamEntry = storage_mod.Value.StreamEntry;
 /// XGROUP CREATE key groupname <id | $> [MKSTREAM]
 /// XGROUP DESTROY key groupname
 /// XGROUP SETID key groupname <id | $>
+/// XGROUP CREATECONSUMER key groupname consumername
+/// XGROUP DELCONSUMER key groupname consumername
 pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -126,6 +128,63 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         };
 
         return w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "CREATECONSUMER")) {
+        if (args.len < 5) {
+            return w.writeError("ERR wrong number of arguments for 'xgroup createconsumer' command");
+        }
+
+        const key = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        const groupname = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid group name"),
+        };
+
+        const consumername = switch (args[4]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid consumer name"),
+        };
+
+        const created = storage.xgroupCreateConsumer(key, groupname, consumername) catch |err| switch (err) {
+            error.NoKey => return w.writeError("ERR no such key"),
+            error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => |e| return e,
+        };
+
+        return w.writeInteger(if (created) 1 else 0);
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "DELCONSUMER")) {
+        if (args.len < 5) {
+            return w.writeError("ERR wrong number of arguments for 'xgroup delconsumer' command");
+        }
+
+        const key = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid key"),
+        };
+
+        const groupname = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid group name"),
+        };
+
+        const consumername = switch (args[4]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid consumer name"),
+        };
+
+        const pending_count = storage.xgroupDelConsumer(key, groupname, consumername) catch |err| switch (err) {
+            error.NoKey => return w.writeError("ERR no such key"),
+            error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
+            error.NoConsumer => return w.writeError("ERR No such consumer in this group"),
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => |e| return e,
+        };
+
+        return w.writeInteger(pending_count);
     } else {
         return w.writeError("ERR unknown XGROUP subcommand");
     }

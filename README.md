@@ -269,6 +269,8 @@ redis-cli -p 6379
 | XGROUP CREATE | `XGROUP CREATE key groupname <id \| $> [MKSTREAM]` | Create a consumer group |
 | XGROUP DESTROY | `XGROUP DESTROY key groupname` | Destroy a consumer group |
 | XGROUP SETID | `XGROUP SETID key groupname <id \| $>` | Set consumer group's last delivered ID |
+| XGROUP CREATECONSUMER | `XGROUP CREATECONSUMER key groupname consumername` | Explicitly create a consumer in a group (returns 1 if created, 0 if already exists) |
+| XGROUP DELCONSUMER | `XGROUP DELCONSUMER key groupname consumername` | Delete a consumer from a group (returns number of pending messages the consumer had) |
 | XREADGROUP | `XREADGROUP GROUP group consumer [COUNT count] [BLOCK ms] [NOACK] STREAMS key [key ...] id [id ...]` | Read entries from streams using consumer groups (> = new messages) |
 | XACK | `XACK key groupname id [id ...]` | Acknowledge processing of messages in a consumer group |
 | XCLAIM | `XCLAIM key group consumer min-idle-time ID [ID ...] [IDLE ms] [TIME ms] [RETRYCOUNT count] [FORCE] [JUSTID]` | Claim ownership of pending messages and transfer to another consumer |
@@ -613,6 +615,7 @@ Iterations 1–50 are complete.
 - Iteration 50: Hash field-level TTL commands (Redis 7.4+) - HEXPIRE/HPEXPIRE/HEXPIREAT/HPEXPIREAT (set field expiration), HPERSIST (remove field expiration), HTTL/HPTTL (get field TTL), HEXPIRETIME/HPEXPIRETIME (get field expiration timestamp) - fine-grained expiration control for hash fields
 - Iteration 52: Hash atomic commands (Redis 8.0+) - HGETDEL (atomically get and delete fields), HGETEX (atomically get and set field expiration), HSETEX (atomically set fields with expiration and conditionals FNX/FXX/KEEPTTL) - Phase 1.1 core hash command gaps from PRD
 - Iteration 53: Sorted set store and intersection cardinality — ZRANGESTORE (store ZRANGE result in destination key, returns member count), ZINTERCARD (count intersection cardinality with LIMIT support for early exit optimization)
+- Iteration 54: Stream consumer management — XGROUP CREATECONSUMER (explicitly create consumer in group, returns 1 if new/0 if exists), XGROUP DELCONSUMER (delete consumer from group, returns pending message count) - Phase 1.3 stream command gaps from PRD
 
 ### Roadmap
 

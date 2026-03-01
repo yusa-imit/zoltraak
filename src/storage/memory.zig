@@ -7296,6 +7296,94 @@ pub const Storage = struct {
         }
     }
 
+    /// Create a consumer in a consumer group
+    /// Returns true if consumer was created, false if it already exists
+    pub fn xgroupCreateConsumer(
+        self: *Storage,
+        key: []const u8,
+        group_name: []const u8,
+        consumer_name: []const u8,
+    ) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                // Check if consumer already exists
+                if (group_ptr.consumers.contains(consumer_name)) {
+                    return false;
+                }
+
+                // Create consumer
+                const owned_consumer_name = try self.allocator.dupe(u8, consumer_name);
+                errdefer self.allocator.free(owned_consumer_name);
+
+                try group_ptr.consumers.put(owned_consumer_name, Value.Consumer{
+                    .name = owned_consumer_name,
+                    .pending = std.ArrayList(Value.StreamId){},
+                });
+
+                return true;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Delete a consumer from a consumer group
+    /// Returns the number of pending messages the consumer had (always 0 or more)
+    pub fn xgroupDelConsumer(
+        self: *Storage,
+        key: []const u8,
+        group_name: []const u8,
+        consumer_name: []const u8,
+    ) !i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return error.NoKey;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return error.NoKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
+
+                // Remove consumer if exists
+                if (group_ptr.consumers.fetchRemove(consumer_name)) |kv| {
+                    var consumer = kv.value;
+                    const pending_count: i64 = @intCast(consumer.pending.items.len);
+
+                    // Remove all pending entries for this consumer from the group's pending list
+                    var i: usize = 0;
+                    while (i < group_ptr.pending.items.len) {
+                        if (std.mem.eql(u8, group_ptr.pending.items[i].consumer, consumer_name)) {
+                            var removed_entry = group_ptr.pending.orderedRemove(i);
+                            removed_entry.deinit(self.allocator);
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    consumer.deinit(self.allocator);
+                    return pending_count;
+                }
+
+                return error.NoConsumer;
+            },
+            else => return error.WrongType,
+        }
+    }
+
     /// Read from a stream for a consumer group
     pub fn xreadgroup(
         self: *Storage,
