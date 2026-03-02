@@ -616,6 +616,10 @@ pub fn executeCommand(
             break :blk try streams_adv.cmdXclaim(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XAUTOCLAIM")) {
             break :blk try streams_adv.cmdXautoclaim(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XACKDEL")) {
+            break :blk try streams_adv.cmdXackdel(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XDELEX")) {
+            break :blk try streams_adv.cmdXdelex(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XPENDING")) {
             break :blk try streams.cmdXpending(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XINFO")) {

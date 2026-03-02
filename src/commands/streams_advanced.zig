@@ -9,6 +9,7 @@ const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const StreamId = storage_mod.Value.StreamId;
 const StreamEntry = storage_mod.Value.StreamEntry;
+const XRefMode = storage_mod.XRefMode;
 
 /// XGROUP CREATE key groupname <id | $> [MKSTREAM]
 /// XGROUP DESTROY key groupname
@@ -1089,4 +1090,370 @@ test "XAUTOCLAIM basic functionality" {
     defer allocator.free(xautoclaim_result);
 
     try std.testing.expect(std.mem.indexOf(u8, xautoclaim_result, "1000-0") != null);
+}
+
+/// XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
+/// Acknowledge entries in a consumer group and conditionally delete from stream
+pub fn cmdXackdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 5) {
+        return w.writeError("ERR wrong number of arguments for 'xackdel' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const group_name = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid group name"),
+    };
+
+    // Parse optional mode flag
+    var mode: XRefMode = .keepref;
+    var ids_start_idx: usize = 3;
+
+    if (args.len > 3) {
+        const maybe_mode = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => "",
+        };
+
+        if (std.ascii.eqlIgnoreCase(maybe_mode, "KEEPREF")) {
+            mode = .keepref;
+            ids_start_idx = 4;
+        } else if (std.ascii.eqlIgnoreCase(maybe_mode, "DELREF")) {
+            mode = .delref;
+            ids_start_idx = 4;
+        } else if (std.ascii.eqlIgnoreCase(maybe_mode, "ACKED")) {
+            mode = .acked;
+            ids_start_idx = 4;
+        }
+    }
+
+    // Find IDS keyword
+    if (args.len <= ids_start_idx) {
+        return w.writeError("ERR wrong number of arguments for 'xackdel' command");
+    }
+
+    const ids_keyword = switch (args[ids_start_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    if (!std.ascii.eqlIgnoreCase(ids_keyword, "IDS")) {
+        return w.writeError("ERR syntax error, expected IDS keyword");
+    }
+
+    // Parse numids
+    if (args.len <= ids_start_idx + 1) {
+        return w.writeError("ERR wrong number of arguments for 'xackdel' command");
+    }
+
+    const numids_str = switch (args[ids_start_idx + 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numids"),
+    };
+
+    const numids = std.fmt.parseInt(usize, numids_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Extract ID array
+    const ids_array_start = ids_start_idx + 2;
+    if (args.len < ids_array_start + numids) {
+        return w.writeError("ERR wrong number of arguments for 'xackdel' command");
+    }
+
+    var id_strings = try allocator.alloc([]const u8, numids);
+    defer allocator.free(id_strings);
+
+    for (0..numids) |i| {
+        id_strings[i] = switch (args[ids_array_start + i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid ID"),
+        };
+    }
+
+    // Call storage layer
+    const results = storage.xackdel(allocator, key, group_name, id_strings, mode) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.NoGroup => return w.writeError("NOGROUP No such consumer group"),
+        else => |e| return e,
+    };
+    defer allocator.free(results);
+
+    // Format response as array of integers
+    var buffer = std.ArrayList(u8){};
+    errdefer buffer.deinit(allocator);
+
+    try buffer.append(allocator, '*');
+    try std.fmt.format(buffer.writer(allocator), "{d}", .{results.len});
+    try buffer.appendSlice(allocator, "\r\n");
+
+    for (results) |status| {
+        try buffer.append(allocator, ':');
+        try std.fmt.format(buffer.writer(allocator), "{d}", .{status});
+        try buffer.appendSlice(allocator, "\r\n");
+    }
+
+    return buffer.toOwnedSlice(allocator);
+}
+
+/// XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]
+/// Delete stream entries with consumer group reference control
+pub fn cmdXdelex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'xdelex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse optional mode flag
+    var mode: XRefMode = .keepref;
+    var ids_start_idx: usize = 2;
+
+    if (args.len > 2) {
+        const maybe_mode = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => "",
+        };
+
+        if (std.ascii.eqlIgnoreCase(maybe_mode, "KEEPREF")) {
+            mode = .keepref;
+            ids_start_idx = 3;
+        } else if (std.ascii.eqlIgnoreCase(maybe_mode, "DELREF")) {
+            mode = .delref;
+            ids_start_idx = 3;
+        } else if (std.ascii.eqlIgnoreCase(maybe_mode, "ACKED")) {
+            mode = .acked;
+            ids_start_idx = 3;
+        }
+    }
+
+    // Find IDS keyword
+    if (args.len <= ids_start_idx) {
+        return w.writeError("ERR wrong number of arguments for 'xdelex' command");
+    }
+
+    const ids_keyword = switch (args[ids_start_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    if (!std.ascii.eqlIgnoreCase(ids_keyword, "IDS")) {
+        return w.writeError("ERR syntax error, expected IDS keyword");
+    }
+
+    // Parse numids
+    if (args.len <= ids_start_idx + 1) {
+        return w.writeError("ERR wrong number of arguments for 'xdelex' command");
+    }
+
+    const numids_str = switch (args[ids_start_idx + 1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid numids"),
+    };
+
+    const numids = std.fmt.parseInt(usize, numids_str, 10) catch {
+        return w.writeError("ERR value is not an integer or out of range");
+    };
+
+    // Extract ID array
+    const ids_array_start = ids_start_idx + 2;
+    if (args.len < ids_array_start + numids) {
+        return w.writeError("ERR wrong number of arguments for 'xdelex' command");
+    }
+
+    var id_strings = try allocator.alloc([]const u8, numids);
+    defer allocator.free(id_strings);
+
+    for (0..numids) |i| {
+        id_strings[i] = switch (args[ids_array_start + i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid ID"),
+        };
+    }
+
+    // Call storage layer
+    const results = storage.xdelex(allocator, key, id_strings, mode) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        else => |e| return e,
+    };
+    defer allocator.free(results);
+
+    // Format response as array of integers
+    var buffer = std.ArrayList(u8){};
+    errdefer buffer.deinit(allocator);
+
+    try buffer.append(allocator, '*');
+    try std.fmt.format(buffer.writer(allocator), "{d}", .{results.len});
+    try buffer.appendSlice(allocator, "\r\n");
+
+    for (results) |status| {
+        try buffer.append(allocator, ':');
+        try std.fmt.format(buffer.writer(allocator), "{d}", .{status});
+        try buffer.appendSlice(allocator, "\r\n");
+    }
+
+    return buffer.toOwnedSlice(allocator);
+}
+
+test "XACKDEL KEEPREF mode" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null);
+    _ = try storage.xadd("mystream", "1001-0", &[_][]const u8{ "field2", "value2" }, null);
+
+    // Create consumer group
+    try storage.xgroupCreate("mystream", "mygroup", "0");
+
+    // Read entries
+    const entries = try storage.xreadgroup(allocator, "mygroup", "consumer1", "mystream", ">", 10, false);
+    try std.testing.expect(entries != null);
+    if (entries) |e| {
+        try std.testing.expectEqual(@as(usize, 2), e.items.len);
+        e.deinit(allocator);
+    }
+
+    // XACKDEL with KEEPREF
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XACKDEL" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "mygroup" },
+        RespValue{ .bulk_string = "KEEPREF" },
+        RespValue{ .bulk_string = "IDS" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const result = try cmdXackdel(allocator, &storage, &args);
+    defer allocator.free(result);
+
+    // Verify entry deleted and acknowledged
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1") != null);
+
+    // Verify entry gone from stream
+    const range = try storage.xrange(allocator, "mystream", "-", "+", null);
+    try std.testing.expectEqual(@as(usize, 1), range.items.len);
+    range.deinit(allocator);
+}
+
+test "XACKDEL ACKED mode with multiple groups" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null);
+
+    // Create two consumer groups
+    try storage.xgroupCreate("mystream", "group1", "0");
+    try storage.xgroupCreate("mystream", "group2", "0");
+
+    // Both groups read
+    const entries1 = try storage.xreadgroup(allocator, "group1", "consumer1", "mystream", ">", 10, false);
+    try std.testing.expect(entries1 != null);
+    if (entries1) |e| e.deinit(allocator);
+
+    const entries2 = try storage.xreadgroup(allocator, "group2", "consumer2", "mystream", ">", 10, false);
+    try std.testing.expect(entries2 != null);
+    if (entries2) |e| e.deinit(allocator);
+
+    // Group1 XACKDEL with ACKED (should return 2 - not deleted)
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XACKDEL" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "group1" },
+        RespValue{ .bulk_string = "ACKED" },
+        RespValue{ .bulk_string = "IDS" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const result1 = try cmdXackdel(allocator, &storage, &args1);
+    defer allocator.free(result1);
+
+    // Should return 2 (not deleted)
+    try std.testing.expect(std.mem.indexOf(u8, result1, ":2") != null);
+
+    // Verify entry still in stream
+    const range1 = try storage.xrange(allocator, "mystream", "-", "+", null);
+    try std.testing.expectEqual(@as(usize, 1), range1.items.len);
+    range1.deinit(allocator);
+
+    // Group2 also does XACKDEL with ACKED (now all acknowledged, should delete)
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XACKDEL" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "group2" },
+        RespValue{ .bulk_string = "ACKED" },
+        RespValue{ .bulk_string = "IDS" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const result2 = try cmdXackdel(allocator, &storage, &args2);
+    defer allocator.free(result2);
+
+    // Should return 1 (deleted)
+    try std.testing.expect(std.mem.indexOf(u8, result2, ":1") != null);
+
+    // Verify entry gone from stream
+    const range2 = try storage.xrange(allocator, "mystream", "-", "+", null);
+    try std.testing.expectEqual(@as(usize, 0), range2.items.len);
+    range2.deinit(allocator);
+}
+
+test "XDELEX DELREF cleans dangling references" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null);
+
+    // Create consumer group and read
+    try storage.xgroupCreate("mystream", "mygroup", "0");
+    const entries = try storage.xreadgroup(allocator, "mygroup", "consumer1", "mystream", ">", 10, false);
+    try std.testing.expect(entries != null);
+    if (entries) |e| e.deinit(allocator);
+
+    // Regular XDEL (leaves dangling ref in PEL)
+    const deleted = try storage.xdel("mystream", &[_][]const u8{"1000-0"});
+    try std.testing.expectEqual(@as(usize, 1), deleted);
+
+    // Verify pending still has reference (dangling)
+    const pending = try storage.xpendingSummary(allocator, "mystream", "mygroup");
+    try std.testing.expectEqual(@as(u64, 1), pending.count);
+    pending.deinit(allocator);
+
+    // XDELEX with DELREF on already-deleted entry (should clean dangling ref)
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XDELEX" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "DELREF" },
+        RespValue{ .bulk_string = "IDS" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const result = try cmdXdelex(allocator, &storage, &args);
+    defer allocator.free(result);
+
+    // Should return -1 (not in stream)
+    try std.testing.expect(std.mem.indexOf(u8, result, ":-1") != null);
+
+    // Verify pending now clean
+    const pending2 = try storage.xpendingSummary(allocator, "mystream", "mygroup");
+    try std.testing.expectEqual(@as(u64, 0), pending2.count);
+    pending2.deinit(allocator);
 }

@@ -3,6 +3,13 @@ const config_mod = @import("config.zig");
 
 pub const Config = config_mod.Config;
 
+/// Mode for XACKDEL and XDELEX commands
+pub const XRefMode = enum {
+    keepref, // Default: preserve PEL references
+    delref, // Aggressive: remove all PEL references
+    acked, // Safe: only delete if all groups acknowledged
+};
+
 /// Type of value stored in the key-value store
 pub const ValueType = enum {
     string,
@@ -7593,6 +7600,313 @@ pub const Storage = struct {
                 }
 
                 return acked;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Check if an entry is acknowledged by ALL consumer groups
+    /// Returns true if entry is not in any group's pending list
+    fn checkAllGroupsAcknowledged(
+        stream_val: *Value.StreamValue,
+        id: Value.StreamId,
+    ) bool {
+        // If no consumer groups exist, return false (cannot verify)
+        if (stream_val.consumer_groups.count() == 0) {
+            return false;
+        }
+
+        // Check if ID exists in ANY group's pending list
+        var it = stream_val.consumer_groups.valueIterator();
+        while (it.next()) |group| {
+            for (group.pending.items) |pending| {
+                if (pending.id.equals(id)) {
+                    return false; // Found in pending, not fully acknowledged
+                }
+            }
+        }
+
+        return true; // Not found in any pending list
+    }
+
+    /// Remove entry ID from all consumer groups' pending lists
+    /// Used by DELREF mode for aggressive cleanup
+    fn removeFromAllPendingLists(
+        self: *Storage,
+        stream_val: *Value.StreamValue,
+        id: Value.StreamId,
+    ) void {
+        var group_it = stream_val.consumer_groups.valueIterator();
+        while (group_it.next()) |group| {
+            // Remove from group pending
+            var i: usize = 0;
+            while (i < group.pending.items.len) {
+                if (group.pending.items[i].id.equals(id)) {
+                    var removed = group.pending.orderedRemove(i);
+                    removed.deinit(self.allocator);
+                    // Don't increment i, next item shifted down
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Remove from all consumer pendings
+            var consumer_it = group.consumers.valueIterator();
+            while (consumer_it.next()) |consumer| {
+                var j: usize = 0;
+                while (j < consumer.pending.items.len) {
+                    if (consumer.pending.items[j].equals(id)) {
+                        _ = consumer.pending.orderedRemove(j);
+                    } else {
+                        j += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Acknowledge entries in a consumer group and conditionally delete from stream
+    /// Returns array of status codes (1=deleted, -1=not found, 2=not deleted)
+    pub fn xackdel(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        group_name: []const u8,
+        ids: []const []const u8,
+        mode: XRefMode,
+    ) ![]i8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try std.ArrayList(i8).initCapacity(allocator, ids.len);
+        errdefer result.deinit(allocator);
+
+        const entry = self.data.getEntry(key) orelse {
+            // Stream doesn't exist - return -1 for all IDs
+            for (ids) |_| {
+                try result.append(allocator, -1);
+            }
+            return try result.toOwnedSlice(allocator);
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            for (ids) |_| {
+                try result.append(allocator, -1);
+            }
+            return try result.toOwnedSlice(allocator);
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse {
+                    return error.NoGroup;
+                };
+
+                for (ids) |id_str| {
+                    const id = Value.StreamId.parse(id_str, null) catch {
+                        try result.append(allocator, -1);
+                        continue;
+                    };
+
+                    // First, acknowledge the entry (remove from this group's PEL)
+                    var acked_in_group = false;
+                    var i: usize = 0;
+                    while (i < group_ptr.pending.items.len) {
+                        if (group_ptr.pending.items[i].id.equals(id)) {
+                            var removed = group_ptr.pending.orderedRemove(i);
+                            const consumer_name = removed.consumer;
+
+                            // Also remove from consumer's pending list
+                            if (group_ptr.consumers.getPtr(consumer_name)) |consumer_ptr| {
+                                var j: usize = 0;
+                                while (j < consumer_ptr.pending.items.len) {
+                                    if (consumer_ptr.pending.items[j].equals(id)) {
+                                        _ = consumer_ptr.pending.orderedRemove(j);
+                                        break;
+                                    } else {
+                                        j += 1;
+                                    }
+                                }
+                            }
+
+                            removed.deinit(self.allocator);
+                            acked_in_group = true;
+                            break;
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    // Now handle deletion based on mode
+                    switch (mode) {
+                        .keepref => {
+                            // Delete from stream, preserve PEL refs in other groups
+                            var found_in_stream = false;
+                            var k: usize = 0;
+                            while (k < stream_val.entries.items.len) {
+                                if (stream_val.entries.items[k].id.equals(id)) {
+                                    var removed_entry = stream_val.entries.orderedRemove(k);
+                                    removed_entry.deinit(self.allocator);
+                                    found_in_stream = true;
+                                    break;
+                                } else {
+                                    k += 1;
+                                }
+                            }
+                            try result.append(allocator, if (found_in_stream) 1 else -1);
+                        },
+                        .delref => {
+                            // Delete from stream AND remove all PEL refs
+                            var found_in_stream = false;
+                            var k: usize = 0;
+                            while (k < stream_val.entries.items.len) {
+                                if (stream_val.entries.items[k].id.equals(id)) {
+                                    var removed_entry = stream_val.entries.orderedRemove(k);
+                                    removed_entry.deinit(self.allocator);
+                                    found_in_stream = true;
+                                    break;
+                                } else {
+                                    k += 1;
+                                }
+                            }
+
+                            // Remove from ALL group PELs (even if not in stream)
+                            removeFromAllPendingLists(self, stream_val, id);
+
+                            try result.append(allocator, if (found_in_stream) 1 else -1);
+                        },
+                        .acked => {
+                            // Only delete if ALL groups acknowledged
+                            if (checkAllGroupsAcknowledged(stream_val, id)) {
+                                // All groups acknowledged - safe to delete
+                                var found_in_stream = false;
+                                var k: usize = 0;
+                                while (k < stream_val.entries.items.len) {
+                                    if (stream_val.entries.items[k].id.equals(id)) {
+                                        var removed_entry = stream_val.entries.orderedRemove(k);
+                                        removed_entry.deinit(self.allocator);
+                                        found_in_stream = true;
+                                        break;
+                                    } else {
+                                        k += 1;
+                                    }
+                                }
+                                try result.append(allocator, if (found_in_stream) 1 else -1);
+                            } else {
+                                // Not all groups acknowledged - don't delete, return 2
+                                try result.append(allocator, 2);
+                            }
+                        },
+                    }
+                }
+
+                return try result.toOwnedSlice(allocator);
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Delete stream entries with consumer group reference control
+    /// Returns array of status codes (1=deleted, -1=not found, 2=not deleted)
+    pub fn xdelex(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        key: []const u8,
+        ids: []const []const u8,
+        mode: XRefMode,
+    ) ![]i8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try std.ArrayList(i8).initCapacity(allocator, ids.len);
+        errdefer result.deinit(allocator);
+
+        const entry = self.data.getEntry(key) orelse {
+            // Stream doesn't exist - return -1 for all IDs
+            for (ids) |_| {
+                try result.append(allocator, -1);
+            }
+            return try result.toOwnedSlice(allocator);
+        };
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            for (ids) |_| {
+                try result.append(allocator, -1);
+            }
+            return try result.toOwnedSlice(allocator);
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                for (ids) |id_str| {
+                    const id = Value.StreamId.parse(id_str, null) catch {
+                        try result.append(allocator, -1);
+                        continue;
+                    };
+
+                    switch (mode) {
+                        .keepref => {
+                            // Traditional XDEL behavior - delete from stream, preserve PEL refs
+                            var found_in_stream = false;
+                            var i: usize = 0;
+                            while (i < stream_val.entries.items.len) {
+                                if (stream_val.entries.items[i].id.equals(id)) {
+                                    var removed_entry = stream_val.entries.orderedRemove(i);
+                                    removed_entry.deinit(self.allocator);
+                                    found_in_stream = true;
+                                    break;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            try result.append(allocator, if (found_in_stream) 1 else -1);
+                        },
+                        .delref => {
+                            // Delete from stream AND remove all PEL refs
+                            var found_in_stream = false;
+                            var i: usize = 0;
+                            while (i < stream_val.entries.items.len) {
+                                if (stream_val.entries.items[i].id.equals(id)) {
+                                    var removed_entry = stream_val.entries.orderedRemove(i);
+                                    removed_entry.deinit(self.allocator);
+                                    found_in_stream = true;
+                                    break;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+
+                            // Remove from ALL group PELs (even if not in stream - cleans dangling refs)
+                            removeFromAllPendingLists(self, stream_val, id);
+
+                            try result.append(allocator, if (found_in_stream) 1 else -1);
+                        },
+                        .acked => {
+                            // Only delete if ALL groups acknowledged
+                            if (checkAllGroupsAcknowledged(stream_val, id)) {
+                                // All groups acknowledged (or no groups exist) - safe to delete
+                                var found_in_stream = false;
+                                var i: usize = 0;
+                                while (i < stream_val.entries.items.len) {
+                                    if (stream_val.entries.items[i].id.equals(id)) {
+                                        var removed_entry = stream_val.entries.orderedRemove(i);
+                                        removed_entry.deinit(self.allocator);
+                                        found_in_stream = true;
+                                        break;
+                                    } else {
+                                        i += 1;
+                                    }
+                                }
+                                try result.append(allocator, if (found_in_stream) 1 else -1);
+                            } else {
+                                // Not all groups acknowledged - don't delete, return 2
+                                try result.append(allocator, 2);
+                            }
+                        },
+                    }
+                }
+
+                return try result.toOwnedSlice(allocator);
             },
             else => return error.WrongType,
         }
