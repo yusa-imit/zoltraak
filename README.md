@@ -379,7 +379,7 @@ redis-cli -p 6379
 | ZINTERSTORE | `ZINTERSTORE destination numkeys key [key ...]` | Store intersection of sorted sets in destination, returns member count |
 | ZDIFFSTORE | `ZDIFFSTORE destination numkeys key [key ...]` | Store difference of sorted sets in destination, returns member count |
 
-### Geospatial Commands (Iteration 25)
+### Geospatial Commands (Iterations 25, 56, 58)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -388,7 +388,11 @@ redis-cli -p 6379
 | GEODIST | `GEODIST key member1 member2 [m\|km\|ft\|mi]` | Returns distance between two members (default: meters) |
 | GEOHASH | `GEOHASH key member [member ...]` | Returns geohash strings representing positions of members |
 | GEORADIUS | `GEORADIUS key longitude latitude radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Query members within radius from point |
-| GEOSEARCH | `GEOSEARCH key FROMMEMBER member \| FROMLONLAT lon lat BYRADIUS radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Modern geospatial query (BYBOX not implemented) |
+| GEORADIUS_RO | `GEORADIUS_RO key longitude latitude radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Read-only variant of GEORADIUS (deprecated but used by read-only replicas) |
+| GEORADIUSBYMEMBER | `GEORADIUSBYMEMBER key member radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Query members within radius from a member's location |
+| GEORADIUSBYMEMBER_RO | `GEORADIUSBYMEMBER_RO key member radius m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Read-only variant of GEORADIUSBYMEMBER |
+| GEOSEARCH | `GEOSEARCH key FROMMEMBER member \| FROMLONLAT lon lat BYRADIUS radius \| BYBOX width height m\|km\|ft\|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC\|DESC]` | Modern unified geospatial query with BYRADIUS and BYBOX support |
+| GEOSEARCHSTORE | `GEOSEARCHSTORE dest source FROMMEMBER member \| FROMLONLAT lon lat BYRADIUS radius \| BYBOX width height m\|km\|ft\|mi [COUNT count] [ASC\|DESC] [STOREDIST]` | Store GEOSEARCH results in sorted set (STOREDIST stores distances instead of geohashes) |
 
 ### HyperLogLog Commands (Iteration 26)
 

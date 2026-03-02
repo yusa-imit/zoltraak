@@ -36,6 +36,14 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 48 | HRANDFIELD |
 | 49 | LMPOP, ZMPOP, BZMPOP |
 | 50 | Hash field-level TTL (HEXPIRE, HPEXPIRE, HTTL, HPTTL, etc.) |
+| 51 | BITPOS |
+| 52 | HGETDEL, HGETEX, HSETEX |
+| 53 | ZRANGESTORE, ZINTERCARD |
+| 54 | XGROUP CREATECONSUMER, XGROUP DELCONSUMER |
+| 55 | XINFO CONSUMERS, XINFO GROUPS |
+| 56 | GEOSEARCH BYBOX, GEOSEARCHSTORE |
+| 57 | SORT |
+| 58 | GEORADIUS_RO, GEORADIUSBYMEMBER, GEORADIUSBYMEMBER_RO |
 
 ### Known stubs (need real implementation for 1.0)
 

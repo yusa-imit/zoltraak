@@ -799,6 +799,12 @@ pub fn executeCommand(
             break :blk try geo_cmds.cmdGeohash(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS")) {
             break :blk try geo_cmds.cmdGeoradius(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS_RO")) {
+            break :blk try geo_cmds.cmdGeoradiusRo(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEORADIUSBYMEMBER")) {
+            break :blk try geo_cmds.cmdGeoradiusbymember(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "GEORADIUSBYMEMBER_RO")) {
+            break :blk try geo_cmds.cmdGeoradiusbymemberRo(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
             break :blk try geo_cmds.cmdGeosearch(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCHSTORE")) {
