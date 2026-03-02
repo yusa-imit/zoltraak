@@ -132,7 +132,7 @@ pub fn executeCommand(
             }
             const write_cmds = [_][]const u8{
                 "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-                "RPOP",       "SADD",       "SREM",       "HSET",       "HDEL",
+                "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
                 "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
                 "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
                 "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
@@ -202,7 +202,7 @@ pub fn executeCommand(
     const is_write_cmd = blk: {
         const write_cmds = [_][]const u8{
             "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-            "RPOP",       "SADD",       "SREM",       "HSET",       "HDEL",
+            "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
             "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
             "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
             "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
@@ -411,6 +411,8 @@ pub fn executeCommand(
         // Hash commands
         else if (std.mem.eql(u8, cmd_upper, "HSET")) {
             break :blk try hashes.cmdHset(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "HMSET")) {
+            break :blk try hashes.cmdHmset(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HGET")) {
             break :blk try hashes.cmdHget(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HDEL")) {
@@ -500,6 +502,8 @@ pub fn executeCommand(
             break :blk try keys_cmds.cmdZscan(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SORT")) {
             break :blk try keys_cmds.cmdSort(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SORT_RO")) {
+            break :blk try keys_cmds.cmdSortRo(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "OBJECT")) {
             break :blk try keys_cmds.cmdObject(allocator, storage, array);
         }

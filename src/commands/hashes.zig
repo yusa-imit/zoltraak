@@ -59,6 +59,57 @@ pub fn cmdHset(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     return w.writeInteger(@intCast(added_count));
 }
 
+/// HMSET key field value [field value ...]
+/// Deprecated alias for HSET - sets field-value pairs in a hash
+/// Returns simple string "OK"
+/// Note: Redis deprecated this in favor of HSET, but many clients still use it
+pub fn cmdHmset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 4 or (args.len - 2) % 2 != 0) {
+        return w.writeError("ERR wrong number of arguments for 'hmset' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Extract field-value pairs
+    const pair_count = (args.len - 2) / 2;
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, pair_count);
+    defer fields.deinit(allocator);
+    var values = try std.ArrayList([]const u8).initCapacity(allocator, pair_count);
+    defer values.deinit(allocator);
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 2) {
+        const field = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid field"),
+        };
+        const value = switch (args[i + 1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid value"),
+        };
+
+        try fields.append(allocator, field);
+        try values.append(allocator, value);
+    }
+
+    // Execute HSET
+    _ = storage.hset(key, fields.items, values.items, null) catch |err| {
+        if (err == error.WrongType) {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        return err;
+    };
+
+    // HMSET returns "OK" instead of the count
+    return w.writeSimpleString("OK");
+}
+
 /// HGET key field
 /// Get value of a field in a hash
 /// Returns bulk string or null
@@ -2854,4 +2905,66 @@ test "cmdHsetex - KEEPTTL preserves existing field TTL" {
     // Should have positive TTL
     try std.testing.expect(std.mem.indexOf(u8, ttl_after, ":") != null);
     try std.testing.expect(!std.mem.eql(u8, ttl_after, ":-1\r\n"));
+}
+// Temporary test file for HMSET - will be appended to hashes.zig
+
+test "HMSET basic" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // HMSET myhash field1 value1 field2 value2
+    const args = [_]RespValue{
+        .{ .bulk_string = "HMSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+        .{ .bulk_string = "field2" },
+        .{ .bulk_string = "value2" },
+    };
+    const response = try cmdHmset(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // HMSET returns "+OK\r\n"
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Verify fields were set
+    const get_args1 = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+    };
+    const get1 = try cmdHget(allocator, &storage, &get_args1);
+    defer allocator.free(get1);
+    try std.testing.expect(std.mem.indexOf(u8, get1, "value1") != null);
+
+    const get_args2 = [_]RespValue{
+        .{ .bulk_string = "HGET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field2" },
+    };
+    const get2 = try cmdHget(allocator, &storage, &get_args2);
+    defer allocator.free(get2);
+    try std.testing.expect(std.mem.indexOf(u8, get2, "value2") != null);
+}
+
+test "HMSET wrong type" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a string key
+    _ = try storage.set("mykey", "value", null);
+
+    // Try HMSET on string key
+    const args = [_]RespValue{
+        .{ .bulk_string = "HMSET" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    const response = try cmdHmset(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
 }

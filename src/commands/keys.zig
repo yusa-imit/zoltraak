@@ -1440,6 +1440,26 @@ fn compareElements(a: []const u8, b: []const u8, weight_a: ?f64, weight_b: ?f64,
     return if (descending) -cmp else cmp;
 }
 
+/// SORT_RO key [BY pattern] [LIMIT offset count] [GET pattern ...] [ASC|DESC] [ALPHA]
+/// Read-only variant of SORT (Redis 7.0+)
+/// Identical to SORT but without the STORE option
+pub fn cmdSortRo(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Check for STORE option (not allowed in SORT_RO)
+    for (args[1..]) |arg| {
+        if (arg == .bulk_string) {
+            if (std.ascii.eqlIgnoreCase(arg.bulk_string, "STORE")) {
+                return w.writeError("ERR STORE option is not allowed in SORT_RO");
+            }
+        }
+    }
+
+    // Delegate to cmdSort (which handles all the sorting logic)
+    return cmdSort(allocator, storage, args);
+}
+
 // ── OBJECT subcommands ────────────────────────────────────────────────────────
 
 /// OBJECT ENCODING key | OBJECT REFCOUNT key | OBJECT IDLETIME key | OBJECT FREQ key | OBJECT HELP
@@ -1779,4 +1799,72 @@ test "keys - UNLINK deletes keys" {
     const result = try cmdUnlink(allocator, storage, &args);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(":2\r\n", result);
+}
+// Temporary test file for SORT_RO - will be appended to keys.zig
+
+test "SORT_RO basic" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a list with unsorted values
+    _ = try storage.rpush("mylist", &[_][]const u8{ "3", "1", "2" }, null);
+
+    // SORT_RO mylist
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT_RO" },
+        .{ .bulk_string = "mylist" },
+    };
+    const response = try cmdSortRo(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return sorted array: 1, 2, 3
+    try std.testing.expect(std.mem.indexOf(u8, response, "1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "3") != null);
+}
+
+test "SORT_RO with ALPHA" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a list with strings
+    _ = try storage.rpush("mylist", &[_][]const u8{ "banana", "apple", "cherry" }, null);
+
+    // SORT_RO mylist ALPHA
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT_RO" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "ALPHA" },
+    };
+    const response = try cmdSortRo(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return alphabetically sorted
+    try std.testing.expect(std.mem.indexOf(u8, response, "apple") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "banana") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "cherry") != null);
+}
+
+test "SORT_RO rejects STORE option" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("mylist", &[_][]const u8{ "3", "1", "2" }, null);
+
+    // SORT_RO mylist STORE dest - should fail
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT_RO" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "STORE" },
+        .{ .bulk_string = "dest" },
+    };
+    const response = try cmdSortRo(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, response, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "STORE") != null);
 }
