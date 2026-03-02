@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-50 complete (150+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-59 complete (160+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-### Completed (Iterations 1-50)
+### Completed (Iterations 1-59)
 
 | Range | Features |
 |-------|----------|
@@ -44,6 +44,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 56 | GEOSEARCH BYBOX, GEOSEARCHSTORE |
 | 57 | SORT |
 | 58 | GEORADIUS_RO, GEORADIUSBYMEMBER, GEORADIUSBYMEMBER_RO |
+| 59 | XSETID |
 
 ### Known stubs (need real implementation for 1.0)
 

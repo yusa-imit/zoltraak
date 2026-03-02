@@ -265,6 +265,7 @@ redis-cli -p 6379
 | XREVRANGE | `XREVRANGE key start end [COUNT count]` | Query range in reverse order (use `+` for max, `-` for min) |
 | XDEL | `XDEL key ID [ID ...]` | Remove specific entries from stream by ID |
 | XTRIM | `XTRIM key MAXLEN [~] count` | Trim stream to approximately maxlen entries |
+| XSETID | `XSETID key <ID \| $> [ENTRIESADDED entries-added] [MAXDELETEDID max-deleted-id]` | Set stream metadata (last_id, entries_added, max_deleted_entry_id) |
 | XREAD | `XREAD [COUNT count] [BLOCK ms] STREAMS key [key ...] id [id ...]` | Read entries from one or more streams ($ = only new messages) |
 | XGROUP CREATE | `XGROUP CREATE key groupname <id \| $> [MKSTREAM]` | Create a consumer group |
 | XGROUP DESTROY | `XGROUP DESTROY key groupname` | Destroy a consumer group |

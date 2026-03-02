@@ -233,6 +233,7 @@ pub const Value = union(ValueType) {
         expires_at: ?i64,
         consumer_groups: std.StringHashMap(ConsumerGroup), // group_name -> ConsumerGroup
         entries_added: u64, // Total entries ever added to this stream (for lag calculation)
+        max_deleted_entry_id: StreamId, // Highest deleted entry ID (for compaction tracking)
 
         pub fn deinit(self: *StreamValue, allocator: std.mem.Allocator) void {
             for (self.entries.items) |*entry| {
@@ -4549,6 +4550,7 @@ pub const Storage = struct {
                     .expires_at = expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                     .entries_added = @intCast(entries.items.len),
+                    .max_deleted_entry_id = .{ .ms = 0, .seq = 0 },
                 } };
             },
             0xFD => { // HyperLogLog
@@ -4722,6 +4724,7 @@ pub const Storage = struct {
                     .expires_at = st.expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                     .entries_added = st.entries_added,
+                    .max_deleted_entry_id = st.max_deleted_entry_id,
                 } };
             },
             .hyperloglog => |hll| blk: {
@@ -6898,6 +6901,7 @@ pub const Storage = struct {
                     .expires_at = expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                     .entries_added = 0,
+                    .max_deleted_entry_id = .{ .ms = 0, .seq = 0 },
                 },
             };
         } else {
@@ -6912,6 +6916,7 @@ pub const Storage = struct {
                         .expires_at = expires_at,
                         .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
                         .entries_added = 0,
+                        .max_deleted_entry_id = .{ .ms = 0, .seq = 0 },
                     },
                 };
             }
@@ -8340,6 +8345,125 @@ pub const Storage = struct {
                 return try buf.toOwnedSlice(allocator);
             },
             else => return error.WrongType,
+        }
+    }
+
+    /// XSETID key <ID | $> [ENTRIESADDED entries-added] [MAXDELETEDID max-deleted-id]
+    /// Set stream metadata (last_id, entries_added, max_deleted_entry_id)
+    /// Creates stream if it doesn't exist
+    /// Returns error if key exists and is not a stream
+    /// Set stream metadata (last_id, entries_added, max_deleted_entry_id).
+    ///
+    /// Creates stream if it doesn't exist. For new streams, $ placeholder uses 0-0.
+    /// For existing streams, $ placeholder preserves current last_id.
+    ///
+    /// Arguments:
+    ///   - key: Stream key name
+    ///   - new_last_id: Stream ID string or "$" placeholder
+    ///   - entries_added: Optional total entries counter
+    ///   - max_deleted_id: Optional highest deleted entry ID
+    ///
+    /// Returns error.WrongType if key exists but is not a stream.
+    /// Returns error.InvalidStreamId if ID format is invalid.
+    pub fn xsetid(
+        self: *Storage,
+        key: []const u8,
+        new_last_id: []const u8,
+        entries_added: ?u64,
+        max_deleted_id: ?[]const u8,
+    ) error{ WrongType, InvalidStreamId, OutOfMemory, Overflow, InvalidCharacter }!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = getCurrentTimestamp();
+
+        // Get or create stream
+        const entry = try self.data.getOrPut(key);
+        if (!entry.found_existing) {
+            // Create new stream
+            const owned_key = try self.allocator.dupe(u8, key);
+            errdefer {
+                self.allocator.free(owned_key);
+                _ = self.data.remove(key);
+            }
+            entry.key_ptr.* = owned_key;
+
+            // Parse new_last_id ($ means 0-0 for empty streams)
+            const parsed_id = if (std.mem.eql(u8, new_last_id, "$"))
+                Value.StreamId{ .ms = 0, .seq = 0 }
+            else
+                try Value.StreamId.parse(new_last_id, null);
+
+            // Parse max_deleted_id if provided
+            const parsed_max_deleted = if (max_deleted_id) |mdid|
+                try Value.StreamId.parse(mdid, null)
+            else
+                Value.StreamId{ .ms = 0, .seq = 0 };
+
+            entry.value_ptr.* = Value{
+                .stream = .{
+                    .entries = std.ArrayList(Value.StreamEntry){},
+                    .last_id = parsed_id,
+                    .expires_at = null,
+                    .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                    .entries_added = entries_added orelse 0,
+                    .max_deleted_entry_id = parsed_max_deleted,
+                },
+            };
+        } else {
+            // Check expiration
+            if (entry.value_ptr.isExpired(now)) {
+                var value = entry.value_ptr.*;
+                value.deinit(self.allocator);
+
+                // Parse new_last_id ($ means 0-0 for empty streams)
+                const parsed_id = if (std.mem.eql(u8, new_last_id, "$"))
+                    Value.StreamId{ .ms = 0, .seq = 0 }
+                else
+                    try Value.StreamId.parse(new_last_id, null);
+
+                // Parse max_deleted_id if provided
+                const parsed_max_deleted = if (max_deleted_id) |mdid|
+                    try Value.StreamId.parse(mdid, null)
+                else
+                    Value.StreamId{ .ms = 0, .seq = 0 };
+
+                entry.value_ptr.* = Value{
+                    .stream = .{
+                        .entries = std.ArrayList(Value.StreamEntry){},
+                        .last_id = parsed_id,
+                        .expires_at = null,
+                        .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                        .entries_added = entries_added orelse 0,
+                        .max_deleted_entry_id = parsed_max_deleted,
+                    },
+                };
+            } else {
+                // Update existing stream
+                switch (entry.value_ptr.*) {
+                    .stream => |*stream_val| {
+                        // Parse new_last_id ($ means use current last_id, or 0-0 for empty streams)
+                        const parsed_id = if (std.mem.eql(u8, new_last_id, "$"))
+                            stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 }
+                        else
+                            try Value.StreamId.parse(new_last_id, null);
+
+                        stream_val.last_id = parsed_id;
+
+                        // Update entries_added if provided
+                        if (entries_added) |ea| {
+                            stream_val.entries_added = ea;
+                        }
+
+                        // Update max_deleted_entry_id if provided
+                        if (max_deleted_id) |mdid| {
+                            const parsed_max_deleted = try Value.StreamId.parse(mdid, null);
+                            stream_val.max_deleted_entry_id = parsed_max_deleted;
+                        }
+                    },
+                    else => return error.WrongType,
+                }
+            }
         }
     }
 };

@@ -151,8 +151,8 @@ pub fn executeCommand(
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
                 "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
                 "SETBIT",     "BITOP",      "BITFIELD",
-                "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
-                "XCLAIM",     "XAUTOCLAIM",
+                "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
+                "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
             };
             var is_write = false;
@@ -221,8 +221,8 @@ pub fn executeCommand(
             "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
             "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
             "SETBIT",     "BITOP",      "BITFIELD",
-            "XADD",       "XDEL",       "XTRIM",      "XGROUP",     "XACK",
-            "XCLAIM",     "XAUTOCLAIM",
+            "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
+            "XACK",       "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
         };
         for (write_cmds) |wc| {
@@ -620,6 +620,8 @@ pub fn executeCommand(
             break :blk try streams.cmdXpending(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XINFO")) {
             break :blk try streams.cmdXinfoStream(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XSETID")) {
+            break :blk try streams.cmdXsetid(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {

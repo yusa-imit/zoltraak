@@ -375,6 +375,77 @@ pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     return w.writeInteger(@intCast(deleted));
 }
 
+/// XSETID key <ID | $> [ENTRIESADDED entries-added] [MAXDELETEDID max-deleted-id]
+/// Set stream metadata (last_id, entries_added, max_deleted_entry_id)
+/// Creates stream if it doesn't exist
+/// $ placeholder uses current last_id (or 0-0 for empty streams)
+pub fn cmdXsetid(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'xsetid' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    const new_last_id = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid stream ID specified as stream command argument"),
+    };
+
+    // Parse optional ENTRIESADDED and MAXDELETEDID parameters
+    var entries_added: ?u64 = null;
+    var max_deleted_id: ?[]const u8 = null;
+
+    var idx: usize = 3;
+    while (idx < args.len) {
+        const param = switch (args[idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(param, "ENTRIESADDED")) {
+            idx += 1;
+            if (idx >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const value_str = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            entries_added = std.fmt.parseInt(u64, value_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.ascii.eqlIgnoreCase(param, "MAXDELETEDID")) {
+            idx += 1;
+            if (idx >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            max_deleted_id = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid stream ID specified as stream command argument"),
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+
+        idx += 1;
+    }
+
+    // Execute XSETID
+    storage.xsetid(key, new_last_id, entries_added, max_deleted_id) catch |err| switch (err) {
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.InvalidStreamId, error.InvalidCharacter, error.Overflow => return w.writeError("ERR invalid stream ID specified as stream command argument"),
+        else => return err,
+    };
+
+    return w.writeSimpleString("OK");
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 test "streams - XADD with auto ID" {
@@ -990,4 +1061,197 @@ test "streams - XINFO STREAM shows basic metadata" {
     // Should contain length and last-entry-id
     try std.testing.expect(std.mem.indexOf(u8, result, "length") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "last-entry-id") != null);
+}
+
+test "streams - XSETID creates new stream" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // XSETID on non-existent key should create stream
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1234-5" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Verify stream was created with correct last_id
+    const len_result = try cmdXlen(allocator, storage, &[_]RespValue{
+        RespValue{ .bulk_string = "XLEN" },
+        RespValue{ .bulk_string = "s" },
+    });
+    defer allocator.free(len_result);
+
+    try std.testing.expectEqualStrings(":0\r\n", len_result); // Stream exists but empty
+}
+
+test "streams - XSETID with $ placeholder on empty stream" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // XSETID with $ on non-existent stream should use 0-0
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Verify stream exists
+    const len_result = try cmdXlen(allocator, storage, &[_]RespValue{
+        RespValue{ .bulk_string = "XLEN" },
+        RespValue{ .bulk_string = "s" },
+    });
+    defer allocator.free(len_result);
+
+    try std.testing.expectEqualStrings(":0\r\n", len_result);
+}
+
+test "streams - XSETID with $ placeholder on existing stream" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entry to stream
+    _ = try cmdXadd(allocator, storage, &[_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "x" },
+        RespValue{ .bulk_string = "1" },
+    });
+
+    // XSETID with $ should keep current last_id (1000-0)
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XSETID with ENTRIESADDED parameter" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream with ENTRIESADDED
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "ENTRIESADDED" },
+        RespValue{ .bulk_string = "100" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XSETID with MAXDELETEDID parameter" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream with MAXDELETEDID
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "2000-0" },
+        RespValue{ .bulk_string = "MAXDELETEDID" },
+        RespValue{ .bulk_string = "500-10" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XSETID with all parameters" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream with all parameters
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "3000-0" },
+        RespValue{ .bulk_string = "ENTRIESADDED" },
+        RespValue{ .bulk_string = "150" },
+        RespValue{ .bulk_string = "MAXDELETEDID" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XSETID WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a string key
+    try storage.set("s", "value", null);
+
+    // XSETID should return WRONGTYPE
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1000-0" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "WRONGTYPE") != null);
+}
+
+test "streams - XSETID invalid stream ID" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Invalid ID format
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "invalid" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR Invalid stream ID") != null);
+}
+
+test "streams - XSETID invalid ENTRIESADDED value" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Non-integer ENTRIESADDED
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "ENTRIESADDED" },
+        RespValue{ .bulk_string = "notanumber" },
+    };
+    const result = try cmdXsetid(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR value is not an integer") != null);
 }
