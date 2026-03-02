@@ -494,3 +494,25 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - [ ] 기존 테스트 전체 통과 확인
 
 **Note**: Non-breaking upgrade. Layout features enable future interactive TUI prompt editor and chat interface.
+
+### v1.3.0 — Performance & Developer Experience (status: READY)
+
+**sailor v1.3.0 released** (2026-03-02) — Performance optimization and debugging tools
+
+- **New features**:
+  - RenderBudget: Frame time tracking with automatic frame skip for 60fps
+  - LazyBuffer: Dirty region tracking (only render changed cells)
+  - EventBatcher: Coalesce rapid events (resize storms, key bursts)
+  - DebugOverlay: Visual debugging (layout rects, FPS, event log)
+  - ThemeWatcher: Hot-reload JSON themes without restart
+- **Impact on zoltraak**: High priority — critical for TUI performance
+  - Lazy rendering essential for large key/data viewers (skip unchanged rows)
+  - Event batching handles rapid resize during live monitoring
+  - DebugOverlay invaluable for REPL development
+  - ThemeWatcher enables theme iteration for CLI/REPL styling
+- [ ] `build.zig.zon`에 sailor v1.3.0 의존성 업데이트
+- [ ] Consider LazyBuffer for key browser pagination (reduce render overhead)
+- [ ] Add DebugOverlay toggle (Ctrl+D) for REPL debugging
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Performance features are opt-in. REPL and TUI viewers will benefit significantly from lazy rendering.
