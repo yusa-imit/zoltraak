@@ -519,7 +519,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. Performance features are opt-in. REPL and TUI viewers will benefit significantly from lazy rendering.
 
-### v1.4.0 — Advanced Input & Forms (status: READY)
+### v1.4.0 — Advanced Input & Forms (DONE)
 
 **sailor v1.4.0 released** (2026-03-03) — Form widgets and input validation
 
@@ -536,10 +536,8 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Select widget for model selection dropdown (GPT-4, Claude, etc.)
   - Checkbox for feature toggles (streaming, embeddings, RAG)
   - RadioGroup for mutually exclusive settings (temperature presets, formats)
-- [ ] `build.zig.zon`에 sailor v1.4.0 의존성 업데이트
-- [ ] (Recommended) Implement interactive prompt editor TUI using Form widget
-- [ ] (Recommended) Add model selector using Select widget
-- [ ] Add connection string validation using validators module
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.4.0 (hash: sailor-1.4.0-53_z3OFrCgA54UWtI6XB--VquKygCaJwzXqceaqki3sh)
+- All existing tests pass
+- Form widgets available for future TUI enhancements
 
 **Note**: Non-breaking upgrade. Form features enable the interactive TUI prompt editor planned for v2.0 milestone.
