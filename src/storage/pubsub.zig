@@ -14,6 +14,9 @@ const SubscriberState = struct {
     /// Set of channel names this subscriber is watching.
     /// Owned strings duplicated from caller input.
     channels: std.StringHashMap(void),
+    /// Set of pattern subscriptions this subscriber is watching.
+    /// Owned strings duplicated from caller input.
+    patterns: std.StringHashMap(void),
     /// Ring-buffer of pending RESP-formatted message frames.
     /// Each element is an owned slice allocated with the PubSub allocator.
     pending: std.ArrayList([]const u8),
@@ -21,6 +24,7 @@ const SubscriberState = struct {
     fn init(allocator: std.mem.Allocator) SubscriberState {
         return SubscriberState{
             .channels = std.StringHashMap(void).init(allocator),
+            .patterns = std.StringHashMap(void).init(allocator),
             .pending = std.ArrayList([]const u8){},
         };
     }
@@ -32,6 +36,12 @@ const SubscriberState = struct {
             allocator.free(key.*);
         }
         self.channels.deinit();
+        // Free all pattern strings
+        var pat_it = self.patterns.keyIterator();
+        while (pat_it.next()) |key| {
+            allocator.free(key.*);
+        }
+        self.patterns.deinit();
         // Free all pending message bytes
         for (self.pending.items) |msg| {
             allocator.free(msg);
@@ -58,6 +68,9 @@ pub const PubSub = struct {
     /// channel name -> list of subscriber IDs.
     /// Channel name strings are owned (duplicated).
     channels: std.StringHashMap(std.ArrayList(u64)),
+    /// pattern -> list of subscriber IDs for pattern subscriptions.
+    /// Pattern strings are owned (duplicated).
+    patterns: std.StringHashMap(std.ArrayList(u64)),
     /// subscriber_id -> SubscriberState
     subscribers: std.AutoHashMap(u64, SubscriberState),
 
@@ -66,6 +79,7 @@ pub const PubSub = struct {
         return PubSub{
             .allocator = allocator,
             .channels = std.StringHashMap(std.ArrayList(u64)).init(allocator),
+            .patterns = std.StringHashMap(std.ArrayList(u64)).init(allocator),
             .subscribers = std.AutoHashMap(u64, SubscriberState).init(allocator),
         };
     }
@@ -79,6 +93,14 @@ pub const PubSub = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.channels.deinit();
+
+        // Free pattern subscriber lists and owned pattern keys
+        var pat_it = self.patterns.iterator();
+        while (pat_it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.patterns.deinit();
 
         // Free subscriber states
         var sub_it = self.subscribers.valueIterator();
@@ -190,33 +212,161 @@ pub const PubSub = struct {
         }
     }
 
+    /// Subscribe `subscriber_id` to `pattern`.
+    /// Returns the total number of patterns this subscriber is now watching.
+    /// Safe to call multiple times for the same (subscriber, pattern) pair.
+    pub fn psubscribe(self: *PubSub, subscriber_id: u64, pattern: []const u8) !usize {
+        // Ensure subscriber state exists
+        const state = try self.getOrCreateState(subscriber_id);
+
+        // Check if already subscribed to avoid duplicate registration
+        if (state.patterns.contains(pattern)) {
+            return state.patterns.count();
+        }
+
+        // Add pattern to subscriber's set
+        const pattern_copy = try self.allocator.dupe(u8, pattern);
+        errdefer self.allocator.free(pattern_copy);
+        try state.patterns.put(pattern_copy, {});
+
+        // Add subscriber to pattern's list (create pattern entry if needed)
+        if (self.patterns.getPtr(pattern)) |sub_list| {
+            try sub_list.append(self.allocator, subscriber_id);
+        } else {
+            const pat_key = try self.allocator.dupe(u8, pattern);
+            errdefer self.allocator.free(pat_key);
+
+            var sub_list = std.ArrayList(u64){};
+            errdefer sub_list.deinit(self.allocator);
+            try sub_list.append(self.allocator, subscriber_id);
+
+            try self.patterns.put(pat_key, sub_list);
+        }
+
+        return state.patterns.count();
+    }
+
+    /// Unsubscribe `subscriber_id` from `pattern`.
+    /// Returns the remaining number of patterns this subscriber is watching.
+    /// Returns 0 if the subscriber was not subscribed to the pattern.
+    pub fn punsubscribe(self: *PubSub, subscriber_id: u64, pattern: []const u8) !usize {
+        const state = self.subscribers.getPtr(subscriber_id) orelse return 0;
+
+        // Remove pattern from subscriber's set, freeing the owned key
+        if (state.patterns.fetchRemove(pattern)) |kv| {
+            self.allocator.free(kv.key);
+        } else {
+            // Not subscribed to this pattern
+            return state.patterns.count();
+        }
+
+        // Remove subscriber from pattern's list
+        if (self.patterns.getPtr(pattern)) |sub_list| {
+            for (sub_list.items, 0..) |sid, idx| {
+                if (sid == subscriber_id) {
+                    _ = sub_list.swapRemove(idx);
+                    break;
+                }
+            }
+            // If no subscribers remain, remove the pattern entry entirely
+            if (sub_list.items.len == 0) {
+                sub_list.deinit(self.allocator);
+                if (self.patterns.fetchRemove(pattern)) |kv| {
+                    self.allocator.free(kv.key);
+                }
+            }
+        }
+
+        return state.patterns.count();
+    }
+
+    /// Unsubscribe `subscriber_id` from all patterns.
+    /// Does not affect channel subscriptions.
+    pub fn punsubscribeAll(self: *PubSub, subscriber_id: u64) !void {
+        const state = self.subscribers.getPtr(subscriber_id) orelse return;
+
+        // Duplicate pattern names into a temporary list
+        var pattern_names = std.ArrayList([]u8){};
+        defer pattern_names.deinit(self.allocator);
+
+        var pat_it = state.patterns.keyIterator();
+        while (pat_it.next()) |key| {
+            const copy = try self.allocator.dupe(u8, key.*);
+            errdefer self.allocator.free(copy);
+            try pattern_names.append(self.allocator, copy);
+        }
+
+        // Unsubscribe from each
+        for (pattern_names.items) |pat| {
+            _ = try self.punsubscribe(subscriber_id, pat);
+            self.allocator.free(pat);
+        }
+        pattern_names.clearRetainingCapacity();
+    }
+
     /// Publish `message` to `channel`.
-    /// Enqueues a RESP push frame (`*3\r\n$7\r\nmessage\r\n…`) to every
-    /// subscriber's pending queue.
+    /// Enqueues a RESP push frame to every subscriber's pending queue.
+    /// Matches against both exact channel subscriptions and pattern subscriptions.
     /// Returns the number of subscribers that received the message.
     pub fn publish(self: *PubSub, channel: []const u8, message: []const u8) !usize {
-        const sub_list = self.channels.get(channel) orelse return 0;
-
-        if (sub_list.items.len == 0) return 0;
-
-        // Build the RESP push frame once, then clone it for each subscriber
-        const frame = try buildMessageFrame(self.allocator, channel, message);
-        defer self.allocator.free(frame);
-
         var delivered: usize = 0;
-        for (sub_list.items) |sid| {
-            const st = self.subscribers.getPtr(sid) orelse continue;
 
-            // Drop oldest message if queue is full
-            if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
-                const oldest = st.pending.orderedRemove(0);
-                self.allocator.free(oldest);
+        // Track which subscribers we've already delivered to (avoid duplicates)
+        var delivered_to = std.AutoHashMap(u64, void).init(self.allocator);
+        defer delivered_to.deinit();
+
+        // 1. Deliver to exact channel subscribers
+        if (self.channels.get(channel)) |sub_list| {
+            const frame = try buildMessageFrame(self.allocator, channel, message);
+            defer self.allocator.free(frame);
+
+            for (sub_list.items) |sid| {
+                const st = self.subscribers.getPtr(sid) orelse continue;
+
+                // Drop oldest message if queue is full
+                if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
+                    const oldest = st.pending.orderedRemove(0);
+                    self.allocator.free(oldest);
+                }
+
+                const frame_copy = try self.allocator.dupe(u8, frame);
+                errdefer self.allocator.free(frame_copy);
+                try st.pending.append(self.allocator, frame_copy);
+                try delivered_to.put(sid, {});
+                delivered += 1;
             }
+        }
 
-            const frame_copy = try self.allocator.dupe(u8, frame);
-            errdefer self.allocator.free(frame_copy);
-            try st.pending.append(self.allocator, frame_copy);
-            delivered += 1;
+        // 2. Deliver to pattern subscribers (pmessage format)
+        var pat_it = self.patterns.iterator();
+        while (pat_it.next()) |entry| {
+            const pattern = entry.key_ptr.*;
+            const sub_list = entry.value_ptr;
+
+            // Check if channel matches this pattern
+            if (!globMatch(pattern, channel)) continue;
+
+            const pframe = try buildPmessageFrame(self.allocator, pattern, channel, message);
+            defer self.allocator.free(pframe);
+
+            for (sub_list.items) |sid| {
+                // Skip if already delivered via exact channel match
+                if (delivered_to.contains(sid)) continue;
+
+                const st = self.subscribers.getPtr(sid) orelse continue;
+
+                // Drop oldest message if queue is full
+                if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
+                    const oldest = st.pending.orderedRemove(0);
+                    self.allocator.free(oldest);
+                }
+
+                const pframe_copy = try self.allocator.dupe(u8, pframe);
+                errdefer self.allocator.free(pframe_copy);
+                try st.pending.append(self.allocator, pframe_copy);
+                try delivered_to.put(sid, {});
+                delivered += 1;
+            }
         }
 
         return delivered;
@@ -244,6 +394,17 @@ pub const PubSub = struct {
     pub fn channelCount(self: *PubSub, subscriber_id: u64) usize {
         const state = self.subscribers.get(subscriber_id) orelse return 0;
         return state.channels.count();
+    }
+
+    /// Return the number of patterns `subscriber_id` is subscribed to.
+    pub fn patternCount(self: *PubSub, subscriber_id: u64) usize {
+        const state = self.subscribers.get(subscriber_id) orelse return 0;
+        return state.patterns.count();
+    }
+
+    /// Return the total number of active pattern subscriptions across all subscribers.
+    pub fn totalPatternCount(self: *PubSub) usize {
+        return self.patterns.count();
     }
 
     /// Return an allocated slice of all active channel names (channels with
@@ -341,6 +502,106 @@ pub fn buildUnsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8,
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
     return buf.toOwnedSlice(allocator);
+}
+
+/// Build a pattern message frame (pmessage):
+/// ```
+/// *4\r\n
+/// $8\r\npmessage\r\n
+/// $<pattern_len>\r\n<pattern>\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// $<msg_len>\r\n<msg>\r\n
+/// ```
+/// Caller owns the returned slice.
+pub fn buildPmessageFrame(allocator: std.mem.Allocator, pattern: []const u8, channel: []const u8, message: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "*4\r\n");
+    try buf.appendSlice(allocator, "$8\r\npmessage\r\n");
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pattern.len, pattern });
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ message.len, message });
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Build a psubscribe confirmation frame:
+/// ```
+/// *3\r\n
+/// $10\r\npsubscribe\r\n
+/// $<pattern_len>\r\n<pattern>\r\n
+/// :<count>\r\n
+/// ```
+/// Caller owns the returned slice.
+pub fn buildPsubscribeFrame(allocator: std.mem.Allocator, pattern: []const u8, count: usize) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "*3\r\n");
+    try buf.appendSlice(allocator, "$10\r\npsubscribe\r\n");
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pattern.len, pattern });
+    try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Build a punsubscribe confirmation frame:
+/// ```
+/// *3\r\n
+/// $12\r\npunsubscribe\r\n
+/// $<pattern_len>\r\n<pattern>\r\n   (or $-1\r\n when pattern is null)
+/// :<count>\r\n
+/// ```
+/// Caller owns the returned slice.
+pub fn buildPunsubscribeFrame(allocator: std.mem.Allocator, pattern: ?[]const u8, count: usize) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "*3\r\n");
+    try buf.appendSlice(allocator, "$12\r\npunsubscribe\r\n");
+    if (pattern) |pat| {
+        try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pat.len, pat });
+    } else {
+        try buf.appendSlice(allocator, "$-1\r\n");
+    }
+    try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Simple glob matching supporting `*` and `?` wildcards.
+/// Case-sensitive, matching against the full string.
+/// `*` matches 0 or more characters, `?` matches exactly 1 character.
+fn globMatch(pattern: []const u8, str: []const u8) bool {
+    var pi: usize = 0;
+    var si: usize = 0;
+    var star_pi: usize = std.math.maxInt(usize);
+    var star_si: usize = 0;
+
+    while (si < str.len) {
+        if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == str[si])) {
+            pi += 1;
+            si += 1;
+        } else if (pi < pattern.len and pattern[pi] == '*') {
+            star_pi = pi;
+            star_si = si;
+            pi += 1;
+        } else if (star_pi != std.math.maxInt(usize)) {
+            pi = star_pi + 1;
+            star_si += 1;
+            si = star_si;
+        } else {
+            return false;
+        }
+    }
+
+    // Consume trailing '*' in pattern
+    while (pi < pattern.len and pattern[pi] == '*') {
+        pi += 1;
+    }
+
+    return pi == pattern.len;
 }
 
 // --- Embedded unit tests ---
@@ -562,4 +823,194 @@ test "pubsub - buildUnsubscribeFrame with null channel" {
 
     const expected = "*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
+}
+
+// --- Pattern subscription tests ---
+
+test "pubsub - psubscribe once returns count 1" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const count = try ps.psubscribe(1, "news*");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "pubsub - psubscribe twice same pattern is idempotent" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    const count = try ps.psubscribe(1, "news*");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "pubsub - psubscribe to multiple patterns" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    const count = try ps.psubscribe(1, "sports?");
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 2), ps.patternCount(1));
+}
+
+test "pubsub - punsubscribe reduces count" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    _ = try ps.psubscribe(1, "sports*");
+    const count = try ps.punsubscribe(1, "news*");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "pubsub - punsubscribe non-subscribed pattern returns current count" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    const count = try ps.punsubscribe(1, "sports*");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "pubsub - punsubscribeAll removes all patterns" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    _ = try ps.psubscribe(1, "sports*");
+    try ps.punsubscribeAll(1);
+    try std.testing.expectEqual(@as(usize, 0), ps.patternCount(1));
+}
+
+test "pubsub - publish delivers to pattern subscribers with pmessage frame" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    const delivered = try ps.publish("news.world", "hello");
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+
+    const pending = ps.pendingMessages(1);
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    // Check the pmessage RESP frame begins with *4\r\n
+    try std.testing.expect(std.mem.startsWith(u8, pending[0], "*4\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, pending[0], "pmessage") != null);
+}
+
+test "pubsub - publish delivers to both exact and pattern subscribers" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "news");
+    _ = try ps.psubscribe(2, "news*");
+    const delivered = try ps.publish("news", "hello");
+    try std.testing.expectEqual(@as(usize, 2), delivered);
+
+    // Subscriber 1 gets regular message
+    const pending1 = ps.pendingMessages(1);
+    try std.testing.expectEqual(@as(usize, 1), pending1.len);
+    try std.testing.expect(std.mem.startsWith(u8, pending1[0], "*3\r\n"));
+
+    // Subscriber 2 gets pmessage
+    const pending2 = ps.pendingMessages(2);
+    try std.testing.expectEqual(@as(usize, 1), pending2.len);
+    try std.testing.expect(std.mem.startsWith(u8, pending2[0], "*4\r\n"));
+}
+
+test "pubsub - publish avoids duplicate delivery to same subscriber" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "news");
+    _ = try ps.psubscribe(1, "news*");
+    const delivered = try ps.publish("news", "hello");
+    // Should deliver only once (exact channel takes precedence)
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+    try std.testing.expectEqual(@as(usize, 1), ps.pendingMessages(1).len);
+}
+
+test "pubsub - totalPatternCount returns global pattern count" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    _ = try ps.psubscribe(2, "sports*");
+    _ = try ps.psubscribe(3, "news*"); // Same pattern, different subscriber
+    try std.testing.expectEqual(@as(usize, 2), ps.totalPatternCount());
+}
+
+test "pubsub - buildPmessageFrame correct RESP format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPmessageFrame(allocator, "news*", "news.world", "hello");
+    defer allocator.free(frame);
+
+    const expected = "*4\r\n$8\r\npmessage\r\n$5\r\nnews*\r\n$10\r\nnews.world\r\n$5\r\nhello\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPsubscribeFrame correct RESP format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPsubscribeFrame(allocator, "news*", 1);
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$10\r\npsubscribe\r\n$5\r\nnews*\r\n:1\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPunsubscribeFrame with pattern" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPunsubscribeFrame(allocator, "news*", 0);
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$12\r\npunsubscribe\r\n$5\r\nnews*\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPunsubscribeFrame with null pattern" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPunsubscribeFrame(allocator, null, 0);
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$12\r\npunsubscribe\r\n$-1\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - globMatch exact match" {
+    try std.testing.expect(globMatch("news", "news"));
+}
+
+test "pubsub - globMatch star wildcard" {
+    try std.testing.expect(globMatch("news*", "news.world"));
+    try std.testing.expect(globMatch("*", "anything"));
+    try std.testing.expect(globMatch("news*world", "news.amazing.world"));
+    try std.testing.expect(!globMatch("sports*", "news.world"));
+}
+
+test "pubsub - globMatch question wildcard" {
+    try std.testing.expect(globMatch("n?ws", "news"));
+    try std.testing.expect(globMatch("new?", "news"));
+    try std.testing.expect(!globMatch("n?ws", "nws"));
+    try std.testing.expect(!globMatch("n?ws", "newss"));
+}
+
+test "pubsub - globMatch combined wildcards" {
+    try std.testing.expect(globMatch("n*s?", "newsy"));
+    try std.testing.expect(globMatch("?ews*", "news.world"));
+    try std.testing.expect(!globMatch("n*s?", "news"));
+}
+
+test "pubsub - globMatch no match" {
+    try std.testing.expect(!globMatch("abc", "xyz"));
+    try std.testing.expect(!globMatch("news*", "sports"));
 }

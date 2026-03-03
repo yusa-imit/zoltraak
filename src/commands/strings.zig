@@ -636,6 +636,10 @@ pub fn executeCommand(
             break :blk try pubsub_cmds.cmdSubscribe(allocator, ps, array, subscriber_id);
         } else if (std.mem.eql(u8, cmd_upper, "UNSUBSCRIBE")) {
             break :blk try pubsub_cmds.cmdUnsubscribe(allocator, ps, array, subscriber_id);
+        } else if (std.mem.eql(u8, cmd_upper, "PSUBSCRIBE")) {
+            break :blk try pubsub_cmds.cmdPsubscribe(allocator, ps, array, subscriber_id);
+        } else if (std.mem.eql(u8, cmd_upper, "PUNSUBSCRIBE")) {
+            break :blk try pubsub_cmds.cmdPunsubscribe(allocator, ps, array, subscriber_id);
         } else if (std.mem.eql(u8, cmd_upper, "PUBLISH")) {
             break :blk try pubsub_cmds.cmdPublish(allocator, ps, array);
         } else if (std.mem.eql(u8, cmd_upper, "PUBSUB")) {
@@ -1497,7 +1501,7 @@ fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
 }
 
 /// PUBSUB subcommand [args...]
-/// Routes to CHANNELS or NUMSUB sub-commands.
+/// Routes to CHANNELS, NUMSUB, NUMPAT, or HELP sub-commands.
 fn cmdPubsub(allocator: std.mem.Allocator, ps: *PubSub, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1518,6 +1522,10 @@ fn cmdPubsub(allocator: std.mem.Allocator, ps: *PubSub, args: []const RespValue)
         return pubsub_cmds.cmdPubsubChannels(allocator, ps, args);
     } else if (std.mem.eql(u8, sub_upper, "NUMSUB")) {
         return pubsub_cmds.cmdPubsubNumsub(allocator, ps, args);
+    } else if (std.mem.eql(u8, sub_upper, "NUMPAT")) {
+        return pubsub_cmds.cmdPubsubNumpat(allocator, ps);
+    } else if (std.mem.eql(u8, sub_upper, "HELP")) {
+        return pubsub_cmds.cmdPubsubHelp(allocator);
     } else {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ERR unknown subcommand '{s}'", .{sub_name}) catch "ERR unknown subcommand";

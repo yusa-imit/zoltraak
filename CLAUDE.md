@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-61 complete (162+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-62 complete (166+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -14,7 +14,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 |-------|----------|
 | 1-5 | Core data structures: Strings, Lists, Sets, Hashes, Sorted Sets |
 | 6-7 | Persistence: RDB snapshots, AOF logging |
-| 8 | Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB) |
+| 8, 62 | Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB) + pattern subscriptions (PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB NUMPAT/HELP) |
 | 9 | Transactions (MULTI/EXEC/DISCARD/WATCH/UNWATCH) |
 | 10 | Replication (REPLICAOF, REPLCONF, PSYNC, WAIT) |
 | 11-12 | Extended Set/SortedSet commands, SCAN family, OBJECT |
@@ -47,6 +47,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 59 | XSETID |
 | 60 | XACKDEL, XDELEX (atomic ACK+DELETE with PEL ref control) |
 | 61 | HMSET (deprecated HSET alias), SORT_RO (read-only SORT) |
+| 62 | PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB NUMPAT, PUBSUB HELP (pattern-based pub/sub with * and ? wildcards, pmessage delivery format) |
 
 ### Known stubs (need real implementation for 1.0)
 

@@ -105,6 +105,18 @@ pub fn build(b: *std.Build) void {
     const run_geosearch_bybox_tests = b.addRunArtifact(geosearch_bybox_tests);
     integration_test_step.dependOn(&run_geosearch_bybox_tests.step);
 
+    // Pattern-based Pub/Sub integration tests
+    const pattern_pubsub_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_pattern_pubsub.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_pattern_pubsub_tests = b.addRunArtifact(pattern_pubsub_tests);
+    integration_test_step.dependOn(&run_pattern_pubsub_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

@@ -223,6 +223,152 @@ pub fn cmdPubsubNumsub(
     return w.writeArray(result.items);
 }
 
+/// PSUBSCRIBE pattern [pattern ...]
+///
+/// Subscribes `subscriber_id` to one or more patterns.
+/// Returns a concatenated sequence of RESP psubscribe-confirmation frames,
+/// one per pattern:
+///   *3\r\n$10\r\npsubscribe\r\n$<len>\r\n<pattern>\r\n:<count>\r\n
+///
+/// Caller owns the returned memory.
+pub fn cmdPsubscribe(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+    subscriber_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'psubscribe' command");
+    }
+
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    for (args[1..]) |arg| {
+        const pattern = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid pattern"),
+        };
+
+        const total = try ps.psubscribe(subscriber_id, pattern);
+        const frame = try pubsub_mod.buildPsubscribeFrame(allocator, pattern, total);
+        defer allocator.free(frame);
+        try buf.appendSlice(allocator, frame);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// PUNSUBSCRIBE [pattern ...]
+///
+/// Unsubscribes `subscriber_id` from the given patterns, or from all patterns
+/// if no pattern argument is provided.
+/// Returns a concatenated sequence of RESP punsubscribe-confirmation frames.
+///
+/// Caller owns the returned memory.
+pub fn cmdPunsubscribe(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+    subscriber_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    if (args.len == 1) {
+        // No patterns specified: unsubscribe from all
+        const count_before = ps.patternCount(subscriber_id);
+        if (count_before == 0) {
+            // Redis sends one frame with nil pattern and count 0
+            const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, null, 0);
+            defer allocator.free(frame);
+            try buf.appendSlice(allocator, frame);
+        } else {
+            // Collect pattern names first
+            var names = std.ArrayList([]const u8){};
+            defer names.deinit(allocator);
+
+            if (ps.subscribers.getPtr(subscriber_id)) |state| {
+                var it = state.patterns.keyIterator();
+                while (it.next()) |key| {
+                    const name_copy = try allocator.dupe(u8, key.*);
+                    try names.append(allocator, name_copy);
+                }
+            }
+            defer for (names.items) |n| allocator.free(n);
+
+            // Now unsubscribe each and emit frames
+            for (names.items) |pat| {
+                const remaining = try ps.punsubscribe(subscriber_id, pat);
+                const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, pat, remaining);
+                defer allocator.free(frame);
+                try buf.appendSlice(allocator, frame);
+            }
+        }
+    } else {
+        for (args[1..]) |arg| {
+            const pattern = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid pattern"),
+            };
+
+            const remaining = try ps.punsubscribe(subscriber_id, pattern);
+            const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, pattern, remaining);
+            defer allocator.free(frame);
+            try buf.appendSlice(allocator, frame);
+        }
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// PUBSUB NUMPAT
+///
+/// Returns the number of unique pattern subscriptions across all clients.
+///
+/// Caller owns the returned memory.
+pub fn cmdPubsubNumpat(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const count = ps.totalPatternCount();
+    return w.writeInteger(@intCast(count));
+}
+
+/// PUBSUB HELP
+///
+/// Returns help text for PUBSUB subcommands.
+///
+/// Caller owns the returned memory.
+pub fn cmdPubsubHelp(allocator: std.mem.Allocator) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const help_text = [_]RespValue{
+        .{ .bulk_string = "PUBSUB <subcommand> [<arg> [value] [opt] ...]. Subcommands are:" },
+        .{ .bulk_string = "CHANNELS [<pattern>]" },
+        .{ .bulk_string = "    Return the currently active channels matching a <pattern> (default: '*')." },
+        .{ .bulk_string = "NUMPAT" },
+        .{ .bulk_string = "    Return number of subscriptions to patterns." },
+        .{ .bulk_string = "NUMSUB [<channel> ...]" },
+        .{ .bulk_string = "    Return the number of subscribers for the specified channels, excluding" },
+        .{ .bulk_string = "    pattern subscriptions(default: no channels)." },
+        .{ .bulk_string = "HELP" },
+        .{ .bulk_string = "    Print this help." },
+    };
+
+    return w.writeArray(&help_text);
+}
+
 /// Simple glob matching supporting `*` and `?` wildcards.
 /// Case-sensitive, matching against the full string.
 fn globMatch(pattern: []const u8, str: []const u8) bool {
@@ -479,4 +625,139 @@ test "globMatch - question wildcard" {
 
 test "globMatch - no match" {
     try std.testing.expect(!globMatch("abc", "xyz"));
+}
+
+// --- Pattern subscription command tests ---
+
+test "cmdPsubscribe - wrong number of args" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{.{ .bulk_string = "PSUBSCRIBE" }};
+    const resp = try cmdPsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+}
+
+test "cmdPsubscribe - single pattern confirmation frame" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PSUBSCRIBE" },
+        .{ .bulk_string = "news*" },
+    };
+    const resp = try cmdPsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    const expected = "*3\r\n$10\r\npsubscribe\r\n$5\r\nnews*\r\n:1\r\n";
+    try std.testing.expectEqualStrings(expected, resp);
+}
+
+test "cmdPsubscribe - multiple patterns returns concatenated frames" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PSUBSCRIBE" },
+        .{ .bulk_string = "news*" },
+        .{ .bulk_string = "sport?" },
+    };
+    const resp = try cmdPsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    // news* count=1, sport? count=2
+    const expected =
+        "*3\r\n$10\r\npsubscribe\r\n$5\r\nnews*\r\n:1\r\n" ++
+        "*3\r\n$10\r\npsubscribe\r\n$6\r\nsport?\r\n:2\r\n";
+    try std.testing.expectEqualStrings(expected, resp);
+}
+
+test "cmdPunsubscribe - single pattern" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PUNSUBSCRIBE" },
+        .{ .bulk_string = "news*" },
+    };
+    const resp = try cmdPunsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    const expected = "*3\r\n$12\r\npunsubscribe\r\n$5\r\nnews*\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, resp);
+}
+
+test "cmdPunsubscribe - no args when subscribed sends frames for each" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    _ = try ps.psubscribe(1, "sport?");
+
+    const args = [_]RespValue{.{ .bulk_string = "PUNSUBSCRIBE" }};
+    const resp = try cmdPunsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    // Should contain two punsubscribe frames
+    try std.testing.expect(std.mem.count(u8, resp, "$12\r\npunsubscribe\r\n") == 2);
+}
+
+test "cmdPunsubscribe - no args when not subscribed sends nil frame" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{.{ .bulk_string = "PUNSUBSCRIBE" }};
+    const resp = try cmdPunsubscribe(allocator, &ps, &args, 99);
+    defer allocator.free(resp);
+
+    const expected = "*3\r\n$12\r\npunsubscribe\r\n$-1\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, resp);
+}
+
+test "cmdPubsubNumpat - returns pattern count" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.psubscribe(1, "news*");
+    _ = try ps.psubscribe(2, "sports*");
+    _ = try ps.psubscribe(3, "news*"); // Same pattern, different subscriber
+
+    const resp = try cmdPubsubNumpat(allocator, &ps);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings(":2\r\n", resp);
+}
+
+test "cmdPubsubNumpat - returns 0 when no patterns" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const resp = try cmdPubsubNumpat(allocator, &ps);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings(":0\r\n", resp);
+}
+
+test "cmdPubsubHelp - returns help array" {
+    const allocator = std.testing.allocator;
+
+    const resp = try cmdPubsubHelp(allocator);
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.startsWith(u8, resp, "*"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "CHANNELS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "NUMPAT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "NUMSUB") != null);
 }

@@ -189,15 +189,19 @@ redis-cli -p 6379
 | WATCH | `WATCH key [key ...]` | Watch keys for optimistic locking |
 | UNWATCH | `UNWATCH` | Unwatch all watched keys |
 
-### Pub/Sub Commands (Iteration 8)
+### Pub/Sub Commands (Iterations 8, 62)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
 | SUBSCRIBE | `SUBSCRIBE channel [channel ...]` | Subscribe to channels |
 | UNSUBSCRIBE | `UNSUBSCRIBE [channel ...]` | Unsubscribe from channels |
+| PSUBSCRIBE | `PSUBSCRIBE pattern [pattern ...]` | Subscribe to channels matching patterns (* and ?) |
+| PUNSUBSCRIBE | `PUNSUBSCRIBE [pattern ...]` | Unsubscribe from pattern subscriptions |
 | PUBLISH | `PUBLISH channel message` | Publish a message to a channel |
 | PUBSUB CHANNELS | `PUBSUB CHANNELS [pattern]` | List active channels |
 | PUBSUB NUMSUB | `PUBSUB NUMSUB [channel ...]` | Number of subscribers per channel |
+| PUBSUB NUMPAT | `PUBSUB NUMPAT` | Number of active pattern subscriptions |
+| PUBSUB HELP | `PUBSUB HELP` | Display PUBSUB command help |
 
 ### Server / Persistence Commands (Iterations 6–7)
 
@@ -636,7 +640,7 @@ Iterations 1–50 are complete.
 - [x] Sorted set operations (ZADD, ZREM, ZRANGE, ZRANGEBYSCORE, ZSCORE, ZCARD, ZRANK, ZREVRANK, ZINCRBY, ZCOUNT, ZPOPMIN, ZPOPMAX, ZMSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZRANDMEMBER)
 - [x] Persistence (RDB snapshots — SAVE, BGSAVE, auto-load on startup)
 - [x] Persistence (AOF — append-only log, replay on startup, BGREWRITEAOF)
-- [x] Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB CHANNELS/NUMSUB)
+- [x] Pub/Sub (SUBSCRIBE, UNSUBSCRIBE, PUBLISH, PUBSUB CHANNELS/NUMSUB/NUMPAT/HELP, PSUBSCRIBE, PUNSUBSCRIBE — pattern matching with * and ?)
 - [x] Transactions (MULTI/EXEC/DISCARD/WATCH/UNWATCH — optimistic locking)
 - [x] Replication (REPLICAOF, REPLCONF, PSYNC, WAIT, INFO — primary/replica mode)
 
