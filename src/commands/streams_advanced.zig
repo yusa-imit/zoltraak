@@ -201,6 +201,7 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     }
 
     var count: ?usize = null;
+    var block_ms: ?i64 = null;
     var streams_idx: ?usize = null;
 
     // Parse optional arguments
@@ -224,14 +225,17 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         } else if (std.ascii.eqlIgnoreCase(arg, "BLOCK")) {
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const _block_str = switch (args[i]) {
+            const block_str = switch (args[i]) {
                 .bulk_string => |s| s,
                 else => return w.writeError("ERR syntax error"),
             };
-            // Parse but ignore BLOCK for now (blocking not implemented)
-            _ = std.fmt.parseInt(i64, _block_str, 10) catch {
+            const timeout_ms = std.fmt.parseInt(i64, block_str, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
+            if (timeout_ms < 0) {
+                return w.writeError("ERR timeout is negative");
+            }
+            block_ms = timeout_ms;
         } else if (std.ascii.eqlIgnoreCase(arg, "STREAMS")) {
             streams_idx = i + 1;
             break;
@@ -325,6 +329,122 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     }
 
+    // If no data and BLOCK specified, enter blocking loop
+    if (!has_data and block_ms != null) {
+        const timeout_ms = block_ms.?;
+        const start_time = std.time.milliTimestamp();
+        const check_interval_ms = 100; // Check every 100ms
+
+        // Blocking loop
+        while (true) {
+            // Check timeout
+            const elapsed = std.time.milliTimestamp() - start_time;
+            if (timeout_ms > 0 and elapsed >= timeout_ms) {
+                // Timeout expired, return null
+                return w.writeNull();
+            }
+
+            // Sleep before retrying
+            std.Thread.sleep(check_interval_ms * std.time.ns_per_ms);
+
+            // Retry reading from streams
+            has_data = false;
+            stream_count = 0;
+
+            // Clear previous temp results
+            for (temp_results.items) |*item| {
+                for (item.entries.items) |*entry| {
+                    var e = entry.*;
+                    e.deinit(allocator);
+                }
+                item.entries.deinit(allocator);
+            }
+            temp_results.clearRetainingCapacity();
+
+            // Check all streams again
+            for (keys, ids) |key_val, id_val| {
+                const key = switch (key_val) {
+                    .bulk_string => |s| s,
+                    else => continue,
+                };
+                const id_str = switch (id_val) {
+                    .bulk_string => |s| s,
+                    else => continue,
+                };
+
+                // Parse start ID ($ means read from end)
+                var entries = blk: {
+                    if (std.mem.eql(u8, id_str, "$")) {
+                        // For $, we need to check if there are new entries since we started blocking
+                        // Get current last ID and check if there are entries after it
+                        const raw_entries = storage.xrange(allocator, key, id_str, "+", count) catch |err| switch (err) {
+                            error.WrongType => continue,
+                            else => |e| return e,
+                        } orelse break :blk std.ArrayList(StreamEntry){};
+                        defer allocator.free(raw_entries);
+
+                        // Convert slice to ArrayList
+                        var result = std.ArrayList(StreamEntry){};
+                        for (raw_entries) |entry| {
+                            // Clone fields
+                            var cloned_fields = std.ArrayList([]const u8){};
+                            for (entry.fields.items) |field| {
+                                const owned = try allocator.dupe(u8, field);
+                                try cloned_fields.append(allocator, owned);
+                            }
+
+                            try result.append(allocator, StreamEntry{
+                                .id = entry.id,
+                                .fields = cloned_fields,
+                            });
+                        }
+
+                        break :blk result;
+                    }
+
+                    // Use xrange internally
+                    const raw_entries = storage.xrange(allocator, key, id_str, "+", count) catch |err| switch (err) {
+                        error.WrongType => continue,
+                        else => |e| return e,
+                    } orelse break :blk std.ArrayList(StreamEntry){};
+                    defer allocator.free(raw_entries);
+
+                    // Convert slice to ArrayList
+                    var result = std.ArrayList(StreamEntry){};
+                    for (raw_entries) |entry| {
+                        // Clone fields
+                        var cloned_fields = std.ArrayList([]const u8){};
+                        for (entry.fields.items) |field| {
+                            const owned = try allocator.dupe(u8, field);
+                            try cloned_fields.append(allocator, owned);
+                        }
+
+                        try result.append(allocator, StreamEntry{
+                            .id = entry.id,
+                            .fields = cloned_fields,
+                        });
+                    }
+
+                    break :blk result;
+                };
+
+                if (entries.items.len > 0) {
+                    try temp_results.append(allocator, .{ .key = key, .entries = entries });
+                    stream_count += 1;
+                    has_data = true;
+                } else {
+                    entries.deinit(allocator);
+                }
+            }
+
+            // If we found data, break out of blocking loop
+            if (has_data) break;
+
+            // For BLOCK 0 (infinite), keep looping
+            // For BLOCK > 0, timeout check at top of loop will handle it
+        }
+    }
+
     if (!has_data) {
         return w.writeNull();
     }
@@ -388,6 +508,7 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
     };
 
     var count: ?usize = null;
+    var block_ms: ?i64 = null;
     var noack = false;
     var streams_idx: ?usize = null;
 
@@ -412,14 +533,17 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
         } else if (std.ascii.eqlIgnoreCase(arg, "BLOCK")) {
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const _block_str = switch (args[i]) {
+            const block_str = switch (args[i]) {
                 .bulk_string => |s| s,
                 else => return w.writeError("ERR syntax error"),
             };
-            // Parse but ignore BLOCK for now (blocking not implemented)
-            _ = std.fmt.parseInt(i64, _block_str, 10) catch {
+            const timeout_ms = std.fmt.parseInt(i64, block_str, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
+            if (timeout_ms < 0) {
+                return w.writeError("ERR timeout is negative");
+            }
+            block_ms = timeout_ms;
         } else if (std.ascii.eqlIgnoreCase(arg, "NOACK")) {
             noack = true;
         } else if (std.ascii.eqlIgnoreCase(arg, "STREAMS")) {
@@ -485,6 +609,92 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
             has_data = true;
         } else {
             entries.deinit(allocator);
+        }
+    }
+
+    // If no data and BLOCK specified, enter blocking loop
+    // Note: XREADGROUP only blocks for ID = ">", not for "0" or specific IDs
+    if (!has_data and block_ms != null) {
+        // Check if all IDs are ">" (only block for new messages)
+        var should_block = true;
+        for (ids) |id_val| {
+            const id_str = switch (id_val) {
+                .bulk_string => |s| s,
+                else => {
+                    should_block = false;
+                    break;
+                },
+            };
+            // Don't block for "0" or specific IDs
+            if (!std.mem.eql(u8, id_str, ">")) {
+                should_block = false;
+                break;
+            }
+        }
+
+        if (should_block) {
+            const timeout_ms = block_ms.?;
+            const start_time = std.time.milliTimestamp();
+            const check_interval_ms = 100; // Check every 100ms
+
+            // Blocking loop
+            while (true) {
+                // Check timeout
+                const elapsed = std.time.milliTimestamp() - start_time;
+                if (timeout_ms > 0 and elapsed >= timeout_ms) {
+                    // Timeout expired, return null
+                    return w.writeNull();
+                }
+
+                // Sleep before retrying
+                std.Thread.sleep(check_interval_ms * std.time.ns_per_ms);
+
+                // Retry reading from streams
+                has_data = false;
+                stream_count = 0;
+
+                // Clear previous temp results
+                for (temp_results.items) |*item| {
+                    for (item.entries.items) |*entry| {
+                        var e = entry.*;
+                        e.deinit(allocator);
+                    }
+                    item.entries.deinit(allocator);
+                }
+                temp_results.clearRetainingCapacity();
+
+                // Check all streams again
+                for (keys, ids) |key_val, id_val| {
+                    const key = switch (key_val) {
+                        .bulk_string => |s| s,
+                        else => continue,
+                    };
+                    const id_str = switch (id_val) {
+                        .bulk_string => |s| s,
+                        else => continue,
+                    };
+
+                    var entries = storage.xreadgroup(allocator, groupname, consumer, key, id_str, count, noack) catch |err| switch (err) {
+                        error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
+                        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                        else => |e| return e,
+                    } orelse continue;
+
+                    if (entries.items.len > 0) {
+                        try temp_results.append(allocator, .{ .key = key, .entries = entries });
+                        stream_count += 1;
+                        has_data = true;
+                    } else {
+                        entries.deinit(allocator);
+                    }
+                }
+
+                // If we found data, break out of blocking loop
+                if (has_data) break;
+
+                // For BLOCK 0 (infinite), keep looping
+                // For BLOCK > 0, timeout check at top of loop will handle it
+            }
         }
     }
 
@@ -1016,7 +1226,7 @@ test "XCLAIM basic functionality" {
     defer allocator.free(xreadgroup_result);
 
     // Sleep briefly to ensure idle time
-    std.time.sleep(std.time.ns_per_ms * 10);
+    std.Thread.sleep(std.time.ns_per_ms * 10);
 
     // Claim message for consumer2
     const xclaim_args = [_]RespValue{
@@ -1075,7 +1285,7 @@ test "XAUTOCLAIM basic functionality" {
     defer allocator.free(xreadgroup_result);
 
     // Sleep briefly
-    std.time.sleep(std.time.ns_per_ms * 10);
+    std.Thread.sleep(std.time.ns_per_ms * 10);
 
     // Auto-claim for consumer2
     const xautoclaim_args = [_]RespValue{
