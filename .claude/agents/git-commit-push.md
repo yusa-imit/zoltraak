@@ -1,7 +1,7 @@
 ---
 name: git-commit-push
 description: Use this agent when the user wants to commit code changes and push them to the remote main branch. This agent handles staging files, writing meaningful commit messages, creating logical commits, and pushing to origin. It is designed for non-production workflows where direct pushes to main are acceptable.\n\nExamples:\n\n<example>\nContext: User has finished implementing a new feature and wants to save their work.\nuser: "I've finished implementing the RESP parser, please commit and push my changes"\nassistant: "I'll use the git-commit-push agent to commit your RESP parser implementation and push it to main."\n<Task tool invocation to git-commit-push agent>\n</example>\n\n<example>\nContext: User has made multiple unrelated changes across different files.\nuser: "commit everything and push"\nassistant: "I'll use the git-commit-push agent to organize your changes into logical commits and push them to main."\n<Task tool invocation to git-commit-push agent>\n</example>\n\n<example>\nContext: After completing a coding task, the assistant proactively offers to commit.\nassistant: "I've finished implementing the SET command handler. Would you like me to use the git-commit-push agent to commit and push these changes?"\nuser: "yes please"\nassistant: "I'll use the git-commit-push agent now."\n<Task tool invocation to git-commit-push agent>\n</example>
-model: sonnet
+model: haiku
 color: orange
 ---
 

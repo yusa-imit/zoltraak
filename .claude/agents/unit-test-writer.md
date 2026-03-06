@@ -21,7 +21,7 @@ assistant: "I'll use the unit-test-writer agent to add embedded unit tests to sr
 <Task tool call to unit-test-writer>
 </example>
 
-model: sonnet
+model: haiku
 color: purple
 ---
 

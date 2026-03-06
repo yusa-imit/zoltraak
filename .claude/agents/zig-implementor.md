@@ -1,7 +1,7 @@
 ---
 name: zig-implementor
 description: Use this agent when you need to implement new features, data structures, or commands in the Zoltraak codebase following professional Zig conventions. This agent focuses on Zig implementation quality, working with unit-test-writer for embedded tests and collaborating with quality reviewers. Use after planning phase to create production-quality Zig code.\n\nExamples:\n\n<example>\nContext: User wants to add a new Redis command to the codebase.\nuser: "I want to implement the INCR command for incrementing integers"\nassistant: "I'll use the zig-implementor agent to implement the INCR command following Zig best practices."\n<commentary>\nSince the user wants to implement a new command, use the zig-implementor agent to create proper implementation following Zoltraak's patterns.\n</commentary>\n</example>\n\n<example>\nContext: User needs to implement a new data structure.\nuser: "We need to add sorted set support to the storage engine"\nassistant: "Let me launch the zig-implementor agent to implement the sorted set data structure with proper Zig conventions."\n<commentary>\nSince the user needs a new data structure implementation, use the zig-implementor agent to ensure proper design, memory management, and testing.\n</commentary>\n</example>\n\n<example>\nContext: User has written some Zig code and wants it reviewed for best practices.\nuser: "Implement the sorted set ZADD command"\nassistant: "I'll use the zig-implementor agent to implement ZADD with proper Zig conventions and memory management."\n<commentary>\nSince the user wants to implement a specific command, use the zig-implementor agent to create the implementation.\n</commentary>\n</example>
-model: sonnet
+model: haiku
 color: blue
 ---
 
