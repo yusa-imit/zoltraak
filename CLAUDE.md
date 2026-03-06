@@ -51,10 +51,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 63 | XCFGSET (Redis 8.6+) — configure stream IDMP (Idempotent Message Processing) settings: IDMP-DURATION (1-86400 sec) and IDMP-MAXSIZE (1-10000 entries), stream configuration for at-most-once production guarantees |
 | 64 | **XREAD/XREADGROUP BLOCK infrastructure (Phase 1)** — BlockingQueue data structure, BlockedClient tracking, specification document (full event-loop integration pending) |
 | 65 | WAITAOF command (Redis 7.2+) — wait for AOF fsync acknowledgment from local Redis and/or replicas, returns array [local_fsynced_count, replicas_fsynced_count], validates numlocal (0 or 1), rejects execution on replica instances, stub implementation (full AOF fsync offset tracking pending) |
+| 66 | **XREAD/XREADGROUP BLOCK with polling (Phase 2)** — true blocking semantics using polling approach (checks every 100ms), validates timeout >= 0, XREADGROUP only blocks for ID=">", returns immediately for "0" or specific IDs, completes Phase 2 of blocking implementation |
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values), **blocking commands (immediate-return, infrastructure added in iteration 64 but event-loop integration pending)**.
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values), **other blocking commands (BLPOP, BRPOP, etc. still use immediate-return)**.
 
 ---
 
