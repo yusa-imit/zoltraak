@@ -287,6 +287,115 @@ pub fn cmdWait(
     }
 }
 
+// ── WAITAOF ──────────────────────────────────────────────────────────────────
+
+/// WAITAOF numlocal numreplicas timeout
+///
+/// Blocks the client until all previous write commands are acknowledged as fsynced to AOF
+/// of the local Redis and/or at least the specified number of replicas.
+///
+/// Returns an array of two integers:
+/// [0] Number of local Redises (0 or 1) that fsynced all writes
+/// [1] Number of replicas that fsynced all writes
+///
+/// Available since Redis 7.2.0
+/// Time complexity: O(1)
+/// ACL categories: @slow, @blocking, @connection
+pub fn cmdWaitaof(
+    allocator: std.mem.Allocator,
+    repl: *ReplicationState,
+    aof: ?*@import("../storage/aof.zig").Aof,
+    args: []const []const u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'waitaof' command");
+    }
+
+    const numlocal = std.fmt.parseInt(u32, args[1], 10) catch {
+        return w.writeError("ERR numlocal is not an integer or out of range");
+    };
+
+    const numreplicas = std.fmt.parseInt(u32, args[2], 10) catch {
+        return w.writeError("ERR numreplicas is not an integer or out of range");
+    };
+
+    const timeout_ms = std.fmt.parseInt(u64, args[3], 10) catch {
+        return w.writeError("ERR timeout is not an integer or out of range");
+    };
+
+    // Validate numlocal (must be 0 or 1)
+    if (numlocal > 1) {
+        return w.writeError("ERR numlocal should be 0 or 1");
+    }
+
+    // Cannot execute WAITAOF on replicas
+    if (repl.role != .primary) {
+        return w.writeError("ERR WAITAOF cannot be used with replica instances. Please also note that since Redis 4.0 if a replica is configured to be writable (which is not the default) writes to replicas are just local and are not propagated.");
+    }
+
+    // Check AOF availability
+    const local_fsynced: u32 = if (numlocal == 1) blk: {
+        if (aof == null) {
+            return w.writeError("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled");
+        }
+        // Stub: In a full implementation, we would track AOF fsync offset and wait for it
+        // For now, if AOF is enabled and numlocal=1, assume immediate fsync (optimistic)
+        break :blk 1;
+    } else 0;
+
+    // Replica fsync acknowledgment
+    // Stub: In a full implementation, replicas would send AOF fsync ACKs via replication stream
+    // For now, treat this like WAIT — check if replicas are caught up with replication offset
+    var replicas_fsynced: u32 = 0;
+
+    if (numreplicas > 0) {
+        // Poll until enough replicas are caught up or timeout expires
+        const deadline_ns: u64 = if (timeout_ms > 0)
+            @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000 + timeout_ms * 1_000_000
+        else
+            0;
+
+        while (true) {
+            replicas_fsynced = 0;
+            for (repl.replicas.items) |r| {
+                if (r.state == .online and r.repl_offset >= repl.repl_offset) {
+                    replicas_fsynced += 1;
+                }
+            }
+
+            if (replicas_fsynced >= numreplicas) {
+                break;
+            }
+
+            if (deadline_ns > 0) {
+                const now_ns = @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000;
+                if (now_ns >= deadline_ns) {
+                    break; // Timeout reached
+                }
+            } else {
+                // timeout == 0: block forever (but with replica checking)
+                // For stub implementation, check once and return
+                break;
+            }
+
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+    }
+
+    // Return [local_fsynced, replicas_fsynced] as array
+    // RESP array format: *2\r\n:N\r\n:M\r\n
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
+    const buf_writer = buf.writer(allocator);
+
+    try buf_writer.print("*2\r\n:{d}\r\n:{d}\r\n", .{ local_fsynced, replicas_fsynced });
+
+    return buf.toOwnedSlice(allocator);
+}
+
 // ── INFO ─────────────────────────────────────────────────────────────────────
 
 /// INFO [section]
@@ -482,4 +591,67 @@ test "replication commands - REPLICAOF NO ONE" {
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
     try std.testing.expectEqual(Role.primary, repl.role);
+}
+
+test "replication commands - WAITAOF wrong number of args" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "WAITAOF", "1", "0" };
+    const result = try cmdWaitaof(allocator, &repl, null, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "replication commands - WAITAOF invalid numlocal" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "WAITAOF", "2", "0", "1000" };
+    const result = try cmdWaitaof(allocator, &repl, null, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "replication commands - WAITAOF without AOF enabled" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "WAITAOF", "1", "0", "1000" };
+    const result = try cmdWaitaof(allocator, &repl, null, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "appendonly") != null);
+}
+
+test "replication commands - WAITAOF on replica" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initReplica(allocator, "127.0.0.1", 6379);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "WAITAOF", "1", "0", "1000" };
+    const result = try cmdWaitaof(allocator, &repl, null, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "replica") != null);
+}
+
+test "replication commands - WAITAOF success with no AOF required" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "WAITAOF", "0", "0", "0" };
+    const result = try cmdWaitaof(allocator, &repl, null, &args);
+    defer allocator.free(result);
+
+    // Should return array [0, 0]
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
 }

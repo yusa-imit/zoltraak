@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-63 complete (167+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-65 complete (168+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -50,6 +50,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 62 | PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB NUMPAT, PUBSUB HELP (pattern-based pub/sub with * and ? wildcards, pmessage delivery format) |
 | 63 | XCFGSET (Redis 8.6+) — configure stream IDMP (Idempotent Message Processing) settings: IDMP-DURATION (1-86400 sec) and IDMP-MAXSIZE (1-10000 entries), stream configuration for at-most-once production guarantees |
 | 64 | **XREAD/XREADGROUP BLOCK infrastructure (Phase 1)** — BlockingQueue data structure, BlockedClient tracking, specification document (full event-loop integration pending) |
+| 65 | WAITAOF command (Redis 7.2+) — wait for AOF fsync acknowledgment from local Redis and/or replicas, returns array [local_fsynced_count, replicas_fsynced_count], validates numlocal (0 or 1), rejects execution on replica instances, stub implementation (full AOF fsync offset tracking pending) |
 
 ### Known stubs (need real implementation for 1.0)
 

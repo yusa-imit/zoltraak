@@ -697,6 +697,15 @@ pub fn executeCommand(
             var w = Writer.init(allocator);
             defer w.deinit();
             return w.writeInteger(0);
+        } else if (std.mem.eql(u8, cmd_upper, "WAITAOF")) {
+            if (repl) |r| {
+                const str_args = try arrayToStrings(allocator, array);
+                defer allocator.free(str_args);
+                break :blk try repl_cmds.cmdWaitaof(allocator, r, aof, str_args);
+            }
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeError("ERR WAITAOF cannot be used with replica instances");
         } else if (std.mem.eql(u8, cmd_upper, "INFO")) {
             const str_args = try arrayToStrings(allocator, array);
             defer allocator.free(str_args);

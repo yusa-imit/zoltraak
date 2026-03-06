@@ -130,6 +130,7 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "replconf", .arity = -3, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
     .{ .name = "psync", .arity = 3, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
     .{ .name = "wait", .arity = 3, .flags = &.{ "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "waitaof", .arity = 4, .flags = &.{ "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
     .{ .name = "info", .arity = -1, .flags = &.{ "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
 
     // Scan commands
