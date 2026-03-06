@@ -49,10 +49,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 61 | HMSET (deprecated HSET alias), SORT_RO (read-only SORT) |
 | 62 | PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB NUMPAT, PUBSUB HELP (pattern-based pub/sub with * and ? wildcards, pmessage delivery format) |
 | 63 | XCFGSET (Redis 8.6+) — configure stream IDMP (Idempotent Message Processing) settings: IDMP-DURATION (1-86400 sec) and IDMP-MAXSIZE (1-10000 entries), stream configuration for at-most-once production guarantees |
+| 64 | **XREAD/XREADGROUP BLOCK infrastructure (Phase 1)** — BlockingQueue data structure, BlockedClient tracking, specification document (full event-loop integration pending) |
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values), blocking commands (immediate-return).
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values), **blocking commands (immediate-return, infrastructure added in iteration 64 but event-loop integration pending)**.
 
 ---
 
@@ -117,7 +118,8 @@ zoltraak/
 │       ├── replication.zig      # Replication state
 │       ├── pubsub.zig           # Pub/Sub state
 │       ├── acl.zig              # ACL storage (stub)
-│       └── scripting.zig        # Script cache
+│       ├── scripting.zig        # Script cache
+│       └── blocking.zig         # Blocking queue for XREAD/XREADGROUP BLOCK
 ├── tests/                       # Integration tests
 │   ├── test_integration.zig     # Main integration suite
 │   ├── test_key_management.zig

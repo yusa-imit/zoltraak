@@ -1,7 +1,11 @@
 const std = @import("std");
 const config_mod = @import("config.zig");
+const blocking_mod = @import("blocking.zig");
 
 pub const Config = config_mod.Config;
+pub const BlockingQueue = blocking_mod.BlockingQueue;
+pub const BlockedClient = blocking_mod.BlockedClient;
+pub const BlockedXreadgroupClient = blocking_mod.BlockedXreadgroupClient;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -442,6 +446,7 @@ pub const Storage = struct {
     config: *Config,
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
+    blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -464,6 +469,7 @@ pub const Storage = struct {
             .config = cfg,
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
+            .blocking_queue = BlockingQueue.init(allocator),
         };
 
         return storage;
@@ -482,6 +488,7 @@ pub const Storage = struct {
         }
         self.data.deinit();
 
+        self.blocking_queue.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;
