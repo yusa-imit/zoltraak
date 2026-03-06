@@ -241,6 +241,10 @@ pub const Value = union(ValueType) {
         consumer_groups: std.StringHashMap(ConsumerGroup), // group_name -> ConsumerGroup
         entries_added: u64, // Total entries ever added to this stream (for lag calculation)
         max_deleted_entry_id: StreamId, // Highest deleted entry ID (for compaction tracking)
+        // IDMP (Idempotent Message Processing) configuration (Redis 8.6+)
+        idmp_duration_sec: u32 = 100, // Default: 100 seconds (range: 1-86400)
+        idmp_maxsize: u32 = 100, // Default: 100 entries per producer (range: 1-10000)
+        // Note: IDMP map is not yet implemented (requires producer ID tracking in XADD)
 
         pub fn deinit(self: *StreamValue, allocator: std.mem.Allocator) void {
             for (self.entries.items) |*entry| {
@@ -8778,6 +8782,63 @@ pub const Storage = struct {
                     else => return error.WrongType,
                 }
             }
+        }
+    }
+
+    /// Configure stream IDMP (Idempotent Message Processing) settings (Redis 8.6+)
+    /// XCFGSET key [IDMP-DURATION duration] [IDMP-MAXSIZE maxsize]
+    ///
+    /// Parameters:
+    /// - duration: 1-86400 seconds (time to retain idempotent IDs)
+    /// - maxsize: 1-10000 entries (max iids per producer)
+    ///
+    /// Important: Calling XCFGSET clears the IDMP map (not yet implemented)
+    ///
+    /// Returns error if:
+    /// - Stream does not exist
+    /// - Key is not a stream
+    /// - Duration/maxsize out of valid range
+    pub fn xcfgset(
+        self: *Storage,
+        key: []const u8,
+        duration: ?u32,
+        maxsize: ?u32,
+    ) error{ NoSuchKey, WrongType, InvalidDuration, InvalidMaxsize }!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // At least one parameter must be provided (validated by caller)
+        // Stream must exist (no implicit creation)
+        const entry = self.data.getEntry(key) orelse return error.NoSuchKey;
+
+        const now = getCurrentTimestamp();
+        if (entry.value_ptr.isExpired(now)) {
+            return error.NoSuchKey;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                // Validate duration (1-86400 seconds)
+                if (duration) |d| {
+                    if (d < 1 or d > 86400) {
+                        return error.InvalidDuration;
+                    }
+                    stream_val.idmp_duration_sec = d;
+                }
+
+                // Validate maxsize (1-10000 entries)
+                if (maxsize) |ms| {
+                    if (ms < 1 or ms > 10000) {
+                        return error.InvalidMaxsize;
+                    }
+                    stream_val.idmp_maxsize = ms;
+                }
+
+                // TODO: Clear IDMP map when implemented
+                // When IDMP tracking is added (producer ID -> idempotent ID map),
+                // this function should clear the map after updating config
+            },
+            else => return error.WrongType,
         }
     }
 };

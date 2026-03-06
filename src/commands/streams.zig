@@ -446,6 +446,81 @@ pub fn cmdXsetid(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     return w.writeSimpleString("OK");
 }
 
+/// XCFGSET command handler (Redis 8.6+)
+/// Configure stream IDMP (Idempotent Message Processing) settings
+/// XCFGSET key [IDMP-DURATION duration] [IDMP-MAXSIZE maxsize]
+pub fn cmdXcfgset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'xcfgset' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse optional IDMP-DURATION and IDMP-MAXSIZE parameters
+    var duration: ?u32 = null;
+    var maxsize: ?u32 = null;
+
+    var idx: usize = 2;
+    while (idx < args.len) {
+        const param = switch (args[idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(param, "IDMP-DURATION")) {
+            idx += 1;
+            if (idx >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const value_str = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            duration = std.fmt.parseInt(u32, value_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else if (std.ascii.eqlIgnoreCase(param, "IDMP-MAXSIZE")) {
+            idx += 1;
+            if (idx >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const value_str = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR value is not an integer or out of range"),
+            };
+            maxsize = std.fmt.parseInt(u32, value_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+
+        idx += 1;
+    }
+
+    // At least one parameter must be provided
+    if (duration == null and maxsize == null) {
+        return w.writeError("ERR syntax error");
+    }
+
+    // Execute XCFGSET
+    storage.xcfgset(key, duration, maxsize) catch |err| switch (err) {
+        error.NoSuchKey => return w.writeError("ERR no such key"),
+        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.InvalidDuration => return w.writeError("ERR invalid duration"),
+        error.InvalidMaxsize => return w.writeError("ERR invalid maxsize"),
+        else => return err,
+    };
+
+    return w.writeSimpleString("OK");
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 test "streams - XADD with auto ID" {
@@ -1254,4 +1329,230 @@ test "streams - XSETID invalid ENTRIESADDED value" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR value is not an integer") != null);
+}
+test "streams - XCFGSET set duration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a stream first
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &xadd_args);
+
+    // Set IDMP-DURATION
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "200" },
+    };
+    const result = try cmdXcfgset(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XCFGSET set maxsize" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a stream first
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &xadd_args);
+
+    // Set IDMP-MAXSIZE
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-MAXSIZE" },
+        RespValue{ .bulk_string = "500" },
+    };
+    const result = try cmdXcfgset(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XCFGSET set both parameters" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a stream first
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &xadd_args);
+
+    // Set both IDMP-DURATION and IDMP-MAXSIZE
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "300" },
+        RespValue{ .bulk_string = "IDMP-MAXSIZE" },
+        RespValue{ .bulk_string = "750" },
+    };
+    const result = try cmdXcfgset(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "streams - XCFGSET on non-existent stream" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // XCFGSET should return "ERR no such key"
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "nosuchkey" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "100" },
+    };
+    const result = try cmdXcfgset(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR no such key") != null);
+}
+
+test "streams - XCFGSET on wrong type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a string key
+    try storage.set("s", "value", null);
+
+    // XCFGSET should return WRONGTYPE
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "100" },
+    };
+    const result = try cmdXcfgset(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "WRONGTYPE") != null);
+}
+
+test "streams - XCFGSET invalid duration range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a stream first
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &xadd_args);
+
+    // Duration < 1 should fail
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result1 = try cmdXcfgset(allocator, storage, &args1);
+    defer allocator.free(result1);
+    try std.testing.expect(std.mem.indexOf(u8, result1, "ERR invalid duration") != null);
+
+    // Duration > 86400 should fail
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "86401" },
+    };
+    const result2 = try cmdXcfgset(allocator, storage, &args2);
+    defer allocator.free(result2);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "ERR invalid duration") != null);
+}
+
+test "streams - XCFGSET invalid maxsize range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a stream first
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &xadd_args);
+
+    // Maxsize < 1 should fail
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-MAXSIZE" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result1 = try cmdXcfgset(allocator, storage, &args1);
+    defer allocator.free(result1);
+    try std.testing.expect(std.mem.indexOf(u8, result1, "ERR invalid maxsize") != null);
+
+    // Maxsize > 10000 should fail
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-MAXSIZE" },
+        RespValue{ .bulk_string = "10001" },
+    };
+    const result2 = try cmdXcfgset(allocator, storage, &args2);
+    defer allocator.free(result2);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "ERR invalid maxsize") != null);
+}
+
+test "streams - XCFGSET no parameters" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a stream first
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &xadd_args);
+
+    // XCFGSET with no parameters should fail
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const result = try cmdXcfgset(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
 }

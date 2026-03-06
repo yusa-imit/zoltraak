@@ -151,8 +151,8 @@ pub fn executeCommand(
                 "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
                 "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
                 "SETBIT",     "BITOP",      "BITFIELD",
-                "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
-                "XACK",       "XCLAIM",     "XAUTOCLAIM",
+                "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
+                "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
             };
             var is_write = false;
@@ -630,6 +630,8 @@ pub fn executeCommand(
             break :blk try streams.cmdXinfoStream(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XSETID")) {
             break :blk try streams.cmdXsetid(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "XCFGSET")) {
+            break :blk try streams.cmdXcfgset(allocator, storage, array);
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {

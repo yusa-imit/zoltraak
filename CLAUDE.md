@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-62 complete (166+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-63 complete (167+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -48,6 +48,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 60 | XACKDEL, XDELEX (atomic ACK+DELETE with PEL ref control) |
 | 61 | HMSET (deprecated HSET alias), SORT_RO (read-only SORT) |
 | 62 | PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB NUMPAT, PUBSUB HELP (pattern-based pub/sub with * and ? wildcards, pmessage delivery format) |
+| 63 | XCFGSET (Redis 8.6+) — configure stream IDMP (Idempotent Message Processing) settings: IDMP-DURATION (1-86400 sec) and IDMP-MAXSIZE (1-10000 entries), stream configuration for at-most-once production guarantees |
 
 ### Known stubs (need real implementation for 1.0)
 
