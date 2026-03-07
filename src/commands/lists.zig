@@ -1742,8 +1742,8 @@ test "lists - RPOPLPUSH on missing source returns null" {
 
 /// BLPOP key [key ...] timeout
 /// Blocking version of LPOP - blocks until an element is available.
-/// In this single-threaded implementation, behaves as immediate check (timeout=0).
-/// Returns array [key, element] or null if all lists are empty.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns array [key, element] or null if timeout expires.
 pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1752,50 +1752,71 @@ pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeError("ERR wrong number of arguments for 'blpop' command");
     }
 
-    // Last argument is timeout (we parse but ignore in this implementation)
+    // Last argument is timeout
     const timeout_str = switch (args[args.len - 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
 
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
 
-    // Try to pop from each key in order
-    for (args[1 .. args.len - 1]) |arg| {
-        const key = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid key"),
-        };
-
-        // Try LPOP from this key
-        const result = (try storage.lpop(allocator, key, 1)) orelse continue;
-        defer {
-            for (result) |elem| allocator.free(elem);
-            allocator.free(result);
-        }
-
-        if (result.len > 0) {
-            // Return [key, element]
-            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
-            defer resp_values.deinit(allocator);
-
-            try resp_values.append(allocator, RespValue{ .bulk_string = key });
-            try resp_values.append(allocator, RespValue{ .bulk_string = result[0] });
-
-            return w.writeArray(resp_values.items);
-        }
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
     }
 
-    // All lists empty - return null
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
+
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
+
+    while (elapsed_ms < timeout_ms) {
+        // Try to pop from each key in order
+        for (args[1 .. args.len - 1]) |arg| {
+            const key = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid key"),
+            };
+
+            // Try LPOP from this key
+            const result = (try storage.lpop(allocator, key, 1)) orelse continue;
+            defer {
+                for (result) |elem| allocator.free(elem);
+                allocator.free(result);
+            }
+
+            if (result.len > 0) {
+                // Return [key, element]
+                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+                defer resp_values.deinit(allocator);
+
+                try resp_values.append(allocator, RespValue{ .bulk_string = key });
+                try resp_values.append(allocator, RespValue{ .bulk_string = result[0] });
+
+                return w.writeArray(resp_values.items);
+            }
+        }
+
+        // All lists empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
+    }
+
+    // Timeout expired - return null
     return w.writeNull();
 }
 
 /// BRPOP key [key ...] timeout
 /// Blocking version of RPOP - blocks until an element is available.
-/// In this single-threaded implementation, behaves as immediate check (timeout=0).
-/// Returns array [key, element] or null if all lists are empty.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns array [key, element] or null if timeout expires.
 pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1804,50 +1825,71 @@ pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeError("ERR wrong number of arguments for 'brpop' command");
     }
 
-    // Last argument is timeout (we parse but ignore in this implementation)
+    // Last argument is timeout
     const timeout_str = switch (args[args.len - 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
 
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
 
-    // Try to pop from each key in order
-    for (args[1 .. args.len - 1]) |arg| {
-        const key = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid key"),
-        };
-
-        // Try RPOP from this key
-        const result = (try storage.rpop(allocator, key, 1)) orelse continue;
-        defer {
-            for (result) |elem| allocator.free(elem);
-            allocator.free(result);
-        }
-
-        if (result.len > 0) {
-            // Return [key, element]
-            var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
-            defer resp_values.deinit(allocator);
-
-            try resp_values.append(allocator, RespValue{ .bulk_string = key });
-            try resp_values.append(allocator, RespValue{ .bulk_string = result[0] });
-
-            return w.writeArray(resp_values.items);
-        }
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
     }
 
-    // All lists empty - return null
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
+
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
+
+    while (elapsed_ms < timeout_ms) {
+        // Try to pop from each key in order
+        for (args[1 .. args.len - 1]) |arg| {
+            const key = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid key"),
+            };
+
+            // Try RPOP from this key
+            const result = (try storage.rpop(allocator, key, 1)) orelse continue;
+            defer {
+                for (result) |elem| allocator.free(elem);
+                allocator.free(result);
+            }
+
+            if (result.len > 0) {
+                // Return [key, element]
+                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+                defer resp_values.deinit(allocator);
+
+                try resp_values.append(allocator, RespValue{ .bulk_string = key });
+                try resp_values.append(allocator, RespValue{ .bulk_string = result[0] });
+
+                return w.writeArray(resp_values.items);
+            }
+        }
+
+        // All lists empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
+    }
+
+    // Timeout expired - return null
     return w.writeNull();
 }
 
 /// BLMOVE source dest LEFT|RIGHT LEFT|RIGHT timeout
 /// Blocking version of LMOVE - blocks until an element is available.
-/// In this single-threaded implementation, behaves as immediate check (timeout=0).
-/// Returns the moved element or null if source is empty.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns the moved element or null if source is empty and timeout expires.
 pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1881,9 +1923,14 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
 
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
+
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
+    }
 
     const src_left = if (std.ascii.eqlIgnoreCase(src_dir, "LEFT"))
         true
@@ -1899,19 +1946,36 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     else
         return w.writeError("ERR syntax error");
 
-    const moved = storage.lmove(allocator, src, dst, src_left, dst_left) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
-    };
-    defer if (moved) |m| allocator.free(m);
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
 
-    if (moved) |elem| {
-        return w.writeBulkString(elem);
-    } else {
-        return w.writeNull();
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
+
+    while (elapsed_ms < timeout_ms) {
+        const moved = storage.lmove(allocator, src, dst, src_left, dst_left) catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        };
+        defer if (moved) |m| allocator.free(m);
+
+        if (moved) |elem| {
+            return w.writeBulkString(elem);
+        }
+
+        // Source list is empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
     }
+
+    // Timeout expired - return null
+    return w.writeNull();
 }
 
 /// LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]
@@ -2321,6 +2385,57 @@ test "lists - BLMOVE on empty source returns null" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "lists - BLPOP with negative timeout returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLPOP" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "-1.0" },
+    };
+    const result = try cmdBlpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR timeout is negative") != null);
+}
+
+test "lists - BRPOP with negative timeout returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BRPOP" },
+        RespValue{ .bulk_string = "list1" },
+        RespValue{ .bulk_string = "-1.0" },
+    };
+    const result = try cmdBrpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR timeout is negative") != null);
+}
+
+test "lists - BLMOVE with negative timeout returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BLMOVE" },
+        RespValue{ .bulk_string = "src" },
+        RespValue{ .bulk_string = "dst" },
+        RespValue{ .bulk_string = "LEFT" },
+        RespValue{ .bulk_string = "RIGHT" },
+        RespValue{ .bulk_string = "-1.0" },
+    };
+    const result = try cmdBlmove(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR timeout is negative") != null);
 }
 
 test "lists - LMPOP pops from first non-empty list with LEFT" {
