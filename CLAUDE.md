@@ -574,6 +574,25 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. Testing utilities improve test quality without breaking existing code. Critical for maintaining REPL rendering quality.
 
+### v1.6.0 — Data Visualization & Advanced Charts (status: READY)
+
+**sailor v1.6.0 released** (2026-03-08) — Advanced data visualization widgets
+
+- **New features**:
+  - ScatterPlot: X-Y coordinate plotting with markers and multiple series
+  - Histogram: Frequency distribution bars (vertical/horizontal)
+  - TimeSeriesChart: Time-based line chart with Unix timestamp support
+  - Heatmap & PieChart (previously released)
+- **Impact on zoltraak**: MEDIUM — Useful for Redis monitoring TUI
+  - TimeSeriesChart for memory usage over time (INFO stats)
+  - Histogram for key distribution across slots (CLUSTER)
+  - ScatterPlot for latency vs. throughput analysis
+  - Optional for future monitoring dashboard
+- [ ] `build.zig.zon`에 sailor v1.6.0 의존성 업데이트
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Visualization widgets are opt-in. Enables future monitoring TUI enhancements.
+
 ---
 
 ## zuda Migration
