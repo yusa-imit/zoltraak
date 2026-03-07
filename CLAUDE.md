@@ -143,6 +143,8 @@ zoltraak/
 └── README.md                    # User-facing documentation
 ```
 
+> **Note**: 파일 구조는 참고안. 실제 구현에 따라 변경 가능하며, 소스 코드가 기준.
+
 ---
 
 ## Zig Guidelines
