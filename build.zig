@@ -129,6 +129,19 @@ pub fn build(b: *std.Build) void {
     const run_xread_blocking_tests = b.addRunArtifact(xread_blocking_tests);
     integration_test_step.dependOn(&run_xread_blocking_tests.step);
 
+    // TUI snapshot tests (sailor v1.5.0)
+    const tui_snapshot_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_tui_snapshot.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    tui_snapshot_tests.root_module.addImport("sailor", sailor_mod);
+
+    const run_tui_snapshot_tests = b.addRunArtifact(tui_snapshot_tests);
+    test_step.dependOn(&run_tui_snapshot_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

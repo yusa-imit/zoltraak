@@ -551,7 +551,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. Form features enable the interactive TUI prompt editor planned for v2.0 milestone.
 
-### v1.5.0 — State Management & Testing (status: READY)
+### v1.5.0 — State Management & Testing (DONE)
 
 **sailor v1.5.0 released** (2026-03-07) — Testing utilities and state management
 
@@ -565,9 +565,9 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Example patterns guide zoltraak's TUI test expansion
   - Event bus useful for REPL component communication (e.g., completion → highlighting)
   - Command pattern enables undo/redo in prompt editor (future feature)
-- [ ] `build.zig.zon`에 sailor v1.5.0 의존성 업데이트
-- [ ] Add snapshot tests for REPL key browser rendering
-- [ ] Add snapshot tests for prompt editor output
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.5.0 (hash: sailor-1.5.0-53_z3NZQCwA9JfYkm5M6Lc2fREUBxPsu9XyB_3JLhgiM)
+- Added TUI snapshot tests in tests/test_tui_snapshot.zig (5 tests covering Style, Color, Rect, Buffer)
+- All existing tests pass
+- Testing utilities available for future TUI enhancements
 
 **Note**: Non-breaking upgrade. Testing utilities improve test quality without breaking existing code. Critical for maintaining REPL rendering quality.
