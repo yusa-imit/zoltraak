@@ -1948,6 +1948,10 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Blocking version of ZMPOP - pops members from the first non-empty sorted set.
 /// In this single-threaded implementation, behaves as immediate check (timeout=0).
 /// Returns array [key, [member, score, ...]] or null if all sorted sets are empty.
+/// BZMPOP timeout numkeys key [key ...] <MIN | MAX> [COUNT count]
+/// Blocking version of ZMPOP - blocks until an element is available.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns [key, [member, score, ...]] or null if timeout expires.
 pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1961,9 +1965,14 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         .bulk_string => |s| s,
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
+
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
+    }
 
     // Parse numkeys
     const numkeys_str = switch (args[2]) {
@@ -2022,69 +2031,85 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         count = @as(usize, @intCast(count_i64));
     }
 
-    // Try to pop from each key in order
-    for (args[3 .. 3 + numkeys_usize]) |arg| {
-        const key = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid key"),
-        };
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
 
-        // Try popping from this key
-        const popped = if (pop_min)
-            storage.zpopmin(allocator, key, count)
-        else
-            storage.zpopmax(allocator, key, count);
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
 
-        const members = (popped catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-            }
-            return err;
-        }) orelse continue;
+    while (elapsed_ms < timeout_ms) {
+        // Try to pop from each key in order
+        for (args[3 .. 3 + numkeys_usize]) |arg| {
+            const key = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid key"),
+            };
 
-        defer {
-            for (members) |sm| allocator.free(sm.member);
-            allocator.free(members);
-        }
+            // Try popping from this key
+            const popped = if (pop_min)
+                storage.zpopmin(allocator, key, count)
+            else
+                storage.zpopmax(allocator, key, count);
 
-        if (members.len > 0) {
-            // Return [key, [member, score, ...]]
-            // Build member-score array
-            var member_score_buf = std.ArrayList(u8){};
-            defer member_score_buf.deinit(allocator);
-            const ms_writer = member_score_buf.writer(allocator);
+            const members = (popped catch |err| {
+                if (err == error.WrongType) {
+                    return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+                }
+                return err;
+            }) orelse continue;
 
-            // Array of member-score pairs
-            try ms_writer.print("*{d}\r\n", .{members.len * 2});
-            for (members) |sm| {
-                try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
-
-                var score_buf: [64]u8 = undefined;
-                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
-                try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+            defer {
+                for (members) |sm| allocator.free(sm.member);
+                allocator.free(members);
             }
 
-            const ms_str = try member_score_buf.toOwnedSlice(allocator);
-            defer allocator.free(ms_str);
+            if (members.len > 0) {
+                // Return [key, [member, score, ...]]
+                // Build member-score array
+                var member_score_buf = std.ArrayList(u8){};
+                defer member_score_buf.deinit(allocator);
+                const ms_writer = member_score_buf.writer(allocator);
 
-            // Build final response: *2\r\n$<keylen>\r\n<key>\r\n<member_score_array>
-            var final_buf = std.ArrayList(u8){};
-            defer final_buf.deinit(allocator);
-            const final_writer = final_buf.writer(allocator);
-            try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, ms_str });
+                // Array of member-score pairs
+                try ms_writer.print("*{d}\r\n", .{members.len * 2});
+                for (members) |sm| {
+                    try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
 
-            return try final_buf.toOwnedSlice(allocator);
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                    try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+                }
+
+                const ms_str = try member_score_buf.toOwnedSlice(allocator);
+                defer allocator.free(ms_str);
+
+                // Build final response: *2\r\n$<keylen>\r\n<key>\r\n<member_score_array>
+                var final_buf = std.ArrayList(u8){};
+                defer final_buf.deinit(allocator);
+                const final_writer = final_buf.writer(allocator);
+                try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, ms_str });
+
+                return try final_buf.toOwnedSlice(allocator);
+            }
         }
+
+        // All sorted sets empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
     }
 
-    // All sorted sets were empty
+    // Timeout expired - return null
     return w.writeNull();
 }
 
 /// BZPOPMIN key [key ...] timeout
-/// Blocking version of ZPOPMIN - pops lowest-score member from first non-empty sorted set.
-/// In this single-threaded implementation, behaves as immediate check (timeout=0).
-/// Returns array [key, member, score] or null if all sorted sets are empty.
+/// Blocking version of ZPOPMIN - blocks until an element is available.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns array [key, member, score] or null if timeout expires.
 pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -2093,64 +2118,85 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR wrong number of arguments for 'bzpopmin' command");
     }
 
-    // Last argument is timeout (we parse but ignore in this implementation)
+    // Last argument is timeout
     const timeout_str = switch (args[args.len - 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
 
-    // Try to pop from each key in order
-    for (args[1 .. args.len - 1]) |arg| {
-        const key = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid key"),
-        };
-
-        // Try ZPOPMIN from this key
-        const popped = storage.zpopmin(allocator, key, 1) catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-            }
-            return err;
-        };
-
-        if (popped) |members| {
-            defer {
-                for (members) |sm| allocator.free(sm.member);
-                allocator.free(members);
-            }
-
-            if (members.len > 0) {
-                // Return [key, member, score]
-                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
-                defer resp_values.deinit(allocator);
-
-                try resp_values.append(allocator, RespValue{ .bulk_string = key });
-                try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
-
-                var score_buf: [64]u8 = undefined;
-                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
-                const owned_score = try allocator.dupe(u8, score_str);
-                defer allocator.free(owned_score);
-
-                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
-
-                return w.writeArray(resp_values.items);
-            }
-        }
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
     }
 
-    // All sorted sets empty - return null
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
+
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
+
+    while (elapsed_ms < timeout_ms) {
+        // Try to pop from each key in order
+        for (args[1 .. args.len - 1]) |arg| {
+            const key = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid key"),
+            };
+
+            // Try ZPOPMIN from this key
+            const popped = storage.zpopmin(allocator, key, 1) catch |err| {
+                if (err == error.WrongType) {
+                    return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+                }
+                return err;
+            };
+
+            if (popped) |members| {
+                defer {
+                    for (members) |sm| allocator.free(sm.member);
+                    allocator.free(members);
+                }
+
+                if (members.len > 0) {
+                    // Return [key, member, score]
+                    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
+                    defer resp_values.deinit(allocator);
+
+                    try resp_values.append(allocator, RespValue{ .bulk_string = key });
+                    try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
+
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
+                    const owned_score = try allocator.dupe(u8, score_str);
+                    defer allocator.free(owned_score);
+
+                    try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+
+                    return w.writeArray(resp_values.items);
+                }
+            }
+        }
+
+        // All sorted sets empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
+    }
+
+    // Timeout expired - return null
     return w.writeNull();
 }
 
 /// BZPOPMAX key [key ...] timeout
-/// Blocking version of ZPOPMAX - pops highest-score member from first non-empty sorted set.
-/// In this single-threaded implementation, behaves as immediate check (timeout=0).
-/// Returns array [key, member, score] or null if all sorted sets are empty.
+/// Blocking version of ZPOPMAX - blocks until an element is available.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns array [key, member, score] or null if timeout expires.
 pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -2159,57 +2205,78 @@ pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR wrong number of arguments for 'bzpopmax' command");
     }
 
-    // Last argument is timeout (we parse but ignore in this implementation)
+    // Last argument is timeout
     const timeout_str = switch (args[args.len - 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
 
-    // Try to pop from each key in order
-    for (args[1 .. args.len - 1]) |arg| {
-        const key = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid key"),
-        };
-
-        // Try ZPOPMAX from this key
-        const popped = storage.zpopmax(allocator, key, 1) catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-            }
-            return err;
-        };
-
-        if (popped) |members| {
-            defer {
-                for (members) |sm| allocator.free(sm.member);
-                allocator.free(members);
-            }
-
-            if (members.len > 0) {
-                // Return [key, member, score]
-                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
-                defer resp_values.deinit(allocator);
-
-                try resp_values.append(allocator, RespValue{ .bulk_string = key });
-                try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
-
-                var score_buf: [64]u8 = undefined;
-                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
-                const owned_score = try allocator.dupe(u8, score_str);
-                defer allocator.free(owned_score);
-
-                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
-
-                return w.writeArray(resp_values.items);
-            }
-        }
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
     }
 
-    // All sorted sets empty - return null
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
+
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
+
+    while (elapsed_ms < timeout_ms) {
+        // Try to pop from each key in order
+        for (args[1 .. args.len - 1]) |arg| {
+            const key = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid key"),
+            };
+
+            // Try ZPOPMAX from this key
+            const popped = storage.zpopmax(allocator, key, 1) catch |err| {
+                if (err == error.WrongType) {
+                    return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+                }
+                return err;
+            };
+
+            if (popped) |members| {
+                defer {
+                    for (members) |sm| allocator.free(sm.member);
+                    allocator.free(members);
+                }
+
+                if (members.len > 0) {
+                    // Return [key, member, score]
+                    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
+                    defer resp_values.deinit(allocator);
+
+                    try resp_values.append(allocator, RespValue{ .bulk_string = key });
+                    try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
+
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
+                    const owned_score = try allocator.dupe(u8, score_str);
+                    defer allocator.free(owned_score);
+
+                    try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+
+                    return w.writeArray(resp_values.items);
+                }
+            }
+        }
+
+        // All sorted sets empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
+    }
+
+    // Timeout expired - return null
     return w.writeNull();
 }
 

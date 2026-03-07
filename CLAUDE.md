@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-67 complete (168+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-68 complete (168+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -52,11 +52,13 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 64 | **XREAD/XREADGROUP BLOCK infrastructure (Phase 1)** — BlockingQueue data structure, BlockedClient tracking, specification document (full event-loop integration pending) |
 | 65 | WAITAOF command (Redis 7.2+) — wait for AOF fsync acknowledgment from local Redis and/or replicas, returns array [local_fsynced_count, replicas_fsynced_count], validates numlocal (0 or 1), rejects execution on replica instances, stub implementation (full AOF fsync offset tracking pending) |
 | 66 | **XREAD/XREADGROUP BLOCK with polling (Phase 2)** — true blocking semantics using polling approach (checks every 100ms), validates timeout >= 0, XREADGROUP only blocks for ID=">", returns immediately for "0" or specific IDs, completes Phase 2 of blocking implementation |
+| 67 | True blocking semantics for list commands — BLPOP/BRPOP/BLMOVE now use polling with 100ms intervals (same approach as XREAD/XREADGROUP BLOCK), validates timeout >= 0, returns null on timeout, completes Phase 1.7 true blocking command semantics for core list operations (BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP remain immediate-return for now) |
+| 68 | **True blocking semantics for BLMPOP and sorted set commands** — BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP now use polling with 100ms intervals, validates timeout >= 0, returns null on timeout, **completes Phase 1.7 true blocking semantics for ALL blocking commands** (BLPOP/BRPOP/BLMOVE/BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP/XREAD BLOCK/XREADGROUP BLOCK) |
 | 67 | **True blocking semantics for list commands** — BLPOP/BRPOP/BLMOVE now use polling with 100ms intervals (same approach as XREAD/XREADGROUP BLOCK), validates timeout >= 0, returns null on timeout, completes Phase 1.7 true blocking command semantics for core list operations (BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP remain immediate-return for now) |
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values), **some blocking commands (BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP still use immediate-return; core BLPOP/BRPOP/BLMOVE now have true blocking)**.
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values). **All blocking commands now have true blocking semantics using polling** (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK).
 
 ---
 

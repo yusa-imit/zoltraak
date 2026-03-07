@@ -2111,6 +2111,10 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Blocking version of LMPOP - pops elements from the first non-empty list.
 /// In this single-threaded implementation, behaves as immediate check (timeout=0).
 /// Returns array [key, [elements...]] or null if all lists are empty.
+/// BLMPOP timeout numkeys key [key ...] <LEFT | RIGHT> [COUNT count]
+/// Blocking version of LMPOP - blocks until an element is available.
+/// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// Returns [key, [elements...]] or null if timeout expires.
 pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -2124,9 +2128,14 @@ pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         .bulk_string => |s| s,
         else => return w.writeError("ERR timeout is not a float or out of range"),
     };
-    _ = std.fmt.parseFloat(f64, timeout_str) catch {
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
         return w.writeError("ERR timeout is not a float or out of range");
     };
+
+    // Validate timeout >= 0
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
+    }
 
     // Parse numkeys
     const numkeys_str = switch (args[2]) {
@@ -2185,62 +2194,78 @@ pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         count = @as(usize, @intCast(count_i64));
     }
 
-    // Try to pop from each key in order
-    for (args[3 .. 3 + numkeys_usize]) |arg| {
-        const key = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid key"),
-        };
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
 
-        // Try popping from this key
-        const result = if (pop_left)
-            (try storage.lpop(allocator, key, count)) orelse continue
-        else
-            (try storage.rpop(allocator, key, count)) orelse continue;
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
 
-        defer {
-            for (result) |elem| allocator.free(elem);
-            allocator.free(result);
-        }
+    while (elapsed_ms < timeout_ms) {
+        // Try to pop from each key in order
+        for (args[3 .. 3 + numkeys_usize]) |arg| {
+            const key = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid key"),
+            };
 
-        if (result.len > 0) {
-            // Return [key, [elements...]]
-            var elements = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
-            defer elements.deinit(allocator);
-            for (result) |elem| {
-                try elements.append(allocator, RespValue{ .bulk_string = elem });
+            // Try popping from this key
+            const result = if (pop_left)
+                (try storage.lpop(allocator, key, count)) orelse continue
+            else
+                (try storage.rpop(allocator, key, count)) orelse continue;
+
+            defer {
+                for (result) |elem| allocator.free(elem);
+                allocator.free(result);
             }
 
-            var outer = try std.ArrayList(RespValue).initCapacity(allocator, 2);
-            defer outer.deinit(allocator);
-            try outer.append(allocator, RespValue{ .bulk_string = key });
+            if (result.len > 0) {
+                // Return [key, [elements...]]
+                var elements = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
+                defer elements.deinit(allocator);
+                for (result) |elem| {
+                    try elements.append(allocator, RespValue{ .bulk_string = elem });
+                }
 
-            // Build array response for elements
-            var inner_buf = std.ArrayList(u8){};
-            defer inner_buf.deinit(allocator);
-            const inner_writer = inner_buf.writer(allocator);
-            try inner_writer.print("*{d}\r\n", .{elements.items.len});
-            for (elements.items) |elem| {
-                const bs = switch (elem) {
-                    .bulk_string => |s| s,
-                    else => "",
-                };
-                try inner_writer.print("${d}\r\n{s}\r\n", .{ bs.len, bs });
+                var outer = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+                defer outer.deinit(allocator);
+                try outer.append(allocator, RespValue{ .bulk_string = key });
+
+                // Build array response for elements
+                var inner_buf = std.ArrayList(u8){};
+                defer inner_buf.deinit(allocator);
+                const inner_writer = inner_buf.writer(allocator);
+                try inner_writer.print("*{d}\r\n", .{elements.items.len});
+                for (elements.items) |elem| {
+                    const bs = switch (elem) {
+                        .bulk_string => |s| s,
+                        else => "",
+                    };
+                    try inner_writer.print("${d}\r\n{s}\r\n", .{ bs.len, bs });
+                }
+
+                const inner_str = try inner_buf.toOwnedSlice(allocator);
+                defer allocator.free(inner_str);
+
+                // Manually build response: *2\r\n$<keylen>\r\n<key>\r\n<inner>
+                var resp_buf = std.ArrayList(u8){};
+                defer resp_buf.deinit(allocator);
+                const resp_writer = resp_buf.writer(allocator);
+                try resp_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, inner_str });
+                return resp_buf.toOwnedSlice(allocator);
             }
-
-            const inner_str = try inner_buf.toOwnedSlice(allocator);
-            defer allocator.free(inner_str);
-
-            // Manually build response: *2\r\n$<keylen>\r\n<key>\r\n<inner>
-            var resp_buf = std.ArrayList(u8){};
-            defer resp_buf.deinit(allocator);
-            const resp_writer = resp_buf.writer(allocator);
-            try resp_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, inner_str });
-            return resp_buf.toOwnedSlice(allocator);
         }
+
+        // All lists empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
     }
 
-    // All lists empty - return null
+    // Timeout expired - return null
     return w.writeNull();
 }
 
