@@ -571,3 +571,66 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - Testing utilities available for future TUI enhancements
 
 **Note**: Non-breaking upgrade. Testing utilities improve test quality without breaking existing code. Critical for maintaining REPL rendering quality.
+
+---
+
+## zuda Migration
+
+zoltraak는 현재 자체 구현한 자료구조/알고리즘을 `zuda` 라이브러리(https://github.com/yusa-imit/zuda)로 점진적으로 대체할 예정이다.
+zuda의 해당 구현이 완료되면 `from:zuda` 라벨 이슈가 발행된다.
+
+### 마이그레이션 대상
+
+| 자체 구현 | 파일 | zuda 대체 | status |
+|-----------|------|-----------|--------|
+| Sorted Set (HashMap + sorted list) | `src/storage/memory.zig` | `zuda.containers.lists.SkipList` | PENDING |
+| HyperLogLog | `src/storage/memory.zig` | `zuda.containers.probabilistic.HyperLogLog` | PENDING |
+| Glob Pattern Matching | `src/utils/glob.zig` | `zuda.algorithms.string.glob_match` | PENDING |
+| Geohash encoding | `src/commands/geo.zig` | `zuda.algorithms.geometry.geohash` | PENDING |
+| Haversine Distance | `src/commands/geo.zig` | `zuda.algorithms.geometry.haversine` | PENDING |
+
+### 마이그레이션 제외 (domain-specific)
+
+- `src/storage/memory.zig` (core storage) — Redis 시맨틱에 밀접, 자체 유지
+- `src/storage/pubsub.zig` — Redis Pub/Sub 전용 프로토콜
+- `src/storage/blocking.zig` — Redis BLOCK 전용 큐
+- `src/commands/streams.zig` — Redis Stream 전용 로직
+- `src/commands/bits.zig` — Redis BITOP 전용 로직
+
+> Sorted Set은 zoltraak에서 가장 복잡한 자체 구현(1800 LOC)이다. zuda의 SkipList가 score 기반 정렬 + 동점 시 lexicographic 비교를 지원하는지 확인 후 마이그레이션한다.
+
+### 마이그레이션 프로토콜
+
+1. zuda에서 `from:zuda` 라벨 이슈가 도착하면 해당 마이그레이션의 status를 `READY`로 변경
+2. **Sorted Set 마이그레이션 특별 절차**:
+   - zuda SkipList가 `(score: f64, member: []const u8)` 복합 키 정렬 지원하는지 확인
+   - rank 기반 range query (ZRANGE), score 기반 range query (ZRANGEBYSCORE) 모두 지원하는지 확인
+   - 모든 기존 sorted set 테스트를 zuda 기반으로 포팅하여 동작 확인
+   - Redis 호환성 검증 통과 확인
+3. 일반 마이그레이션:
+   - `build.zig.zon`에 zuda 의존성 추가
+   - 자체 구현을 zuda import로 교체
+4. `zig build test` + `tests/integration_test.sh` 전체 통과 확인
+5. status를 `DONE`으로 변경하고 커밋
+
+### zuda 이슈 발행 프로토콜
+
+zuda를 사용하는 중 버그를 발견하거나 필요한 기능이 없을 때:
+
+```bash
+gh issue create --repo yusa-imit/zuda \
+  --title "bug: <간단한 설명>" \
+  --label "bug,from:zoltraak" \
+  --body "## 증상
+<어떤 문제가 발생했는지>
+
+## 재현 방법
+<코드 또는 단계>
+
+## 환경
+- zuda: <version>
+- zig: $(zig version)"
+```
+
+- **로컬 워크어라운드 금지**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기
+- zuda 에이전트가 `from:*` 라벨 이슈를 최우선 처리한다
