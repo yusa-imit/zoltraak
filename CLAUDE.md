@@ -574,7 +574,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. Testing utilities improve test quality without breaking existing code. Critical for maintaining REPL rendering quality.
 
-### v1.6.0 — Data Visualization & Advanced Charts (status: READY)
+### v1.6.0 — Data Visualization & Advanced Charts (DONE)
 
 **sailor v1.6.0 released** (2026-03-08) — Advanced data visualization widgets
 
@@ -588,8 +588,9 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Histogram for key distribution across slots (CLUSTER)
   - ScatterPlot for latency vs. throughput analysis
   - Optional for future monitoring dashboard
-- [ ] `build.zig.zon`에 sailor v1.6.0 의존성 업데이트
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.6.0 (hash: sailor-1.6.0-53_z3OizDAALyxQeXTsc1AfcO6Wny1Wz0hvzwZbTsBBx)
+- All existing tests pass
+- Visualization widgets available for future monitoring TUI enhancements
 
 **Note**: Non-breaking upgrade. Visualization widgets are opt-in. Enables future monitoring TUI enhancements.
 
