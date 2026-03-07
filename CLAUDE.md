@@ -548,3 +548,24 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - Form widgets available for future TUI enhancements
 
 **Note**: Non-breaking upgrade. Form features enable the interactive TUI prompt editor planned for v2.0 milestone.
+
+### v1.5.0 — State Management & Testing (status: READY)
+
+**sailor v1.5.0 released** (2026-03-07) — Testing utilities and state management
+
+- **New features**:
+  - Widget snapshot testing: assertSnapshot() method for pixel-perfect verification
+  - Example test suite: 10 comprehensive integration test patterns
+  - Previously released: Event bus, Command pattern, MockTerminal, EventSimulator
+- **Impact on zoltraak**: HIGH — Essential for TUI/REPL testing
+  - MockTerminal already used in zoltraak's TUI tests
+  - assertSnapshot() ensures exact REPL output verification
+  - Example patterns guide zoltraak's TUI test expansion
+  - Event bus useful for REPL component communication (e.g., completion → highlighting)
+  - Command pattern enables undo/redo in prompt editor (future feature)
+- [ ] `build.zig.zon`에 sailor v1.5.0 의존성 업데이트
+- [ ] Add snapshot tests for REPL key browser rendering
+- [ ] Add snapshot tests for prompt editor output
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. Testing utilities improve test quality without breaking existing code. Critical for maintaining REPL rendering quality.
