@@ -17,6 +17,9 @@ const SubscriberState = struct {
     /// Set of pattern subscriptions this subscriber is watching.
     /// Owned strings duplicated from caller input.
     patterns: std.StringHashMap(void),
+    /// Set of sharded channel names this subscriber is watching (Redis 7.0+).
+    /// Owned strings duplicated from caller input.
+    sharded_channels: std.StringHashMap(void),
     /// Ring-buffer of pending RESP-formatted message frames.
     /// Each element is an owned slice allocated with the PubSub allocator.
     pending: std.ArrayList([]const u8),
@@ -25,6 +28,7 @@ const SubscriberState = struct {
         return SubscriberState{
             .channels = std.StringHashMap(void).init(allocator),
             .patterns = std.StringHashMap(void).init(allocator),
+            .sharded_channels = std.StringHashMap(void).init(allocator),
             .pending = std.ArrayList([]const u8){},
         };
     }
@@ -42,6 +46,12 @@ const SubscriberState = struct {
             allocator.free(key.*);
         }
         self.patterns.deinit();
+        // Free all sharded channel strings
+        var shard_it = self.sharded_channels.keyIterator();
+        while (shard_it.next()) |key| {
+            allocator.free(key.*);
+        }
+        self.sharded_channels.deinit();
         // Free all pending message bytes
         for (self.pending.items) |msg| {
             allocator.free(msg);
@@ -71,6 +81,10 @@ pub const PubSub = struct {
     /// pattern -> list of subscriber IDs for pattern subscriptions.
     /// Pattern strings are owned (duplicated).
     patterns: std.StringHashMap(std.ArrayList(u64)),
+    /// sharded channel name -> list of subscriber IDs (Redis 7.0+).
+    /// Sharded channels are hash-slot routed in cluster mode.
+    /// Channel name strings are owned (duplicated).
+    sharded_channels: std.StringHashMap(std.ArrayList(u64)),
     /// subscriber_id -> SubscriberState
     subscribers: std.AutoHashMap(u64, SubscriberState),
 
@@ -80,6 +94,7 @@ pub const PubSub = struct {
             .allocator = allocator,
             .channels = std.StringHashMap(std.ArrayList(u64)).init(allocator),
             .patterns = std.StringHashMap(std.ArrayList(u64)).init(allocator),
+            .sharded_channels = std.StringHashMap(std.ArrayList(u64)).init(allocator),
             .subscribers = std.AutoHashMap(u64, SubscriberState).init(allocator),
         };
     }
@@ -101,6 +116,14 @@ pub const PubSub = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.patterns.deinit();
+
+        // Free sharded channel subscriber lists and owned channel name keys
+        var shard_it = self.sharded_channels.iterator();
+        while (shard_it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.sharded_channels.deinit();
 
         // Free subscriber states
         var sub_it = self.subscribers.valueIterator();
@@ -430,6 +453,161 @@ pub const PubSub = struct {
         return sub_list.items.len;
     }
 
+    // ── Sharded Pub/Sub (Redis 7.0+) ───────────────────────────────────────────
+
+    /// Subscribe `subscriber_id` to sharded `channel`.
+    /// Sharded channels are routed by hash slot in cluster mode.
+    /// Returns the total number of sharded channels this subscriber is now watching.
+    /// Safe to call multiple times for the same (subscriber, channel) pair.
+    pub fn ssubscribe(self: *PubSub, subscriber_id: u64, channel: []const u8) !usize {
+        // Ensure subscriber state exists
+        const state = try self.getOrCreateState(subscriber_id);
+
+        // Check if already subscribed to avoid duplicate registration
+        if (state.sharded_channels.contains(channel)) {
+            return state.sharded_channels.count();
+        }
+
+        // Add channel to subscriber's set
+        const channel_copy = try self.allocator.dupe(u8, channel);
+        errdefer self.allocator.free(channel_copy);
+        try state.sharded_channels.put(channel_copy, {});
+
+        // Add subscriber to sharded channel's list (create channel entry if needed)
+        if (self.sharded_channels.getPtr(channel)) |sub_list| {
+            try sub_list.append(self.allocator, subscriber_id);
+        } else {
+            const chan_key = try self.allocator.dupe(u8, channel);
+            errdefer self.allocator.free(chan_key);
+
+            var sub_list = std.ArrayList(u64){};
+            errdefer sub_list.deinit(self.allocator);
+            try sub_list.append(self.allocator, subscriber_id);
+
+            try self.sharded_channels.put(chan_key, sub_list);
+        }
+
+        return state.sharded_channels.count();
+    }
+
+    /// Unsubscribe `subscriber_id` from sharded `channel`.
+    /// Returns the remaining number of sharded channels this subscriber is watching.
+    /// Returns 0 if the subscriber was not subscribed to the channel.
+    pub fn sunsubscribe(self: *PubSub, subscriber_id: u64, channel: []const u8) !usize {
+        const state = self.subscribers.getPtr(subscriber_id) orelse return 0;
+
+        // Remove channel from subscriber's set, freeing the owned key
+        if (state.sharded_channels.fetchRemove(channel)) |kv| {
+            self.allocator.free(kv.key);
+        } else {
+            // Not subscribed to this channel
+            return state.sharded_channels.count();
+        }
+
+        // Remove subscriber from channel's list
+        if (self.sharded_channels.getPtr(channel)) |sub_list| {
+            for (sub_list.items, 0..) |sid, idx| {
+                if (sid == subscriber_id) {
+                    _ = sub_list.swapRemove(idx);
+                    break;
+                }
+            }
+            // If no subscribers remain, remove the channel entry entirely
+            if (sub_list.items.len == 0) {
+                sub_list.deinit(self.allocator);
+                if (self.sharded_channels.fetchRemove(channel)) |kv| {
+                    self.allocator.free(kv.key);
+                }
+            }
+        }
+
+        return state.sharded_channels.count();
+    }
+
+    /// Unsubscribe `subscriber_id` from all sharded channels.
+    /// Does not affect regular channel or pattern subscriptions.
+    pub fn sunsubscribeAll(self: *PubSub, subscriber_id: u64) !void {
+        const state = self.subscribers.getPtr(subscriber_id) orelse return;
+
+        // Duplicate channel names into a temporary list
+        var channel_names = std.ArrayList([]u8){};
+        defer channel_names.deinit(self.allocator);
+
+        var shard_it = state.sharded_channels.keyIterator();
+        while (shard_it.next()) |key| {
+            const copy = try self.allocator.dupe(u8, key.*);
+            errdefer self.allocator.free(copy);
+            try channel_names.append(self.allocator, copy);
+        }
+
+        // Unsubscribe from each
+        for (channel_names.items) |ch| {
+            _ = try self.sunsubscribe(subscriber_id, ch);
+            self.allocator.free(ch);
+        }
+        channel_names.clearRetainingCapacity();
+    }
+
+    /// Publish `message` to sharded `channel`.
+    /// Enqueues a RESP push frame to every sharded subscriber's pending queue.
+    /// In cluster mode, this would only deliver to nodes responsible for channel's hash slot.
+    /// Returns the number of subscribers that received the message.
+    pub fn spublish(self: *PubSub, channel: []const u8, message: []const u8) !usize {
+        var delivered: usize = 0;
+
+        // Deliver to sharded channel subscribers
+        if (self.sharded_channels.get(channel)) |sub_list| {
+            const frame = try buildSmessageFrame(self.allocator, channel, message);
+            defer self.allocator.free(frame);
+
+            for (sub_list.items) |sid| {
+                const st = self.subscribers.getPtr(sid) orelse continue;
+
+                // Drop oldest message if queue is full
+                if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
+                    const oldest = st.pending.orderedRemove(0);
+                    self.allocator.free(oldest);
+                }
+
+                const frame_copy = try self.allocator.dupe(u8, frame);
+                errdefer self.allocator.free(frame_copy);
+                try st.pending.append(self.allocator, frame_copy);
+                delivered += 1;
+            }
+        }
+
+        return delivered;
+    }
+
+    /// Return an allocated slice of all active sharded channel names (channels with
+    /// at least one subscriber). Caller owns the returned slice but NOT the
+    /// individual strings within it — those point into internal storage.
+    pub fn activeShardedChannels(self: *PubSub, allocator: std.mem.Allocator) ![][]const u8 {
+        var result = std.ArrayList([]const u8){};
+        errdefer result.deinit(allocator);
+
+        var it = self.sharded_channels.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.items.len > 0) {
+                try result.append(allocator, entry.key_ptr.*);
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Return the number of subscribers for sharded `channel`. Returns 0 for unknown channels.
+    pub fn shardedChannelSubscriberCount(self: *PubSub, channel: []const u8) usize {
+        const sub_list = self.sharded_channels.get(channel) orelse return 0;
+        return sub_list.items.len;
+    }
+
+    /// Return the number of sharded channels `subscriber_id` is subscribed to.
+    pub fn shardedChannelCount(self: *PubSub, subscriber_id: u64) usize {
+        const state = self.subscribers.get(subscriber_id) orelse return 0;
+        return state.sharded_channels.count();
+    }
+
     // --- Private helpers ---
 
     fn getOrCreateState(self: *PubSub, subscriber_id: u64) !*SubscriberState {
@@ -562,6 +740,70 @@ pub fn buildPunsubscribeFrame(allocator: std.mem.Allocator, pattern: ?[]const u8
     try buf.appendSlice(allocator, "$12\r\npunsubscribe\r\n");
     if (pattern) |pat| {
         try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pat.len, pat });
+    } else {
+        try buf.appendSlice(allocator, "$-1\r\n");
+    }
+    try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Build a sharded message frame (smessage):
+/// ```
+/// *3\r\n
+/// $8\r\nsmessage\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// $<msg_len>\r\n<msg>\r\n
+/// ```
+/// Caller owns the returned slice.
+pub fn buildSmessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "*3\r\n");
+    try buf.appendSlice(allocator, "$8\r\nsmessage\r\n");
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ message.len, message });
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Build a ssubscribe confirmation frame:
+/// ```
+/// *3\r\n
+/// $10\r\nssubscribe\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// :<count>\r\n
+/// ```
+/// Caller owns the returned slice.
+pub fn buildSsubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "*3\r\n");
+    try buf.appendSlice(allocator, "$10\r\nssubscribe\r\n");
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
+    try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Build a sunsubscribe confirmation frame:
+/// ```
+/// *3\r\n
+/// $12\r\nsunsubscribe\r\n
+/// $<channel_len>\r\n<channel>\r\n   (or $-1\r\n when channel is null)
+/// :<count>\r\n
+/// ```
+/// Caller owns the returned slice.
+pub fn buildSunsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "*3\r\n");
+    try buf.appendSlice(allocator, "$12\r\nsunsubscribe\r\n");
+    if (channel) |ch| {
+        try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ ch.len, ch });
     } else {
         try buf.appendSlice(allocator, "$-1\r\n");
     }
@@ -1013,4 +1255,208 @@ test "pubsub - globMatch combined wildcards" {
 test "pubsub - globMatch no match" {
     try std.testing.expect(!globMatch("abc", "xyz"));
     try std.testing.expect(!globMatch("news*", "sports"));
+}
+
+// --- Sharded Pub/Sub tests (Redis 7.0+) ---
+
+test "pubsub - ssubscribe once returns count 1" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const count = try ps.ssubscribe(1, "news");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "pubsub - ssubscribe twice same channel is idempotent" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    const count = try ps.ssubscribe(1, "news");
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expectEqual(@as(usize, 1), ps.shardedChannelSubscriberCount("news"));
+}
+
+test "pubsub - ssubscribe to multiple channels" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    const count = try ps.ssubscribe(1, "sports");
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 2), ps.shardedChannelCount(1));
+}
+
+test "pubsub - sunsubscribe reduces count" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(1, "sports");
+    const count = try ps.sunsubscribe(1, "news");
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expectEqual(@as(usize, 0), ps.shardedChannelSubscriberCount("news"));
+}
+
+test "pubsub - sunsubscribe non-subscribed channel returns current count" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    const count = try ps.sunsubscribe(1, "sports");
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "pubsub - sunsubscribe unknown subscriber returns 0" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const count = try ps.sunsubscribe(99, "news");
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "pubsub - sunsubscribeAll removes all sharded channels" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(1, "sports");
+    try ps.sunsubscribeAll(1);
+    try std.testing.expectEqual(@as(usize, 0), ps.shardedChannelCount(1));
+    try std.testing.expectEqual(@as(usize, 0), ps.shardedChannelSubscriberCount("news"));
+    try std.testing.expectEqual(@as(usize, 0), ps.shardedChannelSubscriberCount("sports"));
+}
+
+test "pubsub - spublish to channel with no subscribers returns 0" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const delivered = try ps.spublish("news", "hello");
+    try std.testing.expectEqual(@as(usize, 0), delivered);
+}
+
+test "pubsub - spublish delivers to subscriber" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    const delivered = try ps.spublish("news", "hello");
+    try std.testing.expectEqual(@as(usize, 1), delivered);
+
+    const pending = ps.pendingMessages(1);
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    // Check the smessage RESP frame begins with *3\r\n
+    try std.testing.expect(std.mem.startsWith(u8, pending[0], "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, pending[0], "smessage") != null);
+}
+
+test "pubsub - spublish delivers to multiple subscribers" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(2, "news");
+    const delivered = try ps.spublish("news", "hello");
+    try std.testing.expectEqual(@as(usize, 2), delivered);
+    try std.testing.expectEqual(@as(usize, 1), ps.pendingMessages(1).len);
+    try std.testing.expectEqual(@as(usize, 1), ps.pendingMessages(2).len);
+}
+
+test "pubsub - spublish not delivered to regular channel subscribers" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "news");
+    _ = try ps.spublish("news", "hello");
+    try std.testing.expectEqual(@as(usize, 0), ps.pendingMessages(1).len);
+}
+
+test "pubsub - activeShardedChannels returns only populated channels" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(2, "sports");
+
+    const chans = try ps.activeShardedChannels(allocator);
+    defer allocator.free(chans);
+
+    try std.testing.expectEqual(@as(usize, 2), chans.len);
+}
+
+test "pubsub - activeShardedChannels excludes empty channels after unsubscribe" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.sunsubscribe(1, "news");
+
+    const chans = try ps.activeShardedChannels(allocator);
+    defer allocator.free(chans);
+
+    try std.testing.expectEqual(@as(usize, 0), chans.len);
+}
+
+test "pubsub - buildSmessageFrame correct RESP format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSmessageFrame(allocator, "news", "hello");
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$8\r\nsmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSsubscribeFrame correct RESP format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSsubscribeFrame(allocator, "news", 1);
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$10\r\nssubscribe\r\n$4\r\nnews\r\n:1\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSunsubscribeFrame with channel" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSunsubscribeFrame(allocator, "news", 0);
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$12\r\nsunsubscribe\r\n$4\r\nnews\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSunsubscribeFrame with null channel" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSunsubscribeFrame(allocator, null, 0);
+    defer allocator.free(frame);
+
+    const expected = "*3\r\n$12\r\nsunsubscribe\r\n$-1\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - sharded and regular channels are independent" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "news");
+    _ = try ps.ssubscribe(1, "news");
+    try std.testing.expectEqual(@as(usize, 1), ps.channelCount(1));
+    try std.testing.expectEqual(@as(usize, 1), ps.shardedChannelCount(1));
+
+    _ = try ps.publish("news", "regular");
+    _ = try ps.spublish("news", "sharded");
+    try std.testing.expectEqual(@as(usize, 2), ps.pendingMessages(1).len);
 }

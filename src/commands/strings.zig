@@ -647,6 +647,14 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "PUBSUB")) {
             break :blk try cmdPubsub(allocator, ps, array);
         }
+        // Sharded Pub/Sub (Redis 7.0+)
+        else if (std.mem.eql(u8, cmd_upper, "SSUBSCRIBE")) {
+            break :blk try pubsub_cmds.cmdSsubscribe(allocator, ps, array, subscriber_id);
+        } else if (std.mem.eql(u8, cmd_upper, "SUNSUBSCRIBE")) {
+            break :blk try pubsub_cmds.cmdSunsubscribe(allocator, ps, array, subscriber_id);
+        } else if (std.mem.eql(u8, cmd_upper, "SPUBLISH")) {
+            break :blk try pubsub_cmds.cmdSpublish(allocator, ps, array);
+        }
         // Server / persistence commands
         else if (std.mem.eql(u8, cmd_upper, "SAVE")) {
             break :blk try cmdSave(allocator, storage);
@@ -1535,6 +1543,10 @@ fn cmdPubsub(allocator: std.mem.Allocator, ps: *PubSub, args: []const RespValue)
         return pubsub_cmds.cmdPubsubNumsub(allocator, ps, args);
     } else if (std.mem.eql(u8, sub_upper, "NUMPAT")) {
         return pubsub_cmds.cmdPubsubNumpat(allocator, ps);
+    } else if (std.mem.eql(u8, sub_upper, "SHARDCHANNELS")) {
+        return pubsub_cmds.cmdPubsubShardchannels(allocator, ps, args);
+    } else if (std.mem.eql(u8, sub_upper, "SHARDNUMSUB")) {
+        return pubsub_cmds.cmdPubsubShardnumsub(allocator, ps, args);
     } else if (std.mem.eql(u8, sub_upper, "HELP")) {
         return pubsub_cmds.cmdPubsubHelp(allocator);
     } else {

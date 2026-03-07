@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-68 complete (168+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-69 complete (173+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -54,7 +54,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 66 | **XREAD/XREADGROUP BLOCK with polling (Phase 2)** — true blocking semantics using polling approach (checks every 100ms), validates timeout >= 0, XREADGROUP only blocks for ID=">", returns immediately for "0" or specific IDs, completes Phase 2 of blocking implementation |
 | 67 | True blocking semantics for list commands — BLPOP/BRPOP/BLMOVE now use polling with 100ms intervals (same approach as XREAD/XREADGROUP BLOCK), validates timeout >= 0, returns null on timeout, completes Phase 1.7 true blocking command semantics for core list operations (BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP remain immediate-return for now) |
 | 68 | **True blocking semantics for BLMPOP and sorted set commands** — BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP now use polling with 100ms intervals, validates timeout >= 0, returns null on timeout, **completes Phase 1.7 true blocking semantics for ALL blocking commands** (BLPOP/BRPOP/BLMOVE/BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP/XREAD BLOCK/XREADGROUP BLOCK) |
-| 67 | **True blocking semantics for list commands** — BLPOP/BRPOP/BLMOVE now use polling with 100ms intervals (same approach as XREAD/XREADGROUP BLOCK), validates timeout >= 0, returns null on timeout, completes Phase 1.7 true blocking command semantics for core list operations (BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP remain immediate-return for now) |
+| 69 | **Sharded Pub/Sub (Redis 7.0+)** — SSUBSCRIBE (subscribe to sharded channels), SUNSUBSCRIBE (unsubscribe from sharded channels), SPUBLISH (publish to sharded channel), PUBSUB SHARDCHANNELS (list active sharded channels), PUBSUB SHARDNUMSUB (get sharded channel subscriber counts) — cluster-mode ready pub/sub with hash-slot routing, **completes Phase 4 pub/sub feature set (9/9 commands, 100%)** |
 
 ### Known stubs (need real implementation for 1.0)
 

@@ -402,6 +402,197 @@ fn globMatch(pattern: []const u8, str: []const u8) bool {
     return pi == pattern.len;
 }
 
+// ── Sharded Pub/Sub commands (Redis 7.0+) ──────────────────────────────────
+
+/// SSUBSCRIBE channel [channel ...]
+///
+/// Subscribes `subscriber_id` to one or more sharded channels.
+/// Sharded channels are routed by hash slot in cluster mode.
+/// Returns a concatenated sequence of RESP ssubscribe-confirmation frames.
+///
+/// Caller owns the returned memory.
+pub fn cmdSsubscribe(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+    subscriber_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'ssubscribe' command");
+    }
+
+    // Build a concatenated response of confirmation frames (one per channel)
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    for (args[1..]) |arg| {
+        const channel = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid channel name"),
+        };
+
+        const total = try ps.ssubscribe(subscriber_id, channel);
+        const frame = try pubsub_mod.buildSsubscribeFrame(allocator, channel, total);
+        defer allocator.free(frame);
+        try buf.appendSlice(allocator, frame);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// SUNSUBSCRIBE [channel ...]
+///
+/// Unsubscribes `subscriber_id` from the given sharded channels.
+/// If no channels are specified, unsubscribes from all sharded channels.
+/// Returns a concatenated sequence of RESP sunsubscribe-confirmation frames.
+///
+/// Caller owns the returned memory.
+pub fn cmdSunsubscribe(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+    subscriber_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    if (args.len < 2) {
+        // Unsubscribe from all sharded channels
+        try ps.sunsubscribeAll(subscriber_id);
+        const total = ps.shardedChannelCount(subscriber_id);
+        const frame = try pubsub_mod.buildSunsubscribeFrame(allocator, null, total);
+        defer allocator.free(frame);
+        try buf.appendSlice(allocator, frame);
+    } else {
+        // Unsubscribe from specified channels
+        for (args[1..]) |arg| {
+            const channel = switch (arg) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid channel name"),
+            };
+
+            const total = try ps.sunsubscribe(subscriber_id, channel);
+            const frame = try pubsub_mod.buildSunsubscribeFrame(allocator, channel, total);
+            defer allocator.free(frame);
+            try buf.appendSlice(allocator, frame);
+        }
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// SPUBLISH channel message
+///
+/// Publishes `message` to sharded `channel`.
+/// Returns the number of subscribers that received the message.
+/// In cluster mode, this would only deliver to nodes responsible for channel's hash slot.
+///
+/// Caller owns the returned memory.
+pub fn cmdSpublish(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'spublish' command");
+    }
+
+    const channel = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid channel name"),
+    };
+
+    const message = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid message"),
+    };
+
+    const delivered = try ps.spublish(channel, message);
+    return w.writeInteger(@intCast(delivered));
+}
+
+/// PUBSUB SHARDCHANNELS [pattern]
+///
+/// Returns all currently active sharded channels matching the optional pattern.
+/// Defaults to "*" if no pattern is specified.
+///
+/// Caller owns the returned memory.
+pub fn cmdPubsubShardchannels(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+) ![]const u8 {
+    const pattern = if (args.len > 2) blk: {
+        break :blk switch (args[2]) {
+            .bulk_string => |s| s,
+            else => "*",
+        };
+    } else "*";
+
+    const channels = try ps.activeShardedChannels(allocator);
+    defer allocator.free(channels);
+
+    // Filter channels by pattern
+    var matches = std.ArrayList(RespValue){};
+    defer matches.deinit(allocator);
+
+    for (channels) |ch| {
+        if (globMatch(pattern, ch)) {
+            try matches.append(allocator, .{ .bulk_string = ch });
+        }
+    }
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeArray(matches.items);
+}
+
+/// PUBSUB SHARDNUMSUB [channel ...]
+///
+/// Returns the number of subscribers for each specified sharded channel.
+/// Returns alternating channel names and subscriber counts.
+///
+/// Caller owns the returned memory.
+pub fn cmdPubsubShardnumsub(
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    args: []const RespValue,
+) ![]const u8 {
+    var result = std.ArrayList(RespValue){};
+    defer result.deinit(allocator);
+
+    // Start from args[2] since args[0]=PUBSUB, args[1]=SHARDNUMSUB
+    if (args.len > 2) {
+        for (args[2..]) |arg| {
+            const channel = switch (arg) {
+                .bulk_string => |s| s,
+                else => continue,
+            };
+
+            const count = ps.shardedChannelSubscriberCount(channel);
+
+            // Add channel name
+            try result.append(allocator, .{ .bulk_string = channel });
+            // Add subscriber count
+            const count_i64: i64 = @intCast(count);
+            try result.append(allocator, .{ .integer = count_i64 });
+        }
+    }
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeArray(result.items);
+}
+
 // --- Embedded unit tests ---
 
 test "cmdPublish - wrong number of args" {
@@ -760,4 +951,186 @@ test "cmdPubsubHelp - returns help array" {
     try std.testing.expect(std.mem.indexOf(u8, resp, "CHANNELS") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "NUMPAT") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "NUMSUB") != null);
+}
+
+// --- Sharded Pub/Sub tests (Redis 7.0+) ---
+
+test "cmdSsubscribe - subscribes to single channel" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SSUBSCRIBE" },
+        .{ .bulk_string = "news" },
+    };
+    const resp = try cmdSsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "ssubscribe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "news") != null);
+    try std.testing.expectEqual(@as(usize, 1), ps.shardedChannelCount(1));
+}
+
+test "cmdSsubscribe - subscribes to multiple channels" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SSUBSCRIBE" },
+        .{ .bulk_string = "news" },
+        .{ .bulk_string = "sports" },
+    };
+    const resp = try cmdSsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqual(@as(usize, 2), ps.shardedChannelCount(1));
+}
+
+test "cmdSsubscribe - wrong number of args" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{.{ .bulk_string = "SSUBSCRIBE" }};
+    const resp = try cmdSsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings(
+        "-ERR wrong number of arguments for 'ssubscribe' command\r\n",
+        resp,
+    );
+}
+
+test "cmdSunsubscribe - unsubscribes from specific channel" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(1, "sports");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SUNSUBSCRIBE" },
+        .{ .bulk_string = "news" },
+    };
+    const resp = try cmdSunsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "sunsubscribe") != null);
+    try std.testing.expectEqual(@as(usize, 1), ps.shardedChannelCount(1));
+}
+
+test "cmdSunsubscribe - unsubscribes from all when no args" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(1, "sports");
+
+    const args = [_]RespValue{.{ .bulk_string = "SUNSUBSCRIBE" }};
+    const resp = try cmdSunsubscribe(allocator, &ps, &args, 1);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqual(@as(usize, 0), ps.shardedChannelCount(1));
+}
+
+test "cmdSpublish - publishes to sharded channel" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SPUBLISH" },
+        .{ .bulk_string = "news" },
+        .{ .bulk_string = "hello" },
+    };
+    const resp = try cmdSpublish(allocator, &ps, &args);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings(":1\r\n", resp);
+    try std.testing.expectEqual(@as(usize, 1), ps.pendingMessages(1).len);
+}
+
+test "cmdSpublish - wrong number of args" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{.{ .bulk_string = "SPUBLISH" }};
+    const resp = try cmdSpublish(allocator, &ps, &args);
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings(
+        "-ERR wrong number of arguments for 'spublish' command\r\n",
+        resp,
+    );
+}
+
+test "cmdPubsubShardchannels - returns active sharded channels" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(2, "sports");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PUBSUB" },
+        .{ .bulk_string = "SHARDCHANNELS" },
+    };
+    const resp = try cmdPubsubShardchannels(allocator, &ps, &args);
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.startsWith(u8, resp, "*2\r\n"));
+}
+
+test "cmdPubsubShardchannels - filters by pattern" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news.world");
+    _ = try ps.ssubscribe(2, "sports");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PUBSUB" },
+        .{ .bulk_string = "SHARDCHANNELS" },
+        .{ .bulk_string = "news*" },
+    };
+    const resp = try cmdPubsubShardchannels(allocator, &ps, &args);
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.startsWith(u8, resp, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "news.world") != null);
+}
+
+test "cmdPubsubShardnumsub - returns subscriber counts" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.ssubscribe(1, "news");
+    _ = try ps.ssubscribe(2, "news");
+    _ = try ps.ssubscribe(3, "sports");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PUBSUB" },
+        .{ .bulk_string = "SHARDNUMSUB" },
+        .{ .bulk_string = "news" },
+        .{ .bulk_string = "sports" },
+    };
+    const resp = try cmdPubsubShardnumsub(allocator, &ps, &args);
+    defer allocator.free(resp);
+
+    // Should return array of [channel, count, channel, count]
+    try std.testing.expect(std.mem.startsWith(u8, resp, "*4\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "news") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, ":2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "sports") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, ":1\r\n") != null);
 }
