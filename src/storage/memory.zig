@@ -8854,13 +8854,13 @@ pub const Storage = struct {
 
 test "storage - init and deinit" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 }
 
 test "storage - set and get string" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("key1", "value1", null);
@@ -8871,7 +8871,7 @@ test "storage - set and get string" {
 
 test "storage - get non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const result = storage.get("nosuchkey");
@@ -8880,7 +8880,7 @@ test "storage - get non-existent key" {
 
 test "storage - set overwrites existing key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("key1", "value1", null);
@@ -8892,7 +8892,7 @@ test "storage - set overwrites existing key" {
 
 test "storage - del single key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("key1", "value1", null);
@@ -8906,7 +8906,7 @@ test "storage - del single key" {
 
 test "storage - del multiple keys" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("key1", "value1", null);
@@ -8924,7 +8924,7 @@ test "storage - del multiple keys" {
 
 test "storage - del non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const keys = [_][]const u8{"nosuchkey"};
@@ -8934,7 +8934,7 @@ test "storage - del non-existent key" {
 
 test "storage - exists returns true for existing key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("key1", "value1", null);
@@ -8943,7 +8943,7 @@ test "storage - exists returns true for existing key" {
 
 test "storage - exists returns false for non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try std.testing.expect(!storage.exists("nosuchkey"));
@@ -8951,7 +8951,7 @@ test "storage - exists returns false for non-existent key" {
 
 test "storage - set with expiration in future" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const now = Storage.getCurrentTimestamp();
@@ -8965,7 +8965,7 @@ test "storage - set with expiration in future" {
 
 test "storage - get expired key returns null and deletes" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const now = Storage.getCurrentTimestamp();
@@ -8981,7 +8981,7 @@ test "storage - get expired key returns null and deletes" {
 
 test "storage - exists on expired key returns false and deletes" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const now = Storage.getCurrentTimestamp();
@@ -8993,7 +8993,7 @@ test "storage - exists on expired key returns false and deletes" {
 
 test "storage - set updates expiration" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const now = Storage.getCurrentTimestamp();
@@ -9011,7 +9011,7 @@ test "storage - set updates expiration" {
 
 test "storage - evictExpired removes expired keys" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const now = Storage.getCurrentTimestamp();
@@ -9034,7 +9034,7 @@ test "storage - evictExpired removes expired keys" {
 
 test "storage - multiple operations" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Set multiple keys
@@ -9063,7 +9063,7 @@ test "storage - multiple operations" {
 
 test "storage - getType returns correct type" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mystring", "value", null);
@@ -9078,7 +9078,7 @@ test "storage - getType returns correct type" {
 
 test "storage - lpush creates new list" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{"world"};
@@ -9088,7 +9088,7 @@ test "storage - lpush creates new list" {
 
 test "storage - lpush multiple elements order" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9108,7 +9108,7 @@ test "storage - lpush multiple elements order" {
 
 test "storage - lpush on existing string returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -9118,7 +9118,7 @@ test "storage - lpush on existing string returns error" {
 
 test "storage - rpush creates new list" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{"hello"};
@@ -9128,7 +9128,7 @@ test "storage - rpush creates new list" {
 
 test "storage - rpush multiple elements order" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9148,7 +9148,7 @@ test "storage - rpush multiple elements order" {
 
 test "storage - rpush on existing string returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -9158,7 +9158,7 @@ test "storage - rpush on existing string returns error" {
 
 test "storage - lpop single element" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9176,7 +9176,7 @@ test "storage - lpop single element" {
 
 test "storage - lpop multiple elements" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c", "d" };
@@ -9195,7 +9195,7 @@ test "storage - lpop multiple elements" {
 
 test "storage - lpop auto-deletes empty list" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{"a"};
@@ -9212,7 +9212,7 @@ test "storage - lpop auto-deletes empty list" {
 
 test "storage - lpop on non-existent key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const result = try storage.lpop(allocator, "nosuchkey", 1);
@@ -9221,7 +9221,7 @@ test "storage - lpop on non-existent key returns null" {
 
 test "storage - lpop count greater than length" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b" };
@@ -9238,7 +9238,7 @@ test "storage - lpop count greater than length" {
 
 test "storage - rpop single element" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9256,7 +9256,7 @@ test "storage - rpop single element" {
 
 test "storage - rpop multiple elements" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c", "d" };
@@ -9275,7 +9275,7 @@ test "storage - rpop multiple elements" {
 
 test "storage - rpop auto-deletes empty list" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{"a"};
@@ -9292,7 +9292,7 @@ test "storage - rpop auto-deletes empty list" {
 
 test "storage - lrange all elements" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9309,7 +9309,7 @@ test "storage - lrange all elements" {
 
 test "storage - lrange with positive indices" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c", "d", "e" };
@@ -9326,7 +9326,7 @@ test "storage - lrange with positive indices" {
 
 test "storage - lrange with negative indices" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c", "d", "e" };
@@ -9343,7 +9343,7 @@ test "storage - lrange with negative indices" {
 
 test "storage - lrange out of bounds returns empty" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9357,7 +9357,7 @@ test "storage - lrange out of bounds returns empty" {
 
 test "storage - lrange on non-existent key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const result = try storage.lrange(allocator, "nosuchkey", 0, -1);
@@ -9366,7 +9366,7 @@ test "storage - lrange on non-existent key returns null" {
 
 test "storage - llen returns length" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9378,7 +9378,7 @@ test "storage - llen returns length" {
 
 test "storage - llen on non-existent key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const len = storage.llen("nosuchkey");
@@ -9387,7 +9387,7 @@ test "storage - llen on non-existent key returns null" {
 
 test "storage - llen on string key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "value", null);
@@ -9397,7 +9397,7 @@ test "storage - llen on string key returns null" {
 
 test "storage - lindex returns element at positive index" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9410,7 +9410,7 @@ test "storage - lindex returns element at positive index" {
 
 test "storage - lindex returns element at negative index" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9423,7 +9423,7 @@ test "storage - lindex returns element at negative index" {
 
 test "storage - lindex out of range returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b" };
@@ -9435,7 +9435,7 @@ test "storage - lindex out of range returns null" {
 
 test "storage - lindex on non-existent key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try std.testing.expect((try storage.lindex("nosuchkey", 0)) == null);
@@ -9443,7 +9443,7 @@ test "storage - lindex on non-existent key returns null" {
 
 test "storage - lindex wrong type returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "value", null);
@@ -9452,7 +9452,7 @@ test "storage - lindex wrong type returns error" {
 
 test "storage - lset updates element" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9465,7 +9465,7 @@ test "storage - lset updates element" {
 
 test "storage - lset negative index" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9478,7 +9478,7 @@ test "storage - lset negative index" {
 
 test "storage - lset out of range returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{"a"};
@@ -9489,7 +9489,7 @@ test "storage - lset out of range returns error" {
 
 test "storage - ltrim basic range" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c", "d", "e" };
@@ -9506,7 +9506,7 @@ test "storage - ltrim basic range" {
 
 test "storage - ltrim start greater than stop deletes key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9518,7 +9518,7 @@ test "storage - ltrim start greater than stop deletes key" {
 
 test "storage - lrem removes from head" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "a", "c", "a" };
@@ -9537,7 +9537,7 @@ test "storage - lrem removes from head" {
 
 test "storage - lrem count zero removes all" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "a", "a" };
@@ -9554,7 +9554,7 @@ test "storage - lrem count zero removes all" {
 
 test "storage - lpushx on existing list" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const init_elems = [_][]const u8{"a"};
@@ -9568,7 +9568,7 @@ test "storage - lpushx on existing list" {
 
 test "storage - lpushx on missing key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elems = [_][]const u8{"a"};
@@ -9579,7 +9579,7 @@ test "storage - lpushx on missing key returns null" {
 
 test "storage - rpushx on existing list" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const init_elems = [_][]const u8{"a"};
@@ -9593,7 +9593,7 @@ test "storage - rpushx on existing list" {
 
 test "storage - rpushx on missing key returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elems = [_][]const u8{"a"};
@@ -9603,7 +9603,7 @@ test "storage - rpushx on missing key returns null" {
 
 test "storage - linsert before pivot" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9620,7 +9620,7 @@ test "storage - linsert before pivot" {
 
 test "storage - linsert after pivot" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "c" };
@@ -9637,7 +9637,7 @@ test "storage - linsert after pivot" {
 
 test "storage - linsert pivot not found returns -1" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b" };
@@ -9649,7 +9649,7 @@ test "storage - linsert pivot not found returns -1" {
 
 test "storage - linsert on missing key returns 0" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const result = try storage.linsert("nosuchkey", true, "pivot", "elem");
@@ -9658,7 +9658,7 @@ test "storage - linsert on missing key returns 0" {
 
 test "storage - lpos finds first occurrence" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "a", "c", "a" };
@@ -9672,7 +9672,7 @@ test "storage - lpos finds first occurrence" {
 
 test "storage - lpos count 0 finds all" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const elements = [_][]const u8{ "a", "b", "a", "c", "a" };
@@ -9688,7 +9688,7 @@ test "storage - lpos count 0 finds all" {
 
 test "storage - lmove left to right" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const src_elems = [_][]const u8{ "a", "b", "c" };
@@ -9713,7 +9713,7 @@ test "storage - lmove left to right" {
 
 test "storage - lmove on empty source returns null" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const result = try storage.lmove(allocator, "nosuchkey", "dst", true, true);
@@ -9722,7 +9722,7 @@ test "storage - lmove on empty source returns null" {
 
 test "storage - sadd creates new set" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{"hello"};
@@ -9732,7 +9732,7 @@ test "storage - sadd creates new set" {
 
 test "storage - sadd adds multiple members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two", "three" };
@@ -9742,7 +9742,7 @@ test "storage - sadd adds multiple members" {
 
 test "storage - sadd ignores duplicates" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members1 = [_][]const u8{ "one", "two" };
@@ -9755,7 +9755,7 @@ test "storage - sadd ignores duplicates" {
 
 test "storage - sadd on existing string returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -9765,7 +9765,7 @@ test "storage - sadd on existing string returns error" {
 
 test "storage - sadd with mixed new and existing members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members1 = [_][]const u8{ "one", "two" };
@@ -9778,7 +9778,7 @@ test "storage - sadd with mixed new and existing members" {
 
 test "storage - srem removes members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two", "three" };
@@ -9791,7 +9791,7 @@ test "storage - srem removes members" {
 
 test "storage - srem returns count of removed" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two", "three" };
@@ -9804,7 +9804,7 @@ test "storage - srem returns count of removed" {
 
 test "storage - srem auto-deletes empty set" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{"one"};
@@ -9818,7 +9818,7 @@ test "storage - srem auto-deletes empty set" {
 
 test "storage - srem on non-existent key returns 0" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const to_remove = [_][]const u8{"one"};
@@ -9828,7 +9828,7 @@ test "storage - srem on non-existent key returns 0" {
 
 test "storage - srem on non-existent member returns 0" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{"one"};
@@ -9841,7 +9841,7 @@ test "storage - srem on non-existent member returns 0" {
 
 test "storage - sismember returns true for member" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two" };
@@ -9853,7 +9853,7 @@ test "storage - sismember returns true for member" {
 
 test "storage - sismember returns false for non-member" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two" };
@@ -9865,7 +9865,7 @@ test "storage - sismember returns false for non-member" {
 
 test "storage - sismember returns false for non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const is_member = try storage.sismember("nosuchkey", "one");
@@ -9874,7 +9874,7 @@ test "storage - sismember returns false for non-existent key" {
 
 test "storage - sismember on string key returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -9883,7 +9883,7 @@ test "storage - sismember on string key returns error" {
 
 test "storage - smembers returns all members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two", "three" };
@@ -9897,7 +9897,7 @@ test "storage - smembers returns all members" {
 
 test "storage - smembers returns null for non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const result = try storage.smembers(allocator, "nosuchkey");
@@ -9906,7 +9906,7 @@ test "storage - smembers returns null for non-existent key" {
 
 test "storage - smembers returns null for string key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -9916,7 +9916,7 @@ test "storage - smembers returns null for string key" {
 
 test "storage - scard returns cardinality" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{ "one", "two", "three" };
@@ -9928,7 +9928,7 @@ test "storage - scard returns cardinality" {
 
 test "storage - scard returns null for non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const cardinality = storage.scard("nosuchkey");
@@ -9937,7 +9937,7 @@ test "storage - scard returns null for non-existent key" {
 
 test "storage - scard returns null for string key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -9947,7 +9947,7 @@ test "storage - scard returns null for string key" {
 
 test "storage - set respects expiration" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const now = Storage.getCurrentTimestamp();
@@ -9963,7 +9963,7 @@ test "storage - set respects expiration" {
 
 test "storage - getType returns set type" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const members = [_][]const u8{"one"};
@@ -9976,7 +9976,7 @@ test "storage - getType returns set type" {
 
 test "storage - zadd creates new sorted set" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{1.0};
@@ -9988,7 +9988,7 @@ test "storage - zadd creates new sorted set" {
 
 test "storage - zadd multiple members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0 };
@@ -9999,7 +9999,7 @@ test "storage - zadd multiple members" {
 
 test "storage - zadd updates existing member score" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores1 = [_]f64{1.0};
@@ -10019,7 +10019,7 @@ test "storage - zadd updates existing member score" {
 
 test "storage - zadd with NX flag skips existing members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores1 = [_]f64{1.0};
@@ -10039,7 +10039,7 @@ test "storage - zadd with NX flag skips existing members" {
 
 test "storage - zadd with XX flag skips new members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // XX = 2: only update existing, don't create new
@@ -10054,7 +10054,7 @@ test "storage - zadd with XX flag skips new members" {
 
 test "storage - zadd on non-sorted-set returns error" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try storage.set("mykey", "string", null);
@@ -10065,7 +10065,7 @@ test "storage - zadd on non-sorted-set returns error" {
 
 test "storage - zrem removes members" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0 };
@@ -10080,7 +10080,7 @@ test "storage - zrem removes members" {
 
 test "storage - zrem non-existent member returns 0" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{1.0};
@@ -10094,7 +10094,7 @@ test "storage - zrem non-existent member returns 0" {
 
 test "storage - zrem auto-deletes empty sorted set" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{1.0};
@@ -10109,7 +10109,7 @@ test "storage - zrem auto-deletes empty sorted set" {
 
 test "storage - zrem non-existent key returns 0" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const to_remove = [_][]const u8{"one"};
@@ -10119,7 +10119,7 @@ test "storage - zrem non-existent key returns 0" {
 
 test "storage - zscore returns score for existing member" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{3.14};
@@ -10133,7 +10133,7 @@ test "storage - zscore returns score for existing member" {
 
 test "storage - zscore returns null for non-existent member" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{1.0};
@@ -10146,7 +10146,7 @@ test "storage - zscore returns null for non-existent member" {
 
 test "storage - zscore returns null for non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const score = storage.zscore("nosuchkey", "member");
@@ -10155,7 +10155,7 @@ test "storage - zscore returns null for non-existent key" {
 
 test "storage - zcard returns count" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0 };
@@ -10167,7 +10167,7 @@ test "storage - zcard returns count" {
 
 test "storage - zcard returns null for non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     try std.testing.expect(storage.zcard("nosuchkey") == null);
@@ -10175,7 +10175,7 @@ test "storage - zcard returns null for non-existent key" {
 
 test "storage - zrange returns members in order" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 3.0, 1.0, 2.0 };
@@ -10193,7 +10193,7 @@ test "storage - zrange returns members in order" {
 
 test "storage - zrange with WITHSCORES" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0 };
@@ -10217,7 +10217,7 @@ test "storage - zrange with WITHSCORES" {
 
 test "storage - zrange with negative indices" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
@@ -10235,7 +10235,7 @@ test "storage - zrange with negative indices" {
 
 test "storage - zrange out of bounds returns empty" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0 };
@@ -10250,7 +10250,7 @@ test "storage - zrange out of bounds returns empty" {
 
 test "storage - zrangebyscore returns members in score range" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
@@ -10268,7 +10268,7 @@ test "storage - zrangebyscore returns members in score range" {
 
 test "storage - zrangebyscore with exclusive intervals" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0 };
@@ -10285,7 +10285,7 @@ test "storage - zrangebyscore with exclusive intervals" {
 
 test "storage - zrangebyscore with LIMIT" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
@@ -10303,7 +10303,7 @@ test "storage - zrangebyscore with LIMIT" {
 
 test "storage - sorted set lexicographic ordering for equal scores" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{ 1.0, 1.0, 1.0 };
@@ -10321,7 +10321,7 @@ test "storage - sorted set lexicographic ordering for equal scores" {
 
 test "storage - getType returns sorted_set type" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const scores = [_]f64{1.0};
@@ -10335,7 +10335,7 @@ test "storage - getType returns sorted_set type" {
 
 test "storage - xadd creates stream with auto-generated ID" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "temp", "25", "humidity", "60" };
@@ -10347,7 +10347,7 @@ test "storage - xadd creates stream with auto-generated ID" {
 
 test "storage - xadd with explicit ID" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "field1", "value1" };
@@ -10359,7 +10359,7 @@ test "storage - xadd with explicit ID" {
 
 test "storage - xadd enforces ID ordering" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "1" };
@@ -10372,7 +10372,7 @@ test "storage - xadd enforces ID ordering" {
 
 test "storage - xlen returns entry count" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "1" };
@@ -10386,7 +10386,7 @@ test "storage - xlen returns entry count" {
 
 test "storage - xlen on non-existent key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const len = try storage.xlen("nosuchkey");
@@ -10395,7 +10395,7 @@ test "storage - xlen on non-existent key" {
 
 test "storage - xrange returns entries in range" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "data", "x" };
@@ -10412,7 +10412,7 @@ test "storage - xrange returns entries in range" {
 
 test "storage - xrange with - and + bounds" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "x", "y" };
@@ -10427,7 +10427,7 @@ test "storage - xrange with - and + bounds" {
 
 test "storage - xrange with COUNT limit" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "b" };
@@ -10443,7 +10443,7 @@ test "storage - xrange with COUNT limit" {
 
 test "storage - getType returns stream type" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "1" };
@@ -10491,7 +10491,7 @@ test "storage - dump and restore string" {
 
 test "storage - xinfoConsumers returns consumer list with timing fields" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Create stream and group
@@ -10515,7 +10515,7 @@ test "storage - xinfoConsumers returns consumer list with timing fields" {
 
 test "storage - xinfoConsumers returns NOGROUP for missing group" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "x", "1" };
@@ -10527,7 +10527,7 @@ test "storage - xinfoConsumers returns NOGROUP for missing group" {
 
 test "storage - xinfoGroups returns group list with lag" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Create stream with 3 entries
@@ -10540,7 +10540,8 @@ test "storage - xinfoGroups returns group list with lag" {
     try storage.xgroupCreate("s", "g", "0");
 
     // Read 1 entry
-    if (try storage.xreadgroup(allocator, "g", "c1", "s", ">", 1, false)) |entries| {
+    if (try storage.xreadgroup(allocator, "g", "c1", "s", ">", 1, false)) |entries_const| {
+        var entries = entries_const;
         for (entries.items) |*entry| {
             entry.deinit(allocator);
         }
@@ -10561,7 +10562,7 @@ test "storage - xinfoGroups returns group list with lag" {
 
 test "storage - xinfoGroups lag is null for arbitrary start" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const fields = [_][]const u8{ "x", "1" };
@@ -10580,7 +10581,7 @@ test "storage - xinfoGroups lag is null for arbitrary start" {
 
 test "storage - xinfoGroups returns empty array for missing key" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     const info = try storage.xinfoGroups(allocator, "nosuchkey");

@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-69 complete (173+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-74 complete (173+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-### Completed (Iterations 1-73)
+### Completed (Iterations 1-74)
 
 | Range | Features |
 |-------|----------|
@@ -57,6 +57,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 69 | **Sharded Pub/Sub (Redis 7.0+)** — SSUBSCRIBE (subscribe to sharded channels), SUNSUBSCRIBE (unsubscribe from sharded channels), SPUBLISH (publish to sharded channel), PUBSUB SHARDCHANNELS (list active sharded channels), PUBSUB SHARDNUMSUB (get sharded channel subscriber counts) — cluster-mode ready pub/sub with hash-slot routing, **completes Phase 4 pub/sub feature set (9/9 commands, 100%)** |
 | 70-72 | **Sailor library migrations** — v1.5.0 (TUI snapshot testing), v1.6.0 (data visualization widgets), v0.5.0 (advanced TUI widgets with Tree/LineChart/Dialog/Notification) |
 | 73 | **Sailor v1.1.0 migration** — Accessibility & Internationalization (Unicode width calculation for CJK/emoji, keyboard navigation, screen reader support, bidirectional text for RTL languages) — critical for multi-language Redis data display in CLI/TUI |
+| 74 | **Sailor v1.3.0 migration** — Performance & Developer Experience (RenderBudget for 60fps, LazyBuffer for dirty region tracking, EventBatcher for rapid event coalescing, DebugOverlay for visual debugging, ThemeWatcher for hot-reload) + bugfix: Storage.init() signature in 44 unit tests |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -516,7 +517,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. Layout features enable future interactive TUI prompt editor and chat interface.
 
-### v1.3.0 — Performance & Developer Experience (status: READY)
+### v1.3.0 — Performance & Developer Experience (DONE)
 
 **sailor v1.3.0 released** (2026-03-02) — Performance optimization and debugging tools
 
@@ -531,10 +532,10 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Event batching handles rapid resize during live monitoring
   - DebugOverlay invaluable for REPL development
   - ThemeWatcher enables theme iteration for CLI/REPL styling
-- [ ] `build.zig.zon`에 sailor v1.3.0 의존성 업데이트
-- [ ] Consider LazyBuffer for key browser pagination (reduce render overhead)
-- [ ] Add DebugOverlay toggle (Ctrl+D) for REPL debugging
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.3.0 (hash: sailor-1.3.0-53_z3JpKCQCpG_KsgDaxXF3soaMuVYdmoTiD8kPxdGmK)
+- Fixed Storage.init() signature in 44 unit tests (port/bind parameters)
+- All existing tests pass
+- Performance features available for future TUI enhancements
 
 **Note**: Non-breaking upgrade. Performance features are opt-in. REPL and TUI viewers will benefit significantly from lazy rendering.
 
