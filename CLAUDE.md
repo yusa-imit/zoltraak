@@ -598,6 +598,16 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - All existing tests pass
 - Visualization widgets available for future monitoring TUI enhancements
 
+**sailor v1.6.1 patch released** (2026-03-08) — Critical bug fixes for v1.6.0 widgets
+
+- **Bug fixes**:
+  - PieChart: Fixed integer overflow in coordinate calculation (prevented panics)
+  - Multiple widgets: Fixed API compilation errors (Color.rgb, buffer.set, u16 casts)
+- **Impact on zr**: None (zr doesn't use v1.6.0 widgets yet)
+- [ ] Optional: Update to v1.6.1 for stable data visualization widgets
+
+**Note**: Patch release, no breaking changes. Safe to upgrade when/if data visualization widgets are needed.
+
 **Note**: Non-breaking upgrade. Visualization widgets are opt-in. Enables future monitoring TUI enhancements.
 
 ---
