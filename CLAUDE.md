@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-74 complete (173+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-75 complete (173+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -58,6 +58,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 70-72 | **Sailor library migrations** — v1.5.0 (TUI snapshot testing), v1.6.0 (data visualization widgets), v0.5.0 (advanced TUI widgets with Tree/LineChart/Dialog/Notification) |
 | 73 | **Sailor v1.1.0 migration** — Accessibility & Internationalization (Unicode width calculation for CJK/emoji, keyboard navigation, screen reader support, bidirectional text for RTL languages) — critical for multi-language Redis data display in CLI/TUI |
 | 74 | **Sailor v1.3.0 migration** — Performance & Developer Experience (RenderBudget for 60fps, LazyBuffer for dirty region tracking, EventBatcher for rapid event coalescing, DebugOverlay for visual debugging, ThemeWatcher for hot-reload) + bugfix: Storage.init() signature in 44 unit tests |
+| 75 | **Sailor v1.7.0 migration** — Advanced Layout & Rendering (FlexBox layout with justify/align, Viewport clipping for efficient scrolling, Shadow & 3D border effects, Custom widget traits, Layout caching with LRU) — non-breaking upgrade, all tests pass |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -613,7 +614,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. Visualization widgets are opt-in. Enables future monitoring TUI enhancements.
 
-### v1.7.0 — Advanced Layout & Rendering (status: READY)
+### v1.7.0 — Advanced Layout & Rendering (DONE)
 
 **sailor v1.7.0 released** (2026-03-09) — Advanced layout and rendering features
 
@@ -628,10 +629,11 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Viewport clipping enables efficient scrolling through command history
   - Shadow effects add visual polish to TUI mode
   - Layout caching improves performance for complex data browser layouts
-- [ ] `build.zig.zon`에 sailor v1.7.0 의존성 업데이트
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.7.0 (hash: 1220c49110e756c2d9a539fb9df710c86b9ca888a924ac0680ebb223f5bd591348fd)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 75
 
-**Note**: Non-breaking upgrade. All features are opt-in. No immediate action required.
+**Note**: Non-breaking upgrade. All features are opt-in. Layout features available for future TUI enhancements.
 
 ---
 
