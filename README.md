@@ -61,6 +61,15 @@ zig build -Doptimize=ReleaseFast
 
 # Connect using redis-cli
 redis-cli -p 6379
+
+# Use zoltraak-cli for interactive REPL
+./zig-out/bin/zoltraak-cli
+
+# Launch TUI key browser
+./zig-out/bin/zoltraak-cli --tui
+
+# Launch advanced TUI with Tree/LineChart/Dialog/Notification widgets (sailor v0.5.0+)
+./zig-out/bin/zoltraak-cli --tui --advanced
 ```
 
 ## Supported Commands

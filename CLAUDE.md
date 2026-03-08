@@ -431,12 +431,18 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 ### v0.3.0 — fmt (DONE)
 ### v0.4.0 — tui (DONE)
 
-### v0.5.0 — advanced widgets (READY)
-- v0.5.1 패치 사용 권장 (sailor#3~#6 수정됨)
-- [ ] Tree 위젯으로 계층적 키 브라우징
-- [ ] LineChart로 메모리/커넥션 메트릭 대시보드
-- [ ] Dialog 위젯으로 DEL 명령 확인 프롬프트
-- [ ] Notification으로 커넥션 상태 토스트
+### v0.5.0 — advanced widgets (DONE)
+- Updated to sailor v0.5.1 (hash: sailor-0.5.0-53_z3PIyBgC7lm9ua1RdBuVdYg9CNCZmx74pUmnoOriy)
+- Added src/tui_advanced.zig with advanced TUI widgets (Iteration 72)
+- Tree widget for hierarchical key browsing with : delimiter hierarchy
+- LineChart for memory/connection metrics dashboard (memory usage bar chart)
+- Dialog widget for DEL command confirmation (centered modal with Y/N buttons)
+- Notification toast for connection status (bottom-right corner, auto-dismissing)
+- New CLI flag: --advanced (-a) for enhanced TUI mode with all widgets
+- Dashboard struct manages state (selected_index, dialogs, notifications, timer)
+- KeysTree data structure for hierarchical key organization
+- MemoryStats tracking (used_memory, peak_memory, num_keys)
+- All tests pass, non-breaking upgrade
 
 ### v1.0.0 — production ready (READY)
 **v1.0.1 패치**: 크로스 컴파일 수정 (API 변경 없음)

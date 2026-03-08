@@ -2,6 +2,7 @@ const std = @import("std");
 const sailor = @import("sailor");
 const net = std.net;
 const tui = sailor.tui;
+const tui_advanced = @import("tui_advanced.zig");
 
 // Output format enum
 const OutputFormat = enum {
@@ -27,6 +28,7 @@ const flags = [_]sailor.arg.FlagDef{
     .{ .name = "csv", .short = 'c', .type = .bool, .default = "false", .help = "Output data in CSV format" },
     .{ .name = "json", .short = 'j', .type = .bool, .default = "false", .help = "Output data in JSON format" },
     .{ .name = "tui", .short = 't', .type = .bool, .default = "false", .help = "Launch TUI key browser" },
+    .{ .name = "advanced", .short = 'a', .type = .bool, .default = "false", .help = "Use advanced TUI with Tree/LineChart/Dialog/Notification widgets (requires --tui)" },
 };
 
 pub fn main() !void {
@@ -51,9 +53,14 @@ pub fn main() !void {
 
     // Check if TUI mode is requested
     const use_tui = parser.getBool("tui", false);
+    const use_advanced = parser.getBool("advanced", false);
 
     if (use_tui) {
-        return runTuiMode(allocator, host, port);
+        if (use_advanced) {
+            return runAdvancedTuiMode(allocator, host, port);
+        } else {
+            return runTuiMode(allocator, host, port);
+        }
     }
 
     // Determine output format
@@ -822,4 +829,142 @@ fn fetchKeyValue(allocator: std.mem.Allocator, stream: net.Stream, key: []const 
         },
         else => try allocator.dupe(u8, "(unknown)"),
     };
+}
+// Advanced TUI mode with sailor v0.5.0 widgets
+fn runAdvancedTuiMode(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
+    // Connect to server
+    const address = try net.Address.parseIp(host, port);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Initialize Terminal
+    var terminal = try tui.Terminal.init(allocator);
+    defer terminal.deinit();
+
+    // Initialize Dashboard
+    var dashboard = try tui_advanced.Dashboard.init(allocator, &terminal, stream);
+    defer dashboard.deinit();
+
+    // Refresh data
+    try dashboard.refreshKeys();
+    try dashboard.refreshMemoryStats();
+
+    // Enter raw mode
+    const stdout_file = std.fs.File{ .handle = std.posix.STDOUT_FILENO };
+    try stdout_file.writeAll("\x1b[?1049h"); // Alt screen
+    try stdout_file.writeAll("\x1b[?25l"); // Hide cursor
+    defer {
+        stdout_file.writeAll("\x1b[?25h") catch {}; // Show cursor
+        stdout_file.writeAll("\x1b[?1049l") catch {}; // Normal screen
+    }
+
+    var running = true;
+    while (running) {
+        // Clear current buffer
+        terminal.clear();
+
+        // Create frame for the full terminal area
+        const area = terminal.size();
+        var frame = tui.Frame{
+            .buffer = &terminal.current,
+            .area = area,
+        };
+
+        // Layout: 3 columns
+        // Left: Tree widget (1/3)
+        // Middle: LineChart (1/3)
+        // Right: Status (1/3)
+        const col_width = area.width / 3;
+        const tree_area = tui.Rect.new(0, 0, col_width, area.height - 2);
+        const chart_area = tui.Rect.new(col_width, 0, col_width, area.height - 2);
+        const status_area = tui.Rect.new(col_width * 2, 0, col_width, area.height - 2);
+
+        // Render Tree widget
+        try tui_advanced.renderTree(&frame, tree_area, &dashboard.keys_tree, dashboard.selected_index);
+
+        // Render LineChart widget
+        try tui_advanced.renderLineChart(&frame, chart_area, &dashboard.memory_stats);
+
+        // Render status
+        frame.setString(status_area.x + 2, status_area.y + 1, "Status", .{ .fg = tui.Color.yellow, .bold = true });
+        var status_buf: [64]u8 = undefined;
+        const status = try std.fmt.bufPrint(&status_buf, "Keys: {}", .{dashboard.memory_stats.num_keys});
+        frame.setString(status_area.x + 2, status_area.y + 3, status, .{ .fg = tui.Color.white });
+
+        // Render help bar
+        const help_text = "q:quit r:refresh j/k:navigate d:delete";
+        frame.setString(0, area.height - 2, help_text, .{ .fg = tui.Color.black, .bg = tui.Color.white });
+
+        // Render connection info
+        var conn_buf: [128]u8 = undefined;
+        const conn_info = try std.fmt.bufPrint(&conn_buf, "Connected to {s}:{}", .{ host, port });
+        frame.setString(0, area.height - 1, conn_info, .{ .fg = tui.Color.green });
+
+        // Render Dialog if active
+        if (dashboard.show_delete_dialog) {
+            const selected_key = dashboard.keys_tree.getSelectedKey(dashboard.selected_index) orelse "unknown";
+            try tui_advanced.renderDialog(&frame, area, selected_key);
+        }
+
+        // Render Notification if active
+        if (dashboard.notification_text) |text| {
+            if (dashboard.notification_timer > 0) {
+                try tui_advanced.renderNotification(&frame, area, text);
+                dashboard.notification_timer -= 1;
+            } else {
+                dashboard.notification_text = null;
+            }
+        }
+
+        // Flush to screen
+        try flushBuffer(&terminal.current, stdout_file);
+
+        // Handle input
+        const key = try readKey();
+        switch (key) {
+            'q' => {
+                if (dashboard.show_delete_dialog) {
+                    dashboard.closeDeleteDialog();
+                } else {
+                    running = false;
+                }
+            },
+            'r' => {
+                try dashboard.refreshKeys();
+                try dashboard.refreshMemoryStats();
+                dashboard.showNotification("Data refreshed");
+            },
+            'j' => {
+                const max_keys = dashboard.keys_tree.totalKeys();
+                if (dashboard.selected_index < max_keys -| 1) {
+                    dashboard.selected_index += 1;
+                }
+            },
+            'k' => {
+                if (dashboard.selected_index > 0) {
+                    dashboard.selected_index -= 1;
+                }
+            },
+            'd' => {
+                if (!dashboard.show_delete_dialog) {
+                    dashboard.showDeleteDialog();
+                }
+            },
+            'y', 'Y' => {
+                if (dashboard.show_delete_dialog) {
+                    try dashboard.deleteSelectedKey();
+                }
+            },
+            'n', 'N' => {
+                if (dashboard.show_delete_dialog) {
+                    dashboard.closeDeleteDialog();
+                    dashboard.showNotification("Delete cancelled");
+                }
+            },
+            else => {},
+        }
+
+        // Small delay for notification timer
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
 }
