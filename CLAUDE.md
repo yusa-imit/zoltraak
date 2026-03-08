@@ -8,7 +8,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-### Completed (Iterations 1-67)
+### Completed (Iterations 1-73)
 
 | Range | Features |
 |-------|----------|
@@ -55,6 +55,8 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 67 | True blocking semantics for list commands — BLPOP/BRPOP/BLMOVE now use polling with 100ms intervals (same approach as XREAD/XREADGROUP BLOCK), validates timeout >= 0, returns null on timeout, completes Phase 1.7 true blocking command semantics for core list operations (BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP remain immediate-return for now) |
 | 68 | **True blocking semantics for BLMPOP and sorted set commands** — BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP now use polling with 100ms intervals, validates timeout >= 0, returns null on timeout, **completes Phase 1.7 true blocking semantics for ALL blocking commands** (BLPOP/BRPOP/BLMOVE/BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP/XREAD BLOCK/XREADGROUP BLOCK) |
 | 69 | **Sharded Pub/Sub (Redis 7.0+)** — SSUBSCRIBE (subscribe to sharded channels), SUNSUBSCRIBE (unsubscribe from sharded channels), SPUBLISH (publish to sharded channel), PUBSUB SHARDCHANNELS (list active sharded channels), PUBSUB SHARDNUMSUB (get sharded channel subscriber counts) — cluster-mode ready pub/sub with hash-slot routing, **completes Phase 4 pub/sub feature set (9/9 commands, 100%)** |
+| 70-72 | **Sailor library migrations** — v1.5.0 (TUI snapshot testing), v1.6.0 (data visualization widgets), v0.5.0 (advanced TUI widgets with Tree/LineChart/Dialog/Notification) |
+| 73 | **Sailor v1.1.0 migration** — Accessibility & Internationalization (Unicode width calculation for CJK/emoji, keyboard navigation, screen reader support, bidirectional text for RTL languages) — critical for multi-language Redis data display in CLI/TUI |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -462,7 +464,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Optional upgrade. Tree widget fix affects v0.5.0 advanced widgets migration only.
 
-### v1.1.0 — Accessibility & Internationalization (READY)
+### v1.1.0 — Accessibility & Internationalization (DONE)
 
 **sailor v1.1.0 released** (2026-03-02) — Accessibility and i18n features
 
@@ -476,9 +478,9 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Unicode width fixes critical for multi-language Redis keys/values
   - Keyboard navigation enhances interactive CLI usability
   - Accessibility features improve screen reader support
-- [ ] `build.zig.zon`에 sailor v1.1.0 의존성 업데이트
-- [ ] 기존 테스트 전체 통과 확인
-- [ ] Consider keyboard bindings for Redis command history navigation
+- Updated to sailor v1.1.0 (hash: sailor-1.1.0-53_z3CCMBwBNK-7VJxsyLL8ljM8qG82hZ37JfOJhqGq7)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 73
 
 **Note**: Non-breaking upgrade. Unicode improvements automatically benefit international Redis data display.
 
