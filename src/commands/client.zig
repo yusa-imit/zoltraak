@@ -381,6 +381,89 @@ fn cmdClientList(
 }
 
 /// CLIENT command dispatcher
+/// CLIENT INFO - Get current client connection info
+fn cmdClientInfo(
+    allocator: std.mem.Allocator,
+    registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    if (args.len != 1) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR wrong number of arguments for 'client|info' command");
+    }
+
+    registry.mutex.lock();
+    defer registry.mutex.unlock();
+
+    const maybe_client = registry.clients.get(client_id);
+    if (maybe_client == null) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR no such client");
+    }
+
+    const info = maybe_client.?;
+    const now = std.time.milliTimestamp();
+    const age_sec = @divFloor(now - info.connected_at, 1000);
+    const idle_sec = @divFloor(now - info.last_cmd_at, 1000);
+    const name_str = info.name orelse "";
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
+
+    // Format: id=<id> addr=<addr> fd=<fd> name=<name> age=<age> idle=<idle> flags=<flags> db=0 sub=0 psub=0 cmd=<cmd>
+    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db=0 sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events= cmd={s} user=default redir=-1 resp={d}", .{
+        info.id,
+        info.addr,
+        info.fd,
+        name_str,
+        age_sec,
+        idle_sec,
+        info.flags,
+        info.last_cmd,
+        @intFromEnum(info.protocol),
+    });
+
+    const result = try buf.toOwnedSlice(allocator);
+    defer allocator.free(result);
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeBulkString(result);
+}
+
+/// CLIENT HELP - Display help for CLIENT subcommands
+fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
+    if (args.len != 1) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR wrong number of arguments for 'client|help' command");
+    }
+
+    const help_items = [_][]const u8{
+        "CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+        "GETNAME",
+        "    Return the name of the current connection.",
+        "SETNAME <name>",
+        "    Set the name of the current connection.",
+        "ID",
+        "    Return the ID of the current connection.",
+        "INFO",
+        "    Return information about the current client connection.",
+        "LIST [TYPE <NORMAL|MASTER|REPLICA|PUBSUB>]",
+        "    Return information about client connections. Options are:",
+        "    * TYPE <type>: Return clients of specified type.",
+        "HELP",
+        "    Print this help.",
+    };
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeArrayOfBulkStrings(&help_items);
+}
+
 pub fn cmdClient(
     allocator: std.mem.Allocator,
     registry: *ClientRegistry,
@@ -412,6 +495,10 @@ pub fn cmdClient(
         return cmdClientSetname(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "LIST")) {
         return cmdClientList(allocator, registry, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "INFO")) {
+        return cmdClientInfo(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
+        return cmdClientHelp(allocator, args);
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();
@@ -746,4 +833,57 @@ test "ClientRegistry: get protocol for non-existent client" {
 
     // Should return RESP2 for non-existent client
     try std.testing.expectEqual(RespProtocol.RESP2, registry.getProtocol(999));
+}
+
+test "CLIENT INFO command" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INFO" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    // Should return bulk string with client info
+    try std.testing.expect(std.mem.startsWith(u8, response, "$"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "id=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "addr=127.0.0.1:12345") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "fd=42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "resp=2") != null);
+}
+
+test "CLIENT HELP command" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "HELP" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    // Should return array of help items
+    try std.testing.expect(std.mem.startsWith(u8, response, "*"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "GETNAME") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "SETNAME") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "INFO") != null);
 }

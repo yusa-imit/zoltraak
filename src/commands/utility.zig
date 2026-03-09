@@ -50,6 +50,53 @@ pub fn cmdQuit(
     return try w.writeSimpleString("OK");
 }
 
+/// RESET command - reset the connection state
+///
+/// Resets the connection to its initial state:
+/// - Discards any pending MULTI transaction
+/// - Unsubscribes from all pub/sub channels
+/// - Removes the connection name
+/// - Switches back to RESP2 protocol (default)
+/// - Returns to database 0 (if multi-DB support exists)
+///
+/// Returns "RESET" on success
+pub fn cmdReset(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    _: *Storage,
+    ps: *PubSub,
+    tx_state: *TxState,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    _: *ServerConfig,
+    _: u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 1) {
+        return try w.writeError("ERR wrong number of arguments for 'reset' command");
+    }
+
+    // 1. Discard MULTI transaction if active
+    tx_state.discard();
+
+    // 2. Unsubscribe from all channels (regular + pattern + sharded)
+    // Note: PubSub.unsubscribeAll will handle all subscription types
+    try ps.unsubscribeAll(client_id);
+
+    // 3. Remove connection name
+    try client_registry.setClientName(client_id, "");
+
+    // 4. Reset protocol to RESP2
+    client_registry.setProtocol(client_id, .RESP2);
+
+    // 5. Switch to database 0 (no-op in current single-DB implementation)
+
+    // Return "RESET" as simple string
+    return try w.writeSimpleString("RESET");
+}
+
 /// TIME command - returns current Unix timestamp and microseconds
 pub fn cmdTime(
     allocator: std.mem.Allocator,
@@ -706,4 +753,60 @@ test "cmdSwapdb - wrong number of arguments" {
         defer allocator.free(result);
         try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
     }
+}
+
+test "cmdReset - basic reset" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+    var tx_state = TxState.init();
+
+    const client_id = try client_registry.registerClient("127.0.0.1:12345", 42);
+
+    // Set some state
+    try client_registry.setClientName(client_id, "test-client");
+    client_registry.setProtocol(client_id, .RESP3);
+
+    // Subscribe to a channel
+    _ = try pubsub.subscribe(client_id, "test-channel");
+
+    // Reset
+    const args = [_][]const u8{"RESET"};
+    const result = try cmdReset(allocator, &args, &storage, &pubsub, &tx_state, &client_registry, client_id, &config, 3);
+    defer allocator.free(result);
+
+    // Should return "RESET"
+    try std.testing.expectEqualStrings("+RESET\r\n", result);
+
+    // Protocol should be reset to RESP2
+    try std.testing.expectEqual(@import("client.zig").RespProtocol.RESP2, client_registry.getProtocol(client_id));
+
+    // Name should be reset to empty
+    const name = try client_registry.getClientName(client_id, allocator);
+    defer if (name) |n| allocator.free(n);
+    if (name) |n| {
+        try std.testing.expectEqualStrings("", n);
+    }
+}
+
+test "cmdReset - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+    var tx_state = TxState.init();
+
+    const args = [_][]const u8{ "RESET", "extra" };
+    const result = try cmdReset(allocator, &args, &storage, &pubsub, &tx_state, &client_registry, 1, &config, 2);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
 }

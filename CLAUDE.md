@@ -60,6 +60,8 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 74 | **Sailor v1.3.0 migration** — Performance & Developer Experience (RenderBudget for 60fps, LazyBuffer for dirty region tracking, EventBatcher for rapid event coalescing, DebugOverlay for visual debugging, ThemeWatcher for hot-reload) + bugfix: Storage.init() signature in 44 unit tests |
 | 75 | **Sailor v1.7.0 migration** — Advanced Layout & Rendering (FlexBox layout with justify/align, Viewport clipping for efficient scrolling, Shadow & 3D border effects, Custom widget traits, Layout caching with LRU) — non-breaking upgrade, all tests pass |
 | 76 | **Sailor v1.2.0 migration** — Layout & Composition (Grid layout system for multi-pane UI, ScrollView widget for large content, Overlay/z-index system for popups/tooltips, Widget composition helpers with split panes, Responsive breakpoints for terminal sizes) — non-breaking upgrade, all tests pass |
+| 77 | **DIGEST and DELEX commands (Redis 8.4)** — DIGEST returns Wyhash digest (XXH3 placeholder) of string value as hex string for efficient comparison, DELEX conditional delete with IFEQ/IFNE/IFDEQ/IFDNE modes for atomic compare-and-delete, optimistic concurrency control for single-key operations, 10 unit tests, all tests pass |
+| 78 | **Client Management Commands (Phase 5)** — RESET (reset connection state, discard MULTI, unsubscribe all, clear name, switch to RESP2), CLIENT INFO (return current client connection info string), CLIENT HELP (help text for CLIENT subcommands) — Phase 5.1 client/connection commands (3 new commands) |
 
 ### Known stubs (need real implementation for 1.0)
 

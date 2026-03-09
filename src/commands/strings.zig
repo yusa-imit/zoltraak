@@ -1032,6 +1032,17 @@ pub fn executeCommand(
             }
             const client_protocol = client_registry.getProtocol(client_id);
             break :blk try utility_cmds.cmdQuit(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+        } else if (std.mem.eql(u8, cmd_upper, "RESET")) {
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            const client_protocol = client_registry.getProtocol(client_id);
+            break :blk try utility_cmds.cmdReset(allocator, args, storage, ps, tx, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
         } else if (std.mem.eql(u8, cmd_upper, "TIME")) {
             var args = try allocator.alloc([]const u8, array.len);
             defer allocator.free(args);

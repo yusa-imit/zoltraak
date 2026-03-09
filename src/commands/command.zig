@@ -144,6 +144,7 @@ pub const ALL_COMMANDS = [_]CommandInfo{
 
     // Client commands
     .{ .name = "client", .arity = -2, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "reset", .arity = 1, .flags = &.{ "noscript", "loading", "stale", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
 
     // Config commands
     .{ .name = "config", .arity = -2, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
