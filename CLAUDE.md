@@ -637,6 +637,26 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. All features are opt-in. Layout features available for future TUI enhancements.
 
+### v1.8.0 — Network & Async Integration (status: READY)
+
+**sailor v1.8.0 released** (2026-03-10) — Network and async widgets
+
+- **New features**:
+  - HttpClient widget: Download progress visualization with speed/stats (16 tests)
+  - WebSocket widget: Live data feed with auto-scroll (16 tests)
+  - AsyncEventLoop: Non-blocking I/O for network operations (8 tests)
+  - TaskRunner widget: Parallel operation status indicator (20 tests)
+  - LogViewer widget: Tail -f style with filtering and search (20 tests)
+- **Impact on zoltraak**: MEDIUM — Network widgets useful for future features
+  - AsyncEventLoop enables non-blocking Redis operations in TUI
+  - LogViewer perfect for displaying Redis MONITOR output
+  - TaskRunner could visualize multi-key operations progress
+  - WebSocket useful for Redis pub/sub visualization
+- [ ] `build.zig.zon`에 sailor v1.8.0 의존성 업데이트
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: Non-breaking upgrade. All features are opt-in. Network features available for future Redis TUI enhancements.
+
 ---
 
 ## zuda Migration
