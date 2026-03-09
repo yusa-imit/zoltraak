@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-75 complete (173+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-79 complete (173+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -62,6 +62,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 76 | **Sailor v1.2.0 migration** — Layout & Composition (Grid layout system for multi-pane UI, ScrollView widget for large content, Overlay/z-index system for popups/tooltips, Widget composition helpers with split panes, Responsive breakpoints for terminal sizes) — non-breaking upgrade, all tests pass |
 | 77 | **DIGEST and DELEX commands (Redis 8.4)** — DIGEST returns Wyhash digest (XXH3 placeholder) of string value as hex string for efficient comparison, DELEX conditional delete with IFEQ/IFNE/IFDEQ/IFDNE modes for atomic compare-and-delete, optimistic concurrency control for single-key operations, 10 unit tests, all tests pass |
 | 78 | **Client Management Commands (Phase 5)** — RESET (reset connection state, discard MULTI, unsubscribe all, clear name, switch to RESP2), CLIENT INFO (return current client connection info string), CLIENT HELP (help text for CLIENT subcommands) — Phase 5.1 client/connection commands (3 new commands) |
+| 79 | **Sailor v1.8.0 migration** — Network & Async Integration (HttpClient widget for download progress, WebSocket widget for live feeds, AsyncEventLoop for non-blocking I/O, TaskRunner for parallel ops, LogViewer for tail -f style logs) — fixed missing Writer.writeArrayOfBulkStrings method, fixed TxState method call, non-breaking upgrade, all tests pass |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -637,7 +638,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. All features are opt-in. Layout features available for future TUI enhancements.
 
-### v1.8.0 — Network & Async Integration (status: READY)
+### v1.8.0 — Network & Async Integration (DONE)
 
 **sailor v1.8.0 released** (2026-03-10) — Network and async widgets
 
@@ -652,8 +653,11 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - LogViewer perfect for displaying Redis MONITOR output
   - TaskRunner could visualize multi-key operations progress
   - WebSocket useful for Redis pub/sub visualization
-- [ ] `build.zig.zon`에 sailor v1.8.0 의존성 업데이트
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.8.0 (hash: 1220063abf0348544c529399ac31b06cd5cc645aa66e147181d752b59a22ac8057ab)
+- Fixed missing Writer.writeArrayOfBulkStrings method (convenience helper for array of strings)
+- Fixed TxState.discard() → TxState.reset() method call in RESET command
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 79
 
 **Note**: Non-breaking upgrade. All features are opt-in. Network features available for future Redis TUI enhancements.
 

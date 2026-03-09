@@ -79,7 +79,7 @@ pub fn cmdReset(
     }
 
     // 1. Discard MULTI transaction if active
-    tx_state.discard();
+    tx_state.reset();
 
     // 2. Unsubscribe from all channels (regular + pattern + sharded)
     // Note: PubSub.unsubscribeAll will handle all subscription types

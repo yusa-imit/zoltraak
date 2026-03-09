@@ -124,6 +124,19 @@ pub const Writer = struct {
         return self.writeSimpleString("OK");
     }
 
+    /// Write an array of bulk strings (convenience method)
+    /// Converts a slice of strings to an array of bulk string RespValues
+    pub fn writeArrayOfBulkStrings(self: *Writer, strings: []const []const u8) ![]const u8 {
+        var values = std.ArrayList(RespValue){};
+        defer values.deinit(self.allocator);
+
+        for (strings) |s| {
+            try values.append(self.allocator, RespValue{ .bulk_string = s });
+        }
+
+        return self.writeArray(try values.toOwnedSlice(self.allocator));
+    }
+
     // RESP3-specific write methods
 
     /// Write a RESP3 null (_\r\n)
