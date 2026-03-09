@@ -291,6 +291,10 @@ pub fn executeCommand(
             break :blk try cmdMsetex(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LCS")) {
             break :blk try cmdLcs(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "DIGEST")) {
+            break :blk try cmdDigest(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "DELEX")) {
+            break :blk try cmdDelex(allocator, storage, array);
         }
         // TTL / expiry commands
         else if (std.mem.eql(u8, cmd_upper, "TTL")) {
@@ -2659,6 +2663,172 @@ fn findLcsMatches(allocator: std.mem.Allocator, str1: []const u8, str2: []const 
     return matches;
 }
 
+/// DIGEST key
+/// Get the hash digest for the value stored in the specified key.
+/// Returns a hexadecimal string representation of the XXH3 hash.
+/// Redis 8.4+ — uses XXH3 hash algorithm for efficient comparison.
+/// Time complexity: O(N) where N is the length of the string value.
+pub fn cmdDigest(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'digest' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Get the value (borrowed, no need to free)
+    const value_result = storage.get(key);
+
+    if (value_result == null) {
+        return w.writeNull();
+    }
+
+    // Compute Wyhash (placeholder for XXH3 - Zig std doesn't have XXH3 yet)
+    // TODO: Replace with XXH3 when available for full Redis compatibility
+    const hash_value = std.hash.Wyhash.hash(0, value_result.?);
+
+    // Convert to hex string
+    const hex_str = try std.fmt.allocPrint(allocator, "{x:0>16}", .{hash_value});
+    defer allocator.free(hex_str);
+
+    return w.writeBulkString(hex_str);
+}
+
+/// DELEX key [IFEQ value | IFNE value | IFDEQ digest | IFDNE digest]
+/// Conditionally delete a key based on value or digest comparison.
+/// Redis 8.4+ — atomic compare-and-delete for optimistic concurrency control.
+/// Time complexity: O(1) for IFEQ/IFNE, O(N) for IFDEQ/IFDNE where N is value length.
+pub fn cmdDelex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'delex' command");
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid key"),
+    };
+
+    // Parse conditional flags
+    var condition: ?enum { ifeq, ifne, ifdeq, ifdne } = null;
+    var condition_value: ?[]const u8 = null;
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const flag = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid argument"),
+        };
+
+        const flag_upper = try std.ascii.allocUpperString(allocator, flag);
+        defer allocator.free(flag_upper);
+
+        if (std.mem.eql(u8, flag_upper, "IFEQ")) {
+            if (condition != null) {
+                return w.writeError("ERR multiple conditions specified");
+            }
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR IFEQ requires a value");
+            }
+            condition = .ifeq;
+            condition_value = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid value for IFEQ"),
+            };
+            i += 1;
+        } else if (std.mem.eql(u8, flag_upper, "IFNE")) {
+            if (condition != null) {
+                return w.writeError("ERR multiple conditions specified");
+            }
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR IFNE requires a value");
+            }
+            condition = .ifne;
+            condition_value = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid value for IFNE"),
+            };
+            i += 1;
+        } else if (std.mem.eql(u8, flag_upper, "IFDEQ")) {
+            if (condition != null) {
+                return w.writeError("ERR multiple conditions specified");
+            }
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR IFDEQ requires a digest");
+            }
+            condition = .ifdeq;
+            condition_value = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid digest for IFDEQ"),
+            };
+            i += 1;
+        } else if (std.mem.eql(u8, flag_upper, "IFDNE")) {
+            if (condition != null) {
+                return w.writeError("ERR multiple conditions specified");
+            }
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR IFDNE requires a digest");
+            }
+            condition = .ifdne;
+            condition_value = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR invalid digest for IFDNE"),
+            };
+            i += 1;
+        } else {
+            return w.writeError("ERR unknown option");
+        }
+    }
+
+    // No condition means unconditional delete (same as DEL)
+    if (condition == null) {
+        const deleted = storage.del(&[_][]const u8{key});
+        return w.writeInteger(@intCast(deleted));
+    }
+
+    // Get current value (borrowed, no need to free)
+    const current_value = storage.get(key);
+
+    if (current_value == null) {
+        // Key doesn't exist - no deletion
+        return w.writeInteger(0);
+    }
+
+    // Check condition
+    const should_delete = switch (condition.?) {
+        .ifeq => std.mem.eql(u8, current_value.?, condition_value.?),
+        .ifne => !std.mem.eql(u8, current_value.?, condition_value.?),
+        .ifdeq => blk: {
+            // Compute digest of current value
+            const current_hash = std.hash.Wyhash.hash(0, current_value.?);
+            const current_hex = try std.fmt.allocPrint(allocator, "{x:0>16}", .{current_hash});
+            defer allocator.free(current_hex);
+            break :blk std.mem.eql(u8, current_hex, condition_value.?);
+        },
+        .ifdne => blk: {
+            // Compute digest of current value
+            const current_hash = std.hash.Wyhash.hash(0, current_value.?);
+            const current_hex = try std.fmt.allocPrint(allocator, "{x:0>16}", .{current_hash});
+            defer allocator.free(current_hex);
+            break :blk !std.mem.eql(u8, current_hex, condition_value.?);
+        },
+    };
+
+    if (should_delete) {
+        const deleted = storage.del(&[_][]const u8{key});
+        return w.writeInteger(@intCast(deleted));
+    } else {
+        return w.writeInteger(0);
+    }
+}
+
 // Embedded unit tests
 
 test "commands - PING no argument" {
@@ -4133,4 +4303,205 @@ test "commands - LCS with IDX and MINMATCHLEN options" {
     // Should filter out matches shorter than 3 characters
     try std.testing.expect(std.mem.indexOf(u8, result, "matches") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "len") != null);
+}
+
+test "commands - DIGEST returns hash for existing key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "myvalue", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DIGEST" },
+        RespValue{ .bulk_string = "mykey" },
+    };
+    const result = try cmdDigest(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return a bulk string with hex digest (16 hex chars for Wyhash)
+    try std.testing.expect(std.mem.startsWith(u8, result, "$"));
+    try std.testing.expect(result.len > 10); // At least some hex digits
+}
+
+test "commands - DIGEST returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DIGEST" },
+        RespValue{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdDigest(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "commands - DIGEST wrong argument count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DIGEST" },
+    };
+    const result = try cmdDigest(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR wrong number") != null);
+}
+
+test "commands - DELEX unconditional delete" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(storage.get("key1") == null);
+}
+
+test "commands - DELEX with IFEQ matches" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "IFEQ" },
+        RespValue{ .bulk_string = "value1" },
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(storage.get("key1") == null);
+}
+
+test "commands - DELEX with IFEQ no match" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "IFEQ" },
+        RespValue{ .bulk_string = "wrongvalue" },
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":0\r\n", result);
+    const val = storage.get("key1");
+    try std.testing.expect(val != null);
+}
+
+test "commands - DELEX with IFNE matches" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "IFNE" },
+        RespValue{ .bulk_string = "wrongvalue" },
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(storage.get("key1") == null);
+}
+
+test "commands - DELEX with IFDEQ matches" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    // First get the digest
+    const digest_args = [_]RespValue{
+        RespValue{ .bulk_string = "DIGEST" },
+        RespValue{ .bulk_string = "key1" },
+    };
+    const digest_result = try cmdDigest(allocator, storage, &digest_args);
+    defer allocator.free(digest_result);
+
+    // Extract hex digest from RESP bulk string ($N\r\nHEX\r\n)
+    const digest_start = std.mem.indexOf(u8, digest_result, "\r\n").? + 2;
+    const digest_end = std.mem.lastIndexOf(u8, digest_result, "\r\n").?;
+    const digest_hex = digest_result[digest_start..digest_end];
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "IFDEQ" },
+        RespValue{ .bulk_string = digest_hex },
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(storage.get("key1") == null);
+}
+
+test "commands - DELEX with IFDNE matches" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "IFDNE" },
+        RespValue{ .bulk_string = "0000000000000000" }, // Wrong digest
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(storage.get("key1") == null);
+}
+
+test "commands - DELEX multiple conditions error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "DELEX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "IFEQ" },
+        RespValue{ .bulk_string = "value1" },
+        RespValue{ .bulk_string = "IFNE" },
+        RespValue{ .bulk_string = "value2" },
+    };
+    const result = try cmdDelex(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR multiple conditions") != null);
 }
