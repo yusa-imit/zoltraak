@@ -59,6 +59,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 73 | **Sailor v1.1.0 migration** — Accessibility & Internationalization (Unicode width calculation for CJK/emoji, keyboard navigation, screen reader support, bidirectional text for RTL languages) — critical for multi-language Redis data display in CLI/TUI |
 | 74 | **Sailor v1.3.0 migration** — Performance & Developer Experience (RenderBudget for 60fps, LazyBuffer for dirty region tracking, EventBatcher for rapid event coalescing, DebugOverlay for visual debugging, ThemeWatcher for hot-reload) + bugfix: Storage.init() signature in 44 unit tests |
 | 75 | **Sailor v1.7.0 migration** — Advanced Layout & Rendering (FlexBox layout with justify/align, Viewport clipping for efficient scrolling, Shadow & 3D border effects, Custom widget traits, Layout caching with LRU) — non-breaking upgrade, all tests pass |
+| 76 | **Sailor v1.2.0 migration** — Layout & Composition (Grid layout system for multi-pane UI, ScrollView widget for large content, Overlay/z-index system for popups/tooltips, Widget composition helpers with split panes, Responsive breakpoints for terminal sizes) — non-breaking upgrade, all tests pass |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -495,7 +496,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 - [Zig Documentation](https://ziglang.org/documentation/master/)
 - [Zoltraak 1.0 PRD](docs/PRD.md)
 
-### v1.2.0 — Layout & Composition (READY)
+### v1.2.0 — Layout & Composition (DONE)
 
 **sailor v1.2.0 released** (2026-03-02) — Advanced layout and composition features
 
@@ -511,10 +512,9 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - Overlay system for context menus and tooltips
   - Split panes for side-by-side prompt editing and preview
   - Responsive layouts for different terminal sizes
-- [ ] `build.zig.zon`에 sailor v1.2.0 의존성 업데이트
-- [ ] (Optional) Implement multi-pane TUI for prompt editing workflow
-- [ ] (Optional) Add ScrollView for prompt history browser
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.2.0 (hash: 1220357e36aec8ac9e47e11bf80a014b226c816bfc42078297984afc091fd2d73a7b)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 76
 
 **Note**: Non-breaking upgrade. Layout features enable future interactive TUI prompt editor and chat interface.
 
