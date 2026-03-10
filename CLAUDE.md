@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-79 complete (173+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-80 complete (174+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -63,6 +63,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 77 | **DIGEST and DELEX commands (Redis 8.4)** — DIGEST returns Wyhash digest (XXH3 placeholder) of string value as hex string for efficient comparison, DELEX conditional delete with IFEQ/IFNE/IFDEQ/IFDNE modes for atomic compare-and-delete, optimistic concurrency control for single-key operations, 10 unit tests, all tests pass |
 | 78 | **Client Management Commands (Phase 5)** — RESET (reset connection state, discard MULTI, unsubscribe all, clear name, switch to RESP2), CLIENT INFO (return current client connection info string), CLIENT HELP (help text for CLIENT subcommands) — Phase 5.1 client/connection commands (3 new commands) |
 | 79 | **Sailor v1.8.0 migration** — Network & Async Integration (HttpClient widget for download progress, WebSocket widget for live feeds, AsyncEventLoop for non-blocking I/O, TaskRunner for parallel ops, LogViewer for tail -f style logs) — fixed missing Writer.writeArrayOfBulkStrings method, fixed TxState method call, non-breaking upgrade, all tests pass |
+| 80 | **CLIENT KILL command (Phase 5)** — CLIENT KILL with full filter support (ID, ADDR, LADDR, USER, TYPE, SKIPME, MAXAGE), both old addr:port and new filter-based syntax, returns OK (old) or killed count (new), logical AND combination of filters, SKIPME defaults to YES (caller skipped), 10 unit tests + 6 integration tests, all tests pass — Phase 5.1 client/connection commands (4/14 P0 commands, 29%) |
 
 ### Known stubs (need real implementation for 1.0)
 
