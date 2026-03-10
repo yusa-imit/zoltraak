@@ -1,7 +1,13 @@
-// Blocking queue infrastructure for XREAD BLOCK and XREADGROUP BLOCK commands
+// Blocking queue infrastructure for XREAD BLOCK, XREADGROUP BLOCK, and other blocking commands
 const std = @import("std");
 const memory = @import("memory.zig");
 const StreamId = memory.Value.StreamId;
+
+/// Unblock behavior mode
+pub const UnblockMode = enum {
+    timeout, // Unblock as if timeout expired (default)
+    error_mode, // Unblock with UNBLOCKED error
+};
 
 /// Represents a client blocked on XREAD or XREADGROUP
 pub const BlockedClient = struct {
@@ -47,11 +53,17 @@ pub const ClientResponse = struct {
     }
 };
 
+/// Tracks unblock requests for clients
+pub const UnblockRequest = struct {
+    mode: UnblockMode,
+};
+
 /// Manages blocked clients waiting for stream data
 pub const BlockingQueue = struct {
     xread_clients: std.StringHashMap(std.ArrayList(BlockedClient)),
     xreadgroup_clients: std.StringHashMap(std.ArrayList(BlockedXreadgroupClient)),
     pending_responses: std.AutoHashMap(usize, ClientResponse), // client_id -> response
+    unblock_requests: std.AutoHashMap(u64, UnblockRequest), // client_id -> unblock request
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) BlockingQueue {
@@ -59,6 +71,7 @@ pub const BlockingQueue = struct {
             .xread_clients = std.StringHashMap(std.ArrayList(BlockedClient)).init(allocator),
             .xreadgroup_clients = std.StringHashMap(std.ArrayList(BlockedXreadgroupClient)).init(allocator),
             .pending_responses = std.AutoHashMap(usize, ClientResponse).init(allocator),
+            .unblock_requests = std.AutoHashMap(u64, UnblockRequest).init(allocator),
             .allocator = allocator,
         };
     }
@@ -88,6 +101,8 @@ pub const BlockingQueue = struct {
             resp.deinit();
         }
         self.pending_responses.deinit();
+
+        self.unblock_requests.deinit();
     }
 
     /// Enqueue a client blocked on XREAD
@@ -146,6 +161,54 @@ pub const BlockingQueue = struct {
         return response;
     }
 
+    /// Request unblocking of a client
+    /// Returns true if client exists and was found in blocking queues
+    pub fn requestUnblock(self: *BlockingQueue, client_id: u64, mode: UnblockMode) !bool {
+        // Check if client is actually blocked
+        var found = false;
+
+        // Check XREAD clients
+        var iter = self.xread_clients.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.items) |client| {
+                if (client.client_id == client_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+
+        if (!found) {
+            // Check XREADGROUP clients
+            var iter2 = self.xreadgroup_clients.iterator();
+            while (iter2.next()) |entry| {
+                for (entry.value_ptr.items) |client| {
+                    if (client.client.client_id == client_id) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+        }
+
+        if (found) {
+            try self.unblock_requests.put(client_id, UnblockRequest{ .mode = mode });
+        }
+
+        return found;
+    }
+
+    /// Check if a client has a pending unblock request
+    /// If yes, returns the mode and removes the request
+    pub fn checkUnblockRequest(self: *BlockingQueue, client_id: u64) ?UnblockMode {
+        if (self.unblock_requests.fetchRemove(client_id)) |kv| {
+            return kv.value.mode;
+        }
+        return null;
+    }
+
     /// Remove all entries for a specific client (on disconnect)
     pub fn removeClient(self: *BlockingQueue, client_id: usize) void {
         // Remove from XREAD queues
@@ -183,6 +246,9 @@ pub const BlockingQueue = struct {
             var resp = kv.value;
             resp.deinit();
         }
+
+        // Remove unblock request if any
+        _ = self.unblock_requests.remove(@intCast(client_id));
     }
 
     /// Check for expired blocked clients and store timeout responses

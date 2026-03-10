@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-81 complete (176+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-82 complete (177+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-### Completed (Iterations 1-74)
+### Completed (Iterations 1-82)
 
 | Range | Features |
 |-------|----------|
@@ -65,6 +65,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 79 | **Sailor v1.8.0 migration** — Network & Async Integration (HttpClient widget for download progress, WebSocket widget for live feeds, AsyncEventLoop for non-blocking I/O, TaskRunner for parallel ops, LogViewer for tail -f style logs) — fixed missing Writer.writeArrayOfBulkStrings method, fixed TxState method call, non-breaking upgrade, all tests pass |
 | 80 | **CLIENT KILL command (Phase 5)** — CLIENT KILL with full filter support (ID, ADDR, LADDR, USER, TYPE, SKIPME, MAXAGE), both old addr:port and new filter-based syntax, returns OK (old) or killed count (new), logical AND combination of filters, SKIPME defaults to YES (caller skipped), 10 unit tests + 6 integration tests, all tests pass — Phase 5.1 client/connection commands (4/14 P0 commands, 29%) |
 | 81 | **CLIENT PAUSE/UNPAUSE commands (Phase 5)** — CLIENT PAUSE <timeout> [WRITE|ALL] (pause clients for timeout milliseconds, WRITE mode pauses only writes, ALL mode pauses all commands), CLIENT UNPAUSE (resume paused clients), pause state tracking in ClientRegistry (pause_until_ms, pause_all), isClientsPaused(is_write) checks pause status with expiration, validates timeout >= 0, 9 unit tests + 7 integration tests, manual testing confirms functionality — Phase 5.1 client/connection commands (6/14 P0 commands, 43%) |
+| 82 | **CLIENT UNBLOCK command (Phase 5)** — CLIENT UNBLOCK <client-id> [TIMEOUT|ERROR] (unblock a client blocked in a blocking operation from a different connection), returns 1 if client found and unblock requested, 0 if client not found or not blocked, TIMEOUT mode (default, unblock as if timeout occurred), ERROR mode (return UNBLOCKED error), BlockingQueue extended with unblock_requests map and requestUnblock/checkUnblockRequest methods, 5 unit tests + 5 integration tests, all tests pass — Phase 5.1 client/connection commands (7/14 P0 commands, 50%) |
 
 ### Known stubs (need real implementation for 1.0)
 

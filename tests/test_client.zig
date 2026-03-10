@@ -413,3 +413,80 @@ test "CLIENT PAUSE command - invalid mode" {
     try std.testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, resp, "WRITE or ALL") != null);
 }
+
+test "CLIENT UNBLOCK command - client not blocked" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT UNBLOCK 9999 (non-existent or non-blocked client)
+    const resp = try sendCommand(allocator, stream, "*3\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$4\r\n9999\r\n");
+    defer allocator.free(resp);
+
+    // Should return 0 (not found or not blocked)
+    try std.testing.expectEqualStrings(":0\r\n", resp);
+}
+
+test "CLIENT UNBLOCK command - invalid client ID" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT UNBLOCK not-a-number
+    const resp = try sendCommand(allocator, stream, "*3\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$12\r\nnot-a-number\r\n");
+    defer allocator.free(resp);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "invalid client ID") != null);
+}
+
+test "CLIENT UNBLOCK command - invalid mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT UNBLOCK 1 INVALID
+    const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$1\r\n1\r\n$7\r\nINVALID\r\n");
+    defer allocator.free(resp);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "TIMEOUT or ERROR") != null);
+}
+
+test "CLIENT UNBLOCK command - TIMEOUT mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT UNBLOCK 1 TIMEOUT
+    const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$1\r\n1\r\n$7\r\nTIMEOUT\r\n");
+    defer allocator.free(resp);
+
+    // Should return 0 or 1 depending on whether client 1 is blocked
+    try std.testing.expect(std.mem.startsWith(u8, resp, ":"));
+}
+
+test "CLIENT UNBLOCK command - ERROR mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT UNBLOCK 1 ERROR
+    const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$1\r\n1\r\n$5\r\nERROR\r\n");
+    defer allocator.free(resp);
+
+    // Should return 0 or 1 depending on whether client 1 is blocked
+    try std.testing.expect(std.mem.startsWith(u8, resp, ":"));
+}

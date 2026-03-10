@@ -756,7 +756,7 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "CLIENT")) {
             // CLIENT subcommand is in array[1]
             const subcmd_array = array[1..];
-            break :blk try client_cmds.cmdClient(allocator, client_registry, client_id, subcmd_array);
+            break :blk try client_cmds.cmdClient(allocator, client_registry, client_id, subcmd_array, &storage.blocking_queue);
         }
         // Configuration commands
         else if (std.mem.eql(u8, cmd_upper, "CONFIG")) {

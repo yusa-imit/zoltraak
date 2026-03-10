@@ -1,9 +1,11 @@
 const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
+const blocking_mod = @import("../storage/blocking.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
+const BlockingQueue = blocking_mod.BlockingQueue;
 
 /// RESP protocol version
 pub const RespProtocol = enum(u8) {
@@ -861,6 +863,53 @@ fn cmdClientUnpause(
     return w.writeSimpleString("OK");
 }
 
+/// CLIENT UNBLOCK client-id [TIMEOUT|ERROR]
+/// Unblock a client blocked in a blocking command from a different connection.
+/// Returns 1 if client was found and unblocked, 0 if client not found or not blocked.
+fn cmdClientUnblock(
+    allocator: std.mem.Allocator,
+    blocking_queue: *@import("../storage/blocking.zig").BlockingQueue,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2 or args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'client|unblock' command");
+    }
+
+    // Parse client_id
+    const client_id_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid client ID"),
+    };
+
+    const client_id = std.fmt.parseInt(u64, client_id_str, 10) catch {
+        return w.writeError("ERR invalid client ID");
+    };
+
+    // Parse unblock mode (default: TIMEOUT)
+    const mode: @import("../storage/blocking.zig").UnblockMode = if (args.len == 3) blk: {
+        const mode_str = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => break :blk .timeout,
+        };
+
+        if (std.ascii.eqlIgnoreCase(mode_str, "TIMEOUT")) {
+            break :blk .timeout;
+        } else if (std.ascii.eqlIgnoreCase(mode_str, "ERROR")) {
+            break :blk .error_mode;
+        } else {
+            return w.writeError("ERR CLIENT UNBLOCK reason should be TIMEOUT or ERROR");
+        }
+    } else .timeout;
+
+    // Request unblock
+    const found = try blocking_queue.requestUnblock(client_id, mode);
+
+    return w.writeInteger(if (found) 1 else 0);
+}
+
 /// CLIENT HELP - Display help for CLIENT subcommands
 fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
     if (args.len != 1) {
@@ -896,6 +945,9 @@ fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
         "    Mode: WRITE (pause write commands, default) or ALL (pause all commands).",
         "UNPAUSE",
         "    Resume all paused clients.",
+        "UNBLOCK <client-id> [TIMEOUT|ERROR]",
+        "    Unblock a client blocked in a blocking operation.",
+        "    Reason: TIMEOUT (default, unblock as if timeout occurred) or ERROR (return error).",
         "HELP",
         "    Print this help.",
     };
@@ -910,6 +962,7 @@ pub fn cmdClient(
     registry: *ClientRegistry,
     client_id: u64,
     args: []const RespValue,
+    blocking_queue: *@import("../storage/blocking.zig").BlockingQueue,
 ) ![]const u8 {
     if (args.len < 1) {
         var w = Writer.init(allocator);
@@ -944,6 +997,8 @@ pub fn cmdClient(
         return cmdClientPause(allocator, registry, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "UNPAUSE")) {
         return cmdClientUnpause(allocator, registry, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "UNBLOCK")) {
+        return cmdClientUnblock(allocator, blocking_queue, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
         return cmdClientHelp(allocator, args);
     } else {
@@ -965,6 +1020,8 @@ pub fn cmdClient(
 test "ClientRegistry: register and unregister" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -981,6 +1038,8 @@ test "ClientRegistry: register and unregister" {
 test "ClientRegistry: set and get client name" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1010,6 +1069,8 @@ test "ClientRegistry: set and get client name" {
 test "ClientRegistry: update last command" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1027,6 +1088,8 @@ test "ClientRegistry: update last command" {
 test "ClientRegistry: format client list" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1050,6 +1113,8 @@ test "CLIENT ID command" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1063,7 +1128,7 @@ test "CLIENT ID command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return ":1\r\n"
@@ -1074,6 +1139,8 @@ test "CLIENT GETNAME command - no name set" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1086,7 +1153,7 @@ test "CLIENT GETNAME command - no name set" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "GETNAME" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return null bulk string
@@ -1097,6 +1164,8 @@ test "CLIENT SETNAME command - success" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1110,7 +1179,7 @@ test "CLIENT SETNAME command - success" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "my-client" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -1126,6 +1195,8 @@ test "CLIENT SETNAME command - rejects spaces" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1139,7 +1210,7 @@ test "CLIENT SETNAME command - rejects spaces" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "my client" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -1150,6 +1221,8 @@ test "CLIENT LIST command - basic" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1167,7 +1240,7 @@ test "CLIENT LIST command - basic" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should be bulk string containing both clients
@@ -1183,6 +1256,8 @@ test "CLIENT LIST command - with TYPE filter" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     _ = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1197,7 +1272,7 @@ test "CLIENT LIST command - with TYPE filter" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "normal" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, 1, args_slice);
+    const response = try cmdClient(allocator, &registry, 1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return list with normal clients
@@ -1209,6 +1284,8 @@ test "CLIENT unknown subcommand" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1221,7 +1298,7 @@ test "CLIENT unknown subcommand" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNKNOWN" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -1232,6 +1309,8 @@ test "CLIENT LIST command - invalid TYPE" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     _ = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1246,7 +1325,7 @@ test "CLIENT LIST command - invalid TYPE" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "invalid" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, 1, args_slice);
+    const response = try cmdClient(allocator, &registry, 1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return error for unknown client type
@@ -1257,6 +1336,8 @@ test "CLIENT LIST command - invalid TYPE" {
 test "ClientRegistry: set and get protocol version" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1276,6 +1357,8 @@ test "ClientRegistry: set and get protocol version" {
 test "ClientRegistry: get protocol for non-existent client" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     // Should return RESP2 for non-existent client
@@ -1286,6 +1369,8 @@ test "CLIENT INFO command" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1298,7 +1383,7 @@ test "CLIENT INFO command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INFO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return bulk string with client info
@@ -1313,6 +1398,8 @@ test "CLIENT HELP command" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1325,7 +1412,7 @@ test "CLIENT HELP command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "HELP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return array of help items
@@ -1340,6 +1427,8 @@ test "CLIENT KILL command - old format" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1354,7 +1443,7 @@ test "CLIENT KILL command - old format" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "192.168.1.100:9999" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return OK
@@ -1369,6 +1458,8 @@ test "CLIENT KILL command - by ID" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1384,7 +1475,7 @@ test "CLIENT KILL command - by ID" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "2" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :1\r\n (killed count)
@@ -1399,6 +1490,8 @@ test "CLIENT KILL command - by ADDR" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1414,7 +1507,7 @@ test "CLIENT KILL command - by ADDR" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "127.0.0.1:12345" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client2, args_slice);
+    const response = try cmdClient(allocator, &registry, client2, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :1\r\n
@@ -1426,6 +1519,8 @@ test "CLIENT KILL command - SKIPME YES" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1442,7 +1537,7 @@ test "CLIENT KILL command - SKIPME YES" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "YES" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :0\r\n (caller skipped)
@@ -1454,6 +1549,8 @@ test "CLIENT KILL command - SKIPME NO" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1470,7 +1567,7 @@ test "CLIENT KILL command - SKIPME NO" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :1\r\n (caller included)
@@ -1482,6 +1579,8 @@ test "CLIENT KILL command - by TYPE" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1499,7 +1598,7 @@ test "CLIENT KILL command - by TYPE" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :2\r\n (both clients are normal type)
@@ -1512,6 +1611,8 @@ test "CLIENT KILL command - by MAXAGE" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1531,7 +1632,7 @@ test "CLIENT KILL command - by MAXAGE" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should kill client older than 1 second
@@ -1543,6 +1644,8 @@ test "CLIENT KILL command - multiple filters" {
     const allocator = std.testing.allocator;
 
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1561,7 +1664,7 @@ test "CLIENT KILL command - multiple filters" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "2" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     // Should only kill client2 (matches both filters)
@@ -1574,6 +1677,8 @@ test "CLIENT KILL command - multiple filters" {
 test "ClientRegistry: mark and check killed status" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client1 = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1596,6 +1701,8 @@ test "ClientRegistry: mark and check killed status" {
 test "CLIENT PAUSE command - WRITE mode" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1610,7 +1717,7 @@ test "CLIENT PAUSE command - WRITE mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "WRITE" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -1623,6 +1730,8 @@ test "CLIENT PAUSE command - WRITE mode" {
 test "CLIENT PAUSE command - ALL mode" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1637,7 +1746,7 @@ test "CLIENT PAUSE command - ALL mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ALL" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -1650,6 +1759,8 @@ test "CLIENT PAUSE command - ALL mode" {
 test "CLIENT PAUSE command - default WRITE mode" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1663,7 +1774,7 @@ test "CLIENT PAUSE command - default WRITE mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -1676,6 +1787,8 @@ test "CLIENT PAUSE command - default WRITE mode" {
 test "CLIENT PAUSE command - zero timeout" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1689,7 +1802,7 @@ test "CLIENT PAUSE command - zero timeout" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "0" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -1701,6 +1814,8 @@ test "CLIENT PAUSE command - zero timeout" {
 test "CLIENT PAUSE command - negative timeout rejected" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1714,7 +1829,7 @@ test "CLIENT PAUSE command - negative timeout rejected" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "-1" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -1724,6 +1839,8 @@ test "CLIENT PAUSE command - negative timeout rejected" {
 test "CLIENT UNPAUSE command" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1742,7 +1859,7 @@ test "CLIENT UNPAUSE command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNPAUSE" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -1755,6 +1872,8 @@ test "CLIENT UNPAUSE command" {
 test "CLIENT PAUSE command - pause expires" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     // Pause for 100ms
@@ -1771,6 +1890,8 @@ test "CLIENT PAUSE command - pause expires" {
 test "CLIENT PAUSE command - invalid mode" {
     const allocator = std.testing.allocator;
     var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
     defer registry.deinit();
 
     const client_id = try registry.registerClient("127.0.0.1:12345", 42);
@@ -1785,9 +1906,184 @@ test "CLIENT PAUSE command - invalid mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "WRITE or ALL") != null);
+}
+
+test "CLIENT UNBLOCK command - client not blocked" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "999" }); // Non-existent client
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return 0 (client not found or not blocked)
+    try std.testing.expectEqualStrings(":0\r\n", response);
+}
+
+test "CLIENT UNBLOCK command - default TIMEOUT mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Create a blocked client
+    const keys = try allocator.alloc([]const u8, 1);
+    keys[0] = try allocator.dupe(u8, "stream1");
+    const start_ids = try allocator.alloc(blocking_mod.StreamId, 1);
+    start_ids[0] = blocking_mod.StreamId{ .ms = 0, .seq = 0 };
+
+    const blocked_client = blocking_mod.BlockedClient{
+        .client_id = 999, // Different client
+        .keys = keys,
+        .start_ids = start_ids,
+        .count = null,
+        .timeout_ms = 5000,
+        .start_time = std.time.milliTimestamp(),
+        .allocator = allocator,
+    };
+
+    try blocking_queue.enqueueXreadClient("stream1", blocked_client);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return 1 (client found and unblock requested)
+    try std.testing.expectEqualStrings(":1\r\n", response);
+
+    // Check that unblock request was set with TIMEOUT mode
+    const mode = blocking_queue.checkUnblockRequest(999);
+    try std.testing.expect(mode != null);
+    try std.testing.expectEqual(blocking_mod.UnblockMode.timeout, mode.?);
+}
+
+test "CLIENT UNBLOCK command - ERROR mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Create a blocked client
+    const keys = try allocator.alloc([]const u8, 1);
+    keys[0] = try allocator.dupe(u8, "stream1");
+    const start_ids = try allocator.alloc(blocking_mod.StreamId, 1);
+    start_ids[0] = blocking_mod.StreamId{ .ms = 0, .seq = 0 };
+
+    const blocked_client = blocking_mod.BlockedClient{
+        .client_id = 999,
+        .keys = keys,
+        .start_ids = start_ids,
+        .count = null,
+        .timeout_ms = 5000,
+        .start_time = std.time.milliTimestamp(),
+        .allocator = allocator,
+    };
+
+    try blocking_queue.enqueueXreadClient("stream1", blocked_client);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ERROR" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return 1 (client found and unblock requested)
+    try std.testing.expectEqualStrings(":1\r\n", response);
+
+    // Check that unblock request was set with ERROR mode
+    const mode = blocking_queue.checkUnblockRequest(999);
+    try std.testing.expect(mode != null);
+    try std.testing.expectEqual(blocking_mod.UnblockMode.error_mode, mode.?);
+}
+
+test "CLIENT UNBLOCK command - invalid mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "TIMEOUT or ERROR") != null);
+}
+
+test "CLIENT UNBLOCK command - invalid client ID" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "not-a-number" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "invalid client ID") != null);
 }
