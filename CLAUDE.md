@@ -664,6 +664,27 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. All features are opt-in. Network features available for future Redis TUI enhancements.
 
+### v1.9.0 — Developer Tools & Ecosystem (READY)
+
+**sailor v1.9.0 released** (2026-03-11) — Developer tools and ecosystem improvements
+
+- **New features**:
+  - WidgetDebugger: Widget tree inspection with layout bounds visualization
+  - PerformanceProfiler: Frame timing & memory profiling with histogram display
+  - CompletionPopup: REPL tab completion popup (resolves repl.zig TODO)
+  - ThemeEditor: Live theme customization with RGB editing and preview (18 tests)
+  - Widget Gallery: Comprehensive catalog of 40+ widgets across 7 categories
+- **Impact on zoltraak**: HIGH — Directly improves Redis CLI user experience
+  - CompletionPopup is CRITICAL for Redis command/key completion in interactive mode
+  - PerformanceProfiler helps optimize TUI performance for large key sets
+  - WidgetDebugger aids debugging complex data visualization layouts
+  - ThemeEditor enables user-customizable Redis CLI themes
+- [ ] `build.zig.zon`에 sailor v1.9.0 의존성 업데이트
+- [ ] Integrate CompletionPopup with Redis command completion (HIGH PRIORITY)
+- [ ] 기존 테스트 전체 통과 확인
+
+**Note**: PRIORITY UPGRADE — CompletionPopup directly enhances Redis CLI UX. Should be integrated ASAP.
+
 ---
 
 ## zuda Migration
