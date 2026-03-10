@@ -53,6 +53,10 @@ pub const ClientRegistry = struct {
     /// Monotonically increasing client ID counter
     next_id: u64,
     mutex: std.Thread.Mutex,
+    /// Pause expiration timestamp in milliseconds (0 = not paused)
+    pause_until_ms: i64,
+    /// Pause mode: true = ALL, false = WRITE only
+    pause_all: bool,
 
     /// Initialize a new client registry
     pub fn init(allocator: std.mem.Allocator) ClientRegistry {
@@ -62,6 +66,8 @@ pub const ClientRegistry = struct {
             .killed_clients = std.AutoHashMap(u64, void).init(allocator),
             .next_id = 1,
             .mutex = std.Thread.Mutex{},
+            .pause_until_ms = 0,
+            .pause_all = false,
         };
     }
 
@@ -263,6 +269,43 @@ pub const ClientRegistry = struct {
         defer self.mutex.unlock();
 
         _ = self.killed_clients.remove(client_id);
+    }
+
+    /// Pause clients for specified duration
+    pub fn pauseClients(self: *ClientRegistry, timeout_ms: i64, pause_all: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = std.time.milliTimestamp();
+        self.pause_until_ms = now + timeout_ms;
+        self.pause_all = pause_all;
+    }
+
+    /// Unpause all clients
+    pub fn unpauseClients(self: *ClientRegistry) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.pause_until_ms = 0;
+        self.pause_all = false;
+    }
+
+    /// Check if clients are currently paused (for a specific command type)
+    /// is_write: true if the command is a write command
+    pub fn isClientsPaused(self: *ClientRegistry, is_write: bool) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = std.time.milliTimestamp();
+        if (self.pause_until_ms > now) {
+            // Pause is active
+            if (self.pause_all) {
+                return true; // Pause all commands
+            } else {
+                return is_write; // Pause only write commands
+            }
+        }
+        return false;
     }
 };
 
@@ -735,6 +778,89 @@ fn cmdClientKill(
     return w.writeInteger(@intCast(killed_count));
 }
 
+/// CLIENT PAUSE - Pause all clients for specified duration
+fn cmdClientPause(
+    allocator: std.mem.Allocator,
+    registry: *ClientRegistry,
+    args: []const RespValue,
+) ![]const u8 {
+    if (args.len < 2 or args.len > 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR wrong number of arguments for 'client|pause' command");
+    }
+
+    // Parse timeout (milliseconds)
+    const timeout_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => {
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeError("ERR syntax error");
+        },
+    };
+
+    const timeout_ms = std.fmt.parseInt(i64, timeout_str, 10) catch {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR timeout is not an integer or out of range");
+    };
+
+    if (timeout_ms < 0) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR timeout must be non-negative");
+    }
+
+    // Parse mode (optional, defaults to WRITE)
+    var pause_all = false;
+    if (args.len == 3) {
+        const mode = switch (args[2]) {
+            .bulk_string => |s| s,
+            else => {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                return w.writeError("ERR syntax error");
+            },
+        };
+
+        if (std.ascii.eqlIgnoreCase(mode, "WRITE")) {
+            pause_all = false;
+        } else if (std.ascii.eqlIgnoreCase(mode, "ALL")) {
+            pause_all = true;
+        } else {
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeError("ERR CLIENT PAUSE mode must be WRITE or ALL");
+        }
+    }
+
+    registry.pauseClients(timeout_ms, pause_all);
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeSimpleString("OK");
+}
+
+/// CLIENT UNPAUSE - Resume all paused clients
+fn cmdClientUnpause(
+    allocator: std.mem.Allocator,
+    registry: *ClientRegistry,
+    args: []const RespValue,
+) ![]const u8 {
+    if (args.len != 1) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR wrong number of arguments for 'client|unpause' command");
+    }
+
+    registry.unpauseClients();
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeSimpleString("OK");
+}
+
 /// CLIENT HELP - Display help for CLIENT subcommands
 fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
     if (args.len != 1) {
@@ -765,6 +891,11 @@ fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
         "    * TYPE <NORMAL|MASTER|REPLICA|PUBSUB>: Kill by type.",
         "    * SKIPME <YES|NO>: Skip caller (default: YES).",
         "    * MAXAGE <seconds>: Kill connections older than seconds.",
+        "PAUSE <timeout> [WRITE|ALL]",
+        "    Suspend all clients for <timeout> milliseconds.",
+        "    Mode: WRITE (pause write commands, default) or ALL (pause all commands).",
+        "UNPAUSE",
+        "    Resume all paused clients.",
         "HELP",
         "    Print this help.",
     };
@@ -809,6 +940,10 @@ pub fn cmdClient(
         return cmdClientInfo(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "KILL")) {
         return cmdClientKill(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "PAUSE")) {
+        return cmdClientPause(allocator, registry, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "UNPAUSE")) {
+        return cmdClientUnpause(allocator, registry, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
         return cmdClientHelp(allocator, args);
     } else {
@@ -1456,4 +1591,203 @@ test "ClientRegistry: mark and check killed status" {
     // Clear killed status
     registry.clearKilledStatus(client1);
     try std.testing.expect(!registry.isClientKilled(client1));
+}
+
+test "CLIENT PAUSE command - WRITE mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "WRITE" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Check pause state
+    try std.testing.expect(registry.isClientsPaused(true)); // Write commands paused
+    try std.testing.expect(!registry.isClientsPaused(false)); // Read commands not paused
+}
+
+test "CLIENT PAUSE command - ALL mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ALL" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Check pause state
+    try std.testing.expect(registry.isClientsPaused(true)); // Write commands paused
+    try std.testing.expect(registry.isClientsPaused(false)); // Read commands also paused
+}
+
+test "CLIENT PAUSE command - default WRITE mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Check pause state (should default to WRITE mode)
+    try std.testing.expect(registry.isClientsPaused(true)); // Write commands paused
+    try std.testing.expect(!registry.isClientsPaused(false)); // Read commands not paused
+}
+
+test "CLIENT PAUSE command - zero timeout" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "0" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Zero timeout means pause expires immediately
+    try std.testing.expect(!registry.isClientsPaused(true));
+}
+
+test "CLIENT PAUSE command - negative timeout rejected" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "-1" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "non-negative") != null);
+}
+
+test "CLIENT UNPAUSE command" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // First pause clients
+    registry.pauseClients(10000, true);
+    try std.testing.expect(registry.isClientsPaused(true));
+    try std.testing.expect(registry.isClientsPaused(false));
+
+    // Now unpause
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "UNPAUSE" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Check unpause state
+    try std.testing.expect(!registry.isClientsPaused(true));
+    try std.testing.expect(!registry.isClientsPaused(false));
+}
+
+test "CLIENT PAUSE command - pause expires" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Pause for 100ms
+    registry.pauseClients(100, true);
+    try std.testing.expect(registry.isClientsPaused(true));
+
+    // Sleep for 150ms to let pause expire
+    std.Thread.sleep(150_000_000); // 150 milliseconds
+
+    // Pause should have expired
+    try std.testing.expect(!registry.isClientsPaused(true));
+}
+
+test "CLIENT PAUSE command - invalid mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "WRITE or ALL") != null);
 }

@@ -275,3 +275,141 @@ test "CLIENT command updates last_cmd timestamp" {
 
     try std.testing.expect(std.mem.indexOf(u8, resp, "cmd=PING") != null);
 }
+
+test "CLIENT PAUSE command - WRITE mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT PAUSE 1000 WRITE (pause write commands for 1 second)
+    const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$4\r\n1000\r\n$5\r\nWRITE\r\n");
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings("+OK\r\n", resp);
+
+    // Read commands should still work (PING)
+    const ping_resp = try sendCommand(allocator, stream, "*1\r\n$4\r\nPING\r\n");
+    defer allocator.free(ping_resp);
+    try std.testing.expectEqualStrings("+PONG\r\n", ping_resp);
+
+    // Unpause immediately
+    const unpause_resp = try sendCommand(allocator, stream, "*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n");
+    defer allocator.free(unpause_resp);
+    try std.testing.expectEqualStrings("+OK\r\n", unpause_resp);
+}
+
+test "CLIENT PAUSE command - ALL mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT PAUSE 1000 ALL (pause all commands for 1 second)
+    const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$4\r\n1000\r\n$3\r\nALL\r\n");
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings("+OK\r\n", resp);
+
+    // Unpause immediately so we don't block subsequent commands
+    const unpause_resp = try sendCommand(allocator, stream, "*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n");
+    defer allocator.free(unpause_resp);
+    try std.testing.expectEqualStrings("+OK\r\n", unpause_resp);
+}
+
+test "CLIENT PAUSE command - default WRITE mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT PAUSE 1000 (should default to WRITE mode)
+    const resp = try sendCommand(allocator, stream, "*3\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$4\r\n1000\r\n");
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings("+OK\r\n", resp);
+
+    // Unpause
+    const unpause_resp = try sendCommand(allocator, stream, "*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n");
+    defer allocator.free(unpause_resp);
+    try std.testing.expectEqualStrings("+OK\r\n", unpause_resp);
+}
+
+test "CLIENT UNPAUSE command" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Pause clients
+    {
+        const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$5\r\n10000\r\n$3\r\nALL\r\n");
+        defer allocator.free(resp);
+        try std.testing.expectEqualStrings("+OK\r\n", resp);
+    }
+
+    // Unpause
+    {
+        const resp = try sendCommand(allocator, stream, "*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n");
+        defer allocator.free(resp);
+        try std.testing.expectEqualStrings("+OK\r\n", resp);
+    }
+
+    // Verify commands work again
+    const ping_resp = try sendCommand(allocator, stream, "*1\r\n$4\r\nPING\r\n");
+    defer allocator.free(ping_resp);
+    try std.testing.expectEqualStrings("+PONG\r\n", ping_resp);
+}
+
+test "CLIENT PAUSE command - zero timeout" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT PAUSE 0 (pause expires immediately)
+    const resp = try sendCommand(allocator, stream, "*3\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$1\r\n0\r\n");
+    defer allocator.free(resp);
+
+    try std.testing.expectEqualStrings("+OK\r\n", resp);
+
+    // Commands should work immediately
+    const ping_resp = try sendCommand(allocator, stream, "*1\r\n$4\r\nPING\r\n");
+    defer allocator.free(ping_resp);
+    try std.testing.expectEqualStrings("+PONG\r\n", ping_resp);
+}
+
+test "CLIENT PAUSE command - negative timeout rejected" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT PAUSE -1 (should be rejected)
+    const resp = try sendCommand(allocator, stream, "*3\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$2\r\n-1\r\n");
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "non-negative") != null);
+}
+
+test "CLIENT PAUSE command - invalid mode" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT PAUSE 1000 INVALID
+    const resp = try sendCommand(allocator, stream, "*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$4\r\n1000\r\n$7\r\nINVALID\r\n");
+    defer allocator.free(resp);
+
+    try std.testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "WRITE or ALL") != null);
+}
