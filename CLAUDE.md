@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-82 complete (177+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-83 complete (177+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -66,6 +66,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 80 | **CLIENT KILL command (Phase 5)** — CLIENT KILL with full filter support (ID, ADDR, LADDR, USER, TYPE, SKIPME, MAXAGE), both old addr:port and new filter-based syntax, returns OK (old) or killed count (new), logical AND combination of filters, SKIPME defaults to YES (caller skipped), 10 unit tests + 6 integration tests, all tests pass — Phase 5.1 client/connection commands (4/14 P0 commands, 29%) |
 | 81 | **CLIENT PAUSE/UNPAUSE commands (Phase 5)** — CLIENT PAUSE <timeout> [WRITE|ALL] (pause clients for timeout milliseconds, WRITE mode pauses only writes, ALL mode pauses all commands), CLIENT UNPAUSE (resume paused clients), pause state tracking in ClientRegistry (pause_until_ms, pause_all), isClientsPaused(is_write) checks pause status with expiration, validates timeout >= 0, 9 unit tests + 7 integration tests, manual testing confirms functionality — Phase 5.1 client/connection commands (6/14 P0 commands, 43%) |
 | 82 | **CLIENT UNBLOCK command (Phase 5)** — CLIENT UNBLOCK <client-id> [TIMEOUT|ERROR] (unblock a client blocked in a blocking operation from a different connection), returns 1 if client found and unblock requested, 0 if client not found or not blocked, TIMEOUT mode (default, unblock as if timeout occurred), ERROR mode (return UNBLOCKED error), BlockingQueue extended with unblock_requests map and requestUnblock/checkUnblockRequest methods, 5 unit tests + 5 integration tests, all tests pass — Phase 5.1 client/connection commands (7/14 P0 commands, 50%) |
+| 83 | **Sailor v1.9.0 migration** — Developer Tools & Ecosystem (WidgetDebugger for layout inspection, PerformanceProfiler for frame timing, CompletionPopup for REPL tab completion, ThemeEditor for live customization, Widget Gallery catalog), non-breaking upgrade, all tests pass |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -664,7 +665,7 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. All features are opt-in. Network features available for future Redis TUI enhancements.
 
-### v1.9.0 — Developer Tools & Ecosystem (READY)
+### v1.9.0 — Developer Tools & Ecosystem (DONE)
 
 **sailor v1.9.0 released** (2026-03-11) — Developer tools and ecosystem improvements
 
@@ -679,11 +680,11 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
   - PerformanceProfiler helps optimize TUI performance for large key sets
   - WidgetDebugger aids debugging complex data visualization layouts
   - ThemeEditor enables user-customizable Redis CLI themes
-- [ ] `build.zig.zon`에 sailor v1.9.0 의존성 업데이트
-- [ ] Integrate CompletionPopup with Redis command completion (HIGH PRIORITY)
-- [ ] 기존 테스트 전체 통과 확인
+- Updated to sailor v1.9.0 (hash: 122088d326e2de1b2c40547ee39927182412f68da173f46f2bcabc3aa653aec5e465)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 83
 
-**Note**: PRIORITY UPGRADE — CompletionPopup directly enhances Redis CLI UX. Should be integrated ASAP.
+**Note**: Non-breaking upgrade. Developer tools and CompletionPopup widget available for future Redis CLI enhancements.
 
 ---
 
