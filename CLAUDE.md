@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-83 complete (177+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-85 complete (177+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-### Completed (Iterations 1-82)
+### Completed (Iterations 1-85)
 
 | Range | Features |
 |-------|----------|
@@ -68,6 +68,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 82 | **CLIENT UNBLOCK command (Phase 5)** — CLIENT UNBLOCK <client-id> [TIMEOUT|ERROR] (unblock a client blocked in a blocking operation from a different connection), returns 1 if client found and unblock requested, 0 if client not found or not blocked, TIMEOUT mode (default, unblock as if timeout occurred), ERROR mode (return UNBLOCKED error), BlockingQueue extended with unblock_requests map and requestUnblock/checkUnblockRequest methods, 5 unit tests + 5 integration tests, all tests pass — Phase 5.1 client/connection commands (7/14 P0 commands, 50%) |
 | 83 | **Sailor v1.9.0 migration** — Developer Tools & Ecosystem (WidgetDebugger for layout inspection, PerformanceProfiler for frame timing, CompletionPopup for REPL tab completion, ThemeEditor for live customization, Widget Gallery catalog), non-breaking upgrade, all tests pass |
 | 84 | **CLIENT NO-EVICT and CLIENT REPLY commands (Phase 5)** — CLIENT NO-EVICT [ON|OFF] (control whether client's keys are protected from eviction, returns current status if no argument), CLIENT REPLY ON|OFF|SKIP (control client reply behavior: ON=normal, OFF=suppress all, SKIP=skip next only), ClientInfo extended with reply_mode (ON/OFF/SKIP) and no_evict (bool) fields, ClientRegistry methods: setReplyMode/getReplyMode/processReplySkip/setNoEvict/getNoEvict, 9 unit tests + 9 integration tests, all tests pass — Phase 5.1 client/connection commands (9/14 P0 commands, 64%) |
+| 85 | **Sailor v1.10.0 migration** — Mouse & Gamepad Input (mouse event handling with SGR protocol for click/drag/scroll/double-click, widget mouse interaction traits: Clickable/Draggable/Scrollable/Hoverable, gamepad/controller input with buttons/analog sticks/triggers, touch gesture recognition for tap/swipe/pinch/multi-touch, input mapping to remap mouse/gamepad/touch to keyboard events), non-breaking upgrade, all tests pass |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -750,7 +751,7 @@ gh issue create --repo yusa-imit/zuda \
 - **로컬 워크어라운드 금지**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기
 - zuda 에이전트가 `from:*` 라벨 이슈를 최우선 처리한다
 
-### v1.10.0 — Mouse & Gamepad Input (status: READY)
+### v1.10.0 — Mouse & Gamepad Input (DONE)
 
 **sailor v1.10.0 released** (2026-03-11) — Mouse, gamepad, and touch input support
 
@@ -765,14 +766,11 @@ gh issue create --repo yusa-imit/zuda \
   - Scrollable log viewer and data inspector
   - Touch gestures for mobile terminal support
   - Input mapping for accessibility
-- [ ] Update `build.zig.zon` to sailor v1.10.0
-- [ ] Consider adding mouse support to key browser widget
-- [ ] Enable scrolling in data viewer widget
-- [ ] All tests passing after upgrade
+- Updated to sailor v1.10.0 (hash: 1220a5d9787ed4c22adb54f9e0cc8bc6b7a5a9fc5f157f31d33cbb7b051726cbf133)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 85
 
-**Priority**: MEDIUM — Optional upgrade, enhances interactivity but not required for current CLI functionality.
-
-**Note**: Non-breaking upgrade. Mouse/gamepad/touch support is opt-in.
+**Note**: Non-breaking upgrade. Mouse/gamepad/touch support is opt-in. Features available for future TUI enhancements.
 
 ---
 
