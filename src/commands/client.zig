@@ -13,6 +13,13 @@ pub const RespProtocol = enum(u8) {
     RESP3 = 3,
 };
 
+/// Reply mode for CLIENT REPLY command
+pub const ReplyMode = enum {
+    ON,   // Normal replies (default)
+    OFF,  // Suppress all replies
+    SKIP, // Skip next reply only, then revert to ON
+};
+
 /// Metadata for a single client connection
 pub const ClientInfo = struct {
     /// Unique connection ID
@@ -33,6 +40,10 @@ pub const ClientInfo = struct {
     flags: []const u8,
     /// RESP protocol version (2 or 3, defaults to 2)
     protocol: RespProtocol,
+    /// Reply mode (ON/OFF/SKIP) for CLIENT REPLY command
+    reply_mode: ReplyMode,
+    /// No-evict flag for CLIENT NO-EVICT command
+    no_evict: bool,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -119,6 +130,8 @@ pub const ClientRegistry = struct {
             .last_cmd = default_cmd,
             .flags = flags,
             .protocol = .RESP2, // Default to RESP2
+            .reply_mode = .ON, // Default to normal replies
+            .no_evict = false, // Default to normal eviction
         };
 
         try self.clients.put(client_id, info);
@@ -199,6 +212,60 @@ pub const ClientRegistry = struct {
             return info.protocol;
         }
         return .RESP2; // Default to RESP2 if client not found
+    }
+
+    /// Set reply mode for a client (CLIENT REPLY)
+    pub fn setReplyMode(self: *ClientRegistry, client_id: u64, mode: ReplyMode) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.reply_mode = mode;
+        }
+    }
+
+    /// Get reply mode for a client
+    pub fn getReplyMode(self: *ClientRegistry, client_id: u64) ReplyMode {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.reply_mode;
+        }
+        return .ON; // Default to ON if client not found
+    }
+
+    /// Process reply for SKIP mode (converts SKIP to ON after one command)
+    pub fn processReplySkip(self: *ClientRegistry, client_id: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            if (info.reply_mode == .SKIP) {
+                info.reply_mode = .ON;
+            }
+        }
+    }
+
+    /// Set no-evict flag for a client (CLIENT NO-EVICT)
+    pub fn setNoEvict(self: *ClientRegistry, client_id: u64, no_evict: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.no_evict = no_evict;
+        }
+    }
+
+    /// Get no-evict flag for a client
+    pub fn getNoEvict(self: *ClientRegistry, client_id: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.no_evict;
+        }
+        return false; // Default to false if client not found
     }
 
     /// Format client list output matching Redis format
@@ -910,6 +977,82 @@ fn cmdClientUnblock(
     return w.writeInteger(if (found) 1 else 0);
 }
 
+/// CLIENT NO-EVICT [ON|OFF]
+/// Control whether the client's keys should be protected from eviction.
+/// When enabled, keys created by this client won't be evicted when maxmemory is reached.
+/// Returns current status if no argument provided.
+fn cmdClientNoEvict(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len > 2) {
+        return w.writeError("ERR wrong number of arguments for 'client|no-evict' command");
+    }
+
+    // If no argument, return current status
+    if (args.len == 1) {
+        const no_evict = client_registry.getNoEvict(client_id);
+        return w.writeSimpleString(if (no_evict) "on" else "off");
+    }
+
+    // Parse ON|OFF argument
+    const status_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const no_evict = if (std.ascii.eqlIgnoreCase(status_str, "ON"))
+        true
+    else if (std.ascii.eqlIgnoreCase(status_str, "OFF"))
+        false
+    else
+        return w.writeError("ERR CLIENT NO-EVICT accepts either 'ON' or 'OFF'");
+
+    client_registry.setNoEvict(client_id, no_evict);
+    return w.writeSimpleString("OK");
+}
+
+/// CLIENT REPLY ON|OFF|SKIP
+/// Control client reply behavior.
+/// ON: Normal replies (default)
+/// OFF: Suppress all replies until turned back ON
+/// SKIP: Skip reply for the next command only, then revert to ON
+fn cmdClientReply(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'client|reply' command");
+    }
+
+    const mode_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const mode: ReplyMode = if (std.ascii.eqlIgnoreCase(mode_str, "ON"))
+        .ON
+    else if (std.ascii.eqlIgnoreCase(mode_str, "OFF"))
+        .OFF
+    else if (std.ascii.eqlIgnoreCase(mode_str, "SKIP"))
+        .SKIP
+    else
+        return w.writeError("ERR syntax error");
+
+    client_registry.setReplyMode(client_id, mode);
+    return w.writeSimpleString("OK");
+}
+
 /// CLIENT HELP - Display help for CLIENT subcommands
 fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
     if (args.len != 1) {
@@ -948,6 +1091,16 @@ fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
         "UNBLOCK <client-id> [TIMEOUT|ERROR]",
         "    Unblock a client blocked in a blocking operation.",
         "    Reason: TIMEOUT (default, unblock as if timeout occurred) or ERROR (return error).",
+        "NO-EVICT [ON|OFF]",
+        "    Control whether client's keys are protected from eviction.",
+        "    ON: Keys created by this client won't be evicted when maxmemory is reached.",
+        "    OFF: Normal eviction behavior (default).",
+        "    Returns current status if no argument provided.",
+        "REPLY ON|OFF|SKIP",
+        "    Control client reply behavior.",
+        "    ON: Normal replies (default).",
+        "    OFF: Suppress all replies until turned back ON.",
+        "    SKIP: Skip reply for the next command only, then revert to ON.",
         "HELP",
         "    Print this help.",
     };
@@ -999,6 +1152,10 @@ pub fn cmdClient(
         return cmdClientUnpause(allocator, registry, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "UNBLOCK")) {
         return cmdClientUnblock(allocator, blocking_queue, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "NO-EVICT")) {
+        return cmdClientNoEvict(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "REPLY")) {
+        return cmdClientReply(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
         return cmdClientHelp(allocator, args);
     } else {
@@ -2086,4 +2243,187 @@ test "CLIENT UNBLOCK command - invalid client ID" {
     // Should return error
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "invalid client ID") != null);
+}
+
+test "CLIENT NO-EVICT command - enable" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Test NO-EVICT ON
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
+    try std.testing.expect(registry.getNoEvict(client_id) == true);
+}
+
+test "CLIENT NO-EVICT command - disable" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Set to ON first
+    registry.setNoEvict(client_id, true);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Test NO-EVICT OFF
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
+    try std.testing.expect(registry.getNoEvict(client_id) == false);
+}
+
+test "CLIENT NO-EVICT command - get status" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    registry.setNoEvict(client_id, true);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Test NO-EVICT without argument (get status)
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.eql(u8, response, "+on\r\n"));
+}
+
+test "CLIENT REPLY command - ON mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
+    try std.testing.expect(registry.getReplyMode(client_id) == .ON);
+}
+
+test "CLIENT REPLY command - OFF mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
+    try std.testing.expect(registry.getReplyMode(client_id) == .OFF);
+}
+
+test "CLIENT REPLY command - SKIP mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "SKIP" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
+    try std.testing.expect(registry.getReplyMode(client_id) == .SKIP);
+
+    // Test that SKIP reverts to ON after processing
+    registry.processReplySkip(client_id);
+    try std.testing.expect(registry.getReplyMode(client_id) == .ON);
+}
+
+test "CLIENT REPLY command - invalid mode" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
 }
