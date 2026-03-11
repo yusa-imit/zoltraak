@@ -50,6 +50,22 @@ pub const ClientInfo = struct {
     lib_name: ?[]const u8,
     /// Library version for CLIENT SETINFO (optional)
     lib_ver: ?[]const u8,
+    /// Tracking enabled flag (CLIENT TRACKING ON/OFF)
+    tracking_enabled: bool,
+    /// Tracking redirect client ID (0 = self, -1 = none)
+    tracking_redirect: i64,
+    /// Tracking broadcasting mode flag
+    tracking_bcast: bool,
+    /// Tracking OPTIN mode (don't track unless CLIENT CACHING yes)
+    tracking_optin: bool,
+    /// Tracking OPTOUT mode (track unless CLIENT CACHING no)
+    tracking_optout: bool,
+    /// Tracking NOLOOP mode (don't send notifications for self-modified keys)
+    tracking_noloop: bool,
+    /// Next command caching flag for OPTIN/OPTOUT (null = follow mode default, true/false = override)
+    tracking_next_cache: ?bool,
+    /// Tracking prefixes for broadcasting mode
+    tracking_prefixes: std.ArrayList([]const u8),
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -62,6 +78,11 @@ pub const ClientInfo = struct {
         if (self.lib_ver) |lv| {
             allocator.free(lv);
         }
+        // Free tracking prefixes
+        for (self.tracking_prefixes.items) |prefix| {
+            allocator.free(prefix);
+        }
+        self.tracking_prefixes.deinit(allocator);
         allocator.free(self.addr);
         allocator.free(self.last_cmd);
         allocator.free(self.flags);
@@ -147,6 +168,14 @@ pub const ClientRegistry = struct {
             .no_touch = false, // Default to normal LRU/LFU updates
             .lib_name = null, // No library name by default
             .lib_ver = null, // No library version by default
+            .tracking_enabled = false, // Tracking off by default
+            .tracking_redirect = -1, // No redirect by default
+            .tracking_bcast = false, // Broadcasting off
+            .tracking_optin = false, // OPTIN off
+            .tracking_optout = false, // OPTOUT off
+            .tracking_noloop = false, // NOLOOP off
+            .tracking_next_cache = null, // No override
+            .tracking_prefixes = std.ArrayList([]const u8){},
         };
 
         try self.clients.put(client_id, info);
@@ -441,6 +470,107 @@ pub const ClientRegistry = struct {
             }
         }
         return false;
+    }
+
+    /// Enable/disable tracking for a client
+    pub fn setTracking(
+        self: *ClientRegistry,
+        client_id: u64,
+        enabled: bool,
+        redirect: i64,
+        bcast: bool,
+        optin: bool,
+        optout: bool,
+        noloop: bool,
+        prefixes: []const []const u8,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            // Validate redirect client ID exists if not -1 or 0
+            if (redirect > 0 and !self.clients.contains(@intCast(redirect))) {
+                return error.InvalidRedirect;
+            }
+
+            // Clear old prefixes
+            for (info.tracking_prefixes.items) |prefix| {
+                self.allocator.free(prefix);
+            }
+            info.tracking_prefixes.clearRetainingCapacity();
+
+            // Set tracking state
+            info.tracking_enabled = enabled;
+            info.tracking_redirect = redirect;
+            info.tracking_bcast = bcast;
+            info.tracking_optin = optin;
+            info.tracking_optout = optout;
+            info.tracking_noloop = noloop;
+            info.tracking_next_cache = null; // Reset override
+
+            // Copy new prefixes
+            if (enabled and bcast) {
+                for (prefixes) |prefix| {
+                    const prefix_copy = try self.allocator.dupe(u8, prefix);
+                    try info.tracking_prefixes.append(self.allocator, prefix_copy);
+                }
+            }
+        }
+    }
+
+    /// Get tracking info for a client (for CLIENT TRACKINGINFO)
+    pub fn getTrackingInfo(self: *ClientRegistry, client_id: u64, allocator: std.mem.Allocator) !?struct {
+        enabled: bool,
+        redirect: i64,
+        bcast: bool,
+        optin: bool,
+        optout: bool,
+        noloop: bool,
+        next_cache: ?bool,
+        prefixes: []const []const u8,
+    } {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            // Copy prefixes
+            const prefixes = try allocator.alloc([]const u8, info.tracking_prefixes.items.len);
+            for (info.tracking_prefixes.items, 0..) |prefix, i| {
+                prefixes[i] = try allocator.dupe(u8, prefix);
+            }
+
+            return .{
+                .enabled = info.tracking_enabled,
+                .redirect = info.tracking_redirect,
+                .bcast = info.tracking_bcast,
+                .optin = info.tracking_optin,
+                .optout = info.tracking_optout,
+                .noloop = info.tracking_noloop,
+                .next_cache = info.tracking_next_cache,
+                .prefixes = prefixes,
+            };
+        }
+        return null;
+    }
+
+    /// Set next command caching flag (for CLIENT CACHING)
+    pub fn setTrackingNextCache(self: *ClientRegistry, client_id: u64, cache: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.tracking_next_cache = cache;
+        }
+    }
+
+    /// Reset next command caching flag (after command execution)
+    pub fn resetTrackingNextCache(self: *ClientRegistry, client_id: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.tracking_next_cache = null;
+        }
     }
 };
 
@@ -1208,6 +1338,256 @@ fn cmdClientReply(
     return w.writeSimpleString("OK");
 }
 
+/// CLIENT TRACKING ON|OFF [REDIRECT client-id] [PREFIX prefix ...] [BCAST] [OPTIN] [OPTOUT] [NOLOOP]
+/// Enable/disable server-assisted client-side caching tracking on the current connection.
+fn cmdClientTracking(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'client|tracking' command");
+    }
+
+    // Parse ON/OFF
+    const on_off_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const enabled = if (std.ascii.eqlIgnoreCase(on_off_str, "ON"))
+        true
+    else if (std.ascii.eqlIgnoreCase(on_off_str, "OFF"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    // Parse options
+    var redirect: i64 = -1;
+    var bcast = false;
+    var optin = false;
+    var optout = false;
+    var noloop = false;
+    var prefixes = std.ArrayList([]const u8){};
+    defer prefixes.deinit(allocator);
+
+    var i: usize = 2;
+    while (i < args.len) {
+        const option = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(option, "REDIRECT")) {
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const redirect_str = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            redirect = std.fmt.parseInt(i64, redirect_str, 10) catch {
+                return w.writeError("ERR invalid client ID");
+            };
+            i += 2;
+        } else if (std.ascii.eqlIgnoreCase(option, "PREFIX")) {
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const prefix = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            try prefixes.append(allocator, prefix);
+            i += 2;
+        } else if (std.ascii.eqlIgnoreCase(option, "BCAST")) {
+            bcast = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(option, "OPTIN")) {
+            optin = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(option, "OPTOUT")) {
+            optout = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(option, "NOLOOP")) {
+            noloop = true;
+            i += 1;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // Validate: OPTIN and OPTOUT are mutually exclusive
+    if (optin and optout) {
+        return w.writeError("ERR OPTIN and OPTOUT are mutually exclusive");
+    }
+
+    // Set tracking state
+    client_registry.setTracking(client_id, enabled, redirect, bcast, optin, optout, noloop, prefixes.items) catch |err| {
+        if (err == error.InvalidRedirect) {
+            return w.writeError("ERR invalid redirect client ID");
+        }
+        return w.writeError("ERR failed to set tracking");
+    };
+
+    return w.writeSimpleString("OK");
+}
+
+/// CLIENT TRACKINGINFO
+/// Return information about the current client's use of server-assisted client-side caching.
+fn cmdClientTrackinginfo(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 1) {
+        return w.writeError("ERR wrong number of arguments for 'client|trackinginfo' command");
+    }
+
+    const tracking_info = (try client_registry.getTrackingInfo(client_id, allocator)) orelse {
+        return w.writeError("ERR no such client");
+    };
+    defer {
+        for (tracking_info.prefixes) |prefix| {
+            allocator.free(prefix);
+        }
+        allocator.free(tracking_info.prefixes);
+    }
+
+    // Build flags array
+    var flags = std.ArrayList([]const u8){};
+    defer flags.deinit(allocator);
+
+    if (!tracking_info.enabled) {
+        try flags.append(allocator, "off");
+    } else {
+        try flags.append(allocator, "on");
+    }
+
+    if (tracking_info.bcast) {
+        try flags.append(allocator, "bcast");
+    }
+
+    if (tracking_info.optin) {
+        try flags.append(allocator, "optin");
+        if (tracking_info.next_cache) |cache| {
+            if (cache) {
+                try flags.append(allocator, "caching-yes");
+            }
+        }
+    }
+
+    if (tracking_info.optout) {
+        try flags.append(allocator, "optout");
+        if (tracking_info.next_cache) |cache| {
+            if (!cache) {
+                try flags.append(allocator, "caching-no");
+            }
+        }
+    }
+
+    if (tracking_info.noloop) {
+        try flags.append(allocator, "noloop");
+    }
+
+    // Check if redirect is valid (stub: we don't track broken redirects yet)
+    // In a full implementation, we'd check if the redirect client still exists
+
+    // Format output as RESP map (RESP3) or array (RESP2)
+    // For simplicity, we'll use array format compatible with both
+    var result = std.ArrayList(u8){};
+    defer result.deinit(allocator);
+
+    const proto = client_registry.getProtocol(client_id);
+    if (proto == .RESP3) {
+        // RESP3 map format
+        try result.writer(allocator).print("%3\r\n", .{});
+
+        // flags field
+        try result.writer(allocator).print("$5\r\nflags\r\n", .{});
+        try result.writer(allocator).print("*{d}\r\n", .{flags.items.len});
+        for (flags.items) |flag| {
+            try result.writer(allocator).print("${d}\r\n{s}\r\n", .{ flag.len, flag });
+        }
+
+        // redirect field
+        try result.writer(allocator).print("$8\r\nredirect\r\n", .{});
+        try result.writer(allocator).print(":{d}\r\n", .{tracking_info.redirect});
+
+        // prefixes field
+        try result.writer(allocator).print("$8\r\nprefixes\r\n", .{});
+        try result.writer(allocator).print("*{d}\r\n", .{tracking_info.prefixes.len});
+        for (tracking_info.prefixes) |prefix| {
+            try result.writer(allocator).print("${d}\r\n{s}\r\n", .{ prefix.len, prefix });
+        }
+    } else {
+        // RESP2 array format
+        try result.writer(allocator).print("*6\r\n", .{});
+
+        // "flags"
+        try result.writer(allocator).print("$5\r\nflags\r\n", .{});
+        // flags array
+        try result.writer(allocator).print("*{d}\r\n", .{flags.items.len});
+        for (flags.items) |flag| {
+            try result.writer(allocator).print("${d}\r\n{s}\r\n", .{ flag.len, flag });
+        }
+
+        // "redirect"
+        try result.writer(allocator).print("$8\r\nredirect\r\n", .{});
+        // redirect value
+        try result.writer(allocator).print(":{d}\r\n", .{tracking_info.redirect});
+
+        // "prefixes"
+        try result.writer(allocator).print("$8\r\nprefixes\r\n", .{});
+        // prefixes array
+        try result.writer(allocator).print("*{d}\r\n", .{tracking_info.prefixes.len});
+        for (tracking_info.prefixes) |prefix| {
+            try result.writer(allocator).print("${d}\r\n{s}\r\n", .{ prefix.len, prefix });
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// CLIENT CACHING YES|NO
+/// Control tracking of keys in the next command (for OPTIN/OPTOUT modes).
+fn cmdClientCaching(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'client|caching' command");
+    }
+
+    const yes_no_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const cache = if (std.ascii.eqlIgnoreCase(yes_no_str, "YES"))
+        true
+    else if (std.ascii.eqlIgnoreCase(yes_no_str, "NO"))
+        false
+    else
+        return w.writeError("ERR syntax error");
+
+    client_registry.setTrackingNextCache(client_id, cache);
+    return w.writeSimpleString("OK");
+}
+
 /// CLIENT HELP - Display help for CLIENT subcommands
 fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
     if (args.len != 1) {
@@ -1266,6 +1646,21 @@ fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
         "    LIB-NAME: Set client library name (e.g., redis-py).",
         "    LIB-VER: Set client library version (e.g., 4.5.1).",
         "    Value cannot contain spaces, newlines, or non-printable characters.",
+        "TRACKING ON|OFF [REDIRECT client-id] [PREFIX prefix ...] [BCAST] [OPTIN] [OPTOUT] [NOLOOP]",
+        "    Enable/disable server-assisted client-side caching tracking.",
+        "    ON: Enable tracking. OFF: Disable tracking.",
+        "    REDIRECT <client-id>: Send invalidation messages to different client.",
+        "    PREFIX <prefix>: Register key prefix for broadcasting mode (can be repeated).",
+        "    BCAST: Enable broadcasting mode (notifications for all prefixes).",
+        "    OPTIN: Don't track keys unless preceded by CLIENT CACHING yes.",
+        "    OPTOUT: Track keys unless preceded by CLIENT CACHING no.",
+        "    NOLOOP: Don't send notifications for keys modified by this connection.",
+        "TRACKINGINFO",
+        "    Return tracking status and configuration for this connection.",
+        "CACHING YES|NO",
+        "    Control tracking for the next command (OPTIN/OPTOUT modes).",
+        "    YES: Enable tracking for next command (OPTIN mode).",
+        "    NO: Disable tracking for next command (OPTOUT mode).",
         "HELP",
         "    Print this help.",
     };
@@ -1325,6 +1720,12 @@ pub fn cmdClient(
         return cmdClientReply(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "SETINFO")) {
         return cmdClientSetinfo(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "TRACKING")) {
+        return cmdClientTracking(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "TRACKINGINFO")) {
+        return cmdClientTrackinginfo(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "CACHING")) {
+        return cmdClientCaching(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
         return cmdClientHelp(allocator, args);
     } else {
@@ -2824,4 +3225,310 @@ test "CLIENT SETINFO command - wrong number of arguments" {
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "wrong number of arguments") != null);
+}
+
+test "CLIENT TRACKING - enable and disable" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+
+    // Disable tracking
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args2 = std.ArrayList(RespValue){};
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKING" });
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "OFF" });
+    const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
+
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    defer allocator.free(response2);
+
+    try std.testing.expect(std.mem.startsWith(u8, response2, "+OK"));
+}
+
+test "CLIENT TRACKING - with OPTIN and OPTOUT" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking with OPTIN
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+}
+
+test "CLIENT TRACKING - OPTIN and OPTOUT mutually exclusive" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Try to enable both OPTIN and OPTOUT
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OPTOUT" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "mutually exclusive") != null);
+}
+
+test "CLIENT TRACKING - with PREFIX in BCAST mode" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking with BCAST and PREFIX
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "BCAST" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PREFIX" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "user:" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PREFIX" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "product:" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+}
+
+test "CLIENT TRACKINGINFO - basic functionality" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Enable tracking first
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Get tracking info
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args2 = std.ArrayList(RespValue){};
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
+    const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
+
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    defer allocator.free(response2);
+
+    // Should contain flags, redirect, and prefixes
+    try std.testing.expect(std.mem.indexOf(u8, response2, "flags") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response2, "redirect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response2, "prefixes") != null);
+}
+
+test "CLIENT TRACKINGINFO - with OPTIN mode" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Enable tracking with OPTIN
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Get tracking info
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args2 = std.ArrayList(RespValue){};
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
+    const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
+
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    defer allocator.free(response2);
+
+    // Should contain "optin" flag
+    try std.testing.expect(std.mem.indexOf(u8, response2, "optin") != null);
+}
+
+test "CLIENT CACHING - YES and NO" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // CLIENT CACHING YES
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "CACHING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "YES" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+
+    // CLIENT CACHING NO
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args2 = std.ArrayList(RespValue){};
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "CACHING" });
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "NO" });
+    const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
+
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    defer allocator.free(response2);
+
+    try std.testing.expect(std.mem.startsWith(u8, response2, "+OK"));
+}
+
+test "CLIENT CACHING - invalid argument" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // CLIENT CACHING INVALID
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "CACHING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "syntax error") != null);
+}
+
+test "CLIENT TRACKING - invalid redirect client" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Try to redirect to non-existent client 999
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "invalid redirect") != null);
 }

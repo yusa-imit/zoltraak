@@ -142,6 +142,18 @@ pub fn build(b: *std.Build) void {
     const run_tui_snapshot_tests = b.addRunArtifact(tui_snapshot_tests);
     test_step.dependOn(&run_tui_snapshot_tests.step);
 
+    // CLIENT TRACKING/TRACKINGINFO/CACHING integration tests (Iteration 87)
+    const client_tracking_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_client_tracking.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_client_tracking_tests = b.addRunArtifact(client_tracking_tests);
+    integration_test_step.dependOn(&run_client_tracking_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.
