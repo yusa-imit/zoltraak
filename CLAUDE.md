@@ -749,3 +749,30 @@ gh issue create --repo yusa-imit/zuda \
 
 - **로컬 워크어라운드 금지**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, 이슈 발행 후 수정 대기
 - zuda 에이전트가 `from:*` 라벨 이슈를 최우선 처리한다
+
+### v1.10.0 — Mouse & Gamepad Input (status: READY)
+
+**sailor v1.10.0 released** (2026-03-11) — Mouse, gamepad, and touch input support
+
+- **New features**:
+  - Mouse event handling: SGR protocol, click/drag/scroll/double-click (19 tests)
+  - Widget mouse interaction: Clickable, Draggable, Scrollable, Hoverable traits (17 tests)
+  - Gamepad/controller input: Buttons, analog sticks, triggers, multi-controller (13 tests)
+  - Touch gesture recognition: Tap, swipe, pinch, multi-touch support (18 tests)
+  - Input mapping: Remap mouse/gamepad/touch to keyboard events (16 tests)
+- **Impact on zoltraak**: MEDIUM — Enhances interactive features
+  - Mouse click for zoltraak-cli browser interface
+  - Scrollable log viewer and data inspector
+  - Touch gestures for mobile terminal support
+  - Input mapping for accessibility
+- [ ] Update `build.zig.zon` to sailor v1.10.0
+- [ ] Consider adding mouse support to key browser widget
+- [ ] Enable scrolling in data viewer widget
+- [ ] All tests passing after upgrade
+
+**Priority**: MEDIUM — Optional upgrade, enhances interactivity but not required for current CLI functionality.
+
+**Note**: Non-breaking upgrade. Mouse/gamepad/touch support is opt-in.
+
+---
+
