@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-85 complete (177+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-86 complete (179+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -69,6 +69,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 83 | **Sailor v1.9.0 migration** — Developer Tools & Ecosystem (WidgetDebugger for layout inspection, PerformanceProfiler for frame timing, CompletionPopup for REPL tab completion, ThemeEditor for live customization, Widget Gallery catalog), non-breaking upgrade, all tests pass |
 | 84 | **CLIENT NO-EVICT and CLIENT REPLY commands (Phase 5)** — CLIENT NO-EVICT [ON|OFF] (control whether client's keys are protected from eviction, returns current status if no argument), CLIENT REPLY ON|OFF|SKIP (control client reply behavior: ON=normal, OFF=suppress all, SKIP=skip next only), ClientInfo extended with reply_mode (ON/OFF/SKIP) and no_evict (bool) fields, ClientRegistry methods: setReplyMode/getReplyMode/processReplySkip/setNoEvict/getNoEvict, 9 unit tests + 9 integration tests, all tests pass — Phase 5.1 client/connection commands (9/14 P0 commands, 64%) |
 | 85 | **Sailor v1.10.0 migration** — Mouse & Gamepad Input (mouse event handling with SGR protocol for click/drag/scroll/double-click, widget mouse interaction traits: Clickable/Draggable/Scrollable/Hoverable, gamepad/controller input with buttons/analog sticks/triggers, touch gesture recognition for tap/swipe/pinch/multi-touch, input mapping to remap mouse/gamepad/touch to keyboard events), non-breaking upgrade, all tests pass |
+| 86 | **CLIENT NO-TOUCH and CLIENT SETINFO commands (Phase 5)** — CLIENT NO-TOUCH [ON|OFF] (control whether client alters LRU/LFU stats, ON=no updates unless TOUCH sent, OFF=normal updates), CLIENT SETINFO LIB-NAME|LIB-VER <value> (assign library name/version metadata, validates no spaces/newlines/non-printable chars), ClientInfo extended with no_touch/lib_name/lib_ver fields, ClientRegistry methods: setNoTouch/getNoTouch/setLibName/setLibVer, 9 unit tests + 8 integration tests, all tests pass — Phase 5.1 client/connection commands (11/14 P0 commands, 79%), Redis 7.2+ compatibility for library metadata tracking |
 
 ### Known stubs (need real implementation for 1.0)
 
