@@ -490,3 +490,194 @@ test "CLIENT UNBLOCK command - ERROR mode" {
     // Should return 0 or 1 depending on whether client 1 is blocked
     try std.testing.expect(std.mem.startsWith(u8, resp, ":"));
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// CLIENT NO-TOUCH and CLIENT SETINFO Integration Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+test "CLIENT NO-TOUCH - enable/disable via integration" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16381;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    // Enable NO-TOUCH
+    {
+        const cmd = "CLIENT NO-TOUCH ON\r\n";
+        _ = try conn.write(cmd);
+        const response = try readResponse(allocator, &conn);
+        defer allocator.free(response);
+        try std.testing.expectEqualStrings("+OK\r\n", response);
+    }
+
+    // Check status (should be on)
+    {
+        const cmd = "CLIENT NO-TOUCH\r\n";
+        _ = try conn.write(cmd);
+        const response = try readResponse(allocator, &conn);
+        defer allocator.free(response);
+        try std.testing.expectEqualStrings("+on\r\n", response);
+    }
+
+    // Disable NO-TOUCH
+    {
+        const cmd = "CLIENT NO-TOUCH OFF\r\n";
+        _ = try conn.write(cmd);
+        const response = try readResponse(allocator, &conn);
+        defer allocator.free(response);
+        try std.testing.expectEqualStrings("+OK\r\n", response);
+    }
+
+    // Check status (should be off)
+    {
+        const cmd = "CLIENT NO-TOUCH\r\n";
+        _ = try conn.write(cmd);
+        const response = try readResponse(allocator, &conn);
+        defer allocator.free(response);
+        try std.testing.expectEqualStrings("+off\r\n", response);
+    }
+}
+
+test "CLIENT NO-TOUCH - invalid argument" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16382;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    const cmd = "CLIENT NO-TOUCH INVALID\r\n";
+    _ = try conn.write(cmd);
+    const response = try readResponse(allocator, &conn);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "ON") != null or std.mem.indexOf(u8, response, "OFF") != null);
+}
+
+test "CLIENT SETINFO - LIB-NAME" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16383;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    const cmd = "CLIENT SETINFO LIB-NAME redis-py\r\n";
+    _ = try conn.write(cmd);
+    const response = try readResponse(allocator, &conn);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "CLIENT SETINFO - LIB-VER" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16384;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    const cmd = "CLIENT SETINFO LIB-VER 4.5.1\r\n";
+    _ = try conn.write(cmd);
+    const response = try readResponse(allocator, &conn);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "CLIENT SETINFO - invalid attribute" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16385;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    const cmd = "CLIENT SETINFO INVALID value\r\n";
+    _ = try conn.write(cmd);
+    const response = try readResponse(allocator, &conn);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "LIB-NAME") != null or std.mem.indexOf(u8, response, "LIB-VER") != null);
+}
+
+test "CLIENT SETINFO - value with space (rejected)" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16386;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    const cmd = "CLIENT SETINFO LIB-NAME redis py\r\n";
+    _ = try conn.write(cmd);
+    const response = try readResponse(allocator, &conn);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "invalid characters") != null);
+}
+
+test "CLIENT SETINFO - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    const host = "127.0.0.1";
+    const port: u16 = 16387;
+
+    var storage = try Storage.init(allocator, port, host);
+    defer storage.deinit();
+
+    var server_thread = try startServerThread(allocator, &storage);
+    defer stopServerThread(&server_thread, &storage);
+
+    var conn = try connectToServer(allocator, host, port);
+    defer conn.close();
+
+    const cmd = "CLIENT SETINFO LIB-NAME\r\n";
+    _ = try conn.write(cmd);
+    const response = try readResponse(allocator, &conn);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "wrong number of arguments") != null);
+}

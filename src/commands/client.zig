@@ -44,11 +44,23 @@ pub const ClientInfo = struct {
     reply_mode: ReplyMode,
     /// No-evict flag for CLIENT NO-EVICT command
     no_evict: bool,
+    /// No-touch flag for CLIENT NO-TOUCH command (prevents LRU/LFU updates)
+    no_touch: bool,
+    /// Library name for CLIENT SETINFO (optional)
+    lib_name: ?[]const u8,
+    /// Library version for CLIENT SETINFO (optional)
+    lib_ver: ?[]const u8,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
         if (self.name) |n| {
             allocator.free(n);
+        }
+        if (self.lib_name) |ln| {
+            allocator.free(ln);
+        }
+        if (self.lib_ver) |lv| {
+            allocator.free(lv);
         }
         allocator.free(self.addr);
         allocator.free(self.last_cmd);
@@ -132,6 +144,9 @@ pub const ClientRegistry = struct {
             .protocol = .RESP2, // Default to RESP2
             .reply_mode = .ON, // Default to normal replies
             .no_evict = false, // Default to normal eviction
+            .no_touch = false, // Default to normal LRU/LFU updates
+            .lib_name = null, // No library name by default
+            .lib_ver = null, // No library version by default
         };
 
         try self.clients.put(client_id, info);
@@ -266,6 +281,57 @@ pub const ClientRegistry = struct {
             return info.no_evict;
         }
         return false; // Default to false if client not found
+    }
+
+    /// Set no-touch flag for a client (prevents LRU/LFU updates)
+    pub fn setNoTouch(self: *ClientRegistry, client_id: u64, no_touch: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.no_touch = no_touch;
+        }
+    }
+
+    /// Get no-touch flag for a client
+    pub fn getNoTouch(self: *ClientRegistry, client_id: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.no_touch;
+        }
+        return false; // Default to false if client not found
+    }
+
+    /// Set library name for a client (CLIENT SETINFO LIB-NAME)
+    pub fn setLibName(self: *ClientRegistry, client_id: u64, lib_name: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            // Free old value if present
+            if (info.lib_name) |old| {
+                self.allocator.free(old);
+            }
+            // Duplicate and store new value
+            info.lib_name = try self.allocator.dupe(u8, lib_name);
+        }
+    }
+
+    /// Set library version for a client (CLIENT SETINFO LIB-VER)
+    pub fn setLibVer(self: *ClientRegistry, client_id: u64, lib_ver: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            // Free old value if present
+            if (info.lib_ver) |old| {
+                self.allocator.free(old);
+            }
+            // Duplicate and store new value
+            info.lib_ver = try self.allocator.dupe(u8, lib_ver);
+        }
     }
 
     /// Format client list output matching Redis format
@@ -1017,6 +1083,95 @@ fn cmdClientNoEvict(
     return w.writeSimpleString("OK");
 }
 
+/// CLIENT NO-TOUCH [ON|OFF]
+/// Control whether commands sent by the client will alter LRU/LFU stats.
+/// When ON, the client will not change LFU/LRU stats unless it sends TOUCH.
+/// When OFF, the client touches LFU/LRU stats like normal (default).
+/// Returns current status if no argument provided.
+fn cmdClientNoTouch(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len > 2) {
+        return w.writeError("ERR wrong number of arguments for 'client|no-touch' command");
+    }
+
+    // If no argument, return current status
+    if (args.len == 1) {
+        const no_touch = client_registry.getNoTouch(client_id);
+        return w.writeSimpleString(if (no_touch) "on" else "off");
+    }
+
+    // Parse ON|OFF argument
+    const status_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    const no_touch = if (std.ascii.eqlIgnoreCase(status_str, "ON"))
+        true
+    else if (std.ascii.eqlIgnoreCase(status_str, "OFF"))
+        false
+    else
+        return w.writeError("ERR CLIENT NO-TOUCH accepts either 'ON' or 'OFF'");
+
+    client_registry.setNoTouch(client_id, no_touch);
+    return w.writeSimpleString("OK");
+}
+
+/// CLIENT SETINFO LIB-NAME|LIB-VER <value>
+/// Assign library name or version info to the current connection.
+/// This info is displayed in CLIENT LIST and CLIENT INFO output.
+/// Returns OK if the attribute was successfully set.
+fn cmdClientSetinfo(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'client|setinfo' command");
+    }
+
+    // Parse attribute name
+    const attr_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    // Parse attribute value
+    const value_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+
+    // Validate no spaces, newlines, or non-printable characters
+    for (value_str) |c| {
+        if (c == ' ' or c == '\n' or c == '\r' or c == '\t' or c < 32 or c > 126) {
+            return w.writeError("ERR CLIENT SETINFO value contains invalid characters (spaces, newlines, or non-printable)");
+        }
+    }
+
+    // Set the appropriate attribute
+    if (std.ascii.eqlIgnoreCase(attr_str, "LIB-NAME")) {
+        try client_registry.setLibName(client_id, value_str);
+        return w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(attr_str, "LIB-VER")) {
+        try client_registry.setLibVer(client_id, value_str);
+        return w.writeSimpleString("OK");
+    } else {
+        return w.writeError("ERR CLIENT SETINFO accepts either 'LIB-NAME' or 'LIB-VER'");
+    }
+}
+
 /// CLIENT REPLY ON|OFF|SKIP
 /// Control client reply behavior.
 /// ON: Normal replies (default)
@@ -1096,11 +1251,21 @@ fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
         "    ON: Keys created by this client won't be evicted when maxmemory is reached.",
         "    OFF: Normal eviction behavior (default).",
         "    Returns current status if no argument provided.",
+        "NO-TOUCH [ON|OFF]",
+        "    Control whether commands sent by the client alter LRU/LFU stats.",
+        "    ON: Client will not change LFU/LRU stats unless it sends TOUCH.",
+        "    OFF: Client touches LFU/LRU stats like normal (default).",
+        "    Returns current status if no argument provided.",
         "REPLY ON|OFF|SKIP",
         "    Control client reply behavior.",
         "    ON: Normal replies (default).",
         "    OFF: Suppress all replies until turned back ON.",
         "    SKIP: Skip reply for the next command only, then revert to ON.",
+        "SETINFO LIB-NAME|LIB-VER <value>",
+        "    Assign library name or version info to the connection.",
+        "    LIB-NAME: Set client library name (e.g., redis-py).",
+        "    LIB-VER: Set client library version (e.g., 4.5.1).",
+        "    Value cannot contain spaces, newlines, or non-printable characters.",
         "HELP",
         "    Print this help.",
     };
@@ -1154,8 +1319,12 @@ pub fn cmdClient(
         return cmdClientUnblock(allocator, blocking_queue, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "NO-EVICT")) {
         return cmdClientNoEvict(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "NO-TOUCH")) {
+        return cmdClientNoTouch(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "REPLY")) {
         return cmdClientReply(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "SETINFO")) {
+        return cmdClientSetinfo(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
         return cmdClientHelp(allocator, args);
     } else {
@@ -2426,4 +2595,233 @@ test "CLIENT REPLY command - invalid mode" {
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "CLIENT NO-TOUCH command - enable" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+    try std.testing.expect(registry.getNoTouch(client_id) == true);
+}
+
+test "CLIENT NO-TOUCH command - disable" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // First enable it
+    registry.setNoTouch(client_id, true);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+    try std.testing.expect(registry.getNoTouch(client_id) == false);
+}
+
+test "CLIENT NO-TOUCH command - get status" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Test default status (OFF)
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+off\r\n", response);
+}
+
+test "CLIENT NO-TOUCH command - invalid argument" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "CLIENT SETINFO command - LIB-NAME" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-NAME" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "redis-py" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "CLIENT SETINFO command - LIB-VER" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-VER" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "4.5.1" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+}
+
+test "CLIENT SETINFO command - invalid attribute" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "value" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "LIB-NAME") != null);
+}
+
+test "CLIENT SETINFO command - value with space (rejected)" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-NAME" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "redis py" }); // space not allowed
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "invalid characters") != null);
+}
+
+test "CLIENT SETINFO command - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-NAME" });
+    // Missing value
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "wrong number of arguments") != null);
 }
