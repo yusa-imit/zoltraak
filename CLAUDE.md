@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-90 complete (180+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-91 complete (180+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -74,6 +74,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 88 | **SLOWLOG real implementation (Phase 6)** — SLOWLOG GET [count] (return slow log entries with ID, timestamp, duration, command, client address, client name, most recent first), SLOWLOG LEN (return slow log length), SLOWLOG RESET (clear slow log), SLOWLOG HELP (help text), SlowLog data structure with ring buffer (configurable max length, microsecond threshold), CONFIG parameters: slowlog-log-slower-than (10000µs default), slowlog-max-len (128 entries default), Storage.slowlog field tracks commands exceeding threshold, 9 unit tests in slowlog.zig + 4 integration tests in introspection.zig + 5 integration tests in test_slowlog.zig, all tests pass — Phase 6.1 server management (SLOWLOG complete, MONITOR and LATENCY pending) |
 | 89 | **Sailor v1.11.0 migration** — Terminal graphics and visual effects (shadow effects with configurable depth/direction, 3D border effects for raised/sunken widgets, blur effects with multiple rendering modes, transparency effects, Sixel graphics protocol for inline raster images with color quantization, Kitty graphics protocol for efficient image transmission, easing functions for smooth animations, color interpolation), added 9 tests in tests/test_sailor_v1_11_0.zig, non-breaking upgrade, all tests pass |
 | 90 | **MONITOR real implementation (Phase 6.2)** — MONITOR command enables real-time command streaming to monitoring clients (returns OK), ClientInfo.monitor_mode field, ClientRegistry methods (setMonitorMode, isMonitoring, getMonitoringClients, broadcastToMonitors), MonitorMessage struct for typed messages, command dispatcher integration (broadcasts all commands except MONITOR/QUIT before execution), message format: +timestamp.usec [db addr] "cmd" "arg1" ..., quote/backslash escaping in arguments, 2 unit tests in utility.zig (enable mode, wrong args) + 5 unit tests in client.zig (setMonitorMode, getMonitoringClients, broadcastToMonitors, quote escaping) + 6 integration tests in test_monitor.zig (enable mode, broadcast, exclusions, multi-client, timestamp format), all tests pass — Phase 6.2 server management (MONITOR complete, LATENCY and MEMORY real impl pending) |
+| 91 | **Sailor v1.12.0 migration** — Enterprise & Accessibility (session recording & playback for debugging TUI, audit logging with 10 event types and 4 severity levels, 4 high contrast WCAG AAA themes with 21:1+ contrast ratios, screen reader enhancements with OSC8/ARIA/JSON modes, keyboard-only navigation with 5 focus indicator styles), all opt-in features, non-breaking upgrade, all tests pass |
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -806,7 +807,7 @@ gh issue create --repo yusa-imit/zuda \
 
 **Note**: Non-breaking upgrade. All graphics features are opt-in. Sixel/Kitty protocols require compatible terminals.
 
-### sailor v1.12.0 — Enterprise & Accessibility (READY)
+### sailor v1.12.0 — Enterprise & Accessibility (DONE)
 - **Features**:
   - Session recording & playback system for debugging TUI interactions
   - Audit logging with 10 event types, 4 severity levels, JSON/file export
@@ -818,4 +819,6 @@ gh issue create --repo yusa-imit/zuda \
   - High contrast themes for accessibility mode
   - Keyboard navigation hints for CLI help displays
 - **Breaking**: None — all additive features, fully backward compatible
-- **Tests**: No tests required (all opt-in features, no integration needed yet)
+- Updated to sailor v1.12.0 (hash: 122057e28b0c60aca4981d2402eb22cdb642aba1a1eabec345b8cb944ee515ae15f8)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 91
