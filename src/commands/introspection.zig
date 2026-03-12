@@ -112,24 +112,105 @@ pub fn cmdMemory(
     }
 }
 
-/// SLOWLOG GET - Get slow log entries (stub - always returns empty)
-pub fn cmdSlowlogGet(allocator: std.mem.Allocator) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "*0\r\n", .{});
+/// SLOWLOG GET - Get slow log entries
+pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?usize) ![]const u8 {
+    const entries = storage.slowlog.getEntries(count);
+
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    const w = buf.writer(allocator);
+
+    // Redis returns entries in reverse chronological order (most recent first)
+    try w.print("*{d}\r\n", .{entries.len});
+
+    // Iterate in reverse to show most recent first
+    var i: usize = entries.len;
+    while (i > 0) {
+        i -= 1;
+        const entry = entries[i];
+
+        // Each entry is an array: [id, timestamp, duration_us, command_array, client_addr, client_name]
+        try w.writeAll("*6\r\n");
+
+        // ID
+        try w.print(":{d}\r\n", .{entry.id});
+
+        // Timestamp (Unix seconds)
+        try w.print(":{d}\r\n", .{@divTrunc(entry.timestamp, 1_000_000)});
+
+        // Duration (microseconds)
+        try w.print(":{d}\r\n", .{entry.duration_us});
+
+        // Command (as array of strings) - split by spaces
+        var cmd_parts = std.ArrayList([]const u8){};
+        defer cmd_parts.deinit(allocator);
+
+        var iter = std.mem.splitSequence(u8, entry.command, " ");
+        while (iter.next()) |part| {
+            if (part.len > 0) {
+                try cmd_parts.append(allocator, part);
+            }
+        }
+
+        try w.print("*{d}\r\n", .{cmd_parts.items.len});
+        for (cmd_parts.items) |part| {
+            try w.print("${d}\r\n{s}\r\n", .{ part.len, part });
+        }
+
+        // Client IP:port
+        try w.print("${d}\r\n{s}\r\n", .{ entry.client_addr.len, entry.client_addr });
+
+        // Client name
+        try w.print("${d}\r\n{s}\r\n", .{ entry.client_name.len, entry.client_name });
+    }
+
+    return buf.toOwnedSlice(allocator);
 }
 
-/// SLOWLOG LEN - Get slow log length (stub - always returns 0)
-pub fn cmdSlowlogLen(allocator: std.mem.Allocator) ![]const u8 {
-    return std.fmt.allocPrint(allocator, ":0\r\n", .{});
+/// SLOWLOG LEN - Get slow log length
+pub fn cmdSlowlogLen(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    const length = storage.slowlog.len();
+    return std.fmt.allocPrint(allocator, ":{d}\r\n", .{length});
 }
 
-/// SLOWLOG RESET - Reset slow log (stub - always returns OK)
-pub fn cmdSlowlogReset(allocator: std.mem.Allocator) ![]const u8 {
+/// SLOWLOG RESET - Reset slow log
+pub fn cmdSlowlogReset(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    storage.slowlog.reset();
     return std.fmt.allocPrint(allocator, "+OK\r\n", .{});
 }
 
-/// SLOWLOG stub command dispatcher
-pub fn cmdSlowlogStub(
+/// SLOWLOG HELP - Return SLOWLOG command help
+pub fn cmdSlowlogHelp(allocator: std.mem.Allocator) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    const help = [_][]const u8{
+        "SLOWLOG GET [count] - Get the slow log entries",
+        "SLOWLOG LEN - Get the length of the slow log",
+        "SLOWLOG RESET - Clear the slow log",
+        "SLOWLOG HELP - Show this help message",
+    };
+
+    try buf.appendSlice(allocator, "*");
+    try std.fmt.format(buf.writer(allocator), "{d}", .{help.len});
+    try buf.appendSlice(allocator, "\r\n");
+
+    for (help) |line| {
+        try buf.appendSlice(allocator, "$");
+        try std.fmt.format(buf.writer(allocator), "{d}", .{line.len});
+        try buf.appendSlice(allocator, "\r\n");
+        try buf.appendSlice(allocator, line);
+        try buf.appendSlice(allocator, "\r\n");
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// SLOWLOG command dispatcher
+pub fn cmdSlowlog(
     allocator: std.mem.Allocator,
+    storage: *Storage,
     args: []const []const u8,
 ) ![]const u8 {
     if (args.len < 1) {
@@ -139,13 +220,21 @@ pub fn cmdSlowlogStub(
     const subcommand = args[0];
 
     if (std.ascii.eqlIgnoreCase(subcommand, "get")) {
-        return cmdSlowlogGet(allocator);
+        var count: ?usize = null;
+        if (args.len > 1) {
+            count = std.fmt.parseInt(usize, args[1], 10) catch {
+                return std.fmt.allocPrint(allocator, "-ERR value is not an integer or out of range\r\n", .{});
+            };
+        }
+        return cmdSlowlogGet(allocator, storage, count);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "len")) {
-        return cmdSlowlogLen(allocator);
+        return cmdSlowlogLen(allocator, storage);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "reset")) {
-        return cmdSlowlogReset(allocator);
+        return cmdSlowlogReset(allocator, storage);
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "help")) {
+        return cmdSlowlogHelp(allocator);
     } else {
-        return std.fmt.allocPrint(allocator, "-ERR unknown subcommand for 'slowlog' command. Try SLOWLOG GET, SLOWLOG LEN, or SLOWLOG RESET.\r\n", .{});
+        return std.fmt.allocPrint(allocator, "-ERR unknown subcommand for 'slowlog' command. Try SLOWLOG HELP.\r\n", .{});
     }
 }
 
@@ -177,18 +266,68 @@ test "MEMORY USAGE" {
     try std.testing.expect(std.mem.startsWith(u8, result, ":"));
 }
 
-test "SLOWLOG stub" {
+test "SLOWLOG GET empty" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
-    const get_result = try cmdSlowlogGet(allocator);
-    defer allocator.free(get_result);
-    try std.testing.expectEqualStrings("*0\r\n", get_result);
+    const result = try cmdSlowlogGet(allocator, storage, null);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
 
-    const len_result = try cmdSlowlogLen(allocator);
+test "SLOWLOG LEN" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdSlowlogLen(allocator, storage);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "SLOWLOG RESET" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdSlowlogReset(allocator, storage);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "SLOWLOG integration" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add slow entries directly
+    _ = try storage.slowlog.logCommand(15000, "GET key1", "127.0.0.1:12345", "client1");
+    _ = try storage.slowlog.logCommand(20000, "SET key2 value2", "127.0.0.1:12346", "");
+
+    // Test LEN
+    const len_result = try cmdSlowlogLen(allocator, storage);
     defer allocator.free(len_result);
-    try std.testing.expectEqualStrings(":0\r\n", len_result);
+    try std.testing.expectEqualStrings(":2\r\n", len_result);
 
-    const reset_result = try cmdSlowlogReset(allocator);
+    // Test GET
+    const get_result = try cmdSlowlogGet(allocator, storage, null);
+    defer allocator.free(get_result);
+    try std.testing.expect(std.mem.indexOf(u8, get_result, "GET key1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result, "SET key2 value2") != null);
+
+    // Test GET with count
+    const get_one = try cmdSlowlogGet(allocator, storage, 1);
+    defer allocator.free(get_one);
+    try std.testing.expect(std.mem.indexOf(u8, get_one, "*1\r\n") != null);
+
+    // Test RESET
+    const reset_result = try cmdSlowlogReset(allocator, storage);
     defer allocator.free(reset_result);
     try std.testing.expectEqualStrings("+OK\r\n", reset_result);
+
+    // Verify empty after reset
+    const len_after = try cmdSlowlogLen(allocator, storage);
+    defer allocator.free(len_after);
+    try std.testing.expectEqualStrings(":0\r\n", len_after);
 }

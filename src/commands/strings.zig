@@ -863,7 +863,7 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "SLOWLOG")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
-            break :blk try introspection_cmds.cmdSlowlogStub(allocator, args);
+            break :blk try introspection_cmds.cmdSlowlog(allocator, storage, args);
         }
         // Scripting commands
         else if (std.mem.eql(u8, cmd_upper, "EVAL")) {

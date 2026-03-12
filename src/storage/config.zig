@@ -97,6 +97,10 @@ pub const Config = struct {
 
             // Database
             .{ .name = "databases", .value = .{ .int = 1 }, .read_only = true }, // Zoltraak uses single DB
+
+            // Slowlog
+            .{ .name = "slowlog-log-slower-than", .value = .{ .int = 10000 }, .read_only = false }, // microseconds, 10ms default
+            .{ .name = "slowlog-max-len", .value = .{ .int = 128 }, .read_only = false }, // max entries in slowlog
         };
 
         for (defaults) |def| {
