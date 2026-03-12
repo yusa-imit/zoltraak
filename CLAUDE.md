@@ -778,16 +778,28 @@ gh issue create --repo yusa-imit/zuda \
 ---
 
 
-### v1.11.0 — Terminal Graphics & Effects
-- **status**: READY
-- **features**:
-  - Particle effects system (confetti, sparkles)
-  - Blur/transparency effects  
-  - Sixel/Kitty graphics protocol
-  - Animated widget transitions
-- **integration**:
-  - Particle effects for successful spell executions
-  - Blur effects for modal overlays
-  - Graphics for inline visualization
-- **tests**: Verify effects in TUI mode
-- **breaking**: None — all opt-in
+### v1.11.0 — Terminal Graphics & Effects (DONE)
+
+**sailor v1.11.0 released** (2026-03-12) — Terminal graphics and visual effects
+
+- **New features**:
+  - Shadow effects (subtle/medium/heavy with configurable depth and direction)
+  - 3D border effects (raised buttons, sunken inputs)
+  - Blur effects (box drawing, half blocks, shade chars, braille patterns)
+  - Transparency effects (char fade, color dim, checkerboard)
+  - Sixel graphics protocol (DEC Sixel for inline raster images with color quantization)
+  - Kitty graphics protocol (efficient image transmission with compression)
+  - Easing functions (linear, ease-in/out, cubic, bounce, elastic)
+  - Color interpolation for smooth transitions
+- **Impact on zoltraak**: MEDIUM — enhances TUI visual quality
+  - Shadow effects add depth to TUI widgets (key browser panels, dialogs)
+  - Blur effects improve modal overlay aesthetics
+  - Sixel/Kitty protocols enable inline Redis data visualization (graphs, images)
+  - Easing functions smooth out widget transitions and animations
+  - Optional features for future TUI enhancements
+- Updated to sailor v1.11.0 (hash: 12206266e32da3d1201970510c2c3d3696bd25b714e820e952cb996b63f7ab7ff6ce)
+- Added 9 tests in tests/test_sailor_v1_11_0.zig (shadow, 3D borders, blur, transparency, Sixel, Kitty, easing)
+- All existing tests pass
+- Non-breaking upgrade completed in Iteration 89
+
+**Note**: Non-breaking upgrade. All graphics features are opt-in. Sixel/Kitty protocols require compatible terminals.
