@@ -777,3 +777,17 @@ gh issue create --repo yusa-imit/zuda \
 
 ---
 
+
+### v1.11.0 — Terminal Graphics & Effects
+- **status**: READY
+- **features**:
+  - Particle effects system (confetti, sparkles)
+  - Blur/transparency effects  
+  - Sixel/Kitty graphics protocol
+  - Animated widget transitions
+- **integration**:
+  - Particle effects for successful spell executions
+  - Blur effects for modal overlays
+  - Graphics for inline visualization
+- **tests**: Verify effects in TUI mode
+- **breaking**: None — all opt-in
