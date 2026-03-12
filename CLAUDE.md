@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-86 complete (179+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-88 complete (180+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-### Completed (Iterations 1-85)
+### Completed (Iterations 1-88)
 
 | Range | Features |
 |-------|----------|
@@ -71,10 +71,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 85 | **Sailor v1.10.0 migration** — Mouse & Gamepad Input (mouse event handling with SGR protocol for click/drag/scroll/double-click, widget mouse interaction traits: Clickable/Draggable/Scrollable/Hoverable, gamepad/controller input with buttons/analog sticks/triggers, touch gesture recognition for tap/swipe/pinch/multi-touch, input mapping to remap mouse/gamepad/touch to keyboard events), non-breaking upgrade, all tests pass |
 | 86 | **CLIENT NO-TOUCH and CLIENT SETINFO commands (Phase 5)** — CLIENT NO-TOUCH [ON|OFF] (control whether client alters LRU/LFU stats, ON=no updates unless TOUCH sent, OFF=normal updates), CLIENT SETINFO LIB-NAME|LIB-VER <value> (assign library name/version metadata, validates no spaces/newlines/non-printable chars), ClientInfo extended with no_touch/lib_name/lib_ver fields, ClientRegistry methods: setNoTouch/getNoTouch/setLibName/setLibVer, 9 unit tests + 8 integration tests, all tests pass — Phase 5.1 client/connection commands (11/14 P0 commands, 79%), Redis 7.2+ compatibility for library metadata tracking |
 | 87 | **CLIENT TRACKING, CLIENT TRACKINGINFO, and CLIENT CACHING commands (Phase 5)** — CLIENT TRACKING ON|OFF [REDIRECT client-id] [PREFIX prefix ...] [BCAST] [OPTIN] [OPTOUT] [NOLOOP] (enable/disable server-assisted client-side caching tracking, supports redirect to different client, broadcasting mode with key prefixes, OPTIN/OPTOUT modes for selective tracking, NOLOOP to skip self-modified keys), CLIENT TRACKINGINFO (return tracking status with flags/redirect/prefixes, RESP3 map or RESP2 array format), CLIENT CACHING YES|NO (control tracking for next command in OPTIN/OPTOUT modes), ClientInfo extended with tracking_enabled/tracking_redirect/tracking_bcast/tracking_optin/tracking_optout/tracking_noloop/tracking_next_cache/tracking_prefixes fields, ClientRegistry methods: setTracking/getTrackingInfo/setTrackingNextCache/resetTrackingNextCache, validates OPTIN/OPTOUT mutual exclusivity, validates redirect client ID, 9 unit tests + 6 integration tests, all tests pass — Phase 5.1 client/connection commands (14/14 P0 commands, 100% P0 complete), Redis 6.0+ client-side caching infrastructure |
+| 88 | **SLOWLOG real implementation (Phase 6)** — SLOWLOG GET [count] (return slow log entries with ID, timestamp, duration, command, client address, client name, most recent first), SLOWLOG LEN (return slow log length), SLOWLOG RESET (clear slow log), SLOWLOG HELP (help text), SlowLog data structure with ring buffer (configurable max length, microsecond threshold), CONFIG parameters: slowlog-log-slower-than (10000µs default), slowlog-max-len (128 entries default), Storage.slowlog field tracks commands exceeding threshold, 9 unit tests in slowlog.zig + 4 integration tests in introspection.zig + 5 integration tests in test_slowlog.zig, all tests pass — Phase 6.1 server management (SLOWLOG complete, MONITOR and LATENCY pending) |
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SLOWLOG (empty), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values). **All blocking commands now have true blocking semantics using polling** (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK).
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), MONITOR (no-op), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values). **All blocking commands now have true blocking semantics using polling** (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK). **SLOWLOG now has real implementation** (tracking, ring buffer, configurable threshold).
 
 ---
 
