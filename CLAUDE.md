@@ -805,3 +805,17 @@ gh issue create --repo yusa-imit/zuda \
 - Non-breaking upgrade completed in Iteration 89
 
 **Note**: Non-breaking upgrade. All graphics features are opt-in. Sixel/Kitty protocols require compatible terminals.
+
+### sailor v1.12.0 — Enterprise & Accessibility (READY)
+- **Features**:
+  - Session recording & playback system for debugging TUI interactions
+  - Audit logging with 10 event types, 4 severity levels, JSON/file export
+  - 4 high contrast WCAG AAA themes (dark 21:1, light 21:1, amber 13.7:1+, green 15.2:1+)
+  - Screen reader enhancements (OSC8, ARIA, JSON output modes, auto-detection)
+  - Keyboard-only navigation improvements (skip links, 5 focus indicator styles, navigation hints)
+- **Usage in zoltraak**:
+  - Audit logging for spell execution history (compliance tracking)
+  - High contrast themes for accessibility mode
+  - Keyboard navigation hints for CLI help displays
+- **Breaking**: None — all additive features, fully backward compatible
+- **Tests**: No tests required (all opt-in features, no integration needed yet)
