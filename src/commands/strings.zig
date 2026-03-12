@@ -44,6 +44,7 @@ pub const Aof = aof_mod.Aof;
 pub const PubSub = pubsub_mod.PubSub;
 pub const ClientRegistry = client_cmds.ClientRegistry;
 const RespProtocol = client_cmds.RespProtocol;
+const MonitorMessage = client_cmds.MonitorMessage;
 
 /// Default RDB file path
 const DEFAULT_RDB_PATH = "dump.rdb";
@@ -114,6 +115,48 @@ pub fn executeCommand(
     // Command dispatch (case-insensitive)
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
+
+    // ── MONITOR: Broadcast command to monitoring clients ──────────────────────
+    // Broadcast to all monitoring clients BEFORE execution (except MONITOR command itself)
+    if (!std.mem.eql(u8, cmd_upper, "MONITOR") and !std.mem.eql(u8, cmd_upper, "QUIT")) {
+        // Extract command arguments from RespValue array
+        var cmd_args = try allocator.alloc([]const u8, array.len);
+        defer allocator.free(cmd_args);
+        for (array, 0..) |arg, i| {
+            cmd_args[i] = switch (arg) {
+                .bulk_string => |s| s,
+                .simple_string => |s| s,
+                else => "",
+            };
+        }
+
+        // Get current timestamp
+        const now = std.time.milliTimestamp();
+        const timestamp_sec = @divTrunc(now, 1000);
+        const timestamp_usec = @mod(now, 1000) * 1000;
+
+        // Get client address (default to "127.0.0.1:0" if not available)
+        const client_addr = "127.0.0.1:0"; // TODO: Get from client_registry
+
+        // Broadcast to monitoring clients (we don't await responses, fire-and-forget)
+        var monitor_messages = client_registry.broadcastToMonitors(
+            allocator,
+            timestamp_sec,
+            timestamp_usec,
+            0, // database (always 0 for now)
+            client_addr,
+            cmd_args,
+        ) catch |err| blk: {
+            // Log error but don't fail the command
+            std.debug.print("MONITOR broadcast error: {}\n", .{err});
+            break :blk std.ArrayList(MonitorMessage){};
+        };
+        // Clean up monitor messages
+        for (monitor_messages.items) |msg| {
+            allocator.free(msg.message);
+        }
+        monitor_messages.deinit(allocator);
+    }
 
     // ── Replication: read-only guard ──────────────────────────────────────────
     // When this instance is a replica, reject write commands.

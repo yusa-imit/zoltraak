@@ -154,6 +154,18 @@ pub fn build(b: *std.Build) void {
     const run_client_tracking_tests = b.addRunArtifact(client_tracking_tests);
     integration_test_step.dependOn(&run_client_tracking_tests.step);
 
+    // MONITOR command integration tests (Iteration 90)
+    const monitor_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_monitor.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_monitor_tests = b.addRunArtifact(monitor_tests);
+    integration_test_step.dependOn(&run_monitor_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

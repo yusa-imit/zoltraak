@@ -66,6 +66,8 @@ pub const ClientInfo = struct {
     tracking_next_cache: ?bool,
     /// Tracking prefixes for broadcasting mode
     tracking_prefixes: std.ArrayList([]const u8),
+    /// Monitor mode flag (CLIENT is in MONITOR mode)
+    monitor_mode: bool,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -87,6 +89,12 @@ pub const ClientInfo = struct {
         allocator.free(self.last_cmd);
         allocator.free(self.flags);
     }
+};
+
+/// Monitor message for broadcasting to monitoring clients
+pub const MonitorMessage = struct {
+    client_id: u64,
+    message: []const u8,
 };
 
 /// Thread-safe registry of all active client connections
@@ -176,6 +184,7 @@ pub const ClientRegistry = struct {
             .tracking_noloop = false, // NOLOOP off
             .tracking_next_cache = null, // No override
             .tracking_prefixes = std.ArrayList([]const u8){},
+            .monitor_mode = false, // Monitor mode off by default
         };
 
         try self.clients.put(client_id, info);
@@ -571,6 +580,100 @@ pub const ClientRegistry = struct {
         if (self.clients.getPtr(client_id)) |info| {
             info.tracking_next_cache = null;
         }
+    }
+
+    /// Enable/disable monitor mode for a client
+    pub fn setMonitorMode(self: *ClientRegistry, client_id: u64, enabled: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.monitor_mode = enabled;
+        }
+    }
+
+    /// Check if a client is in monitor mode
+    pub fn isMonitoring(self: *ClientRegistry, client_id: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.monitor_mode;
+        }
+        return false;
+    }
+
+    /// Get list of all monitoring client IDs
+    pub fn getMonitoringClients(self: *ClientRegistry, allocator: std.mem.Allocator) ![]u64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var monitors = std.ArrayList(u64){};
+        defer monitors.deinit(allocator);
+
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.monitor_mode) {
+                try monitors.append(allocator, entry.key_ptr.*);
+            }
+        }
+
+        return try allocator.dupe(u64, monitors.items);
+    }
+
+    /// Broadcast a command to all monitoring clients
+    /// Returns RESP bulk string for each monitor client
+    pub fn broadcastToMonitors(
+        self: *ClientRegistry,
+        allocator: std.mem.Allocator,
+        timestamp_sec: i64,
+        timestamp_usec: i64,
+        db: u8,
+        client_addr: []const u8,
+        command_args: []const []const u8,
+    ) !std.ArrayList(MonitorMessage) {
+        var messages = std.ArrayList(MonitorMessage){};
+        errdefer {
+            for (messages.items) |msg| {
+                allocator.free(msg.message);
+            }
+            messages.deinit(allocator);
+        }
+
+        const monitor_ids = try self.getMonitoringClients(allocator);
+        defer allocator.free(monitor_ids);
+
+        // Format: +timestamp.microsec [db client_addr] "command" "arg1" "arg2" ...
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+
+        const writer = buf.writer(allocator);
+        try writer.print("+{d}.{d:0>6} [{d} {s}]", .{ timestamp_sec, timestamp_usec, db, client_addr });
+
+        for (command_args) |arg| {
+            try writer.print(" \"", .{});
+            // Escape quotes in the argument
+            for (arg) |c| {
+                if (c == '"' or c == '\\') {
+                    try writer.writeByte('\\');
+                }
+                try writer.writeByte(c);
+            }
+            try writer.print("\"", .{});
+        }
+        try writer.print("\r\n", .{});
+
+        const message = try allocator.dupe(u8, buf.items);
+        errdefer allocator.free(message);
+
+        // Send to all monitoring clients
+        for (monitor_ids) |monitor_id| {
+            const msg_copy = try allocator.dupe(u8, message);
+            try messages.append(allocator, .{ .client_id = monitor_id, .message = msg_copy });
+        }
+
+        allocator.free(message);
+        return messages;
     }
 };
 
@@ -3531,4 +3634,118 @@ test "CLIENT TRACKING - invalid redirect client" {
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "invalid redirect") != null);
+}
+
+test "ClientRegistry - setMonitorMode and isMonitoring" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:54321", 10);
+
+    // Initially not monitoring
+    try std.testing.expect(!registry.isMonitoring(client_id));
+
+    // Enable monitoring
+    registry.setMonitorMode(client_id, true);
+    try std.testing.expect(registry.isMonitoring(client_id));
+
+    // Disable monitoring
+    registry.setMonitorMode(client_id, false);
+    try std.testing.expect(!registry.isMonitoring(client_id));
+}
+
+test "ClientRegistry - getMonitoringClients" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client1 = try registry.registerClient("127.0.0.1:1", 10);
+    _ = try registry.registerClient("127.0.0.1:2", 11);
+    const client3 = try registry.registerClient("127.0.0.1:3", 12);
+
+    // Enable monitoring for client1 and client3
+    registry.setMonitorMode(client1, true);
+    registry.setMonitorMode(client3, true);
+
+    const monitors = try registry.getMonitoringClients(allocator);
+    defer allocator.free(monitors);
+
+    // Should have 2 monitoring clients
+    try std.testing.expectEqual(@as(usize, 2), monitors.len);
+
+    // Check that client1 and client3 are in the list
+    var found_client1 = false;
+    var found_client3 = false;
+    for (monitors) |id| {
+        if (id == client1) found_client1 = true;
+        if (id == client3) found_client3 = true;
+    }
+    try std.testing.expect(found_client1);
+    try std.testing.expect(found_client3);
+}
+
+test "ClientRegistry - broadcastToMonitors" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    _ = try registry.registerClient("127.0.0.1:1", 10);
+    const client2 = try registry.registerClient("127.0.0.1:2", 11);
+
+    // Enable monitoring for client2
+    registry.setMonitorMode(client2, true);
+
+    const cmd_args = [_][]const u8{ "SET", "key", "value" };
+    const messages = try registry.broadcastToMonitors(
+        allocator,
+        1234567890, // timestamp_sec
+        123456, // timestamp_usec
+        0, // db
+        "127.0.0.1:54321", // client_addr
+        &cmd_args,
+    );
+    defer {
+        for (messages.items) |msg| {
+            allocator.free(msg.message);
+        }
+        messages.deinit(allocator);
+    }
+
+    // Should have 1 message (only client2 is monitoring)
+    try std.testing.expectEqual(@as(usize, 1), messages.items.len);
+    try std.testing.expectEqual(client2, messages.items[0].client_id);
+
+    // Check message format: +timestamp.usec [db addr] "cmd" "arg1" "arg2"
+    const msg = messages.items[0].message;
+    try std.testing.expect(std.mem.startsWith(u8, msg, "+1234567890.123456 [0 127.0.0.1:54321] \"SET\" \"key\" \"value\"\r\n"));
+}
+
+test "ClientRegistry - broadcastToMonitors with quote escaping" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client1 = try registry.registerClient("127.0.0.1:1", 10);
+    registry.setMonitorMode(client1, true);
+
+    const cmd_args = [_][]const u8{ "SET", "key", "val\"ue" };
+    const messages = try registry.broadcastToMonitors(
+        allocator,
+        1234567890,
+        123456,
+        0,
+        "127.0.0.1:54321",
+        &cmd_args,
+    );
+    defer {
+        for (messages.items) |msg| {
+            allocator.free(msg.message);
+        }
+        messages.deinit(allocator);
+    }
+
+    // Check that quotes are escaped
+    const msg = messages.items[0].message;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "val\\\"ue") != null);
 }

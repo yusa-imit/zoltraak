@@ -28,7 +28,7 @@ pub const SlowLog = struct {
     pub fn init(allocator: std.mem.Allocator, max_len: usize, threshold_us: i64) SlowLog {
         return SlowLog{
             .allocator = allocator,
-            .entries = std.ArrayList(SlowLogEntry).init(allocator),
+            .entries = std.ArrayList(SlowLogEntry){},
             .next_id = 0,
             .max_len = max_len,
             .threshold_us = threshold_us,

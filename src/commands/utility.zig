@@ -201,15 +201,15 @@ pub fn cmdShutdown(
     return try w.writeSimpleString("OK");
 }
 
-/// MONITOR command - enables real-time command monitoring (stub)
+/// MONITOR command - enables real-time command monitoring
 pub fn cmdMonitor(
     allocator: std.mem.Allocator,
     args: []const []const u8,
     _: *Storage,
     _: *PubSub,
     _: ?*TxState,
-    _: *ClientRegistry,
-    _: u64,
+    client_registry: *ClientRegistry,
+    client_id: u64,
     _: *ServerConfig,
     _: u8,
 ) ![]const u8 {
@@ -220,8 +220,10 @@ pub fn cmdMonitor(
         return try w.writeError("ERR wrong number of arguments for 'monitor' command");
     }
 
-    // Stub implementation - in a real implementation, this would enable monitoring mode
-    // and stream all commands to this client
+    // Enable monitor mode for this client
+    client_registry.setMonitorMode(client_id, true);
+
+    // Return OK to acknowledge - server will stream commands to this client
     return try w.writeSimpleString("OK");
 }
 
@@ -491,7 +493,7 @@ test "cmdShutdown - accepts SAVE and NOSAVE" {
     }
 }
 
-test "cmdMonitor - stub returns OK" {
+test "cmdMonitor - enables monitor mode and returns OK" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator);
     defer storage.deinit();
@@ -501,11 +503,39 @@ test "cmdMonitor - stub returns OK" {
     defer client_registry.deinit();
     var config = ServerConfig.init();
 
+    // Register a client
+    const client_id = try client_registry.registerClient("127.0.0.1:12345", 10);
+
+    // Monitor mode should be off initially
+    try std.testing.expect(!client_registry.isMonitoring(client_id));
+
+    // Execute MONITOR command
     const args = [_][]const u8{"MONITOR"};
+    const result = try cmdMonitor(allocator, &args, &storage, &pubsub, null, &client_registry, client_id, &config, 2);
+    defer allocator.free(result);
+
+    // Should return OK
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Monitor mode should now be enabled
+    try std.testing.expect(client_registry.isMonitoring(client_id));
+}
+
+test "cmdMonitor - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const args = [_][]const u8{ "MONITOR", "extra" };
     const result = try cmdMonitor(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
 }
 
 test "cmdDebug - OBJECT subcommand" {
