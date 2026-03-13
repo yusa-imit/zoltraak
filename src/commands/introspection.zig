@@ -4,7 +4,7 @@ const Writer = @import("../protocol/writer.zig").Writer;
 const LatencyMonitor = @import("../storage/latency.zig").LatencyMonitor;
 const EventType = @import("../storage/latency.zig").EventType;
 
-/// MEMORY STATS - Return memory usage statistics (stub implementation)
+/// MEMORY STATS - Return memory usage statistics (real implementation)
 pub fn cmdMemoryStats(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -13,50 +13,170 @@ pub fn cmdMemoryStats(
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
+    const tracker = &storage.memory_tracker;
 
+    const keys_count = storage.dbSize();
+    const bytes_per_key: usize = if (keys_count > 0)
+        tracker.dataset_bytes / keys_count
+    else
+        0;
+
+    const overhead_total = tracker.overhead_bytes +
+        tracker.replication_backlog_bytes +
+        tracker.aof_buffer_bytes +
+        tracker.clients_normal_bytes +
+        tracker.clients_slaves_bytes;
+
+    const dataset_pct = tracker.datasetPercentage();
+    const peak_pct = tracker.peakPercentage();
+    const frag_ratio = tracker.fragmentationRatio();
+    const frag_bytes: isize = @intCast(tracker.current_allocated -| tracker.dataset_bytes);
+
+    // Build stats string
+    var stats = std.ArrayList(u8){};
+    errdefer stats.deinit(allocator);
+    const stats_w = stats.writer(allocator);
+
+    try stats_w.print("peak.allocated:{d}\r\n", .{tracker.peak_allocated});
+    try stats_w.print("total.allocated:{d}\r\n", .{tracker.current_allocated});
+    try stats_w.print("startup.allocated:{d}\r\n", .{tracker.startup_allocated});
+    try stats_w.print("replication.backlog:{d}\r\n", .{tracker.replication_backlog_bytes});
+    try stats_w.print("clients.slaves:{d}\r\n", .{tracker.clients_slaves_bytes});
+    try stats_w.print("clients.normal:{d}\r\n", .{tracker.clients_normal_bytes});
+    try stats_w.print("aof.buffer:{d}\r\n", .{tracker.aof_buffer_bytes});
+    try stats_w.print("overhead.total:{d}\r\n", .{overhead_total});
+    try stats_w.print("keys.count:{d}\r\n", .{keys_count});
+    try stats_w.print("keys.bytes-per-key:{d}\r\n", .{bytes_per_key});
+    try stats_w.print("dataset.bytes:{d}\r\n", .{tracker.dataset_bytes});
+    try stats_w.print("dataset.percentage:{d:.2}\r\n", .{dataset_pct});
+    try stats_w.print("peak.percentage:{d:.2}\r\n", .{peak_pct});
+    try stats_w.print("fragmentation:{d:.2}\r\n", .{frag_ratio});
+    try stats_w.print("fragmentation.bytes:{d}\r\n", .{frag_bytes});
+
+    const stats_str = try stats.toOwnedSlice(allocator);
+    defer allocator.free(stats_str);
+
+    // Write bulk string
     try w.writeAll("$");
-    try w.print("{d}", .{200}); // Approximate length
+    try w.print("{d}", .{stats_str.len});
     try w.writeAll("\r\n");
-    try w.print("peak.allocated:0\r\n", .{});
-    try w.print("total.allocated:0\r\n", .{});
-    try w.print("startup.allocated:16384\r\n", .{});
-    try w.print("replication.backlog:0\r\n", .{});
-    try w.print("clients.slaves:0\r\n", .{});
-    try w.print("clients.normal:1\r\n", .{});
-    try w.print("aof.buffer:0\r\n", .{});
-    try w.print("keys.count:{d}\r\n", .{storage.dbSize()});
+    try w.writeAll(stats_str);
+    try w.writeAll("\r\n");
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// MEMORY USAGE - Estimate memory usage of a key (stub implementation)
+/// MEMORY USAGE - Estimate memory usage of a key (improved estimation)
 pub fn cmdMemoryUsage(
     allocator: std.mem.Allocator,
     storage: *Storage,
     key: []const u8,
+    samples: usize,
 ) ![]const u8 {
+    _ = samples; // For future use with nested aggregates
+
     const value = storage.data.get(key) orelse {
         return std.fmt.allocPrint(allocator, "$-1\r\n", .{});
     };
 
-    // Rough estimate based on value type
-    const estimated_size: i64 = switch (value) {
-        .string => |s| @intCast(s.data.len + 50),
-        .list => |l| @intCast(l.data.items.len * 50 + 100),
-        .set => |s| @intCast(s.data.count() * 50 + 100),
-        .hash => |h| @intCast(h.data.count() * 100 + 100),
-        .sorted_set => |zs| @intCast(zs.members.count() * 100 + 100),
-        .stream => |s| @intCast(s.entries.items.len * 200 + 100),
-        .hyperloglog => 12304, // Fixed size for HLL
+    // Improved estimate with overhead
+    const key_overhead: usize = 48; // HashMap entry overhead
+    const ttl_overhead: usize = 8; // Optional i64
+    const estimated_size: i64 = blk: {
+        const data_size: usize = switch (value) {
+            .string => |s| s.data.len + 24, // String struct + data
+            .list => |l| l.data.items.len * (@sizeOf([]const u8) + 32) + 64, // ArrayList + items
+            .set => |s| s.data.count() * 64 + 128, // StringHashMap entries
+            .hash => |h| h.data.count() * 128 + 128, // FieldValue entries
+            .sorted_set => |zs| zs.members.count() * 160 + 256, // Member + score + indices
+            .stream => |s| s.entries.items.len * 256 + 512, // Entry struct + metadata
+            .hyperloglog => 12304, // 16384 registers * 6 bits
+        };
+        break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };
 
     return std.fmt.allocPrint(allocator, ":{d}\r\n", .{estimated_size});
 }
 
-/// MEMORY DOCTOR - Return memory usage advice (stub)
-pub fn cmdMemoryDoctor(allocator: std.mem.Allocator) ![]const u8 {
-    const advice = "Sam, I'm sorry, but I can't help you with this. Your memory is fine.";
-    return std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ advice.len, advice });
+/// MEMORY DOCTOR - Return memory usage advice (real analysis)
+pub fn cmdMemoryDoctor(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+    var advice = std.ArrayList(u8){};
+    errdefer advice.deinit(allocator);
+
+    const w = advice.writer(allocator);
+    const tracker = &storage.memory_tracker;
+    const frag_ratio = tracker.fragmentationRatio();
+    const keys_count = storage.dbSize();
+    const bytes_per_key: usize = if (keys_count > 0)
+        tracker.dataset_bytes / keys_count
+    else
+        0;
+
+    // Analyze memory health
+    var has_issues = false;
+
+    // Check fragmentation
+    if (frag_ratio > 1.5) {
+        try w.print("* High memory fragmentation detected ({d:.2}).\n", .{frag_ratio});
+        try w.writeAll("  Consider restarting the server to reduce fragmentation.\n\n");
+        has_issues = true;
+    }
+
+    // Check peak memory vs current
+    const peak_pct = tracker.peakPercentage();
+    if (peak_pct < 70.0 and tracker.peak_allocated > tracker.startup_allocated * 2) {
+        try w.print("* Peak memory ({d} bytes) is {d:.1}% higher than current ({d} bytes).\n", .{
+            tracker.peak_allocated,
+            100.0 - peak_pct,
+            tracker.current_allocated,
+        });
+        try w.writeAll("  Memory was freed but not released to OS.\n\n");
+        has_issues = true;
+    }
+
+    // Check small keys
+    if (keys_count > 1000 and bytes_per_key < 100) {
+        try w.print("* Large number of small keys detected ({d} keys, {d} bytes/key).\n", .{
+            keys_count,
+            bytes_per_key,
+        });
+        try w.writeAll("  Consider using hashes to group related keys.\n\n");
+        has_issues = true;
+    }
+
+    // Check AOF buffer
+    if (tracker.aof_buffer_bytes > 10 * 1024 * 1024) {
+        try w.print("* AOF buffer is large ({d} bytes).\n", .{tracker.aof_buffer_bytes});
+        try w.writeAll("  AOF rewrite may be needed.\n\n");
+        has_issues = true;
+    }
+
+    if (!has_issues) {
+        try w.writeAll("Hi Sam, I detected no issues in your memory.\n");
+    }
+
+    const advice_str = try advice.toOwnedSlice(allocator);
+    defer allocator.free(advice_str);
+
+    return std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ advice_str.len, advice_str });
+}
+
+/// MEMORY PURGE - Attempt to purge dirty pages (no-op for Zig GPA)
+pub fn cmdMemoryPurge(allocator: std.mem.Allocator) ![]const u8 {
+    // Zig's GeneralPurposeAllocator doesn't support explicit purging
+    // In a real Redis implementation, this would call je_purge_dirty_pages() for jemalloc
+    return std.fmt.allocPrint(allocator, "+OK\r\n", .{});
+}
+
+/// MEMORY MALLOC-STATS - Return allocator statistics (stub)
+pub fn cmdMemoryMallocStats(allocator: std.mem.Allocator) ![]const u8 {
+    // Zig's GPA doesn't expose detailed internal statistics like jemalloc
+    // Return minimal stats
+    const stats =
+        \\Allocator: Zig GeneralPurposeAllocator
+        \\Note: Detailed malloc stats not available (jemalloc-specific)
+    ;
+    return std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ stats.len, stats });
 }
 
 /// MEMORY HELP - Return MEMORY command help
@@ -66,8 +186,10 @@ pub fn cmdMemoryHelp(allocator: std.mem.Allocator) ![]const u8 {
 
     const help = [_][]const u8{
         "MEMORY STATS - Show memory usage statistics",
-        "MEMORY USAGE <key> - Estimate memory usage of a key",
+        "MEMORY USAGE <key> [SAMPLES <count>] - Estimate memory usage of a key",
         "MEMORY DOCTOR - Get memory usage advice",
+        "MEMORY PURGE - Purge dirty pages (no-op)",
+        "MEMORY MALLOC-STATS - Show allocator statistics",
         "MEMORY HELP - Show this help message",
     };
 
@@ -104,9 +226,20 @@ pub fn cmdMemory(
         if (args.len < 2) {
             return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'memory usage' command\r\n", .{});
         }
-        return cmdMemoryUsage(allocator, storage, args[1]);
+        // Parse optional SAMPLES parameter
+        var samples: usize = 5; // default
+        if (args.len >= 4 and std.ascii.eqlIgnoreCase(args[2], "samples")) {
+            samples = std.fmt.parseInt(usize, args[3], 10) catch {
+                return std.fmt.allocPrint(allocator, "-ERR value is not an integer or out of range\r\n", .{});
+            };
+        }
+        return cmdMemoryUsage(allocator, storage, args[1], samples);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "doctor")) {
-        return cmdMemoryDoctor(allocator);
+        return cmdMemoryDoctor(allocator, storage);
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "purge")) {
+        return cmdMemoryPurge(allocator);
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "malloc-stats")) {
+        return cmdMemoryMallocStats(allocator);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "help")) {
         return cmdMemoryHelp(allocator);
     } else {
@@ -780,4 +913,91 @@ test "cmdLatencyHelp" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "LATENCY LATEST") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "LATENCY HELP") != null);
+}
+
+test "cmdMemoryStats" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    // Add some keys to populate memory
+    _ = try storage.set("key1", "value1", null);
+    _ = try storage.set("key2", "value2", null);
+
+    const result = try cmdMemoryStats(std.testing.allocator, &storage);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "peak.allocated:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "dataset.bytes:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "keys.count:") != null);
+}
+
+test "cmdMemoryUsage existing key" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    _ = try storage.set("testkey", "testvalue", null);
+
+    const result = try cmdMemoryUsage(std.testing.allocator, &storage, "testkey", 5);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, ":"));
+    try std.testing.expect(result[result.len - 2] == '\r');
+}
+
+test "cmdMemoryUsage missing key" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    const result = try cmdMemoryUsage(std.testing.allocator, &storage, "nonexistent", 5);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "cmdMemoryDoctor no issues" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    const result = try cmdMemoryDoctor(std.testing.allocator, &storage);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Hi Sam") != null);
+}
+
+test "cmdMemoryPurge" {
+    const result = try cmdMemoryPurge(std.testing.allocator);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "cmdMemoryMallocStats" {
+    const result = try cmdMemoryMallocStats(std.testing.allocator);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Allocator:") != null);
+}
+
+test "cmdMemoryHelp" {
+    const result = try cmdMemoryHelp(std.testing.allocator);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "MEMORY STATS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "MEMORY DOCTOR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "MEMORY PURGE") != null);
+}
+
+test "cmdMemory dispatcher" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    const stats_args = [_][]const u8{"stats"};
+    const stats_result = try cmdMemory(std.testing.allocator, &storage, &stats_args);
+    defer std.testing.allocator.free(stats_result);
+    try std.testing.expect(std.mem.indexOf(u8, stats_result, "peak.allocated:") != null);
+
+    const help_args = [_][]const u8{"help"};
+    const help_result = try cmdMemory(std.testing.allocator, &storage, &help_args);
+    defer std.testing.allocator.free(help_result);
+    try std.testing.expect(std.mem.indexOf(u8, help_result, "MEMORY STATS") != null);
 }

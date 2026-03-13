@@ -178,6 +178,18 @@ pub fn build(b: *std.Build) void {
     const run_latency_tests = b.addRunArtifact(latency_tests);
     integration_test_step.dependOn(&run_latency_tests.step);
 
+    // MEMORY command integration tests (Iteration 93)
+    const memory_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_memory.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_memory_tests = b.addRunArtifact(memory_tests);
+    integration_test_step.dependOn(&run_memory_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

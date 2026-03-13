@@ -3,6 +3,7 @@ const config_mod = @import("config.zig");
 const blocking_mod = @import("blocking.zig");
 const slowlog_mod = @import("slowlog.zig");
 const latency_mod = @import("latency.zig");
+const memory_tracker_mod = @import("memory_tracker.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -10,6 +11,7 @@ pub const BlockedClient = blocking_mod.BlockedClient;
 pub const BlockedXreadgroupClient = blocking_mod.BlockedXreadgroupClient;
 pub const SlowLog = slowlog_mod.SlowLog;
 pub const LatencyMonitor = latency_mod.LatencyMonitor;
+pub const MemoryTracker = memory_tracker_mod.MemoryTracker;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -453,6 +455,7 @@ pub const Storage = struct {
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
     slowlog: SlowLog, // Slow query log
     latency_monitor: LatencyMonitor, // Latency event tracking
+    memory_tracker: MemoryTracker, // Memory usage tracking
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -472,6 +475,8 @@ pub const Storage = struct {
         const latency_mon = try LatencyMonitor.init(allocator);
         errdefer latency_mon.deinit();
 
+        const mem_tracker = MemoryTracker.init();
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
@@ -481,6 +486,7 @@ pub const Storage = struct {
             .blocking_queue = BlockingQueue.init(allocator),
             .slowlog = SlowLog.init(allocator, 128, 10000), // max 128 entries, 10ms threshold
             .latency_monitor = latency_mon,
+            .memory_tracker = mem_tracker,
         };
 
         return storage;
