@@ -907,6 +907,10 @@ pub fn executeCommand(
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
             break :blk try introspection_cmds.cmdSlowlog(allocator, storage, args);
+        } else if (std.mem.eql(u8, cmd_upper, "LATENCY")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            break :blk try introspection_cmds.cmdLatency(allocator, storage, args);
         }
         // Scripting commands
         else if (std.mem.eql(u8, cmd_upper, "EVAL")) {

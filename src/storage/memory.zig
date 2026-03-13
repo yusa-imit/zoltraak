@@ -2,12 +2,14 @@ const std = @import("std");
 const config_mod = @import("config.zig");
 const blocking_mod = @import("blocking.zig");
 const slowlog_mod = @import("slowlog.zig");
+const latency_mod = @import("latency.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
 pub const BlockedClient = blocking_mod.BlockedClient;
 pub const BlockedXreadgroupClient = blocking_mod.BlockedXreadgroupClient;
 pub const SlowLog = slowlog_mod.SlowLog;
+pub const LatencyMonitor = latency_mod.LatencyMonitor;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -450,6 +452,7 @@ pub const Storage = struct {
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
     slowlog: SlowLog, // Slow query log
+    latency_monitor: LatencyMonitor, // Latency event tracking
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -466,6 +469,9 @@ pub const Storage = struct {
         const cfg = try Config.init(allocator, port, bind);
         errdefer cfg.deinit();
 
+        const latency_mon = try LatencyMonitor.init(allocator);
+        errdefer latency_mon.deinit();
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
@@ -474,6 +480,7 @@ pub const Storage = struct {
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
             .slowlog = SlowLog.init(allocator, 128, 10000), // max 128 entries, 10ms threshold
+            .latency_monitor = latency_mon,
         };
 
         return storage;
@@ -494,6 +501,7 @@ pub const Storage = struct {
 
         self.blocking_queue.deinit();
         self.slowlog.deinit();
+        self.latency_monitor.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;

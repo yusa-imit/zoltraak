@@ -166,6 +166,18 @@ pub fn build(b: *std.Build) void {
     const run_monitor_tests = b.addRunArtifact(monitor_tests);
     integration_test_step.dependOn(&run_monitor_tests.step);
 
+    // LATENCY command integration tests (Iteration 92)
+    const latency_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_latency.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_latency_tests = b.addRunArtifact(latency_tests);
+    integration_test_step.dependOn(&run_latency_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.
