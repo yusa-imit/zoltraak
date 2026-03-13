@@ -456,6 +456,7 @@ pub const Storage = struct {
     slowlog: SlowLog, // Slow query log
     latency_monitor: LatencyMonitor, // Latency event tracking
     memory_tracker: MemoryTracker, // Memory usage tracking
+    active_expire_enabled: bool, // Whether active expiration is enabled (default: true)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -487,6 +488,7 @@ pub const Storage = struct {
             .slowlog = SlowLog.init(allocator, 128, 10000), // max 128 entries, 10ms threshold
             .latency_monitor = latency_mon,
             .memory_tracker = mem_tracker,
+            .active_expire_enabled = true, // Active expiration enabled by default
         };
 
         return storage;

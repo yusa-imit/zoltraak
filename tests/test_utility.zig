@@ -365,3 +365,85 @@ test "SELECT command - data persists across SELECT 0" {
     try stream.writeAll("*2\r\n$3\r\nDEL\r\n$9\r\nselectkey\r\n");
     _ = try stream.read(&buf);
 }
+
+// ── DEBUG command integration tests ───────────────────────────────────────────
+
+test "DEBUG SET-ACTIVE-EXPIRE - toggle active expiration" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    var buf: [1024]u8 = undefined;
+
+    // Disable active expiration
+    try stream.writeAll("*3\r\n$5\r\nDEBUG\r\n$18\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n0\r\n");
+    const n1 = try stream.read(&buf);
+    try testing.expectEqualStrings(":0\r\n", buf[0..n1]);
+
+    // Enable active expiration
+    try stream.writeAll("*3\r\n$5\r\nDEBUG\r\n$18\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n1\r\n");
+    const n2 = try stream.read(&buf);
+    try testing.expectEqualStrings(":1\r\n", buf[0..n2]);
+}
+
+test "DEBUG SLEEP - sleeps for specified duration" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    const start = std.time.milliTimestamp();
+
+    // Sleep for 0.1 seconds (100ms)
+    try stream.writeAll("*3\r\n$5\r\nDEBUG\r\n$5\r\nSLEEP\r\n$3\r\n0.1\r\n");
+
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const elapsed = std.time.milliTimestamp() - start;
+
+    try testing.expectEqualStrings("+OK\r\n", buf[0..n]);
+    try testing.expect(elapsed >= 100); // At least 100ms
+}
+
+test "DEBUG POPULATE - creates test keys" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    var buf: [1024]u8 = undefined;
+
+    // Populate 5 keys with prefix "dbgtest:" and size 16
+    try stream.writeAll("*5\r\n$5\r\nDEBUG\r\n$8\r\nPOPULATE\r\n$1\r\n5\r\n$8\r\ndbgtest:\r\n$2\r\n16\r\n");
+    const n1 = try stream.read(&buf);
+    try testing.expectEqualStrings("+OK\r\n", buf[0..n1]);
+
+    // Check that key exists
+    try stream.writeAll("*2\r\n$3\r\nGET\r\n$9\r\ndbgtest:0\r\n");
+    const n2 = try stream.read(&buf);
+    const response = buf[0..n2];
+    try testing.expect(std.mem.startsWith(u8, response, "$16\r\n")); // Size 16
+
+    // Cleanup
+    try stream.writeAll("*6\r\n$3\r\nDEL\r\n$9\r\ndbgtest:0\r\n$9\r\ndbgtest:1\r\n$9\r\ndbgtest:2\r\n$9\r\ndbgtest:3\r\n$9\r\ndbgtest:4\r\n");
+    _ = try stream.read(&buf);
+}
+
+test "DEBUG CHANGE-REPL-ID - returns OK (stub)" {
+    const allocator = testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Send DEBUG CHANGE-REPL-ID command
+    try stream.writeAll("*2\r\n$5\r\nDEBUG\r\n$14\r\nCHANGE-REPL-ID\r\n");
+
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    try testing.expectEqualStrings("+OK\r\n", buf[0..n]);
+}

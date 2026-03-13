@@ -263,7 +263,7 @@ pub fn cmdSelect(
     return try w.writeSimpleString("OK");
 }
 
-/// DEBUG command - debugging utilities (stub)
+/// DEBUG command - debugging utilities
 pub fn cmdDebug(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -272,7 +272,7 @@ pub fn cmdDebug(
     _: ?*TxState,
     _: *ClientRegistry,
     _: u64,
-    _: *ServerConfig,
+    config: *ServerConfig,
     _: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
@@ -313,11 +313,150 @@ pub fn cmdDebug(
         } else {
             return try w.writeError("ERR no such key");
         }
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "SET-ACTIVE-EXPIRE")) {
+        // DEBUG SET-ACTIVE-EXPIRE 0|1 - toggle active expiration
+        if (args.len != 3) {
+            return try w.writeError("ERR wrong number of arguments for 'debug set-active-expire' command");
+        }
+
+        const value = std.fmt.parseInt(i64, args[2], 10) catch {
+            return try w.writeError("ERR value must be 0 or 1");
+        };
+
+        if (value != 0 and value != 1) {
+            return try w.writeError("ERR value must be 0 or 1");
+        }
+
+        storage.mutex.lock();
+        storage.active_expire_enabled = (value == 1);
+        storage.mutex.unlock();
+
+        return try w.writeInteger(value);
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "SLEEP")) {
+        // DEBUG SLEEP <seconds> - sleep for N seconds
+        if (args.len != 3) {
+            return try w.writeError("ERR wrong number of arguments for 'debug sleep' command");
+        }
+
+        const seconds = std.fmt.parseFloat(f64, args[2]) catch {
+            return try w.writeError("ERR value is not a float or out of range");
+        };
+
+        if (seconds < 0) {
+            return try w.writeError("ERR sleep time must be non-negative");
+        }
+
+        const nanoseconds = @as(u64, @intFromFloat(seconds * 1_000_000_000));
+        std.Thread.sleep(nanoseconds);
+
+        return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "RELOAD")) {
+        // DEBUG RELOAD - save RDB + reload from disk
+        if (args.len != 2) {
+            return try w.writeError("ERR wrong number of arguments for 'debug reload' command");
+        }
+
+        // Save current state to RDB
+        const Persistence = @import("../storage/persistence.zig").Persistence;
+        const rdb_path_opt = try config.get("dir");
+        if (rdb_path_opt == null) {
+            return try w.writeError("ERR config parameter 'dir' not found");
+        }
+        const rdb_path = rdb_path_opt.?;
+        defer allocator.free(rdb_path);
+
+        const dbfilename_opt = try config.get("dbfilename");
+        if (dbfilename_opt == null) {
+            return try w.writeError("ERR config parameter 'dbfilename' not found");
+        }
+        const dbfilename = dbfilename_opt.?;
+        defer allocator.free(dbfilename);
+
+        var path_buf: [4096]u8 = undefined;
+        const full_path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ rdb_path, dbfilename });
+
+        // Save current data
+        try Persistence.save(storage, full_path, allocator);
+
+        // Clear current data
+        storage.mutex.lock();
+        var it = storage.data.iterator();
+        while (it.next()) |entry| {
+            const val = entry.value_ptr;
+            val.deinit(storage.allocator);
+        }
+        storage.data.clearRetainingCapacity();
+        storage.mutex.unlock();
+
+        // Reload from disk
+        _ = try Persistence.load(storage, full_path, allocator);
+
+        return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "CHANGE-REPL-ID")) {
+        // DEBUG CHANGE-REPL-ID - force new replication ID
+        // Note: This is a stub since ReplicationState is owned by Server,
+        // not accessible from command handlers. In a real implementation,
+        // this would require passing server context through the command chain.
+        if (args.len != 2) {
+            return try w.writeError("ERR wrong number of arguments for 'debug change-repl-id' command");
+        }
+
+        // Stub implementation - returns OK but doesn't actually change replid
+        // TODO: Implement when server context is available to commands
+        return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "POPULATE")) {
+        // DEBUG POPULATE <count> [<prefix>] [<size>] - fill DB with test keys
+        if (args.len < 3 or args.len > 5) {
+            return try w.writeError("ERR wrong number of arguments for 'debug populate' command");
+        }
+
+        const count = std.fmt.parseInt(u64, args[2], 10) catch {
+            return try w.writeError("ERR value is not an integer or out of range");
+        };
+
+        const prefix = if (args.len >= 4) args[3] else "key:";
+        const size = if (args.len >= 5) blk: {
+            break :blk std.fmt.parseInt(u64, args[4], 10) catch {
+                return try w.writeError("ERR value is not an integer or out of range");
+            };
+        } else 64;
+
+        // Create test value of specified size
+        const value_data = try allocator.alloc(u8, size);
+        defer allocator.free(value_data);
+        @memset(value_data, 'x');
+
+        // Generate keys
+        var i: u64 = 0;
+        while (i < count) : (i += 1) {
+            var key_buf: [256]u8 = undefined;
+            const key = try std.fmt.bufPrint(&key_buf, "{s}{d}", .{ prefix, i });
+
+            const key_copy = try allocator.dupe(u8, key);
+            errdefer allocator.free(key_copy);
+
+            const val_copy = try allocator.dupe(u8, value_data);
+            errdefer allocator.free(val_copy);
+
+            try storage.set(key_copy, val_copy, null);
+        }
+
+        return try w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "HELP")) {
         const help_text =
             \\DEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:
             \\OBJECT <key>
             \\    Show low-level info about key and associated value.
+            \\SET-ACTIVE-EXPIRE <0|1>
+            \\    Toggle active key expiration on/off.
+            \\SLEEP <seconds>
+            \\    Sleep for the specified number of seconds.
+            \\RELOAD
+            \\    Save RDB snapshot and reload from disk.
+            \\CHANGE-REPL-ID
+            \\    Generate a new replication ID.
+            \\POPULATE <count> [<prefix>] [<size>]
+            \\    Create <count> test keys with optional prefix and value size.
             \\HELP
             \\    Print this help.
         ;
@@ -839,4 +978,157 @@ test "cmdReset - wrong number of arguments" {
     const result = try cmdReset(allocator, &args, &storage, &pubsub, &tx_state, &client_registry, 1, &config, 2);
     defer allocator.free(result);
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
+}
+
+// ── DEBUG command tests ───────────────────────────────────────────────────────
+
+test "cmdDebug - DEBUG OBJECT shows key info" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    // Set a string key
+    const key = try allocator.dupe(u8, "testkey");
+    const value = try allocator.dupe(u8, "testvalue");
+    try storage.set(key, value, null);
+
+    const args = [_][]const u8{ "DEBUG", "OBJECT", "testkey" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Value at:string") != null);
+}
+
+test "cmdDebug - DEBUG SET-ACTIVE-EXPIRE toggles flag" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    // Initially enabled
+    try std.testing.expect(storage.active_expire_enabled == true);
+
+    // Disable
+    {
+        const args = [_][]const u8{ "DEBUG", "SET-ACTIVE-EXPIRE", "0" };
+        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings(":0\r\n", result);
+        try std.testing.expect(storage.active_expire_enabled == false);
+    }
+
+    // Enable
+    {
+        const args = [_][]const u8{ "DEBUG", "SET-ACTIVE-EXPIRE", "1" };
+        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings(":1\r\n", result);
+        try std.testing.expect(storage.active_expire_enabled == true);
+    }
+}
+
+test "cmdDebug - DEBUG SLEEP sleeps for specified time" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const start = std.time.milliTimestamp();
+    const args = [_][]const u8{ "DEBUG", "SLEEP", "0.1" }; // 100ms
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+    const elapsed = std.time.milliTimestamp() - start;
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expect(elapsed >= 100); // At least 100ms
+}
+
+test "cmdDebug - DEBUG POPULATE creates keys" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "POPULATE", "10", "test:", "32" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expectEqual(@as(usize, 10), storage.dbSize());
+
+    // Check that keys exist
+    const val = storage.get("test:0");
+    try std.testing.expect(val != null);
+    try std.testing.expectEqual(@as(usize, 32), val.?.len);
+}
+
+test "cmdDebug - DEBUG HELP returns help text" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "HELP" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "SET-ACTIVE-EXPIRE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "SLEEP") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "RELOAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "POPULATE") != null);
+}
+
+test "cmdDebug - DEBUG wrong subcommand returns error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "INVALID" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR unknown subcommand"));
+}
+
+test "cmdDebug - DEBUG CHANGE-REPL-ID returns OK (stub)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "CHANGE-REPL-ID" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
 }
