@@ -701,6 +701,61 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 ---
 
+### v1.10.0 — Mouse & Gamepad Input (READY)
+
+**sailor v1.10.0 released** (2026-03-12) — Mouse and gamepad input support
+
+- **New features**: Mouse event handling, widget-level mouse interaction, gamepad/controller support, touch gestures, input mapping
+- **Impact on zoltraak**: MEDIUM — Mouse support useful for interactive Redis CLI
+  - Click to select keys in key browser widget
+  - Scroll through large datasets with mouse wheel
+  - Gamepad support not relevant for Redis CLI
+- [ ] Update to sailor v1.10.0
+- [ ] Consider mouse interaction for key browser and data viewer widgets
+
+### v1.11.0 — Terminal Graphics & Effects (READY)
+
+**sailor v1.11.0 released** (2026-03-12) — Terminal graphics protocols and visual effects
+
+- **New features**: Sixel/Kitty graphics protocols, animated transitions, particle effects, blur/transparency
+- **Impact on zoltraak**: LOW — Graphics effects not essential for Redis CLI
+  - Sixel/Kitty could display Redis key value images (if stored as binary)
+  - Particle effects for successful command execution
+  - Transitions for smoother navigation in TUI mode
+- [ ] Update to sailor v1.11.0
+- [ ] (Optional) Add transitions for TUI navigation smoothness
+
+### v1.12.0 — Enterprise & Accessibility (READY)
+
+**sailor v1.12.0 released** (2026-03-13) — Enterprise features and accessibility
+
+- **New features**: Session recording/playback, audit logging, high contrast themes, screen reader support, keyboard navigation
+- **Impact on zoltraak**: HIGH — Enterprise features critical for production Redis management
+  - Session recording enables reproducing Redis CLI bugs from user reports
+  - Audit logging tracks Redis commands for compliance (GDPR, SOC2)
+  - High contrast themes for accessibility
+  - Screen reader support for visually impaired administrators
+- [ ] Update to sailor v1.12.0
+- [ ] Implement audit logging for Redis commands
+- [ ] Enable high contrast themes for Redis CLI
+
+### v1.13.0 — Advanced Text Editing & Rich Input (READY)
+
+**sailor v1.13.0 released** (2026-03-14) — Multi-cursor editing and rich text input
+
+- **New features**: Syntax highlighting, code editor widget, autocomplete widget, multi-cursor editing, rich text input
+- **Impact on zoltraak**: HIGH — Directly improves Redis command input experience
+  - Syntax highlighting for Redis commands and Lua scripts
+  - Autocomplete widget for Redis command completion (CRITICAL for UX)
+  - Multi-cursor editing for bulk key updates
+  - Rich text input for formatted command documentation
+- [ ] Update to sailor v1.13.0
+- [ ] Integrate autocomplete widget for Redis command/key completion
+- [ ] Add syntax highlighting for Redis commands and Lua scripts
+- [ ] (Optional) Use code editor widget for multi-line Lua script editing
+
+---
+
 ## zuda Migration
 
 zoltraak는 현재 자체 구현한 자료구조/알고리즘을 `zuda` 라이브러리(https://github.com/yusa-imit/zuda)로 점진적으로 대체할 예정이다.
