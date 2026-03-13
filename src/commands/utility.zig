@@ -164,7 +164,8 @@ pub fn cmdLastsave(
     return try w.writeInteger(@intCast(last_save_time));
 }
 
-/// SHUTDOWN command - signals graceful server shutdown
+/// SHUTDOWN command - signals graceful server shutdown with modifiers
+/// Syntax: SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE] [ABORT]
 pub fn cmdShutdown(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -175,29 +176,73 @@ pub fn cmdShutdown(
     _: u64,
     _: *ServerConfig,
     _: u8,
+    shutdown_state: ?*@import("../server.zig").ShutdownState,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    // Optional: NOSAVE or SAVE modifier
-    if (args.len > 2) {
-        return try w.writeError("ERR wrong number of arguments for 'shutdown' command");
-    }
+    // Parse modifiers
+    var save: ?bool = null; // null = default (save if configured), true = force save, false = no save
+    var now = false;
+    var force = false;
+    var abort = false;
 
-    // Parse optional SAVE/NOSAVE modifier (validated but not used in stub)
-    if (args.len == 2) {
-        const modifier = args[1];
-        if (!std.ascii.eqlIgnoreCase(modifier, "NOSAVE") and
-            !std.ascii.eqlIgnoreCase(modifier, "SAVE"))
-        {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const modifier = args[i];
+        if (std.ascii.eqlIgnoreCase(modifier, "NOSAVE")) {
+            if (save != null) {
+                return try w.writeError("ERR SAVE and NOSAVE can't be set at the same time");
+            }
+            save = false;
+        } else if (std.ascii.eqlIgnoreCase(modifier, "SAVE")) {
+            if (save != null) {
+                return try w.writeError("ERR SAVE and NOSAVE can't be set at the same time");
+            }
+            save = true;
+        } else if (std.ascii.eqlIgnoreCase(modifier, "NOW")) {
+            now = true;
+        } else if (std.ascii.eqlIgnoreCase(modifier, "FORCE")) {
+            force = true;
+        } else if (std.ascii.eqlIgnoreCase(modifier, "ABORT")) {
+            abort = true;
+        } else {
             return try w.writeError("ERR syntax error");
         }
     }
 
-    // Note: The actual shutdown logic will be handled by the server
-    // This command just acknowledges the request
+    // ABORT modifier cancels a pending shutdown
+    if (abort) {
+        if (shutdown_state) |ss| {
+            ss.mutex.lock();
+            defer ss.mutex.unlock();
+            if (ss.requested.load(.acquire)) {
+                ss.request = null;
+                ss.requested.store(false, .release);
+                return try w.writeSimpleString("OK");
+            } else {
+                return try w.writeError("ERR No shutdown in progress");
+            }
+        }
+        return try w.writeError("ERR shutdown state not available");
+    }
 
-    // Return OK to acknowledge - server will handle shutdown
+    // Default: save if no modifier specified
+    const should_save = save orelse true;
+
+    // Request shutdown via shutdown state
+    if (shutdown_state) |ss| {
+        const ShutdownRequest = @import("../server.zig").ShutdownRequest;
+        ss.requestShutdown(ShutdownRequest{
+            .save = should_save,
+            .now = now,
+            .force = force,
+        });
+        // Return OK - actual shutdown happens in server loop
+        return try w.writeSimpleString("OK");
+    }
+
+    // Fallback if shutdown state is not available (shouldn't happen in production)
     return try w.writeSimpleString("OK");
 }
 
@@ -597,7 +642,7 @@ test "cmdLastsave - returns integer timestamp" {
     try std.testing.expect(std.mem.startsWith(u8, result, ":"));
 }
 
-test "cmdShutdown - accepts SAVE and NOSAVE" {
+test "cmdShutdown - accepts SAVE and NOSAVE and sets shutdown state" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator);
     defer storage.deinit();
@@ -607,29 +652,149 @@ test "cmdShutdown - accepts SAVE and NOSAVE" {
     defer client_registry.deinit();
     var config = ServerConfig.init();
 
-    // Test plain SHUTDOWN
+    const ShutdownState = @import("../server.zig").ShutdownState;
+    var shutdown_state = ShutdownState.init();
+
+    // Test plain SHUTDOWN (default: save)
     {
         const args = [_][]const u8{"SHUTDOWN"};
-        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
         defer allocator.free(result);
         try std.testing.expectEqualStrings("+OK\r\n", result);
+        try std.testing.expect(shutdown_state.isRequested());
+        const req = shutdown_state.getRequest().?;
+        try std.testing.expect(req.save == true); // default is save
+        try std.testing.expect(req.now == false);
+        try std.testing.expect(req.force == false);
+        // Reset for next test
+        shutdown_state = ShutdownState.init();
     }
 
     // Test SHUTDOWN SAVE
     {
         const args = [_][]const u8{ "SHUTDOWN", "SAVE" };
-        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
         defer allocator.free(result);
         try std.testing.expectEqualStrings("+OK\r\n", result);
+        try std.testing.expect(shutdown_state.isRequested());
+        const req = shutdown_state.getRequest().?;
+        try std.testing.expect(req.save == true);
+        shutdown_state = ShutdownState.init();
     }
 
     // Test SHUTDOWN NOSAVE
     {
         const args = [_][]const u8{ "SHUTDOWN", "NOSAVE" };
-        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
         defer allocator.free(result);
         try std.testing.expectEqualStrings("+OK\r\n", result);
+        try std.testing.expect(shutdown_state.isRequested());
+        const req = shutdown_state.getRequest().?;
+        try std.testing.expect(req.save == false);
+        shutdown_state = ShutdownState.init();
     }
+
+    // Test SHUTDOWN NOW
+    {
+        const args = [_][]const u8{ "SHUTDOWN", "NOW" };
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("+OK\r\n", result);
+        const req = shutdown_state.getRequest().?;
+        try std.testing.expect(req.now == true);
+        shutdown_state = ShutdownState.init();
+    }
+
+    // Test SHUTDOWN FORCE
+    {
+        const args = [_][]const u8{ "SHUTDOWN", "FORCE" };
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("+OK\r\n", result);
+        const req = shutdown_state.getRequest().?;
+        try std.testing.expect(req.force == true);
+        shutdown_state = ShutdownState.init();
+    }
+
+    // Test SHUTDOWN NOSAVE NOW FORCE (combined modifiers)
+    {
+        const args = [_][]const u8{ "SHUTDOWN", "NOSAVE", "NOW", "FORCE" };
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("+OK\r\n", result);
+        const req = shutdown_state.getRequest().?;
+        try std.testing.expect(req.save == false);
+        try std.testing.expect(req.now == true);
+        try std.testing.expect(req.force == true);
+        shutdown_state = ShutdownState.init();
+    }
+
+    // Test SHUTDOWN ABORT (cancels shutdown)
+    {
+        // First request shutdown
+        {
+            const args = [_][]const u8{"SHUTDOWN"};
+            const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+            defer allocator.free(result);
+            try std.testing.expect(shutdown_state.isRequested());
+        }
+        // Then abort it
+        {
+            const args = [_][]const u8{ "SHUTDOWN", "ABORT" };
+            const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+            defer allocator.free(result);
+            try std.testing.expectEqualStrings("+OK\r\n", result);
+            try std.testing.expect(!shutdown_state.isRequested());
+        }
+    }
+
+    // Test SHUTDOWN ABORT when no shutdown in progress (should error)
+    {
+        const args = [_][]const u8{ "SHUTDOWN", "ABORT" };
+        const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR No shutdown in progress"));
+    }
+}
+
+test "cmdShutdown - rejects SAVE and NOSAVE together" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const ShutdownState = @import("../server.zig").ShutdownState;
+    var shutdown_state = ShutdownState.init();
+
+    const args = [_][]const u8{ "SHUTDOWN", "SAVE", "NOSAVE" };
+    const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR SAVE and NOSAVE can't be set at the same time"));
+}
+
+test "cmdShutdown - rejects invalid modifier" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    var config = ServerConfig.init();
+
+    const ShutdownState = @import("../server.zig").ShutdownState;
+    var shutdown_state = ShutdownState.init();
+
+    const args = [_][]const u8{ "SHUTDOWN", "INVALID" };
+    const result = try cmdShutdown(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, &shutdown_state);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR syntax error"));
 }
 
 test "cmdMonitor - enables monitor mode and returns OK" {

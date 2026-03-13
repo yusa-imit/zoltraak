@@ -30,6 +30,45 @@ pub const Config = struct {
     replicaof_port: u16 = 0,
 };
 
+/// Shutdown request state
+pub const ShutdownRequest = struct {
+    save: bool, // true = save RDB before shutdown, false = don't save
+    now: bool, // true = immediate shutdown, false = wait for clients
+    force: bool, // true = skip save errors, false = abort on save errors
+};
+
+/// Shutdown state for the server
+pub const ShutdownState = struct {
+    requested: std.atomic.Value(bool),
+    request: ?ShutdownRequest,
+    mutex: std.Thread.Mutex,
+
+    pub fn init() ShutdownState {
+        return ShutdownState{
+            .requested = std.atomic.Value(bool).init(false),
+            .request = null,
+            .mutex = std.Thread.Mutex{},
+        };
+    }
+
+    pub fn requestShutdown(self: *ShutdownState, req: ShutdownRequest) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.request = req;
+        self.requested.store(true, .release);
+    }
+
+    pub fn isRequested(self: *ShutdownState) bool {
+        return self.requested.load(.acquire);
+    }
+
+    pub fn getRequest(self: *ShutdownState) ?ShutdownRequest {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.request;
+    }
+};
+
 /// TCP server for handling Redis-compatible connections
 pub const Server = struct {
     allocator: std.mem.Allocator,
@@ -46,6 +85,8 @@ pub const Server = struct {
     /// Monotonically increasing connection ID used as subscriber_id.
     next_subscriber_id: u64,
     running: std.atomic.Value(bool),
+    /// Shutdown state tracking
+    shutdown_state: ShutdownState,
 
     /// Initialize a new server instance.
     /// If `config.replicaof_host` is set, the server starts as a replica.
@@ -73,6 +114,7 @@ pub const Server = struct {
             .script_store = ScriptStore.init(allocator),
             .next_subscriber_id = 1,
             .running = std.atomic.Value(bool).init(false),
+            .shutdown_state = ShutdownState.init(),
         };
 
         return server;
@@ -140,6 +182,12 @@ pub const Server = struct {
 
         // Accept connections (single-threaded)
         while (self.running.load(.monotonic)) {
+            // Check for shutdown request
+            if (self.shutdown_state.isRequested()) {
+                try self.performShutdown();
+                break;
+            }
+
             // Accept connection with timeout to allow checking running flag
             const connection = listener.accept() catch |err| {
                 if (err == error.WouldBlock) continue;
@@ -152,6 +200,36 @@ pub const Server = struct {
                 std.debug.print("Error handling connection: {any}\n", .{err});
             };
         }
+    }
+
+    /// Perform graceful shutdown based on shutdown request
+    fn performShutdown(self: *Server) !void {
+        const req = self.shutdown_state.getRequest() orelse return;
+
+        std.debug.print("\x1b[1;33mShutdown requested\x1b[0m (save={}, now={}, force={})\n", .{ req.save, req.now, req.force });
+
+        // Save RDB if requested
+        if (req.save) {
+            std.debug.print("Saving RDB snapshot before shutdown...\n", .{});
+            const persistence = @import("storage/persistence.zig");
+            persistence.Persistence.save(self.storage, "dump.rdb", self.allocator) catch |err| {
+                if (!req.force) {
+                    std.debug.print("\x1b[1;31mError saving RDB: {any}\x1b[0m\n", .{err});
+                    std.debug.print("Shutdown aborted (use FORCE to override)\n", .{});
+                    // Clear shutdown request
+                    self.shutdown_state.mutex.lock();
+                    self.shutdown_state.request = null;
+                    self.shutdown_state.requested.store(false, .release);
+                    self.shutdown_state.mutex.unlock();
+                    return err;
+                }
+                std.debug.print("\x1b[1;33mWarning: RDB save failed: {any} (continuing due to FORCE)\x1b[0m\n", .{err});
+            };
+        }
+
+        // Stop accepting new connections
+        self.running.store(false, .monotonic);
+        std.debug.print("\x1b[1;32mShutdown complete\x1b[0m\n", .{});
     }
 
     /// Stop the server gracefully
@@ -280,6 +358,7 @@ pub const Server = struct {
                 &self.client_registry,
                 client_id,
                 &self.script_store,
+                &self.shutdown_state,
             ) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";

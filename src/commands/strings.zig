@@ -72,6 +72,7 @@ fn getClientProtocol(client_registry: *ClientRegistry, client_id: u64) RespProto
 /// `my_port` is this server's listen port, sent to primary during REPLCONF handshake.
 /// `replica_stream` is set when this connection is from a replica performing PSYNC.
 /// `client_registry` and `client_id` are used for CLIENT commands.
+/// `shutdown_state` is used for SHUTDOWN command.
 pub fn executeCommand(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -87,6 +88,7 @@ pub fn executeCommand(
     client_registry: *ClientRegistry,
     client_id: u64,
     script_store: *ScriptStore,
+    shutdown_state: ?*@import("../server.zig").ShutdownState,
 ) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
@@ -225,7 +227,7 @@ pub fn executeCommand(
     } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
         return tx_mod.cmdUnwatch(allocator, tx, array);
     } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
-        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store);
+        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store, shutdown_state);
     }
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
@@ -1122,7 +1124,7 @@ pub fn executeCommand(
                 };
             }
             const client_protocol = client_registry.getProtocol(client_id);
-            break :blk try utility_cmds.cmdShutdown(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+            break :blk try utility_cmds.cmdShutdown(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol), shutdown_state);
         } else if (std.mem.eql(u8, cmd_upper, "MONITOR")) {
             var args = try allocator.alloc([]const u8, array.len);
             defer allocator.free(args);
@@ -1242,6 +1244,7 @@ fn cmdExec(
     client_registry: *ClientRegistry,
     client_id: u64,
     script_store: *ScriptStore,
+    shutdown_state: ?*@import("../server.zig").ShutdownState,
 ) anyerror![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1296,6 +1299,7 @@ fn cmdExec(
             client_registry,
             client_id,
             script_store,
+            shutdown_state,
         ) catch |err| blk: {
             var buf: [64]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "ERR command error: {any}", .{err}) catch "ERR internal error";
