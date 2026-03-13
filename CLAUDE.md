@@ -4,7 +4,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-91 complete (180+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-92 complete (187+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
@@ -75,10 +75,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 | 89 | **Sailor v1.11.0 migration** — Terminal graphics and visual effects (shadow effects with configurable depth/direction, 3D border effects for raised/sunken widgets, blur effects with multiple rendering modes, transparency effects, Sixel graphics protocol for inline raster images with color quantization, Kitty graphics protocol for efficient image transmission, easing functions for smooth animations, color interpolation), added 9 tests in tests/test_sailor_v1_11_0.zig, non-breaking upgrade, all tests pass |
 | 90 | **MONITOR real implementation (Phase 6.2)** — MONITOR command enables real-time command streaming to monitoring clients (returns OK), ClientInfo.monitor_mode field, ClientRegistry methods (setMonitorMode, isMonitoring, getMonitoringClients, broadcastToMonitors), MonitorMessage struct for typed messages, command dispatcher integration (broadcasts all commands except MONITOR/QUIT before execution), message format: +timestamp.usec [db addr] "cmd" "arg1" ..., quote/backslash escaping in arguments, 2 unit tests in utility.zig (enable mode, wrong args) + 5 unit tests in client.zig (setMonitorMode, getMonitoringClients, broadcastToMonitors, quote escaping) + 6 integration tests in test_monitor.zig (enable mode, broadcast, exclusions, multi-client, timestamp format), all tests pass — Phase 6.2 server management (MONITOR complete, LATENCY and MEMORY real impl pending) |
 | 91 | **Sailor v1.12.0 migration** — Enterprise & Accessibility (session recording & playback for debugging TUI, audit logging with 10 event types and 4 severity levels, 4 high contrast WCAG AAA themes with 21:1+ contrast ratios, screen reader enhancements with OSC8/ARIA/JSON modes, keyboard-only navigation with 5 focus indicator styles), all opt-in features, non-breaking upgrade, all tests pass |
+| 92 | **LATENCY real implementation (Phase 6.3)** — LATENCY LATEST (get latest samples for all events), LATENCY HISTORY <event> (get 160-sample history), LATENCY RESET [event...] (reset specific/all events), LATENCY GRAPH <event> (ASCII bar chart), LATENCY HISTOGRAM [cmd...] (per-command latency distribution), LATENCY DOCTOR (automated analysis with warnings), LATENCY HELP (help text), LatencyMonitor data structure (event tracking with 11 event types, command histograms with 16 logarithmic buckets), HistoryBuffer ring buffer (160 samples), EventType enum (command, fast-command, fork, rdb-unlink-temp-file, aof-*, expire-cycle, eviction-cycle, eviction-del), EventSample named type, 9 unit tests in latency.zig + 9 unit tests in introspection.zig + 14 integration tests in test_latency.zig, all tests pass — Phase 6.3 complete (SLOWLOG/MONITOR/LATENCY done, MEMORY real impl and DEBUG expansion pending) |
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values). **All blocking commands now have true blocking semantics using polling** (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK). **SLOWLOG and MONITOR now have real implementations** (SLOWLOG: tracking with ring buffer, MONITOR: real-time command streaming).
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SHUTDOWN (no-op), SELECT (DB 0 only), MEMORY (stub values). **All blocking commands now have true blocking semantics using polling** (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK). **SLOWLOG, MONITOR, and LATENCY now have real implementations** (SLOWLOG: ring buffer tracking, MONITOR: real-time command streaming, LATENCY: event tracking + command histograms).
 
 ---
 
