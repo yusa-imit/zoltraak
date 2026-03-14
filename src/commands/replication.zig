@@ -396,6 +396,144 @@ pub fn cmdWaitaof(
     return buf.toOwnedSlice(allocator);
 }
 
+// ── FAILOVER ─────────────────────────────────────────────────────────────────
+
+/// FAILOVER [TO host port [FORCE]] [ABORT] [TIMEOUT milliseconds]
+///
+/// Initiates a coordinated failover from a master to one of its replicas.
+/// Returns +OK if the command was accepted and failover is in progress.
+///
+/// Options:
+/// - TO host port [FORCE]: Designate a specific replica to failover to
+/// - TIMEOUT ms: Maximum time to wait in waiting-for-sync state before aborting
+/// - ABORT: Abort an ongoing failover
+///
+/// Stub implementation for Iteration 97:
+/// - Validates arguments and sets failover state
+/// - Real failover execution (CLIENT PAUSE, sync wait, demote, PSYNC FAILOVER) not implemented
+/// - Requires full event-loop integration for production use
+pub fn cmdFailover(
+    allocator: std.mem.Allocator,
+    repl: *ReplicationState,
+    args: []const []const u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Only masters can initiate failover
+    if (repl.role != .primary) {
+        return w.writeError("ERR FAILOVER is not supported for replica instances");
+    }
+
+    // Parse options
+    var abort = false;
+    var timeout_ms: u64 = 0;
+    var target_host: ?[]const u8 = null;
+    var target_port: u16 = 0;
+    var force = false;
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        const arg_upper = try std.ascii.allocUpperString(allocator, arg);
+        defer allocator.free(arg_upper);
+
+        if (std.mem.eql(u8, arg_upper, "ABORT")) {
+            abort = true;
+        } else if (std.mem.eql(u8, arg_upper, "TIMEOUT")) {
+            if (i + 1 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            timeout_ms = std.fmt.parseInt(u64, args[i], 10) catch {
+                return w.writeError("ERR timeout is not an integer or out of range");
+            };
+        } else if (std.mem.eql(u8, arg_upper, "TO")) {
+            if (i + 2 >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            target_host = args[i];
+            i += 1;
+            target_port = std.fmt.parseInt(u16, args[i], 10) catch {
+                return w.writeError("ERR invalid port");
+            };
+        } else if (std.mem.eql(u8, arg_upper, "FORCE")) {
+            force = true;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    // ABORT: cancel ongoing failover
+    if (abort) {
+        if (repl.failover_state == .no_failover) {
+            return w.writeError("ERR No failover in progress");
+        }
+
+        // Reset failover state
+        repl.failover_state = .no_failover;
+        if (repl.failover_target_host) |h| {
+            repl.allocator.free(h);
+            repl.failover_target_host = null;
+        }
+        repl.failover_target_port = 0;
+        repl.failover_timeout_ms = 0;
+        repl.failover_start_ms = 0;
+
+        return w.writeSimpleString("OK");
+    }
+
+    // Check if failover already in progress
+    if (repl.failover_state != .no_failover) {
+        return w.writeError("ERR Failover already in progress");
+    }
+
+    // Validate FORCE: only valid with TO + TIMEOUT
+    if (force and (target_host == null or timeout_ms == 0)) {
+        return w.writeError("ERR FORCE requires both TO and TIMEOUT");
+    }
+
+    // Validate target replica (if specified)
+    if (target_host != null) {
+        // Check if target replica exists and is connected
+        var found = false;
+        for (repl.replicas.items) |r| {
+            if (r.port == target_port) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return w.writeError("ERR Target replica not found or not connected");
+        }
+    }
+
+    // Initiate failover
+    // Stub implementation: set state to waiting_for_sync
+    // Real implementation would:
+    // 1. CLIENT PAUSE WRITE
+    // 2. Monitor replicas for sync
+    // 3. Demote master to replica
+    // 4. Send PSYNC FAILOVER to target replica
+    // 5. CLIENT UNPAUSE after acknowledgment
+
+    repl.failover_state = .waiting_for_sync;
+    repl.failover_timeout_ms = timeout_ms;
+    repl.failover_start_ms = std.time.milliTimestamp();
+
+    if (target_host) |host| {
+        // Store target replica info
+        if (repl.failover_target_host) |h| {
+            repl.allocator.free(h);
+        }
+        repl.failover_target_host = try repl.allocator.dupe(u8, host);
+        repl.failover_target_port = target_port;
+    }
+
+    return w.writeSimpleString("OK");
+}
+
 // ── INFO ─────────────────────────────────────────────────────────────────────
 
 /// INFO [section]
@@ -449,6 +587,11 @@ pub fn buildReplicationInfo(
     try bw.print("role:{s}\r\n", .{role_str});
     try bw.print("master_replid:{s}\r\n", .{repl.replid});
     try bw.print("master_repl_offset:{d}\r\n", .{repl.repl_offset});
+
+    // Add master_failover_state for primaries
+    if (repl.role == .primary) {
+        try bw.print("master_failover_state:{s}\r\n", .{repl.failover_state.toString()});
+    }
 
     if (repl.role == .primary) {
         try bw.print("connected_slaves:{d}\r\n", .{repl.replicas.items.len});
@@ -654,4 +797,132 @@ test "replication commands - WAITAOF success with no AOF required" {
 
     // Should return array [0, 0]
     try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+}
+
+test "replication commands - FAILOVER on replica fails" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initReplica(allocator, "127.0.0.1", 6379);
+    defer repl.deinit();
+
+    const args = [_][]const u8{"FAILOVER"};
+    const result = try cmdFailover(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "replica") != null);
+}
+
+test "replication commands - FAILOVER basic (no options)" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{"FAILOVER"};
+    const result = try cmdFailover(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expectEqual(repl_mod.FailoverState.waiting_for_sync, repl.failover_state);
+}
+
+test "replication commands - FAILOVER with TIMEOUT" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "FAILOVER", "TIMEOUT", "5000" };
+    const result = try cmdFailover(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expectEqual(repl_mod.FailoverState.waiting_for_sync, repl.failover_state);
+    try std.testing.expectEqual(@as(u64, 5000), repl.failover_timeout_ms);
+}
+
+test "replication commands - FAILOVER ABORT without ongoing failover" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "FAILOVER", "ABORT" };
+    const result = try cmdFailover(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "No failover") != null);
+}
+
+test "replication commands - FAILOVER ABORT after starting failover" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // Start failover
+    const args1 = [_][]const u8{"FAILOVER"};
+    const result1 = try cmdFailover(allocator, &repl, &args1);
+    defer allocator.free(result1);
+    try std.testing.expectEqualStrings("+OK\r\n", result1);
+
+    // Abort it
+    const args2 = [_][]const u8{ "FAILOVER", "ABORT" };
+    const result2 = try cmdFailover(allocator, &repl, &args2);
+    defer allocator.free(result2);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result2);
+    try std.testing.expectEqual(repl_mod.FailoverState.no_failover, repl.failover_state);
+}
+
+test "replication commands - FAILOVER already in progress" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // Start failover
+    const args1 = [_][]const u8{"FAILOVER"};
+    const result1 = try cmdFailover(allocator, &repl, &args1);
+    defer allocator.free(result1);
+
+    // Try to start another
+    const args2 = [_][]const u8{"FAILOVER"};
+    const result2 = try cmdFailover(allocator, &repl, &args2);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.startsWith(u8, result2, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result2, "already in progress") != null);
+}
+
+test "replication commands - FAILOVER FORCE requires TO and TIMEOUT" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "FAILOVER", "FORCE" };
+    const result = try cmdFailover(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "FORCE requires") != null);
+}
+
+test "replication commands - FAILOVER invalid timeout" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const args = [_][]const u8{ "FAILOVER", "TIMEOUT", "notanumber" };
+    const result = try cmdFailover(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "replication commands - INFO replication includes master_failover_state" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const info = try buildReplicationInfo(allocator, &repl);
+    defer allocator.free(info);
+
+    try std.testing.expect(std.mem.indexOf(u8, info, "master_failover_state:no-failover") != null);
 }

@@ -178,6 +178,18 @@ pub fn build(b: *std.Build) void {
     const run_latency_tests = b.addRunArtifact(latency_tests);
     integration_test_step.dependOn(&run_latency_tests.step);
 
+    // FAILOVER command integration tests (Iteration 97)
+    const failover_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_failover.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_failover_tests = b.addRunArtifact(failover_tests);
+    integration_test_step.dependOn(&run_failover_tests.step);
+
     // MEMORY command integration tests (Iteration 93)
     const memory_tests = b.addTest(.{
         .root_module = b.createModule(.{

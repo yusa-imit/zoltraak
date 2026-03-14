@@ -33,6 +33,24 @@ const ReplicaState = enum {
     online,
 };
 
+/// Coordinated failover state (master-side).
+pub const FailoverState = enum {
+    /// No ongoing coordinated failover
+    no_failover,
+    /// Master waiting for replica to catch up
+    waiting_for_sync,
+    /// Master has demoted itself, attempting to hand off ownership
+    failover_in_progress,
+
+    pub fn toString(self: FailoverState) []const u8 {
+        return switch (self) {
+            .no_failover => "no-failover",
+            .waiting_for_sync => "waiting-for-sync",
+            .failover_in_progress => "failover-in-progress",
+        };
+    }
+};
+
 /// Information about a connected replica (primary-side view).
 pub const ReplicaInfo = struct {
     /// TCP stream to the replica
@@ -76,6 +94,19 @@ pub const ReplicationState = struct {
     /// Whether the replica-to-primary link is healthy
     primary_link_up: bool,
 
+    /// Current failover state (primary-side only)
+    failover_state: FailoverState,
+
+    /// Target replica for failover (host:port), null if none
+    failover_target_host: ?[]u8,
+    failover_target_port: u16,
+
+    /// Timeout for failover operation in milliseconds
+    failover_timeout_ms: u64,
+
+    /// Start time of failover operation (for timeout tracking)
+    failover_start_ms: i64,
+
     // ── Initialisation ────────────────────────────────────────────────────
 
     /// Create a new ReplicationState as a primary (generates a random replid).
@@ -90,6 +121,11 @@ pub const ReplicationState = struct {
             .primary_port = 0,
             .primary_stream = null,
             .primary_link_up = false,
+            .failover_state = .no_failover,
+            .failover_target_host = null,
+            .failover_target_port = 0,
+            .failover_timeout_ms = 0,
+            .failover_start_ms = 0,
         };
         generateReplid(&state.replid);
         return state;
@@ -112,6 +148,11 @@ pub const ReplicationState = struct {
             .primary_port = port,
             .primary_stream = null,
             .primary_link_up = false,
+            .failover_state = .no_failover,
+            .failover_target_host = null,
+            .failover_target_port = 0,
+            .failover_timeout_ms = 0,
+            .failover_start_ms = 0,
         };
         // replid will be set from the primary's FULLRESYNC response
         @memset(&state.replid, '0');
@@ -133,6 +174,9 @@ pub const ReplicationState = struct {
 
         // Free heap strings
         if (self.primary_host) |h| {
+            self.allocator.free(h);
+        }
+        if (self.failover_target_host) |h| {
             self.allocator.free(h);
         }
     }
