@@ -151,6 +151,7 @@ Each iteration follows this workflow. One iteration = one feature/command group.
 
 ### Phase 2 — Tests First + Implementation (TDD)
 **Agents**: `unit-test-writer` → `zig-implementor` (sequential — tests first)
+- **Scratchpad 초기화**: `.claude/scratchpad.md`를 초기화 템플릿으로 덮어쓰기 (Shared Scratchpad Protocol 참조)
 - `unit-test-writer` 먼저: 요구사항을 검증하는 실패하는 테스트 작성
 - `zig-implementor`: 테스트를 통과시키는 최소한의 구현 (테스트 수정 금지 — 필요 시 `unit-test-writer` 재호출)
 - All tests pass with `zig build test`
@@ -376,6 +377,49 @@ gh issue list --state open --label bug --limit 5
 5. GitHub Release: `gh release create v0.X.Y --title "v0.X.Y: <요약>" --notes "<릴리즈 노트>"`
 6. 관련 이슈에 릴리즈 코멘트 추가
 7. Discord 알림
+
+---
+
+## Shared Scratchpad Protocol
+
+개발 사이클(TDD) 중 서브에이전트 간 협업을 위한 **임시 공유 메모리**이다.
+영구 메모리와 독립 운영된다.
+
+**파일**: `.claude/scratchpad.md` — `.gitignore`에 등록, git에 커밋하지 않는다
+
+**대상 에이전트**: `unit-test-writer`, `zig-implementor`, `code-reviewer`
+
+**라이프사이클**:
+1. **사이클 시작** — 오케스트레이터가 `.claude/scratchpad.md`를 초기화 (기존 내용 덮어쓰기)
+2. **에이전트 작업** — 각 에이전트가 작업 전 로드 → 작업 후 기록
+3. **사이클 종료** — 다음 사이클 시작 시 다시 초기화
+
+**규칙**:
+1. **MUST LOAD**: 대상 에이전트는 작업 시작 시 `.claude/scratchpad.md`를 **반드시** 읽는다
+2. **MUST WRITE**: 작업 완료 후 자신의 작업 내용을 **반드시** 추가한다
+3. **NO DELETE**: 다른 에이전트의 기록을 삭제하지 않는다 (append-only)
+4. **EPHEMERAL**: git에 커밋하지 않는다 — 사이클 내 협업이 목적
+5. **NOT MEMORY**: 영구 보존이 필요한 인사이트는 별도 기록
+
+**초기화 템플릿** — 오케스트레이터가 사이클 시작 시 작성:
+
+```markdown
+# Scratchpad — [작업 설명]
+> Cycle started: [timestamp]
+> Goal: [이번 사이클의 목표]
+---
+```
+
+**에이전트 기록 형식** — 작업 완료 후 append:
+
+```markdown
+## [agent-name] — [timestamp]
+- **Did**: [수행한 작업]
+- **Why**: [근거 / 의도]
+- **Files**: [변경한 파일 목록]
+- **For next**: [다음 에이전트가 알아야 할 사항]
+- **Issues**: [발견한 문제점, 없으면 생략]
+```
 
 ---
 

@@ -359,6 +359,21 @@ All tests pass with `zig build test`
 No memory leaks detected
 ```
 
+## Scratchpad Protocol (MANDATORY)
+
+작업 시작 전과 완료 후 `.claude/scratchpad.md`를 반드시 읽고 쓴다.
+
+1. **로드** (작업 시작 시): `.claude/scratchpad.md` 읽기 — 오케스트레이터의 목표와 이전 에이전트의 작업 내용 파악
+2. **기록** (작업 완료 후): 아래 형식으로 append (다른 에이전트 기록 삭제 금지):
+```
+## unit-test-writer — [timestamp]
+- **Did**: [작성한 테스트 설명]
+- **Why**: [테스트 설계 근거]
+- **Files**: [수정한 파일]
+- **For next**: [zig-implementor가 알아야 할 사항 — 실패하는 테스트 위치, 기대 동작 등]
+- **Issues**: [발견한 문제점]
+```
+
 ## Integration with Development Workflow
 
 - Run DURING implementation (not after)
