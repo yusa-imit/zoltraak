@@ -804,8 +804,8 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     return buf.toOwnedSlice(allocator);
 }
 
-/// HSCAN key cursor [MATCH pattern] [COUNT count]
-/// Hash field iterator. Returns [next_cursor, [field, value, ...]].
+/// HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]
+/// Hash field iterator. Returns [next_cursor, [field, value, ...]] or [next_cursor, [field, ...]] with NOVALUES.
 pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -828,6 +828,7 @@ pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     var pattern: []const u8 = "*";
     var count: usize = 10;
+    var novalues: bool = false;
 
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
@@ -854,6 +855,8 @@ pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             count = std.fmt.parseInt(usize, cnt_str, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
+        } else if (std.mem.eql(u8, opt_upper, "NOVALUES")) {
+            novalues = true;
         } else {
             return w.writeError("ERR syntax error");
         }
@@ -882,16 +885,23 @@ pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         const val = all_pairs[j + 1];
         if (glob.matchGlob(pattern, field)) {
             try pairs.append(allocator, field);
-            try pairs.append(allocator, val);
+            if (!novalues) {
+                try pairs.append(allocator, val);
+            }
         }
     }
 
-    // Apply cursor and count (count is in field-value pairs)
-    const pair_count = pairs.items.len / 2;
-    const start = @min(cursor, pair_count);
-    const end = @min(start + count, pair_count);
-    const next_cursor: usize = if (end >= pair_count) 0 else end;
-    const page_pairs = pairs.items[start * 2 .. end * 2];
+    // Apply cursor and count
+    // With NOVALUES: pairs.items.len is field count
+    // Without NOVALUES: pairs.items.len is field count * 2
+    const item_count = if (novalues) pairs.items.len else pairs.items.len / 2;
+    const start = @min(cursor, item_count);
+    const end = @min(start + count, item_count);
+    const next_cursor: usize = if (end >= item_count) 0 else end;
+    const page_pairs = if (novalues)
+        pairs.items[start..end]
+    else
+        pairs.items[start * 2 .. end * 2];
 
     var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
@@ -1867,4 +1877,223 @@ test "SORT_RO rejects STORE option" {
     // Should return error
     try std.testing.expect(std.mem.indexOf(u8, response, "ERR") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "STORE") != null);
+}
+
+test "HSCAN NOVALUES - basic with populated hash" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create hash with 5 fields
+    _ = try storage.hset("myhash", &[_][]const u8{ "field1", "field2", "field3", "field4", "field5" }, &[_][]const u8{ "val1", "val2", "val3", "val4", "val5" }, null);
+
+    // HSCAN myhash 0 NOVALUES
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return array with fields only (not values)
+    // Parse RESP: *2\r\n:0\r\n*<count>\r\n...<fields>...
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2"));
+    // Second element should be cursor 0 (next_cursor)
+    try std.testing.expect(std.mem.indexOf(u8, response, ":0") != null);
+    // Should have array with exactly 5 elements (not 10)
+    try std.testing.expect(std.mem.indexOf(u8, response, "*5") != null);
+    // Should NOT contain values
+    try std.testing.expect(std.mem.indexOf(u8, response, "val1") == null);
+}
+
+test "HSCAN NOVALUES - empty hash" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // HSCAN non_existent 0 NOVALUES
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "non_existent" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return [0, []]
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "*0") != null);
+}
+
+test "HSCAN NOVALUES - non-existent key" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // HSCAN nonexistent 0 NOVALUES
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "nonexistent" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return [0, []] - empty result
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "*0") != null);
+}
+
+test "HSCAN NOVALUES - with MATCH pattern" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create hash with pattern-matchable fields
+    _ = try storage.hset("myhash", &[_][]const u8{ "foo1", "foo2", "bar1", "baz1" }, &[_][]const u8{ "v1", "v2", "v3", "v4" }, null);
+
+    // HSCAN myhash 0 MATCH "foo*" NOVALUES
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "MATCH" },
+        .{ .bulk_string = "foo*" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return only foo1 and foo2 (2 fields)
+    try std.testing.expect(std.mem.indexOf(u8, response, "*2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "foo") != null);
+    // Should NOT contain values or non-matching fields
+    try std.testing.expect(std.mem.indexOf(u8, response, "v1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "bar") == null);
+}
+
+test "HSCAN NOVALUES - with COUNT" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create hash with 10 fields
+    var fields: [10][]const u8 = undefined;
+    var values: [10][]const u8 = undefined;
+    for (0..10) |i| {
+        const buf = try std.fmt.allocPrint(allocator, "f{d}", .{i});
+        fields[i] = buf;
+        const vbuf = try std.fmt.allocPrint(allocator, "v{d}", .{i});
+        values[i] = vbuf;
+    }
+    _ = try storage.hset("bighash", &fields, &values, null);
+    for (fields) |f| allocator.free(f);
+    for (values) |v| allocator.free(v);
+
+    // HSCAN bighash 0 COUNT 3 NOVALUES
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "bighash" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "COUNT" },
+        .{ .bulk_string = "3" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should have at most COUNT fields (3)
+    // Response format: *2\r\n:next_cursor\r\n*<field_count>\r\n...
+    // The field_count should be <= COUNT (not <= COUNT*2)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2"));
+    // Should NOT contain values
+    try std.testing.expect(std.mem.indexOf(u8, response, "v0") == null);
+}
+
+test "HSCAN NOVALUES - combined MATCH COUNT NOVALUES" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create hash
+    _ = try storage.hset("myhash", &[_][]const u8{ "aaa1", "aaa2", "aaa3", "bbb1" }, &[_][]const u8{ "x", "y", "z", "w" }, null);
+
+    // HSCAN myhash 0 MATCH "aaa*" COUNT 2 NOVALUES
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "MATCH" },
+        .{ .bulk_string = "aaa*" },
+        .{ .bulk_string = "COUNT" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should match pattern AND respect COUNT AND return no values
+    try std.testing.expect(std.mem.indexOf(u8, response, "aaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "bbb") == null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "x") == null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "y") == null);
+}
+
+test "HSCAN NOVALUES - WRONGTYPE error on string key" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a string key
+    _ = try storage.set("mystring", "value", null);
+
+    // HSCAN mystring 0 NOVALUES - should error
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "mystring" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Should return WRONGTYPE error
+    try std.testing.expect(std.mem.indexOf(u8, response, "WRONGTYPE") != null);
+}
+
+test "HSCAN NOVALUES - order matters (field-only vs field-value pairs)" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create hash
+    _ = try storage.hset("h", &[_][]const u8{"f1"}, &[_][]const u8{"v1"}, null);
+
+    // WITHOUT NOVALUES: should have 2 items (field + value)
+    const args_with = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "h" },
+        .{ .bulk_string = "0" },
+    };
+    const response_with = try cmdHscan(allocator, &storage, &args_with);
+    defer allocator.free(response_with);
+
+    // WITH NOVALUES: should have 1 item (field only)
+    const args_without = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "h" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "NOVALUES" },
+    };
+    const response_without = try cmdHscan(allocator, &storage, &args_without);
+    defer allocator.free(response_without);
+
+    // WITH: should have "*2" (field + value in nested array)
+    // NOVALUES: should have "*1" (field only in nested array)
+    try std.testing.expect(std.mem.indexOf(u8, response_with, "*2\r\n") != null or std.mem.indexOf(u8, response_with, "*2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response_without, "*1\r\n") != null);
 }
