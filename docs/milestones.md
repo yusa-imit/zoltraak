@@ -3,14 +3,15 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 98 (188+ Redis commands implemented)
+- **Iterations complete**: 99 (189+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 6 — Server Management (100% complete) ✅
+- **Current phase**: Phase 1 — Hash command enhancements (10/10 complete) ✅
 - **Next milestone**: Phase 1 remaining commands (see PRD.md), then Phases 2-7
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE (all have real implementations as of Iteration 95-98)
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
+- **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 
 ---
 
@@ -37,7 +38,7 @@
 
 ## Completed Milestones
 
-96 iterations complete. Grouped by feature area:
+99 iterations complete. Grouped by feature area:
 
 | Group | Iterations | Summary |
 |-------|-----------|---------|
