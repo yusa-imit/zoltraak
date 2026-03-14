@@ -3,20 +3,20 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 97 (187+ Redis commands implemented)
+- **Iterations complete**: 98 (188+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 6 — Server Management (90% complete)
-- **Next milestone**: Phase 6 completion (ROLE command), then Phase 7+
+- **Current phase**: Phase 6 — Server Management (100% complete) ✅
+- **Next milestone**: Phase 1 remaining commands (see PRD.md), then Phases 2-7
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
-- **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER (all have real implementations as of Iteration 95-97)
+- **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE (all have real implementations as of Iteration 95-98)
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 
 ---
 
 ## Active Milestones
 
-### Phase 6 — Server Management (90% complete)
+### Phase 6 — Server Management (100% complete) ✅
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -27,7 +27,7 @@
 | 94 | DEBUG (SET-ACTIVE-EXPIRE, SLEEP, RELOAD, POPULATE) | Done |
 | 95 | SHUTDOWN (graceful with SAVE/NOSAVE/NOW/FORCE/ABORT) | Done |
 | 97 | FAILOVER (coordinated manual failover, stub execution) | Done |
-| — | ROLE | Pending |
+| 98 | ROLE (replication role introspection) | Done |
 
 ### Upcoming Phases (from PRD)
 
@@ -58,7 +58,7 @@
 | Utility Commands | 39-41, 57, 61, 65, 77 | ECHO, QUIT, SELECT, SWAPDB, TIME, MONITOR stub, DEBUG, SHUTDOWN stub, SORT/SORT_RO, HMSET, WAITAOF, DIGEST, DELEX |
 | Blocking Commands (True Semantics) | 64, 66-68 | XREAD/XREADGROUP BLOCK, BLPOP/BRPOP/BLMOVE, BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP — all use polling (100ms intervals) |
 | Client Management (Phase 5) | 78, 80-82, 84, 86-87 | RESET, CLIENT INFO/HELP/KILL/PAUSE/UNPAUSE/UNBLOCK/NO-EVICT/REPLY/NO-TOUCH/SETINFO/TRACKING/TRACKINGINFO/CACHING (14/14 P0 commands, 100%) |
-| Server Management (Phase 6) | 88, 90, 92-95, 97 | SLOWLOG/MONITOR/LATENCY/MEMORY/DEBUG/SHUTDOWN/FAILOVER real implementations (90% complete) |
+| Server Management (Phase 6) | 88, 90, 92-95, 97-98 | SLOWLOG/MONITOR/LATENCY/MEMORY/DEBUG/SHUTDOWN/FAILOVER/ROLE real implementations (100% complete) ✅ |
 | Sailor Migrations | 70-76, 79, 83, 85, 89, 91, 96 | sailor v0.5.0 through v1.13.0 — TUI widgets, data viz, layout, accessibility, text editing |
 
 ---

@@ -166,7 +166,7 @@ pub fn executeCommand(
     if (repl) |r| {
         if (r.role == .replica) {
             const replication_cmds = [_][]const u8{
-                "REPLCONF", "PSYNC", "PING", "INFO", "REPLICAOF", "WAIT", "FAILOVER",
+                "REPLCONF", "PSYNC", "PING", "INFO", "REPLICAOF", "WAIT", "FAILOVER", "ROLE",
             };
             var is_repl_cmd = false;
             for (replication_cmds) |rc| {
@@ -768,6 +768,15 @@ pub fn executeCommand(
                 const str_args = try arrayToStrings(allocator, array);
                 defer allocator.free(str_args);
                 break :blk try repl_cmds.cmdFailover(allocator, r, str_args);
+            }
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeError("ERR replication not initialized");
+        } else if (std.mem.eql(u8, cmd_upper, "ROLE")) {
+            if (repl) |r| {
+                const str_args = try arrayToStrings(allocator, array);
+                defer allocator.free(str_args);
+                break :blk try repl_cmds.cmdRole(allocator, r, str_args);
             }
             var w = Writer.init(allocator);
             defer w.deinit();

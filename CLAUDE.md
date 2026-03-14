@@ -4,15 +4,15 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-97 complete (187+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-98 complete (188+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-97 iterations complete (187+ Redis commands). See `docs/milestones.md` for detailed breakdown, `docs/PRD.md` for full roadmap.
+98 iterations complete (188+ Redis commands). See `docs/milestones.md` for detailed breakdown, `docs/PRD.md` for full roadmap.
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only). All blocking commands have true polling-based semantics. SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER have real implementations. Phase 6 server management 90% complete (ROLE pending).
+Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only). All blocking commands have true polling-based semantics. SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE have real implementations. **Phase 6 server management 100% complete** ✅
 
 ---
 

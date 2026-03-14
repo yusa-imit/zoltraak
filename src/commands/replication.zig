@@ -534,6 +534,108 @@ pub fn cmdFailover(
     return w.writeSimpleString("OK");
 }
 
+// ── ROLE ──────────────────────────────────────────────────────────────────────
+
+/// ROLE
+///
+/// Returns information about the role of a Redis instance in the replication stack.
+///
+/// For a primary, returns:
+///   *3\r\n
+///   $6\r\nmaster\r\n
+///   :<offset>\r\n
+///   *<num_replicas>\r\n
+///     *3\r\n$<ip_len>\r\n<ip>\r\n$<port_len>\r\n<port>\r\n$<offset_len>\r\n<offset>\r\n
+///     ...
+///
+/// For a replica, returns:
+///   *5\r\n
+///   $5\r\nslave\r\n
+///   $<ip_len>\r\n<ip>\r\n
+///   :<port>\r\n
+///   $<state_len>\r\n<state>\r\n
+///   :<offset>\r\n
+///
+/// State inference for replicas:
+///   - primary_stream == null → "connect" (not yet connected)
+///   - primary_link_up == false → "connecting" (connection exists but not fully established)
+///   - otherwise → "connected"
+pub fn cmdRole(
+    allocator: std.mem.Allocator,
+    repl: *ReplicationState,
+    args: []const []const u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // ROLE takes no arguments
+    if (args.len != 1) {
+        return w.writeError("ERR wrong number of arguments for 'role' command");
+    }
+
+    var buffer = std.ArrayList(u8){};
+    errdefer buffer.deinit(allocator);
+
+    if (repl.role == .primary) {
+        // Master response: ["master", offset, [[ip, port, offset], ...]]
+        try buffer.appendSlice(allocator, "*3\r\n");
+        try buffer.appendSlice(allocator, "$6\r\nmaster\r\n");
+
+        // Write offset as integer
+        try std.fmt.format(buffer.writer(allocator), ":{d}\r\n", .{repl.repl_offset});
+
+        // Write replica list array
+        try std.fmt.format(buffer.writer(allocator), "*{d}\r\n", .{repl.replicas.items.len});
+
+        // Write each replica as [ip, port, offset]
+        for (repl.replicas.items) |replica| {
+            // Each replica is a 3-element array
+            try buffer.appendSlice(allocator, "*3\r\n");
+
+            // IP address (hardcoded to 127.0.0.1 for now)
+            const ip = "127.0.0.1";
+            try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ ip.len, ip });
+
+            // Port as bulk string
+            const port_str = try std.fmt.allocPrint(allocator, "{d}", .{replica.port});
+            defer allocator.free(port_str);
+            try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ port_str.len, port_str });
+
+            // Offset as bulk string
+            const offset_str = try std.fmt.allocPrint(allocator, "{d}", .{replica.repl_offset});
+            defer allocator.free(offset_str);
+            try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ offset_str.len, offset_str });
+        }
+    } else {
+        // Replica response: ["slave", master_ip, master_port, state, offset]
+        try buffer.appendSlice(allocator, "*5\r\n");
+        try buffer.appendSlice(allocator, "$5\r\nslave\r\n");
+
+        // Master IP (use primary_host if available, else use placeholder)
+        const master_ip = repl.primary_host orelse "127.0.0.1";
+        try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ master_ip.len, master_ip });
+
+        // Master port as integer
+        try std.fmt.format(buffer.writer(allocator), ":{d}\r\n", .{repl.primary_port});
+
+        // Connection state as bulk string
+        const state: []const u8 = if (repl.primary_stream == null)
+            "connect"
+        else if (!repl.primary_link_up)
+            "connecting"
+        else
+            "connected";
+
+        try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ state.len, state });
+
+        // Replication offset as integer (or -1 if not connected)
+        const offset: i64 = if (repl.primary_stream == null) -1 else repl.repl_offset;
+        try std.fmt.format(buffer.writer(allocator), ":{d}\r\n", .{offset});
+    }
+
+    return buffer.toOwnedSlice(allocator);
+}
+
 // ── INFO ─────────────────────────────────────────────────────────────────────
 
 /// INFO [section]
@@ -925,4 +1027,149 @@ test "replication commands - INFO replication includes master_failover_state" {
     defer allocator.free(info);
 
     try std.testing.expect(std.mem.indexOf(u8, info, "master_failover_state:no-failover") != null);
+}
+
+test "replication commands - ROLE returns master with no replicas" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // ROLE command takes no arguments
+    const args = [_][]const u8{"ROLE"};
+    const result = try cmdRole(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    // Expected: *3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n
+    // Array of 3 elements: "master", offset (0), empty array of replicas
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "$6\r\nmaster\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "*0\r\n") != null);
+}
+
+test "replication commands - ROLE returns master with 2 replicas" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // Manually add mock replica connections
+    const mock_stream1 = std.net.Stream{ .handle = 100 };
+    const mock_stream2 = std.net.Stream{ .handle = 101 };
+
+    try repl.replicas.append(allocator, .{
+        .stream = mock_stream1,
+        .port = 6380,
+        .repl_offset = 1024,
+        .state = .online,
+    });
+    try repl.replicas.append(allocator, .{
+        .stream = mock_stream2,
+        .port = 6381,
+        .repl_offset = 2048,
+        .state = .online,
+    });
+
+    const args = [_][]const u8{"ROLE"};
+    const result = try cmdRole(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    // Expected: *3\r\n$6\r\nmaster\r\n:0\r\n*2\r\n*3\r\n$9\r\n127.0.0.1\r\n$4\r\n6380\r\n$4\r\n1024\r\n*3\r\n$9\r\n127.0.0.1\r\n$4\r\n6381\r\n$4\r\n2048\r\n
+    // Array of 3 elements: "master", offset, array of 2 replica info arrays
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "$6\r\nmaster\r\n") != null);
+    // Should contain array of 2 replicas
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    // Should contain replica info (IP, port, offset)
+    try std.testing.expect(std.mem.indexOf(u8, result, "127.0.0.1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "6380") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "1024") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "6381") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "2048") != null);
+}
+
+test "replication commands - ROLE returns replica not connected" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initReplica(allocator, "192.168.1.100", 6379);
+    defer repl.deinit();
+
+    // primary_stream is null → state is "connect"
+    try std.testing.expect(repl.primary_stream == null);
+
+    const args = [_][]const u8{"ROLE"};
+    const result = try cmdRole(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    // Expected: *5\r\n$5\r\nslave\r\n$13\r\n192.168.1.100\r\n:6379\r\n$7\r\nconnect\r\n:-1\r\n
+    // Array of 5 elements: "slave", master_ip, master_port, state ("connect"), offset (-1)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*5\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "$5\r\nslave\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "192.168.1.100") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":6379\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$7\r\nconnect\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":-1\r\n") != null);
+}
+
+test "replication commands - ROLE returns replica connected" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initReplica(allocator, "10.0.0.5", 6379);
+    defer repl.deinit();
+
+    // Simulate successful connection
+    const mock_stream = std.net.Stream{ .handle = 200 };
+    repl.primary_stream = mock_stream;
+    repl.primary_link_up = true;
+    repl.repl_offset = 4096;
+
+    const args = [_][]const u8{"ROLE"};
+    const result = try cmdRole(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    // Expected: *5\r\n$5\r\nslave\r\n$8\r\n10.0.0.5\r\n:6379\r\n$9\r\nconnected\r\n:4096\r\n
+    // Array of 5 elements: "slave", master_ip, master_port, state ("connected"), offset
+    try std.testing.expect(std.mem.startsWith(u8, result, "*5\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "$5\r\nslave\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "10.0.0.5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":6379\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$9\r\nconnected\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":4096\r\n") != null);
+}
+
+test "replication commands - ROLE returns replica connecting" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initReplica(allocator, "172.16.0.10", 6379);
+    defer repl.deinit();
+
+    // Simulate connection exists but link not fully up
+    const mock_stream = std.net.Stream{ .handle = 300 };
+    repl.primary_stream = mock_stream;
+    repl.primary_link_up = false; // Link not fully established
+    repl.repl_offset = 512;
+
+    const args = [_][]const u8{"ROLE"};
+    const result = try cmdRole(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    // Expected: *5\r\n$5\r\nslave\r\n$11\r\n172.16.0.10\r\n:6379\r\n$10\r\nconnecting\r\n:512\r\n
+    // Array of 5 elements: "slave", master_ip, master_port, state ("connecting"), offset
+    try std.testing.expect(std.mem.startsWith(u8, result, "*5\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "$5\r\nslave\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "172.16.0.10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":6379\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$10\r\nconnecting\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":512\r\n") != null);
+}
+
+test "replication commands - ROLE rejects arguments" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // ROLE command accepts no arguments
+    const args = [_][]const u8{ "ROLE", "extra" };
+    const result = try cmdRole(allocator, &repl, &args);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
 }
