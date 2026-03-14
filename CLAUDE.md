@@ -764,6 +764,13 @@ zoltraak은 `sailor` 라이브러리(https://github.com/yusa-imit/sailor)를 점
 
 **Note**: Non-breaking upgrade. All text editing features are opt-in. Autocomplete and syntax highlighting widgets ready for zoltraak-cli integration.
 
+#### v1.13.1 Patch (2026-03-14)
+
+**Critical bug fix** for data visualization widgets (Histogram, TimeSeriesChart, ScatterPlot):
+- **Fixed**: Integer overflow panic when rendering analytics data (#9 from:zr)
+- **Impact**: No direct impact on zoltraak (not using data viz widgets yet), but prevents future crashes if widgets are adopted
+- **Action**: No migration needed — patch release, fully backward compatible
+
 ---
 
 ## zuda Migration
