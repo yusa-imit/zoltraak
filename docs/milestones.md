@@ -96,6 +96,7 @@
 - **Current**: Not yet integrated (all modules PENDING)
 - **Repository**: https://github.com/yusa-imit/zuda
 - **Trigger**: `from:zuda` label issues will arrive when modules are ready
+- **Open issues**: #1, #2, #3 (all `enhancement`, `from:zuda` label)
 
 | Custom Implementation | File | zuda Target | Status |
 |----------------------|------|-------------|--------|
