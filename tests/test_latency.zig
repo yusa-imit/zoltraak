@@ -41,6 +41,7 @@ fn execLatency(
         client_registry,
         1, // client_id
         script_store,
+        null, // shutdown_state
     );
 }
 
