@@ -149,10 +149,10 @@ Each iteration follows this workflow. One iteration = one feature/command group.
 - Document command syntax, return types, error conditions, edge cases
 - Cross-reference with redis.io/commands
 
-### Phase 2 — Implementation + Unit Tests
-**Agents**: `zig-implementor` + `unit-test-writer` (parallel)
-- Implement in `src/commands/`, `src/storage/`
-- Embed unit tests at end of source files (Zig convention)
+### Phase 2 — Tests First + Implementation (TDD)
+**Agents**: `unit-test-writer` → `zig-implementor` (sequential — tests first)
+- `unit-test-writer` 먼저: 요구사항을 검증하는 실패하는 테스트 작성
+- `zig-implementor`: 테스트를 통과시키는 최소한의 구현 (테스트 수정 금지 — 필요 시 `unit-test-writer` 재호출)
 - All tests pass with `zig build test`
 - **Gate**: compiles, unit tests pass, no memory leaks
 
@@ -205,7 +205,7 @@ Each iteration follows this workflow. One iteration = one feature/command group.
 | Phase | Agent(s) | Execution |
 |-------|----------|-----------|
 | 1 | redis-spec-analyzer | Solo |
-| 2 | zig-implementor + unit-test-writer | Parallel |
+| 2 | unit-test-writer → zig-implementor | Sequential (TDD) |
 | 3 | zig-quality-reviewer → code-reviewer | Sequential |
 | 4 | integration-test-orchestrator | Solo |
 | 5 | redis-compatibility-validator + performance-validator | Parallel |
@@ -268,6 +268,13 @@ gh issue list --state open --limit 10 --json number,title,labels,createdAt
 - bug 라벨 이슈가 있으면 새 이터레이션 구현보다 반드시 먼저 수정한다
 - bug 수정은 별도 커밋: `fix(<scope>): <description>`
 
+**테스트 품질 감사** (Stability 세션 필수):
+- 무조건 통과하는 무의미한 테스트 식별 및 개선 (예: 빈 assertion, 항상 true인 조건)
+- 구현 코드를 그대로 복사한 expected value 제거
+- happy-path-only 테스트에 실패 시나리오 보강
+- 경계값, 에러 경로, 동시성 시나리오 누락 확인
+- `unit-test-writer`를 호출하여 개선 방향 수립
+
 **작업 선택 규칙**:
 - bug 이슈가 있으면 → 버그 수정 우선
 - bug 없으면 → PRD.md의 Phase 순서를 따름 (Phase 1 → Phase 2 → ...)
@@ -280,6 +287,8 @@ gh issue list --state open --limit 10 --json number,title,labels,createdAt
 - 동일 에러 3회 시도 후 지속 시 문서화하고 다음 항목으로 이동
 - 스코프 크리프 금지: 사이클당 하나의 이터레이션만 구현
 - 기존 테스트가 반드시 계속 통과해야 함
+- **TDD is mandatory** — 구현 전 반드시 `unit-test-writer`로 실패하는 테스트를 작성. 테스트 수정 시에도 `unit-test-writer` 재호출
+- **Meaningful tests only** — 무조건 통과하는 테스트, 구현을 복사한 테스트, assertion 없는 테스트 금지. 테스트가 실패할 수 있는 조건이 명확해야 한다
 - `zig build test`가 60초 이상 걸리면 hang으로 간주하고 강제 종료
 
 **프로세스 정리 (필수)**:
