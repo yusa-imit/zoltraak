@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 102 (191+ Redis commands implemented)
+- **Iterations complete**: 103 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 1.6 Generic Key Commands — WAIT full implementation complete
+- **Current phase**: Sailor v1.14.0 migration complete
 - **Next milestone**: Phase 1 remaining commands (see PRD.md), then Phases 2-7
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
@@ -13,6 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
+- **Sailor library**: v1.14.0 (memory pooling, render profiling, virtual rendering, incremental layout, buffer compression)
 
 ---
 
@@ -70,9 +71,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.13.1 (build.zig.zon)
-- **Latest available**: v1.13.1
-- **Migration status**: All versions through v1.13.1 migrated.
+- **Current in zoltraak**: v1.14.0 (build.zig.zon)
+- **Latest available**: v1.14.0
+- **Migration status**: All versions through v1.14.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -93,6 +94,7 @@
 | v1.12.0 | Session recording, audit logging, WCAG themes, screen reader | Done (Iter 91) |
 | v1.13.0 | Syntax highlighting, code editor, autocomplete, multi-cursor | Done (Iter 96) |
 | v1.13.1 | Integer overflow fix for data viz widgets | Done (Iter 101) |
+| v1.14.0 | Memory pooling, render profiling, virtual rendering, incremental layout, buffer compression | Done (Iter 103) |
 
 ### zuda Library
 

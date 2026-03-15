@@ -202,6 +202,19 @@ pub fn build(b: *std.Build) void {
     const run_memory_tests = b.addRunArtifact(memory_tests);
     integration_test_step.dependOn(&run_memory_tests.step);
 
+    // Sailor v1.14.0 feature tests (Iteration 103)
+    const sailor_v1_14_0_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_sailor_v1_14_0.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    sailor_v1_14_0_tests.root_module.addImport("sailor", sailor_mod);
+
+    const run_sailor_v1_14_0_tests = b.addRunArtifact(sailor_v1_14_0_tests);
+    test_step.dependOn(&run_sailor_v1_14_0_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.
