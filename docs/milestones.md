@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 99 (189+ Redis commands implemented)
+- **Iterations complete**: 100 (190+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 1 — Hash command enhancements (10/10 complete) ✅
+- **Current phase**: Phase 1 — Sorted Set command enhancements (ZRANGE unified complete)
 - **Next milestone**: Phase 1 remaining commands (see PRD.md), then Phases 2-7
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
@@ -38,7 +38,7 @@
 
 ## Completed Milestones
 
-99 iterations complete. Grouped by feature area:
+100 iterations complete. Grouped by feature area:
 
 | Group | Iterations | Summary |
 |-------|-----------|---------|
@@ -47,7 +47,7 @@
 | Pub/Sub | 8, 62, 69 | SUBSCRIBE/PUBLISH, pattern subscriptions (PSUBSCRIBE), sharded pub/sub (SSUBSCRIBE/SPUBLISH) |
 | Transactions | 9 | MULTI/EXEC/DISCARD/WATCH/UNWATCH |
 | Replication | 10 | REPLICAOF, REPLCONF, PSYNC, WAIT |
-| Extended Data Types | 11-12, 18-19, 42-43, 45-54 | Extended Set/SortedSet/String/List commands, SCAN family, OBJECT, LPOS, LMOVE, LCS, MGET, HRANDFIELD, LMPOP, ZMPOP, Hash field-level TTL, HGETDEL/HGETEX/HSETEX, ZRANGESTORE |
+| Extended Data Types | 11-12, 18-19, 42-43, 45-54, 99-100 | Extended Set/SortedSet/String/List commands, SCAN family, OBJECT, LPOS, LMOVE, LCS, MGET, HRANDFIELD, LMPOP, ZMPOP, Hash field-level TTL, HGETDEL/HGETEX/HSETEX, ZRANGESTORE, HSCAN NOVALUES, ZRANGE unified |
 | Introspection | 13-15, 29-30 | CLIENT, CONFIG, COMMAND, MEMORY stubs, SLOWLOG stubs, INFO |
 | Streams | 16-17, 24, 27-28, 54-55, 59-60, 63-64, 66 | XADD through XAUTOCLAIM, consumer groups, XSETID, XACKDEL/XDELEX, XCFGSET, XREAD/XREADGROUP BLOCK (polling) |
 | Bit Operations | 20, 44, 51 | SETBIT/GETBIT/BITCOUNT/BITOP, BITFIELD/BITFIELD_RO, BITPOS |
