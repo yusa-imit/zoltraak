@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 100 (190+ Redis commands implemented)
+- **Iterations complete**: 101 (190+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 1 — Sorted Set command enhancements (ZRANGE unified complete)
+- **Current phase**: Dependency updates — sailor v1.13.1 migration complete
 - **Next milestone**: Phase 1 remaining commands (see PRD.md), then Phases 2-7
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
@@ -60,7 +60,7 @@
 | Blocking Commands (True Semantics) | 64, 66-68 | XREAD/XREADGROUP BLOCK, BLPOP/BRPOP/BLMOVE, BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP — all use polling (100ms intervals) |
 | Client Management (Phase 5) | 78, 80-82, 84, 86-87 | RESET, CLIENT INFO/HELP/KILL/PAUSE/UNPAUSE/UNBLOCK/NO-EVICT/REPLY/NO-TOUCH/SETINFO/TRACKING/TRACKINGINFO/CACHING (14/14 P0 commands, 100%) |
 | Server Management (Phase 6) | 88, 90, 92-95, 97-98 | SLOWLOG/MONITOR/LATENCY/MEMORY/DEBUG/SHUTDOWN/FAILOVER/ROLE real implementations (100% complete) ✅ |
-| Sailor Migrations | 70-76, 79, 83, 85, 89, 91, 96 | sailor v0.5.0 through v1.13.0 — TUI widgets, data viz, layout, accessibility, text editing |
+| Sailor Migrations | 70-76, 79, 83, 85, 89, 91, 96, 101 | sailor v0.5.0 through v1.13.1 — TUI widgets, data viz, layout, accessibility, text editing, integer overflow fix |
 
 ---
 
@@ -68,9 +68,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.13.0 (build.zig.zon)
-- **Latest available**: v1.13.1 (patch — integer overflow fix for data viz widgets)
-- **Migration status**: All versions through v1.13.0 migrated. v1.13.1 patch not yet applied.
+- **Current in zoltraak**: v1.13.1 (build.zig.zon)
+- **Latest available**: v1.13.1
+- **Migration status**: All versions through v1.13.1 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -90,7 +90,7 @@
 | v1.11.0 | Sixel/Kitty graphics, blur, shadows, easing, particles | Done (Iter 89) |
 | v1.12.0 | Session recording, audit logging, WCAG themes, screen reader | Done (Iter 91) |
 | v1.13.0 | Syntax highlighting, code editor, autocomplete, multi-cursor | Done (Iter 96) |
-| v1.13.1 | Integer overflow fix for data viz widgets | Not applied (optional) |
+| v1.13.1 | Integer overflow fix for data viz widgets | Done (Iter 101) |
 
 ### zuda Library
 
