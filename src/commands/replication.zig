@@ -229,11 +229,19 @@ pub fn cmdPsync(
 
 /// WAIT numreplicas timeout_ms
 ///
-/// Returns the number of replicas that have acknowledged the current offset.
-/// Simplified: polls with 10ms sleep intervals up to timeout_ms.
+/// Waits for the specified number of replicas to acknowledge the replication offset
+/// of the last write command executed by this client.
+///
+/// Per Redis specification: "Redis remembers, for each client, the replication offset
+/// of the produced replication stream when a given write command was executed in the
+/// context of that client."
+///
+/// Polls with 10ms sleep intervals up to timeout_ms.
 pub fn cmdWait(
     allocator: std.mem.Allocator,
     repl: *ReplicationState,
+    client_registry: *@import("client.zig").ClientRegistry,
+    client_id: u64,
     args: []const []const u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
@@ -255,6 +263,9 @@ pub fn cmdWait(
         return w.writeInteger(count);
     }
 
+    // Get the client's replication offset (offset of the last write by this client)
+    const client_offset = client_registry.getClientReplOffset(client_id);
+
     // Poll until enough replicas are caught up or timeout expires
     const deadline_ns: u64 = if (timeout_ms > 0)
         @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000 + timeout_ms * 1_000_000
@@ -264,7 +275,8 @@ pub fn cmdWait(
     while (true) {
         var caught_up: u32 = 0;
         for (repl.replicas.items) |r| {
-            if (r.state == .online and r.repl_offset >= repl.repl_offset) {
+            // Replica has acknowledged this client's writes if its offset >= client's offset
+            if (r.state == .online and r.repl_offset >= client_offset) {
                 caught_up += 1;
             }
         }
@@ -780,8 +792,14 @@ test "replication commands - WAIT returns 0 with no replicas" {
     var repl = try ReplicationState.initPrimary(allocator);
     defer repl.deinit();
 
+    const ClientRegistry = @import("client.zig").ClientRegistry;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 3);
+
     const args = [_][]const u8{ "WAIT", "1", "0" };
-    const result = try cmdWait(allocator, &repl, &args);
+    const result = try cmdWait(allocator, &repl, &registry, client_id, &args);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings(":0\r\n", result);
@@ -792,11 +810,120 @@ test "replication commands - WAIT wrong args" {
     var repl = try ReplicationState.initPrimary(allocator);
     defer repl.deinit();
 
+    const ClientRegistry = @import("client.zig").ClientRegistry;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 3);
+
     const args = [_][]const u8{"WAIT"};
-    const result = try cmdWait(allocator, &repl, &args);
+    const result = try cmdWait(allocator, &repl, &registry, client_id, &args);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "replication commands - WAIT uses per-client offset" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const ClientRegistry = @import("client.zig").ClientRegistry;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Register two clients
+    const client1_id = try registry.registerClient("127.0.0.1:12345", 3);
+    const client2_id = try registry.registerClient("127.0.0.1:12346", 4);
+
+    // Simulate client1 performing a write at offset 100
+    registry.updateClientReplOffset(client1_id, 100);
+    // Simulate client2 performing a write at offset 200
+    registry.updateClientReplOffset(client2_id, 200);
+
+    // Add a mock replica at offset 150
+    const mock_stream = std.net.Stream{ .handle = 0 };
+    try repl.replicas.append(allocator, .{
+        .stream = mock_stream,
+        .port = 6380,
+        .repl_offset = 150,
+        .state = .online,
+    });
+
+    // Client1 (offset 100) should see the replica as caught up (150 >= 100)
+    const args1 = [_][]const u8{ "WAIT", "1", "0" };
+    const result1 = try cmdWait(allocator, &repl, &registry, client1_id, &args1);
+    defer allocator.free(result1);
+    try std.testing.expectEqualStrings(":1\r\n", result1); // 1 replica caught up
+
+    // Client2 (offset 200) should see the replica as NOT caught up (150 < 200)
+    const args2 = [_][]const u8{ "WAIT", "1", "0" };
+    const result2 = try cmdWait(allocator, &repl, &registry, client2_id, &args2);
+    defer allocator.free(result2);
+    try std.testing.expectEqualStrings(":0\r\n", result2); // 0 replicas caught up
+}
+
+test "replication commands - WAIT with timeout and per-client offset" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const ClientRegistry = @import("client.zig").ClientRegistry;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 3);
+
+    // Client performs write at offset 500
+    registry.updateClientReplOffset(client_id, 500);
+
+    // Add replica at offset 400 (not caught up yet)
+    const mock_stream = std.net.Stream{ .handle = 0 };
+    try repl.replicas.append(allocator, .{
+        .stream = mock_stream,
+        .port = 6380,
+        .repl_offset = 400,
+        .state = .online,
+    });
+
+    // WAIT with timeout=50ms should return 0 (replica not caught up)
+    const args = [_][]const u8{ "WAIT", "1", "50" };
+    const start_time = std.time.milliTimestamp();
+    const result = try cmdWait(allocator, &repl, &registry, client_id, &args);
+    const elapsed_ms = std.time.milliTimestamp() - start_time;
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":0\r\n", result);
+    // Should have waited close to timeout (at least 40ms, at most 100ms)
+    try std.testing.expect(elapsed_ms >= 40 and elapsed_ms <= 100);
+}
+
+test "replication commands - WAIT default offset is 0" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const ClientRegistry = @import("client.zig").ClientRegistry;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Register client without any writes (offset should be 0)
+    const client_id = try registry.registerClient("127.0.0.1:12345", 3);
+
+    // Add replica at offset 50
+    const mock_stream = std.net.Stream{ .handle = 0 };
+    try repl.replicas.append(allocator, .{
+        .stream = mock_stream,
+        .port = 6380,
+        .repl_offset = 50,
+        .state = .online,
+    });
+
+    // Client with default offset 0 should see replica as caught up (50 >= 0)
+    const args = [_][]const u8{ "WAIT", "1", "0" };
+    const result = try cmdWait(allocator, &repl, &registry, client_id, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
 }
 
 test "replication commands - REPLCONF listening-port" {

@@ -749,7 +749,7 @@ pub fn executeCommand(
             if (repl) |r| {
                 const str_args = try arrayToStrings(allocator, array);
                 defer allocator.free(str_args);
-                break :blk try repl_cmds.cmdWait(allocator, r, str_args);
+                break :blk try repl_cmds.cmdWait(allocator, r, client_registry, client_id, str_args);
             }
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -1240,6 +1240,12 @@ pub fn executeCommand(
                     defer allocator.free(bytes);
                     r.propagate(bytes);
                 }
+            }
+
+            // Update client's replication offset for WAIT command
+            // This records the replication offset after this write command
+            if (r.role == .primary) {
+                client_registry.updateClientReplOffset(client_id, r.repl_offset);
             }
         }
     }

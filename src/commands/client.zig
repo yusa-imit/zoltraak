@@ -68,6 +68,8 @@ pub const ClientInfo = struct {
     tracking_prefixes: std.ArrayList([]const u8),
     /// Monitor mode flag (CLIENT is in MONITOR mode)
     monitor_mode: bool,
+    /// Replication offset of the last write command executed by this client (for WAIT command)
+    client_repl_offset: i64,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -185,6 +187,7 @@ pub const ClientRegistry = struct {
             .tracking_next_cache = null, // No override
             .tracking_prefixes = std.ArrayList([]const u8){},
             .monitor_mode = false, // Monitor mode off by default
+            .client_repl_offset = 0, // Start at offset 0
         };
 
         try self.clients.put(client_id, info);
@@ -674,6 +677,27 @@ pub const ClientRegistry = struct {
 
         allocator.free(message);
         return messages;
+    }
+
+    /// Update the client's replication offset (called after write commands)
+    pub fn updateClientReplOffset(self: *ClientRegistry, client_id: u64, repl_offset: i64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.client_repl_offset = repl_offset;
+        }
+    }
+
+    /// Get the client's replication offset
+    pub fn getClientReplOffset(self: *ClientRegistry, client_id: u64) i64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.client_repl_offset;
+        }
+        return 0; // Default to 0 if client not found
     }
 };
 
