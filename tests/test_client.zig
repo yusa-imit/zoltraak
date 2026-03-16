@@ -681,3 +681,79 @@ test "CLIENT SETINFO - wrong number of arguments" {
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "wrong number of arguments") != null);
 }
+
+test "CLIENT GETREDIR returns -1 when tracking disabled" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // CLIENT GETREDIR (tracking disabled by default)
+    const resp = try sendCommand(allocator, stream, "*2\r\n$6\r\nCLIENT\r\n$8\r\nGETREDIR\r\n");
+    defer allocator.free(resp);
+
+    // Should return -1
+    try std.testing.expectEqualStrings(":-1\r\n", resp);
+}
+
+test "CLIENT GETREDIR returns redirect ID when enabled" {
+    const allocator = std.testing.allocator;
+
+    // Create two connections
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream1 = try net.tcpConnectToAddress(address);
+    defer stream1.close();
+    const stream2 = try net.tcpConnectToAddress(address);
+    defer stream2.close();
+
+    // Get client ID of stream2 (redirect target)
+    const id_resp = try sendCommand(allocator, stream2, "*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n");
+    defer allocator.free(id_resp);
+
+    // Parse the integer ID (format: ":123\r\n")
+    const id_str = id_resp[1 .. id_resp.len - 2]; // Strip ":" and "\r\n"
+    const redirect_id = try std.fmt.parseInt(u64, id_str, 10);
+
+    // Enable tracking on stream1 with REDIRECT to stream2
+    {
+        var cmd_buf: [256]u8 = undefined;
+        const cmd = try std.fmt.bufPrint(&cmd_buf, "*4\r\n$6\r\nCLIENT\r\n$8\r\nTRACKING\r\n$2\r\nON\r\n$8\r\nREDIRECT\r\n${d}\r\n{d}\r\n", .{ id_str.len, redirect_id });
+        const resp = try sendCommand(allocator, stream1, cmd);
+        defer allocator.free(resp);
+        try std.testing.expectEqualStrings("+OK\r\n", resp);
+    }
+
+    // CLIENT GETREDIR on stream1
+    {
+        const resp = try sendCommand(allocator, stream1, "*2\r\n$6\r\nCLIENT\r\n$8\r\nGETREDIR\r\n");
+        defer allocator.free(resp);
+
+        // Should return redirect_id
+        var expected_buf: [64]u8 = undefined;
+        const expected = try std.fmt.bufPrint(&expected_buf, ":{d}\r\n", .{redirect_id});
+        try std.testing.expectEqualStrings(expected, resp);
+    }
+}
+
+test "CLIENT GETREDIR returns -1 when tracking enabled without REDIRECT" {
+    const allocator = std.testing.allocator;
+
+    const address = try net.Address.parseIp("127.0.0.1", 6379);
+    const stream = try net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Enable tracking without REDIRECT
+    {
+        const resp = try sendCommand(allocator, stream, "*3\r\n$6\r\nCLIENT\r\n$8\r\nTRACKING\r\n$2\r\nON\r\n");
+        defer allocator.free(resp);
+        try std.testing.expectEqualStrings("+OK\r\n", resp);
+    }
+
+    // CLIENT GETREDIR (should return -1 since redirect is 0 = self)
+    {
+        const resp = try sendCommand(allocator, stream, "*2\r\n$6\r\nCLIENT\r\n$8\r\nGETREDIR\r\n");
+        defer allocator.free(resp);
+        try std.testing.expectEqualStrings(":-1\r\n", resp);
+    }
+}

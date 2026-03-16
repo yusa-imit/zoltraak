@@ -1684,6 +1684,41 @@ fn cmdClientTrackinginfo(
     return result.toOwnedSlice(allocator);
 }
 
+/// CLIENT GETREDIR
+/// Return the ID of the client we're redirecting tracking invalidation messages to.
+/// Returns -1 if tracking is OFF or not using REDIRECT mode.
+fn cmdClientGetredir(
+    allocator: std.mem.Allocator,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 1) {
+        return w.writeError("ERR wrong number of arguments for 'client|getredir' command");
+    }
+
+    const tracking_info = (try client_registry.getTrackingInfo(client_id, allocator)) orelse {
+        return w.writeError("ERR no such client");
+    };
+    defer {
+        for (tracking_info.prefixes) |prefix| {
+            allocator.free(prefix);
+        }
+        allocator.free(tracking_info.prefixes);
+    }
+
+    // Return -1 if tracking is disabled or redirect is 0 (self), otherwise return redirect ID
+    const redir = if (!tracking_info.enabled or tracking_info.redirect == 0)
+        @as(i64, -1)
+    else
+        tracking_info.redirect;
+
+    return w.writeInteger(redir);
+}
+
 /// CLIENT CACHING YES|NO
 /// Control tracking of keys in the next command (for OPTIN/OPTOUT modes).
 fn cmdClientCaching(
@@ -1784,6 +1819,9 @@ fn cmdClientHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
         "    NOLOOP: Don't send notifications for keys modified by this connection.",
         "TRACKINGINFO",
         "    Return tracking status and configuration for this connection.",
+        "GETREDIR",
+        "    Return the client ID we're redirecting tracking invalidation messages to.",
+        "    Returns -1 if tracking is OFF or not using REDIRECT mode.",
         "CACHING YES|NO",
         "    Control tracking for the next command (OPTIN/OPTOUT modes).",
         "    YES: Enable tracking for next command (OPTIN mode).",
@@ -1851,6 +1889,8 @@ pub fn cmdClient(
         return cmdClientTracking(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "TRACKINGINFO")) {
         return cmdClientTrackinginfo(allocator, registry, client_id, args);
+    } else if (std.ascii.eqlIgnoreCase(subcmd, "GETREDIR")) {
+        return cmdClientGetredir(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "CACHING")) {
         return cmdClientCaching(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "HELP")) {
@@ -3561,6 +3601,116 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
 
     // Should contain "optin" flag
     try std.testing.expect(std.mem.indexOf(u8, response2, "optin") != null);
+}
+
+test "CLIENT GETREDIR - returns -1 when tracking disabled" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "GETREDIR" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return -1 (tracking disabled)
+    try std.testing.expectEqualStrings(":-1\r\n", response);
+}
+
+test "CLIENT GETREDIR - returns redirect client ID when enabled" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const redirect_id = try registry.registerClient("127.0.0.1:54321", 43);
+
+    // Enable tracking with REDIRECT
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args_tracking = std.ArrayList(RespValue){};
+    try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
+    var buf: [32]u8 = undefined;
+    const redirect_str = try std.fmt.bufPrint(&buf, "{d}", .{redirect_id});
+    try args_tracking.append(arena_allocator, RespValue{ .bulk_string = redirect_str });
+    const tracking_args = try args_tracking.toOwnedSlice(arena_allocator);
+
+    const tracking_response = try cmdClient(allocator, &registry, client_id, tracking_args, &blocking_queue);
+    defer allocator.free(tracking_response);
+
+    // Call GETREDIR
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator2, RespValue{ .bulk_string = "GETREDIR" });
+    const args_slice = try args.toOwnedSlice(arena_allocator2);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return redirect_id
+    var expected_buf: [32]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_buf, ":{d}\r\n", .{redirect_id});
+    try std.testing.expectEqualStrings(expected, response);
+}
+
+test "CLIENT GETREDIR - returns -1 when redirect is 0 (self)" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    // Enable tracking without REDIRECT (defaults to self)
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var args_tracking = std.ArrayList(RespValue){};
+    try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    const tracking_args = try args_tracking.toOwnedSlice(arena_allocator);
+
+    const tracking_response = try cmdClient(allocator, &registry, client_id, tracking_args, &blocking_queue);
+    defer allocator.free(tracking_response);
+
+    // Call GETREDIR
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator2, RespValue{ .bulk_string = "GETREDIR" });
+    const args_slice = try args.toOwnedSlice(arena_allocator2);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should return -1 (redirect is 0 = self)
+    try std.testing.expectEqualStrings(":-1\r\n", response);
 }
 
 test "CLIENT CACHING - YES and NO" {
