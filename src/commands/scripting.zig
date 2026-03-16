@@ -4,11 +4,10 @@ const Storage = @import("../storage/memory.zig").Storage;
 const ScriptStore = @import("../storage/scripting.zig").ScriptStore;
 const writer_mod = @import("../protocol/writer.zig");
 const Writer = writer_mod.Writer;
+const LuaEngine = @import("../scripting/lua_engine.zig").LuaEngine;
 
 /// EVAL script numkeys key [key ...] arg [arg ...]
 /// Execute a Lua script server side
-/// Note: This is a stub implementation that returns nil
-/// Full Lua execution would require embedding a Lua interpreter
 pub fn cmdEval(
     allocator: Allocator,
     storage: *Storage,
@@ -16,8 +15,7 @@ pub fn cmdEval(
     args: []const []const u8,
     resp_version: u8,
 ) ![]const u8 {
-    _ = storage;
-    _ = script_store;
+    _ = storage; // TODO: Wire redis.call/pcall to storage operations
     _ = resp_version;
 
     var w = Writer.init(allocator);
@@ -40,14 +38,32 @@ pub fn cmdEval(
         return w.writeError("ERR Number of keys can't be greater than number of args");
     }
 
-    // For now, this is a stub that returns nil
-    // In a full implementation, we would:
-    // 1. Parse the Lua script
-    // 2. Execute it with KEYS and ARGV available
-    // 3. Return the result
-    _ = script;
+    // Extract KEYS and ARGV
+    const keys_start = 2;
+    const keys_end = 2 + numkeys;
+    const argv_start = keys_end;
 
-    return w.writeBulkString(null);
+    const keys = args[keys_start..keys_end];
+    const argv = args[argv_start..];
+
+    // Cache the script
+    const sha1 = try script_store.loadScript(script);
+    defer allocator.free(sha1);
+
+    // Create Lua engine and execute script
+    var lua_engine = try LuaEngine.init(allocator);
+    defer lua_engine.deinit();
+
+    const result_str = try lua_engine.eval(script, numkeys, keys, argv);
+    defer allocator.free(result_str);
+
+    // Check if result is an error
+    if (std.mem.startsWith(u8, result_str, "ERR ")) {
+        return w.writeError(result_str);
+    }
+
+    // Return the result as a bulk string
+    return w.writeBulkString(result_str);
 }
 
 /// EVALSHA sha1 numkeys key [key ...] arg [arg ...]
@@ -59,7 +75,7 @@ pub fn cmdEvalSHA(
     args: []const []const u8,
     resp_version: u8,
 ) ![]const u8 {
-    _ = storage;
+    _ = storage; // TODO: Wire redis.call/pcall to storage operations
     _ = resp_version;
 
     var w = Writer.init(allocator);
@@ -83,9 +99,9 @@ pub fn cmdEvalSHA(
     }
 
     // Check if script exists
-    if (!script_store.exists(sha1)) {
+    const script = script_store.getScript(sha1) orelse {
         return w.writeError("NOSCRIPT No matching script. Please use EVAL.");
-    }
+    };
 
     // Parse numkeys
     const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
@@ -97,9 +113,28 @@ pub fn cmdEvalSHA(
         return w.writeError("ERR Number of keys can't be greater than number of args");
     }
 
-    // For now, stub returns nil
-    // In a full implementation, retrieve script and execute
-    return w.writeBulkString(null);
+    // Extract KEYS and ARGV
+    const keys_start = 2;
+    const keys_end = 2 + numkeys;
+    const argv_start = keys_end;
+
+    const keys = args[keys_start..keys_end];
+    const argv = args[argv_start..];
+
+    // Create Lua engine and execute script
+    var lua_engine = try LuaEngine.init(allocator);
+    defer lua_engine.deinit();
+
+    const result_str = try lua_engine.eval(script, numkeys, keys, argv);
+    defer allocator.free(result_str);
+
+    // Check if result is an error
+    if (std.mem.startsWith(u8, result_str, "ERR ")) {
+        return w.writeError(result_str);
+    }
+
+    // Return the result as a bulk string
+    return w.writeBulkString(result_str);
 }
 
 /// SCRIPT LOAD script
@@ -271,8 +306,40 @@ test "cmdEval basic" {
     const response = try cmdEval(allocator, storage, &script_store, &args, 2);
     defer allocator.free(response);
 
-    // Stub returns nil
-    try std.testing.expectEqualStrings("$-1\r\n", response);
+    // Real Lua engine returns "42"
+    try std.testing.expectEqualStrings("$2\r\n42\r\n", response);
+}
+
+test "cmdEval with KEYS" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    const script = "return KEYS[1]";
+    const args = [_][]const u8{ script, "1", "mykey" };
+
+    const response = try cmdEval(allocator, storage, &script_store, &args, 2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("$5\r\nmykey\r\n", response);
+}
+
+test "cmdEval with ARGV" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    const script = "return ARGV[1] .. ' ' .. ARGV[2]";
+    const args = [_][]const u8{ script, "0", "hello", "world" };
+
+    const response = try cmdEval(allocator, storage, &script_store, &args, 2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("$11\r\nhello world\r\n", response);
 }
 
 test "cmdEvalSHA nonexistent script" {

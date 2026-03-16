@@ -23,6 +23,12 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("sailor", sailor_mod);
 
+    // Link LuaJIT for Lua scripting support
+    exe.linkSystemLibrary("luajit-5.1");
+    exe.linkLibC();
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
     // Executable: zoltraak-cli (REPL client)
     const cli = b.addExecutable(.{
         .name = "zoltraak-cli",
@@ -59,6 +65,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     unit_tests.root_module.addImport("sailor", sailor_mod);
+
+    // Link LuaJIT for Lua scripting tests
+    unit_tests.linkSystemLibrary("luajit-5.1");
+    unit_tests.linkLibC();
+    unit_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    unit_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
@@ -214,6 +226,18 @@ pub fn build(b: *std.Build) void {
 
     const run_sailor_v1_14_0_tests = b.addRunArtifact(sailor_v1_14_0_tests);
     test_step.dependOn(&run_sailor_v1_14_0_tests.step);
+
+    // Lua scripting integration tests (Iteration 105)
+    const lua_scripting_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_lua_scripting.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_lua_scripting_tests = b.addRunArtifact(lua_scripting_tests);
+    integration_test_step.dependOn(&run_lua_scripting_tests.step);
 
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
