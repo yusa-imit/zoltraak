@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.1.0 — Iterations 1-104 complete (191+ Redis commands)**
+**Current: v0.1.0 — Iterations 1-106 complete (191+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-104 iterations complete (191+ Redis commands). See `docs/milestones.md` for detailed breakdown, `docs/PRD.md` for full roadmap.
+106 iterations complete (191+ Redis commands). See `docs/milestones.md` for detailed breakdown, `docs/PRD.md` for full roadmap.
 
 ### Known stubs (need real implementation for 1.0)
 
@@ -434,8 +434,8 @@ gh issue list --state open --label bug --limit 5
 
 ## Sailor Migration
 
-**Current in zoltraak**: v1.14.0 — All versions through v1.14.0 migrated. See `docs/milestones.md` for full version history.
-**Latest available**: v1.14.0
+**Current in zoltraak**: v1.15.0 — All versions through v1.15.0 migrated. See `docs/milestones.md` for full version history.
+**Latest available**: v1.15.0
 
 **마이그레이션 프로토콜**:
 1. 세션 시작 시 `docs/milestones.md`의 Sailor 섹션을 확인

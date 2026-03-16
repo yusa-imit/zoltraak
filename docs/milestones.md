@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 104 (191+ Redis commands implemented)
+- **Iterations complete**: 106 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 5 CLIENT commands 100% complete (15/15 P0+P1+P2)
 - **Next milestone**: Phase 2 (Lua scripting), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.14.0 (memory pooling, render profiling, virtual rendering, incremental layout, buffer compression)
+- **Sailor library**: v1.15.0 (thread safety, terminal capability query, memory leak fixes, multi-platform CI)
 
 ---
 
@@ -71,9 +71,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.14.0 (build.zig.zon)
-- **Latest available**: v1.14.0
-- **Migration status**: All versions through v1.14.0 migrated.
+- **Current in zoltraak**: v1.15.0 (build.zig.zon)
+- **Latest available**: v1.15.0
+- **Migration status**: All versions through v1.15.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -95,6 +95,7 @@
 | v1.13.0 | Syntax highlighting, code editor, autocomplete, multi-cursor | Done (Iter 96) |
 | v1.13.1 | Integer overflow fix for data viz widgets | Done (Iter 101) |
 | v1.14.0 | Memory pooling, render profiling, virtual rendering, incremental layout, buffer compression | Done (Iter 103) |
+| v1.15.0 | Thread safety enhancements, XTGETTCAP terminal capability query, memory leak fixes (repl.zig), multi-platform CI (Linux, macOS, Windows), 13 platform tests | Done (Iter 106) |
 
 ### zuda Library
 
