@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 103 (191+ Redis commands implemented)
+- **Iterations complete**: 104 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Sailor v1.14.0 migration complete
-- **Next milestone**: Phase 1 remaining commands (see PRD.md), then Phases 2-7
+- **Current phase**: Phase 5 CLIENT commands 100% complete (15/15 P0+P1+P2)
+- **Next milestone**: Phase 2 (Lua scripting), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT (all have real implementations as of Iteration 95-102)
@@ -60,10 +60,10 @@
 | Stubs (Scripting/ACL/Cluster) | 36-38 | EVAL/EVALSHA stubs, ACL stubs, Cluster stubs |
 | Utility Commands | 39-41, 57, 61, 65, 77 | ECHO, QUIT, SELECT, SWAPDB, TIME, MONITOR stub, DEBUG, SHUTDOWN stub, SORT/SORT_RO, HMSET, WAITAOF, DIGEST, DELEX |
 | Blocking Commands (True Semantics) | 64, 66-68 | XREAD/XREADGROUP BLOCK, BLPOP/BRPOP/BLMOVE, BLMPOP/BZPOPMIN/BZPOPMAX/BZMPOP — all use polling (100ms intervals) |
-| Client Management (Phase 5) | 78, 80-82, 84, 86-87 | RESET, CLIENT INFO/HELP/KILL/PAUSE/UNPAUSE/UNBLOCK/NO-EVICT/REPLY/NO-TOUCH/SETINFO/TRACKING/TRACKINGINFO/CACHING (14/14 P0 commands, 100%) |
-| Server Management (Phase 6) | 88, 90, 92-95, 97-98 | SLOWLOG/MONITOR/LATENCY/MEMORY/DEBUG/SHUTDOWN/FAILOVER/ROLE real implementations (100% complete) ✅ |
+| Client Management (Phase 5) | 78, 80-82, 84, 86-87, 104 | RESET, CLIENT INFO/HELP/KILL/PAUSE/UNPAUSE/UNBLOCK/NO-EVICT/REPLY/NO-TOUCH/SETINFO/TRACKING/TRACKINGINFO/CACHING/GETREDIR (15/15 P0+P1+P2 commands, 100% complete ✅) |
+| Server Management (Phase 6) | 88, 90, 92-95, 97-98 | SLOWLOG/MONITOR/LATENCY/MEMORY/DEBUG/SHUTDOWN/FAILOVER/ROLE real implementations (8/8 commands, 100% complete ✅) |
 | Generic Key Commands (Phase 1.6) | 102 | WAIT full implementation with per-client replication offset tracking |
-| Sailor Migrations | 70-76, 79, 83, 85, 89, 91, 96, 101 | sailor v0.5.0 through v1.13.1 — TUI widgets, data viz, layout, accessibility, text editing, integer overflow fix |
+| Sailor Migrations | 70-76, 79, 83, 85, 89, 91, 96, 101, 103 | sailor v0.5.0 through v1.14.0 — TUI widgets, data viz, layout, accessibility, text editing, performance optimizations |
 
 ---
 
