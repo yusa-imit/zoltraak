@@ -51,7 +51,7 @@ pub fn cmdEval(
     defer allocator.free(sha1);
 
     // Create Lua engine and execute script
-    var lua_engine = try LuaEngine.init(allocator);
+    var lua_engine = try LuaEngine.init(allocator, null);
     defer lua_engine.deinit();
 
     const result_str = try lua_engine.eval(script, numkeys, keys, argv);
@@ -122,7 +122,7 @@ pub fn cmdEvalSHA(
     const argv = args[argv_start..];
 
     // Create Lua engine and execute script
-    var lua_engine = try LuaEngine.init(allocator);
+    var lua_engine = try LuaEngine.init(allocator, null);
     defer lua_engine.deinit();
 
     const result_str = try lua_engine.eval(script, numkeys, keys, argv);

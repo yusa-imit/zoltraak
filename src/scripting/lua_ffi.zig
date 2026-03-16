@@ -67,7 +67,9 @@ pub extern "c" fn lua_pushinteger(L: *lua_State, n: i32) void;
 pub extern "c" fn lua_pushlstring(L: *lua_State, s: [*]const u8, len: usize) void;
 pub extern "c" fn lua_pushstring(L: *lua_State, s: [*:0]const u8) void;
 pub extern "c" fn lua_pushboolean(L: *lua_State, b: c_int) void;
-pub extern "c" fn lua_pushcclosure(L: *lua_State, f: *const fn (*lua_State) callconv(.C) c_int, n: c_int) void;
+pub extern "c" fn lua_pushcclosure(L: *lua_State, f: *const fn (*lua_State) callconv(.c) c_int, n: c_int) void;
+pub extern "c" fn lua_pushlightuserdata(L: *lua_State, p: ?*anyopaque) void;
+pub extern "c" fn lua_touserdata(L: *lua_State, idx: c_int) ?*anyopaque;
 
 // Get functions (Lua -> stack)
 pub extern "c" fn lua_getfield(L: *lua_State, idx: c_int, k: [*:0]const u8) void;
@@ -100,7 +102,7 @@ pub inline fn lua_pop(L: *lua_State, n: c_int) void {
     lua_settop(L, -n - 1);
 }
 
-pub inline fn lua_register(L: *lua_State, name: [*:0]const u8, f: *const fn (*lua_State) callconv(.C) c_int) void {
+pub inline fn lua_register(L: *lua_State, name: [*:0]const u8, f: *const fn (*lua_State) callconv(.c) c_int) void {
     lua_pushcclosure(L, f, 0);
     lua_setfield(L, LUA_GLOBALSINDEX, name);
 }
@@ -125,6 +127,6 @@ pub inline fn lua_tostring(L: *lua_State, idx: c_int) ?[*:0]const u8 {
     return lua_tolstring(L, idx, null);
 }
 
-pub inline fn lua_pushcfunction(L: *lua_State, f: *const fn (*lua_State) callconv(.C) c_int) void {
+pub inline fn lua_pushcfunction(L: *lua_State, f: *const fn (*lua_State) callconv(.c) c_int) void {
     lua_pushcclosure(L, f, 0);
 }

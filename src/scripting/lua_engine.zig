@@ -3,15 +3,22 @@
 
 const std = @import("std");
 const lua = @import("lua_ffi.zig");
+const redis_api = @import("redis_api.zig");
 const Storage = @import("../storage/memory.zig").Storage;
+const protocol = @import("../protocol/parser.zig");
+const RespValue = protocol.RespValue;
+
+pub const RedisContext = redis_api.RedisContext;
 
 /// Lua engine instance - manages a single Lua VM
 pub const LuaEngine = struct {
     L: *lua.lua_State,
     allocator: std.mem.Allocator,
+    redis_ctx: ?*RedisContext,
 
     /// Initialize a new Lua engine with sandboxing
-    pub fn init(allocator: std.mem.Allocator) !LuaEngine {
+    /// If execute_fn is provided, registers redis.call() and redis.pcall()
+    pub fn init(allocator: std.mem.Allocator, execute_fn: ?*const fn (allocator: std.mem.Allocator, cmd: RespValue) anyerror![]const u8) !LuaEngine {
         const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
 
         // Open standard libraries
@@ -20,14 +27,31 @@ pub const LuaEngine = struct {
         // TODO: Apply sandboxing (remove dangerous globals like os.execute, io.*, etc.)
         // For now, we leave libraries open for basic functionality
 
-        return LuaEngine{
+        var engine = LuaEngine{
             .L = L,
             .allocator = allocator,
+            .redis_ctx = null,
         };
+
+        // Register redis.call() and redis.pcall() if execute function provided
+        if (execute_fn) |exec_fn| {
+            const ctx = try allocator.create(RedisContext);
+            ctx.* = RedisContext{
+                .allocator = allocator,
+                .execute_fn = exec_fn,
+            };
+            engine.redis_ctx = ctx;
+            try redis_api.registerRedisApi(L, ctx);
+        }
+
+        return engine;
     }
 
     /// Clean up Lua state
     pub fn deinit(self: *LuaEngine) void {
+        if (self.redis_ctx) |ctx| {
+            self.allocator.destroy(ctx);
+        }
         lua.lua_close(self.L);
     }
 
@@ -124,7 +148,7 @@ pub const LuaEngine = struct {
 // Unit tests
 test "LuaEngine: basic initialization" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     // If we got here, initialization succeeded
@@ -133,7 +157,7 @@ test "LuaEngine: basic initialization" {
 
 test "LuaEngine: simple script evaluation" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return 42";
@@ -148,7 +172,7 @@ test "LuaEngine: simple script evaluation" {
 
 test "LuaEngine: script with string return" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return 'hello world'";
@@ -163,7 +187,7 @@ test "LuaEngine: script with string return" {
 
 test "LuaEngine: script with KEYS access" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return KEYS[1]";
@@ -178,7 +202,7 @@ test "LuaEngine: script with KEYS access" {
 
 test "LuaEngine: script with ARGV access" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return ARGV[1] .. ' ' .. ARGV[2]";
@@ -193,7 +217,7 @@ test "LuaEngine: script with ARGV access" {
 
 test "LuaEngine: script compilation error" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return 42 +"; // Invalid syntax
@@ -208,7 +232,7 @@ test "LuaEngine: script compilation error" {
 
 test "LuaEngine: script runtime error" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return nil + 1"; // Runtime error: attempt to perform arithmetic on nil
@@ -223,7 +247,7 @@ test "LuaEngine: script runtime error" {
 
 test "LuaEngine: boolean return value" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return true";
@@ -238,7 +262,7 @@ test "LuaEngine: boolean return value" {
 
 test "LuaEngine: nil return value" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator);
+    var engine = try LuaEngine.init(allocator, null);
     defer engine.deinit();
 
     const script = "return nil";
@@ -249,4 +273,91 @@ test "LuaEngine: nil return value" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("nil", result);
+}
+
+// Tests for redis.call() and redis.pcall()
+fn mockExecuteFn(allocator: std.mem.Allocator, cmd: RespValue) anyerror![]const u8 {
+    const array = cmd.array;
+    if (array.len == 0) {
+        const writer_mod = @import("../protocol/writer.zig");
+        var w = writer_mod.Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR empty command");
+    }
+
+    const cmd_name = array[0].bulk_string;
+
+    // Mock GET command
+    if (std.mem.eql(u8, cmd_name, "GET")) {
+        const writer_mod = @import("../protocol/writer.zig");
+        var w = writer_mod.Writer.init(allocator);
+        defer w.deinit();
+        return w.writeBulkString("value123");
+    }
+
+    // Mock SET command
+    if (std.mem.eql(u8, cmd_name, "SET")) {
+        const writer_mod = @import("../protocol/writer.zig");
+        var w = writer_mod.Writer.init(allocator);
+        defer w.deinit();
+        return w.writeSimpleString("OK");
+    }
+
+    // Mock command that returns error
+    if (std.mem.eql(u8, cmd_name, "ERRORTEST")) {
+        const writer_mod = @import("../protocol/writer.zig");
+        var w = writer_mod.Writer.init(allocator);
+        defer w.deinit();
+        return w.writeError("ERR mock error");
+    }
+
+    const writer_mod = @import("../protocol/writer.zig");
+    var w = writer_mod.Writer.init(allocator);
+    defer w.deinit();
+    return w.writeError("ERR unknown command");
+}
+
+test "LuaEngine: redis.call() basic execution" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, mockExecuteFn);
+    defer engine.deinit();
+
+    const script = "return redis.call('GET', 'mykey')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("value123", result);
+}
+
+test "LuaEngine: redis.call() with SET command" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, mockExecuteFn);
+    defer engine.deinit();
+
+    const script = "return redis.call('SET', 'mykey', 'myvalue')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("OK", result);
+}
+
+test "LuaEngine: redis.pcall() error handling" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, mockExecuteFn);
+    defer engine.deinit();
+
+    const script = "local result = redis.pcall('ERRORTEST'); if result.err then return 'caught: ' .. result.err else return 'no error' end";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR mock error") != null);
 }
