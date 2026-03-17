@@ -24,8 +24,8 @@ pub const LuaEngine = struct {
         // Open standard libraries
         lua.luaL_openlibs(L);
 
-        // TODO: Apply sandboxing (remove dangerous globals like os.execute, io.*, etc.)
-        // For now, we leave libraries open for basic functionality
+        // Apply sandboxing to restrict dangerous operations
+        applySandbox(L);
 
         const engine = LuaEngine{
             .L = L,
@@ -39,6 +39,66 @@ pub const LuaEngine = struct {
         }
 
         return engine;
+    }
+
+    /// Apply Redis-compatible sandboxing to Lua environment
+    /// Removes dangerous globals and restricts access to OS/IO operations
+    fn applySandbox(L: *lua.lua_State) void {
+        // Remove dangerous modules and functions that allow file system/OS access
+        const dangerous_modules = [_][:0]const u8{
+            "os",      // os.execute, os.exit, os.remove, etc.
+            "io",      // io.open, io.write, etc.
+            "loadfile", // Load and execute external files
+            "dofile",   // Load and execute external files
+        };
+
+        for (dangerous_modules) |module_name| {
+            lua.lua_pushnil(L);
+            lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, module_name.ptr);
+        }
+
+        // Restrict require() to only allow safe libraries
+        // We'll replace it with a restricted version
+        const require_code =
+            \\local old_require = require
+            \\local allowed_libs = {
+            \\  ['math'] = true,
+            \\  ['string'] = true,
+            \\  ['table'] = true,
+            \\  ['cjson'] = true,
+            \\  ['cmsgpack'] = true,
+            \\  ['struct'] = true,
+            \\  ['bit'] = true,
+            \\}
+            \\require = function(name)
+            \\  if not allowed_libs[name] then
+            \\    error('ERR require is restricted in Redis scripts. Allowed: math, string, table, cjson, cmsgpack, struct, bit')
+            \\  end
+            \\  return old_require(name)
+            \\end
+        ;
+
+        const load_result = lua.luaL_loadstring(L, require_code.ptr);
+        if (load_result == lua.LUA_OK) {
+            _ = lua.lua_pcall(L, 0, 0, 0);
+        }
+
+        // Disable ability to create new global variables (enforce local)
+        const globals_code =
+            \\local mt = {}
+            \\mt.__newindex = function(t, k, v)
+            \\  error('ERR Script attempted to create global variable "' .. tostring(k) .. '". Use local variables instead.')
+            \\end
+            \\mt.__index = function(t, k)
+            \\  error('ERR Script attempted to access undefined global variable "' .. tostring(k) .. '"')
+            \\end
+            \\setmetatable(_G, mt)
+        ;
+
+        const globals_result = lua.luaL_loadstring(L, globals_code.ptr);
+        if (globals_result == lua.LUA_OK) {
+            _ = lua.lua_pcall(L, 0, 0, 0);
+        }
     }
 
     /// Clean up Lua state
@@ -354,4 +414,148 @@ test "LuaEngine: redis.pcall() error handling" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR mock error") != null);
+}
+
+// Sandboxing tests
+test "LuaEngine: sandbox blocks os module" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "return os.execute('echo hello')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error because os is nil
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR Error running script") != null);
+}
+
+test "LuaEngine: sandbox blocks io module" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "return io.open('/etc/passwd', 'r')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error because io is nil
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR Error running script") != null);
+}
+
+test "LuaEngine: sandbox blocks loadfile" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "return loadfile('/tmp/evil.lua')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error because loadfile is nil
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR Error running script") != null);
+}
+
+test "LuaEngine: sandbox blocks dofile" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "return dofile('/tmp/evil.lua')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error because dofile is nil
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR Error running script") != null);
+}
+
+test "LuaEngine: sandbox allows safe libraries" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "return math.abs(-42) + string.len('hello')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("47", result);
+}
+
+test "LuaEngine: sandbox blocks require of dangerous modules" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "return require('os')";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error with require restriction message
+    try std.testing.expect(std.mem.indexOf(u8, result, "require is restricted") != null);
+}
+
+test "LuaEngine: sandbox allows require of safe libraries" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    // math library should be allowed
+    const script = "local m = require('math'); return m.pi";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should succeed and return pi
+    try std.testing.expect(std.mem.startsWith(u8, result, "3.14"));
+}
+
+test "LuaEngine: sandbox blocks global variable creation" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "evil_global = 42; return evil_global";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error with global variable creation message
+    try std.testing.expect(std.mem.indexOf(u8, result, "create global variable") != null);
+}
+
+test "LuaEngine: sandbox allows local variables" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null);
+    defer engine.deinit();
+
+    const script = "local safe_var = 42; return safe_var";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("42", result);
 }

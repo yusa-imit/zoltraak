@@ -12,7 +12,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ### Known stubs (need real implementation for 1.0)
 
-Lua scripting (EVAL/EVALSHA execute real scripts, redis.call/pcall work - Phase 2 60% complete), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only). All blocking commands have true polling-based semantics. SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE have real implementations. **Phase 6 server management 100% complete** ✅
+Lua scripting (EVAL/EVALSHA execute real scripts, redis.call/pcall work, sandboxing complete - Phase 2 70% complete), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only). All blocking commands have true polling-based semantics. SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE have real implementations. **Phase 6 server management 100% complete** ✅
 
 ---
 

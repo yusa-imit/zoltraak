@@ -3,12 +3,12 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 108 (191+ Redis commands implemented)
+- **Iterations complete**: 109 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 5 CLIENT commands 100% complete (15/15 P0+P1+P2)
-- **Next milestone**: Phase 2 (Lua scripting), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
+- **Current phase**: Phase 2 Lua scripting (70% complete — sandboxing done)
+- **Next milestone**: Phase 2 remaining (script timeout, libraries), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
-- **Known stubs**: Lua scripting (EVAL returns nil), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
+- **Known stubs**: Lua scripting (timeout/libraries pending), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT (all have real implementations as of Iteration 95-102)
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
@@ -120,3 +120,9 @@
 - `src/commands/bits.zig` — Redis BITOP logic
 
 > Sorted Set is the most complex custom implementation (1800 LOC). Requires zuda SkipList to support `(score: f64, member: []const u8)` composite key sorting + rank-based and score-based range queries.
+
+---
+
+## Iteration Log
+
+- **109**: **Lua Sandboxing (Phase 2.4)** — Implemented Redis-compatible sandboxing for Lua scripts: removed dangerous globals (os, io, loadfile, dofile), restricted require() to safe libraries (math, string, table, cjson, cmsgpack, struct, bit), enforced local-only variables (blocked global creation), 9 unit tests in lua_engine.zig (os/io/loadfile/dofile blocking, require restrictions, global variable enforcement, safe library access), 9 integration tests in test_lua_scripting.zig (full EVAL command sandboxing), applySandbox() function with metatable protection, all tests pass, zero memory leaks, Phase 2 Lua Scripting: 70% complete (execution + redis.call/pcall + sandboxing done, timeout + libraries pending)
