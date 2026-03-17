@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 106 (191+ Redis commands implemented)
+- **Iterations complete**: 108 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 5 CLIENT commands 100% complete (15/15 P0+P1+P2)
 - **Next milestone**: Phase 2 (Lua scripting), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
