@@ -5,6 +5,12 @@ const ScriptStore = @import("../storage/scripting.zig").ScriptStore;
 const writer_mod = @import("../protocol/writer.zig");
 const Writer = writer_mod.Writer;
 const LuaEngine = @import("../scripting/lua_engine.zig").LuaEngine;
+const RedisContext = @import("../scripting/redis_api.zig").RedisContext;
+const Aof = @import("../storage/aof.zig").Aof;
+const PubSub = @import("../storage/pubsub.zig").PubSub;
+const TxState = @import("../commands/transactions.zig").TxState;
+const ReplicationState = @import("../storage/replication.zig").ReplicationState;
+const ClientRegistry = @import("../commands/client.zig").ClientRegistry;
 
 /// EVAL script numkeys key [key ...] arg [arg ...]
 /// Execute a Lua script server side
@@ -14,8 +20,18 @@ pub fn cmdEval(
     script_store: *ScriptStore,
     args: []const []const u8,
     resp_version: u8,
+    aof: ?*Aof,
+    ps: *PubSub,
+    subscriber_id: u64,
+    tx: *TxState,
+    repl: ?*ReplicationState,
+    my_port: u16,
+    replica_stream: ?std.net.Stream,
+    replica_idx: ?usize,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    shutdown_state: ?*@import("../server.zig").ShutdownState,
 ) ![]const u8 {
-    _ = storage; // TODO: Wire redis.call/pcall to storage operations
     _ = resp_version;
 
     var w = Writer.init(allocator);
@@ -50,8 +66,26 @@ pub fn cmdEval(
     const sha1 = try script_store.loadScript(script);
     defer allocator.free(sha1);
 
-    // Create Lua engine and execute script
-    var lua_engine = try LuaEngine.init(allocator, null);
+    // Create RedisContext with all required parameters
+    var redis_ctx = RedisContext{
+        .allocator = allocator,
+        .storage = storage,
+        .aof = aof,
+        .ps = ps,
+        .subscriber_id = subscriber_id,
+        .tx = tx,
+        .repl = repl,
+        .my_port = my_port,
+        .replica_stream = replica_stream,
+        .replica_idx = replica_idx,
+        .client_registry = client_registry,
+        .client_id = client_id,
+        .script_store = script_store,
+        .shutdown_state = shutdown_state,
+    };
+
+    // Create Lua engine with redis.call/pcall enabled
+    var lua_engine = try LuaEngine.init(allocator, &redis_ctx);
     defer lua_engine.deinit();
 
     const result_str = try lua_engine.eval(script, numkeys, keys, argv);
@@ -74,8 +108,18 @@ pub fn cmdEvalSHA(
     script_store: *ScriptStore,
     args: []const []const u8,
     resp_version: u8,
+    aof: ?*Aof,
+    ps: *PubSub,
+    subscriber_id: u64,
+    tx: *TxState,
+    repl: ?*ReplicationState,
+    my_port: u16,
+    replica_stream: ?std.net.Stream,
+    replica_idx: ?usize,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    shutdown_state: ?*@import("../server.zig").ShutdownState,
 ) ![]const u8 {
-    _ = storage; // TODO: Wire redis.call/pcall to storage operations
     _ = resp_version;
 
     var w = Writer.init(allocator);
@@ -121,8 +165,26 @@ pub fn cmdEvalSHA(
     const keys = args[keys_start..keys_end];
     const argv = args[argv_start..];
 
-    // Create Lua engine and execute script
-    var lua_engine = try LuaEngine.init(allocator, null);
+    // Create RedisContext with all required parameters
+    var redis_ctx = RedisContext{
+        .allocator = allocator,
+        .storage = storage,
+        .aof = aof,
+        .ps = ps,
+        .subscriber_id = subscriber_id,
+        .tx = tx,
+        .repl = repl,
+        .my_port = my_port,
+        .replica_stream = replica_stream,
+        .replica_idx = replica_idx,
+        .client_registry = client_registry,
+        .client_id = client_id,
+        .script_store = script_store,
+        .shutdown_state = shutdown_state,
+    };
+
+    // Create Lua engine with redis.call/pcall enabled
+    var lua_engine = try LuaEngine.init(allocator, &redis_ctx);
     defer lua_engine.deinit();
 
     const result_str = try lua_engine.eval(script, numkeys, keys, argv);
@@ -300,10 +362,17 @@ test "cmdEval basic" {
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
 
+    // Create stub parameters for testing
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
     const script = "return 42";
     const args = [_][]const u8{ script, "0" };
 
-    const response = try cmdEval(allocator, storage, &script_store, &args, 2);
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
     defer allocator.free(response);
 
     // Real Lua engine returns "42"
@@ -317,10 +386,17 @@ test "cmdEval with KEYS" {
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
 
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
     const script = "return KEYS[1]";
     const args = [_][]const u8{ script, "1", "mykey" };
 
-    const response = try cmdEval(allocator, storage, &script_store, &args, 2);
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("$5\r\nmykey\r\n", response);
@@ -333,10 +409,17 @@ test "cmdEval with ARGV" {
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
 
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
     const script = "return ARGV[1] .. ' ' .. ARGV[2]";
     const args = [_][]const u8{ script, "0", "hello", "world" };
 
-    const response = try cmdEval(allocator, storage, &script_store, &args, 2);
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("$11\r\nhello world\r\n", response);
@@ -349,11 +432,137 @@ test "cmdEvalSHA nonexistent script" {
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
 
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
     const fake_sha1 = "0123456789abcdef0123456789abcdef01234567";
     const args = [_][]const u8{ fake_sha1, "0" };
 
-    const response = try cmdEvalSHA(allocator, storage, &script_store, &args, 2);
+    const response = try cmdEvalSHA(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-NOSCRIPT"));
+}
+
+test "redis.call executes real Redis commands" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Script that uses redis.call to SET and GET a key
+    const script =
+        \\redis.call('SET', 'mykey', 'myvalue')
+        \\return redis.call('GET', 'mykey')
+    ;
+    const args = [_][]const u8{ script, "0" };
+
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
+    defer allocator.free(response);
+
+    // Should return "myvalue"
+    try std.testing.expectEqualStrings("$7\r\nmyvalue\r\n", response);
+}
+
+test "redis.call with multiple arguments" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Script that uses redis.call to RPUSH multiple values
+    const script =
+        \\redis.call('RPUSH', 'mylist', 'a', 'b', 'c')
+        \\return redis.call('LRANGE', 'mylist', '0', '-1')
+    ;
+    const args = [_][]const u8{ script, "0" };
+
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
+    defer allocator.free(response);
+
+    // Should return array ['a', 'b', 'c']
+    try std.testing.expect(std.mem.indexOf(u8, response, "a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "b") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "c") != null);
+}
+
+test "redis.pcall catches errors" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Script that uses redis.pcall with invalid command
+    const script =
+        \\local result = redis.pcall('INVALIDCMD', 'key')
+        \\if result.err then
+        \\  return 'error caught'
+        \\else
+        \\  return 'no error'
+        \\end
+    ;
+    const args = [_][]const u8{ script, "0" };
+
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
+    defer allocator.free(response);
+
+    // Should return "error caught"
+    try std.testing.expect(std.mem.indexOf(u8, response, "error caught") != null);
+}
+
+test "redis.call with numeric return values" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    // Create stub parameters
+    var ps = try PubSub.init(allocator);
+    defer ps.deinit();
+    var tx = TxState.init();
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Script that uses redis.call to INCR and returns the integer
+    const script =
+        \\redis.call('SET', 'counter', '0')
+        \\local val = redis.call('INCR', 'counter')
+        \\return val
+    ;
+    const args = [_][]const u8{ script, "0" };
+
+    const response = try cmdEval(allocator, &storage, &script_store, &args, 2, null, &ps, 0, &tx, null, 6379, null, null, &client_registry, 0, null);
+    defer allocator.free(response);
+
+    // Should return integer 1
+    try std.testing.expect(std.mem.indexOf(u8, response, "1") != null);
 }

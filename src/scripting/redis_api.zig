@@ -9,11 +9,33 @@ const writer_mod = @import("../protocol/writer.zig");
 const RespValue = protocol.RespValue;
 const RespType = protocol.RespType;
 
+// Import required types for executeCommand
+const Storage = @import("../storage/memory.zig").Storage;
+const Aof = @import("../storage/aof.zig").Aof;
+const PubSub = @import("../storage/pubsub.zig").PubSub;
+const TxState = @import("../commands/transactions.zig").TxState;
+const ReplicationState = @import("../storage/replication.zig").ReplicationState;
+const ClientRegistry = @import("../commands/client.zig").ClientRegistry;
+const ScriptStore = @import("../storage/scripting.zig").ScriptStore;
+
 /// Context passed to redis.call() and redis.pcall() C callbacks
 /// Stored in Lua registry for access from C functions
+/// Contains all parameters needed to call executeCommand
 pub const RedisContext = struct {
     allocator: std.mem.Allocator,
-    execute_fn: *const fn (allocator: std.mem.Allocator, cmd: RespValue) anyerror![]const u8,
+    storage: *Storage,
+    aof: ?*Aof,
+    ps: *PubSub,
+    subscriber_id: u64,
+    tx: *TxState,
+    repl: ?*ReplicationState,
+    my_port: u16,
+    replica_stream: ?std.net.Stream,
+    replica_idx: ?usize,
+    client_registry: *ClientRegistry,
+    client_id: u64,
+    script_store: *ScriptStore,
+    shutdown_state: ?*@import("../server.zig").ShutdownState,
 };
 
 /// C callback for redis.call()
@@ -120,7 +142,7 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
         try args.append(ctx.allocator, resp_val);
     }
 
-    // Execute Redis command
+    // Execute Redis command using real executeCommand
     const cmd_array = try args.toOwnedSlice(ctx.allocator);
     defer {
         // Free the array and its owned strings
@@ -133,7 +155,26 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
     }
     const cmd = RespValue{ .array = cmd_array };
 
-    const result = ctx.execute_fn(ctx.allocator, cmd) catch |err| {
+    // Import executeCommand at compile time
+    const executeCommand = @import("../commands/strings.zig").executeCommand;
+
+    const result = executeCommand(
+        ctx.allocator,
+        ctx.storage,
+        cmd,
+        ctx.aof,
+        ctx.ps,
+        ctx.subscriber_id,
+        ctx.tx,
+        ctx.repl,
+        ctx.my_port,
+        ctx.replica_stream,
+        ctx.replica_idx,
+        ctx.client_registry,
+        ctx.client_id,
+        ctx.script_store,
+        ctx.shutdown_state,
+    ) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR {s}", .{@errorName(err)});
         defer ctx.allocator.free(err_msg);
 

@@ -17,8 +17,8 @@ pub const LuaEngine = struct {
     redis_ctx: ?*RedisContext,
 
     /// Initialize a new Lua engine with sandboxing
-    /// If execute_fn is provided, registers redis.call() and redis.pcall()
-    pub fn init(allocator: std.mem.Allocator, execute_fn: ?*const fn (allocator: std.mem.Allocator, cmd: RespValue) anyerror![]const u8) !LuaEngine {
+    /// If redis_ctx is provided, registers redis.call() and redis.pcall()
+    pub fn init(allocator: std.mem.Allocator, redis_ctx: ?*RedisContext) !LuaEngine {
         const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
 
         // Open standard libraries
@@ -27,20 +27,14 @@ pub const LuaEngine = struct {
         // TODO: Apply sandboxing (remove dangerous globals like os.execute, io.*, etc.)
         // For now, we leave libraries open for basic functionality
 
-        var engine = LuaEngine{
+        const engine = LuaEngine{
             .L = L,
             .allocator = allocator,
-            .redis_ctx = null,
+            .redis_ctx = redis_ctx,
         };
 
-        // Register redis.call() and redis.pcall() if execute function provided
-        if (execute_fn) |exec_fn| {
-            const ctx = try allocator.create(RedisContext);
-            ctx.* = RedisContext{
-                .allocator = allocator,
-                .execute_fn = exec_fn,
-            };
-            engine.redis_ctx = ctx;
+        // Register redis.call() and redis.pcall() if context provided
+        if (redis_ctx) |ctx| {
             try redis_api.registerRedisApi(L, ctx);
         }
 
