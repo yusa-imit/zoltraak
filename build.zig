@@ -240,6 +240,19 @@ pub fn build(b: *std.Build) void {
     const run_sailor_v1_15_0_tests = b.addRunArtifact(sailor_v1_15_0_tests);
     test_step.dependOn(&run_sailor_v1_15_0_tests.step);
 
+    // Sailor v1.16.0 feature tests (Iteration 110)
+    const sailor_v1_16_0_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_sailor_v1_16_0.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    sailor_v1_16_0_tests.root_module.addImport("sailor", sailor_mod);
+
+    const run_sailor_v1_16_0_tests = b.addRunArtifact(sailor_v1_16_0_tests);
+    test_step.dependOn(&run_sailor_v1_16_0_tests.step);
+
     // Lua scripting integration tests (Iteration 105)
     const lua_scripting_tests = b.addTest(.{
         .root_module = b.createModule(.{

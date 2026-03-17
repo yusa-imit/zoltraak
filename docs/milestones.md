@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 109 (191+ Redis commands implemented)
+- **Iterations complete**: 110 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 2 Lua scripting (70% complete — sandboxing done)
 - **Next milestone**: Phase 2 remaining (script timeout, libraries), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.15.0 (thread safety, terminal capability query, memory leak fixes, multi-platform CI)
+- **Sailor library**: v1.16.0 (advanced terminal features: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking)
 
 ---
 
@@ -71,9 +71,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.15.0 (build.zig.zon)
-- **Latest available**: v1.15.0
-- **Migration status**: All versions through v1.15.0 migrated.
+- **Current in zoltraak**: v1.16.0 (build.zig.zon)
+- **Latest available**: v1.16.0
+- **Migration status**: All versions through v1.16.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -96,6 +96,7 @@
 | v1.13.1 | Integer overflow fix for data viz widgets | Done (Iter 101) |
 | v1.14.0 | Memory pooling, render profiling, virtual rendering, incremental layout, buffer compression | Done (Iter 103) |
 | v1.15.0 | Thread safety enhancements, XTGETTCAP terminal capability query, memory leak fixes (repl.zig), multi-platform CI (Linux, macOS, Windows), 13 platform tests | Done (Iter 106) |
+| v1.16.0 | Advanced terminal features: terminal capability database (termcap module), bracketed paste mode (DEC 2004), synchronized output protocol (DEC 2026), hyperlink support (OSC 8), focus tracking (DEC 1004) | Done (Iter 110) |
 
 ### zuda Library
 
@@ -126,3 +127,4 @@
 ## Iteration Log
 
 - **109**: **Lua Sandboxing (Phase 2.4)** — Implemented Redis-compatible sandboxing for Lua scripts: removed dangerous globals (os, io, loadfile, dofile), restricted require() to safe libraries (math, string, table, cjson, cmsgpack, struct, bit), enforced local-only variables (blocked global creation), 9 unit tests in lua_engine.zig (os/io/loadfile/dofile blocking, require restrictions, global variable enforcement, safe library access), 9 integration tests in test_lua_scripting.zig (full EVAL command sandboxing), applySandbox() function with metatable protection, all tests pass, zero memory leaks, Phase 2 Lua Scripting: 70% complete (execution + redis.call/pcall + sandboxing done, timeout + libraries pending)
+- **110**: **Sailor v1.16.0 migration** — Updated to sailor v1.16.0 (advanced terminal features and protocols): terminal capability database (termcap module with TermInfo.load/parse for terminfo files), bracketed paste mode (term.BracketedPaste with DEC private mode 2004 for command injection prevention), synchronized output protocol (term.SynchronizedOutput with DEC private mode 2026 for tearing elimination), hyperlink support (term.writeHyperlink/writeHyperlinkWithParams with OSC 8 escape sequences), focus tracking (focus.FocusManager with DEC private mode 1004 for focus in/out events), 11 tests in tests/test_sailor_v1_16_0.zig covering module/type availability and backward compatibility, fully backward compatible with zero breaking changes, all tests pass, build.zig.zon updated to hash sailor-1.16.0-53_z3K8MGQApNWbuJ16kRSnUtat4iiWS5L6xrwWXU-L2, GitHub issue #6 resolved
