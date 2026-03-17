@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 110 (191+ Redis commands implemented)
+- **Iterations complete**: 111 (191+ Redis commands implemented)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 2 Lua scripting (70% complete — sandboxing done)
-- **Next milestone**: Phase 2 remaining (script timeout, libraries), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
+- **Current phase**: Phase 2 Lua scripting (80% complete — sandboxing + timeout done)
+- **Next milestone**: Phase 2 remaining (Lua libraries cjson/cmsgpack, SCRIPT KILL), Phase 3 (ACL enforcement), Phase 7 (multi-DB)
 - **Blockers**: zuda library migrations blocked until zuda releases target modules
 - **Known stubs**: Lua scripting (timeout/libraries pending), ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT (all have real implementations as of Iteration 95-102)
@@ -128,3 +128,4 @@
 
 - **109**: **Lua Sandboxing (Phase 2.4)** — Implemented Redis-compatible sandboxing for Lua scripts: removed dangerous globals (os, io, loadfile, dofile), restricted require() to safe libraries (math, string, table, cjson, cmsgpack, struct, bit), enforced local-only variables (blocked global creation), 9 unit tests in lua_engine.zig (os/io/loadfile/dofile blocking, require restrictions, global variable enforcement, safe library access), 9 integration tests in test_lua_scripting.zig (full EVAL command sandboxing), applySandbox() function with metatable protection, all tests pass, zero memory leaks, Phase 2 Lua Scripting: 70% complete (execution + redis.call/pcall + sandboxing done, timeout + libraries pending)
 - **110**: **Sailor v1.16.0 migration** — Updated to sailor v1.16.0 (advanced terminal features and protocols): terminal capability database (termcap module with TermInfo.load/parse for terminfo files), bracketed paste mode (term.BracketedPaste with DEC private mode 2004 for command injection prevention), synchronized output protocol (term.SynchronizedOutput with DEC private mode 2026 for tearing elimination), hyperlink support (term.writeHyperlink/writeHyperlinkWithParams with OSC 8 escape sequences), focus tracking (focus.FocusManager with DEC private mode 1004 for focus in/out events), 11 tests in tests/test_sailor_v1_16_0.zig covering module/type availability and backward compatibility, fully backward compatible with zero breaking changes, all tests pass, build.zig.zon updated to hash sailor-1.16.0-53_z3K8MGQApNWbuJ16kRSnUtat4iiWS5L6xrwWXU-L2, GitHub issue #6 resolved
+- **111**: **Lua Script Timeout (Phase 2.5)** — Implemented script timeout mechanism to prevent runaway Lua scripts: added lua-time-limit CONFIG parameter (default 5000ms, configurable via CONFIG SET), extended LuaEngine struct with timeout_ms and deadline_ns fields, added lua_sethook FFI bindings (lua_Hook type, LUA_MASKCOUNT event mask, debug hook infrastructure), implemented timeoutHook() debug callback (checks deadline every 1000 instructions, raises timeout error if exceeded), updated LuaEngine.init() to accept timeout_ms parameter (0 = disabled), cmdEval/cmdEvalSha read timeout from storage.config, hook automatically cleared after script execution (deadline reset to 0), 5 unit tests in lua_engine.zig (timeout disabled, within limit, infinite loop termination, long computation termination, hook cleanup between runs), updated all 21 existing tests to pass timeout parameter, all 36 unit tests pass, zero memory leaks, Phase 2 Lua Scripting: 80% complete (execution + redis.call/pcall + sandboxing + timeout done, libraries cjson/cmsgpack + SCRIPT KILL pending)

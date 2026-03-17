@@ -84,8 +84,16 @@ pub fn cmdEval(
         .shutdown_state = shutdown_state,
     };
 
+    // Get lua-time-limit from config
+    const timeout_ms = blk: {
+        storage.config.mutex.lock();
+        defer storage.config.mutex.unlock();
+        const timeout_val = storage.config.params.get("lua-time-limit") orelse break :blk 5000; // default 5000ms
+        break :blk timeout_val.int;
+    };
+
     // Create Lua engine with redis.call/pcall enabled
-    var lua_engine = try LuaEngine.init(allocator, &redis_ctx);
+    var lua_engine = try LuaEngine.init(allocator, &redis_ctx, timeout_ms);
     defer lua_engine.deinit();
 
     const result_str = try lua_engine.eval(script, numkeys, keys, argv);
@@ -183,8 +191,16 @@ pub fn cmdEvalSHA(
         .shutdown_state = shutdown_state,
     };
 
+    // Get lua-time-limit from config
+    const timeout_ms = blk: {
+        storage.config.mutex.lock();
+        defer storage.config.mutex.unlock();
+        const timeout_val = storage.config.params.get("lua-time-limit") orelse break :blk 5000; // default 5000ms
+        break :blk timeout_val.int;
+    };
+
     // Create Lua engine with redis.call/pcall enabled
-    var lua_engine = try LuaEngine.init(allocator, &redis_ctx);
+    var lua_engine = try LuaEngine.init(allocator, &redis_ctx, timeout_ms);
     defer lua_engine.deinit();
 
     const result_str = try lua_engine.eval(script, numkeys, keys, argv);

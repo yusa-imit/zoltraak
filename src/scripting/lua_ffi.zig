@@ -97,6 +97,18 @@ pub extern "c" fn lua_call(L: *lua_State, nargs: c_int, nresults: c_int) void;
 // Error handling
 pub extern "c" fn lua_error(L: *lua_State) c_int;
 
+// Debug hooks for timeout support
+pub const lua_Hook = *const fn (L: *lua_State, ar: *lua_Debug) callconv(.c) void;
+pub const lua_Debug = opaque {};
+
+// Hook event masks
+pub const LUA_MASKCALL: c_int = 1 << 0;
+pub const LUA_MASKRET: c_int = 1 << 1;
+pub const LUA_MASKLINE: c_int = 1 << 2;
+pub const LUA_MASKCOUNT: c_int = 1 << 3;
+
+pub extern "c" fn lua_sethook(L: *lua_State, func: ?lua_Hook, mask: c_int, count: c_int) c_int;
+
 // Helpers
 pub inline fn lua_pop(L: *lua_State, n: c_int) void {
     lua_settop(L, -n - 1);

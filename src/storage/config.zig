@@ -101,6 +101,9 @@ pub const Config = struct {
             // Slowlog
             .{ .name = "slowlog-log-slower-than", .value = .{ .int = 10000 }, .read_only = false }, // microseconds, 10ms default
             .{ .name = "slowlog-max-len", .value = .{ .int = 128 }, .read_only = false }, // max entries in slowlog
+
+            // Lua scripting
+            .{ .name = "lua-time-limit", .value = .{ .int = 5000 }, .read_only = false }, // milliseconds, 5s default
         };
 
         for (defaults) |def| {

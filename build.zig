@@ -265,6 +265,18 @@ pub fn build(b: *std.Build) void {
     const run_lua_scripting_tests = b.addRunArtifact(lua_scripting_tests);
     integration_test_step.dependOn(&run_lua_scripting_tests.step);
 
+    // Lua timeout integration tests (Iteration 111)
+    const lua_timeout_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_lua_timeout.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_lua_timeout_tests = b.addRunArtifact(lua_timeout_tests);
+    integration_test_step.dependOn(&run_lua_timeout_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

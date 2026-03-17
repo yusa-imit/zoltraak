@@ -15,10 +15,13 @@ pub const LuaEngine = struct {
     L: *lua.lua_State,
     allocator: std.mem.Allocator,
     redis_ctx: ?*RedisContext,
+    timeout_ms: i64, // script timeout in milliseconds (0 = no timeout)
+    deadline_ns: i64, // absolute deadline in nanoseconds (set when script starts)
 
     /// Initialize a new Lua engine with sandboxing
     /// If redis_ctx is provided, registers redis.call() and redis.pcall()
-    pub fn init(allocator: std.mem.Allocator, redis_ctx: ?*RedisContext) !LuaEngine {
+    /// timeout_ms: script timeout in milliseconds (0 = no timeout, default 5000)
+    pub fn init(allocator: std.mem.Allocator, redis_ctx: ?*RedisContext, timeout_ms: i64) !LuaEngine {
         const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
 
         // Open standard libraries
@@ -31,6 +34,8 @@ pub const LuaEngine = struct {
             .L = L,
             .allocator = allocator,
             .redis_ctx = redis_ctx,
+            .timeout_ms = timeout_ms,
+            .deadline_ns = 0, // set when script starts
         };
 
         // Register redis.call() and redis.pcall() if context provided
@@ -109,9 +114,55 @@ pub const LuaEngine = struct {
         lua.lua_close(self.L);
     }
 
+    /// Lua debug hook to check script timeout
+    /// Called periodically during script execution (every N instructions)
+    fn timeoutHook(L: *lua.lua_State, _: *lua.lua_Debug) callconv(.c) void {
+        // Retrieve the LuaEngine pointer from the registry
+        lua.lua_pushlightuserdata(L, @ptrFromInt(@as(usize, @intCast(lua.LUA_REGISTRYINDEX))));
+        lua.lua_gettable(L, lua.LUA_REGISTRYINDEX);
+
+        const engine_ptr = lua.lua_touserdata(L, -1);
+        lua.lua_pop(L, 1);
+
+        if (engine_ptr) |ptr| {
+            const engine: *LuaEngine = @ptrCast(@alignCast(ptr));
+
+            // Check if deadline exceeded
+            if (engine.deadline_ns > 0) {
+                const now_ns = std.time.nanoTimestamp();
+                if (now_ns > engine.deadline_ns) {
+                    // Timeout exceeded - raise Lua error
+                    lua.lua_pushstring(L, "ERR script execution timeout exceeded");
+                    _ = lua.lua_error(L);
+                }
+            }
+        }
+    }
+
     /// Execute a Lua script and return the result
     /// Returns error if script fails to compile or execute
     pub fn eval(self: *LuaEngine, script: []const u8, numkeys: usize, keys: []const []const u8, argv: []const []const u8) ![]const u8 {
+        // Set up timeout if enabled
+        if (self.timeout_ms > 0) {
+            const now_ns = std.time.nanoTimestamp();
+            self.deadline_ns = now_ns + (self.timeout_ms * std.time.ns_per_ms);
+
+            // Store engine pointer in registry for hook access
+            lua.lua_pushlightuserdata(self.L, @ptrFromInt(@as(usize, @intCast(lua.LUA_REGISTRYINDEX))));
+            lua.lua_pushlightuserdata(self.L, @ptrCast(self));
+            lua.lua_settable(self.L, lua.LUA_REGISTRYINDEX);
+
+            // Set debug hook to check timeout every 1000 instructions
+            _ = lua.lua_sethook(self.L, timeoutHook, lua.LUA_MASKCOUNT, 1000);
+        }
+        defer {
+            // Clear hook and deadline after execution
+            if (self.timeout_ms > 0) {
+                _ = lua.lua_sethook(self.L, null, 0, 0);
+                self.deadline_ns = 0;
+            }
+        }
+
         // Load the script
         const script_z = try self.allocator.dupeZ(u8, script);
         defer self.allocator.free(script_z);
@@ -202,7 +253,7 @@ pub const LuaEngine = struct {
 // Unit tests
 test "LuaEngine: basic initialization" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0); // 0 = no timeout
     defer engine.deinit();
 
     // If we got here, initialization succeeded
@@ -211,7 +262,7 @@ test "LuaEngine: basic initialization" {
 
 test "LuaEngine: simple script evaluation" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return 42";
@@ -226,7 +277,7 @@ test "LuaEngine: simple script evaluation" {
 
 test "LuaEngine: script with string return" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return 'hello world'";
@@ -241,7 +292,7 @@ test "LuaEngine: script with string return" {
 
 test "LuaEngine: script with KEYS access" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return KEYS[1]";
@@ -256,7 +307,7 @@ test "LuaEngine: script with KEYS access" {
 
 test "LuaEngine: script with ARGV access" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return ARGV[1] .. ' ' .. ARGV[2]";
@@ -271,7 +322,7 @@ test "LuaEngine: script with ARGV access" {
 
 test "LuaEngine: script compilation error" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return 42 +"; // Invalid syntax
@@ -286,7 +337,7 @@ test "LuaEngine: script compilation error" {
 
 test "LuaEngine: script runtime error" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return nil + 1"; // Runtime error: attempt to perform arithmetic on nil
@@ -301,7 +352,7 @@ test "LuaEngine: script runtime error" {
 
 test "LuaEngine: boolean return value" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return true";
@@ -316,7 +367,7 @@ test "LuaEngine: boolean return value" {
 
 test "LuaEngine: nil return value" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return nil";
@@ -373,7 +424,7 @@ fn mockExecuteFn(allocator: std.mem.Allocator, cmd: RespValue) anyerror![]const 
 
 test "LuaEngine: redis.call() basic execution" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, mockExecuteFn);
+    var engine = try LuaEngine.init(allocator, mockExecuteFn, 0);
     defer engine.deinit();
 
     const script = "return redis.call('GET', 'mykey')";
@@ -388,7 +439,7 @@ test "LuaEngine: redis.call() basic execution" {
 
 test "LuaEngine: redis.call() with SET command" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, mockExecuteFn);
+    var engine = try LuaEngine.init(allocator, mockExecuteFn, 0);
     defer engine.deinit();
 
     const script = "return redis.call('SET', 'mykey', 'myvalue')";
@@ -403,7 +454,7 @@ test "LuaEngine: redis.call() with SET command" {
 
 test "LuaEngine: redis.pcall() error handling" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, mockExecuteFn);
+    var engine = try LuaEngine.init(allocator, mockExecuteFn, 0);
     defer engine.deinit();
 
     const script = "local result = redis.pcall('ERRORTEST'); if result.err then return 'caught: ' .. result.err else return 'no error' end";
@@ -419,7 +470,7 @@ test "LuaEngine: redis.pcall() error handling" {
 // Sandboxing tests
 test "LuaEngine: sandbox blocks os module" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return os.execute('echo hello')";
@@ -435,7 +486,7 @@ test "LuaEngine: sandbox blocks os module" {
 
 test "LuaEngine: sandbox blocks io module" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return io.open('/etc/passwd', 'r')";
@@ -451,7 +502,7 @@ test "LuaEngine: sandbox blocks io module" {
 
 test "LuaEngine: sandbox blocks loadfile" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return loadfile('/tmp/evil.lua')";
@@ -467,7 +518,7 @@ test "LuaEngine: sandbox blocks loadfile" {
 
 test "LuaEngine: sandbox blocks dofile" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return dofile('/tmp/evil.lua')";
@@ -483,7 +534,7 @@ test "LuaEngine: sandbox blocks dofile" {
 
 test "LuaEngine: sandbox allows safe libraries" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return math.abs(-42) + string.len('hello')";
@@ -498,7 +549,7 @@ test "LuaEngine: sandbox allows safe libraries" {
 
 test "LuaEngine: sandbox blocks require of dangerous modules" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "return require('os')";
@@ -514,7 +565,7 @@ test "LuaEngine: sandbox blocks require of dangerous modules" {
 
 test "LuaEngine: sandbox allows require of safe libraries" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     // math library should be allowed
@@ -531,7 +582,7 @@ test "LuaEngine: sandbox allows require of safe libraries" {
 
 test "LuaEngine: sandbox blocks global variable creation" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "evil_global = 42; return evil_global";
@@ -547,7 +598,7 @@ test "LuaEngine: sandbox blocks global variable creation" {
 
 test "LuaEngine: sandbox allows local variables" {
     const allocator = std.testing.allocator;
-    var engine = try LuaEngine.init(allocator, null);
+    var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
     const script = "local safe_var = 42; return safe_var";
@@ -558,4 +609,98 @@ test "LuaEngine: sandbox allows local variables" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("42", result);
+}
+
+// Timeout tests
+test "LuaEngine: script without timeout executes normally" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null, 0); // 0 = no timeout
+    defer engine.deinit();
+
+    const script = "local x = 0; for i = 1, 1000000 do x = x + i end; return x";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should complete successfully
+    try std.testing.expect(!std.mem.startsWith(u8, result, "ERR"));
+}
+
+test "LuaEngine: script with timeout executes normally if within limit" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null, 5000); // 5 second timeout
+    defer engine.deinit();
+
+    const script = "return 42";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("42", result);
+}
+
+test "LuaEngine: script exceeding timeout is terminated" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null, 100); // 100ms timeout
+    defer engine.deinit();
+
+    // Infinite loop that will exceed timeout
+    const script = "while true do end";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error with timeout message
+    try std.testing.expect(std.mem.indexOf(u8, result, "timeout exceeded") != null);
+}
+
+test "LuaEngine: script with long computation exceeding timeout" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null, 50); // 50ms timeout
+    defer engine.deinit();
+
+    // Long computation that exceeds timeout
+    const script = "local x = 0; for i = 1, 100000000 do x = x + i end; return x";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    const result = try engine.eval(script, 0, keys, argv);
+    defer allocator.free(result);
+
+    // Should error with timeout message
+    try std.testing.expect(std.mem.indexOf(u8, result, "timeout exceeded") != null);
+}
+
+test "LuaEngine: timeout hook is cleared after execution" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null, 5000); // 5s timeout
+    defer engine.deinit();
+
+    const script = "return 'first'";
+    const keys: []const []const u8 = &.{};
+    const argv: []const []const u8 = &.{};
+
+    // First execution
+    {
+        const result = try engine.eval(script, 0, keys, argv);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("first", result);
+    }
+
+    // Second execution - hook should be re-set properly
+    const script2 = "return 'second'";
+    {
+        const result = try engine.eval(script2, 0, keys, argv);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("second", result);
+    }
+
+    // Deadline should be cleared
+    try std.testing.expectEqual(@as(i64, 0), engine.deadline_ns);
 }
