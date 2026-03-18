@@ -972,6 +972,8 @@ pub fn executeCommand(
                 const args = try extractBulkStrings(allocator, array[2..]);
                 defer allocator.free(args);
                 break :blk try scripting_cmds.cmdScriptFlush(allocator, script_store, args);
+            } else if (std.mem.eql(u8, subcmd_upper, "KILL")) {
+                break :blk try scripting_cmds.cmdScriptKill(allocator, script_store);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try scripting_cmds.cmdScriptHelp(allocator);
             } else {

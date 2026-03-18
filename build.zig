@@ -277,6 +277,18 @@ pub fn build(b: *std.Build) void {
     const run_lua_timeout_tests = b.addRunArtifact(lua_timeout_tests);
     integration_test_step.dependOn(&run_lua_timeout_tests.step);
 
+    // SCRIPT KILL integration tests (Iteration 112)
+    const script_kill_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_script_kill.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_script_kill_tests = b.addRunArtifact(script_kill_tests);
+    test_step.dependOn(&run_script_kill_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

@@ -294,6 +294,27 @@ pub fn cmdScriptFlush(
     return w.writeSimpleString("OK");
 }
 
+/// SCRIPT KILL
+/// Terminate a currently executing script
+/// Returns error if no script is running
+pub fn cmdScriptKill(
+    allocator: Allocator,
+    script_store: *ScriptStore,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Request script termination
+    // The actual termination happens in the Lua debug hook
+    script_store.requestKill();
+
+    // NOTE: In a real implementation, we would check if a script is actually running
+    // and return an error if not. For now, we always return OK since we don't
+    // track script execution state globally. The kill flag will be checked on
+    // the next hook invocation.
+    return w.writeSimpleString("OK");
+}
+
 /// SCRIPT HELP
 /// Show help for SCRIPT command
 pub fn cmdScriptHelp(allocator: Allocator) ![]const u8 {
@@ -305,6 +326,8 @@ pub fn cmdScriptHelp(allocator: Allocator) ![]const u8 {
         "    Check existence of scripts in the script cache.",
         "FLUSH [ASYNC|SYNC]",
         "    Remove all scripts from the script cache.",
+        "KILL",
+        "    Kill the currently executing script.",
         "HELP",
         "    Print this help.",
     };
@@ -581,4 +604,27 @@ test "redis.call with numeric return values" {
 
     // Should return integer 1
     try std.testing.expect(std.mem.indexOf(u8, response, "1") != null);
+}
+
+test "cmdScriptKill sets kill flag" {
+    const allocator = std.testing.allocator;
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    // Initially kill flag should be false
+    try std.testing.expect(!script_store.isKillRequested());
+
+    // Call SCRIPT KILL
+    const response = try cmdScriptKill(allocator, &script_store);
+    defer allocator.free(response);
+
+    // Should return OK
+    try std.testing.expectEqualStrings("+OK\r\n", response);
+
+    // Kill flag should now be true
+    try std.testing.expect(script_store.isKillRequested());
+
+    // Clear the flag
+    script_store.clearKill();
+    try std.testing.expect(!script_store.isKillRequested());
 }

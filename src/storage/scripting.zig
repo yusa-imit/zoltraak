@@ -6,11 +6,14 @@ pub const ScriptStore = struct {
     /// Map of SHA1 hash to script source
     scripts: std.StringHashMap([]const u8),
     allocator: Allocator,
+    /// Atomic flag to request script termination (for SCRIPT KILL)
+    kill_requested: std.atomic.Value(bool),
 
     pub fn init(allocator: Allocator) ScriptStore {
         return .{
             .scripts = std.StringHashMap([]const u8).init(allocator),
             .allocator = allocator,
+            .kill_requested = std.atomic.Value(bool).init(false),
         };
     }
 
@@ -59,6 +62,21 @@ pub const ScriptStore = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.scripts.clearRetainingCapacity();
+    }
+
+    /// Request script termination (for SCRIPT KILL)
+    pub fn requestKill(self: *ScriptStore) void {
+        self.kill_requested.store(true, .seq_cst);
+    }
+
+    /// Check if script kill was requested
+    pub fn isKillRequested(self: *ScriptStore) bool {
+        return self.kill_requested.load(.seq_cst);
+    }
+
+    /// Clear kill request flag
+    pub fn clearKill(self: *ScriptStore) void {
+        self.kill_requested.store(false, .seq_cst);
     }
 };
 

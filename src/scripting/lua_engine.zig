@@ -114,11 +114,11 @@ pub const LuaEngine = struct {
         lua.lua_close(self.L);
     }
 
-    /// Lua debug hook to check script timeout
+    /// Lua debug hook to check script timeout and kill requests
     /// Called periodically during script execution (every N instructions)
     fn timeoutHook(L: *lua.lua_State, _: *lua.lua_Debug) callconv(.c) void {
         // Retrieve the LuaEngine pointer from the registry
-        lua.lua_pushlightuserdata(L, @ptrFromInt(@as(usize, @intCast(lua.LUA_REGISTRYINDEX))));
+        lua.lua_pushstring(L, "LUA_ENGINE");
         lua.lua_gettable(L, lua.LUA_REGISTRYINDEX);
 
         const engine_ptr = lua.lua_touserdata(L, -1);
@@ -127,9 +127,20 @@ pub const LuaEngine = struct {
         if (engine_ptr) |ptr| {
             const engine: *LuaEngine = @ptrCast(@alignCast(ptr));
 
+            // Check if SCRIPT KILL was requested
+            if (engine.redis_ctx) |ctx| {
+                if (ctx.script_store.isKillRequested()) {
+                    // Clear the kill flag before terminating
+                    ctx.script_store.clearKill();
+                    // Terminate script with error
+                    lua.lua_pushstring(L, "ERR script killed by user");
+                    _ = lua.lua_error(L);
+                }
+            }
+
             // Check if deadline exceeded
             if (engine.deadline_ns > 0) {
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns: i64 = @intCast(std.time.nanoTimestamp());
                 if (now_ns > engine.deadline_ns) {
                     // Timeout exceeded - raise Lua error
                     lua.lua_pushstring(L, "ERR script execution timeout exceeded");
@@ -144,11 +155,12 @@ pub const LuaEngine = struct {
     pub fn eval(self: *LuaEngine, script: []const u8, numkeys: usize, keys: []const []const u8, argv: []const []const u8) ![]const u8 {
         // Set up timeout if enabled
         if (self.timeout_ms > 0) {
-            const now_ns = std.time.nanoTimestamp();
-            self.deadline_ns = now_ns + (self.timeout_ms * std.time.ns_per_ms);
+            const now_ns: i64 = @intCast(std.time.nanoTimestamp());
+            const timeout_ns: i64 = @intCast(self.timeout_ms * 1_000_000); // ms to ns
+            self.deadline_ns = now_ns + timeout_ns;
 
             // Store engine pointer in registry for hook access
-            lua.lua_pushlightuserdata(self.L, @ptrFromInt(@as(usize, @intCast(lua.LUA_REGISTRYINDEX))));
+            lua.lua_pushstring(self.L, "LUA_ENGINE");
             lua.lua_pushlightuserdata(self.L, @ptrCast(self));
             lua.lua_settable(self.L, lua.LUA_REGISTRYINDEX);
 
