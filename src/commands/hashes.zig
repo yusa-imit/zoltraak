@@ -448,6 +448,7 @@ pub fn cmdHincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
     const new_value = storage.hincrby(allocator, key, field, increment) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         error.InvalidValue => return w.writeError("ERR hash value is not an integer"),
+        error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
         else => return err,
     };
 
@@ -934,6 +935,143 @@ test "cmdHincrby - negative increment" {
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings(":-3\r\n", response);
+}
+
+test "cmdHincrby - zero increment should work" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "42" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":42\r\n", response);
+}
+
+test "cmdHincrby - large positive within range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "1000000000" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "2000000000" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":3000000000\r\n", response);
+}
+
+test "cmdHincrby - large negative within range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "-1000000000" },
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "-2000000000" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings(":-3000000000\r\n", response);
+}
+
+test "cmdHincrby - overflow near i64::MAX should error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set field to a value near i64::MAX
+    // i64::MAX = 9223372036854775807
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "9223372036854775707" }, // MAX - 100
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Try to increment by 200, which would overflow
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "200" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return an error about overflow
+    try std.testing.expect(std.mem.startsWith(u8, response, "-"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "overflow") != null or
+                          std.mem.indexOf(u8, response, "out of range") != null);
+}
+
+test "cmdHincrby - underflow near i64::MIN should error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set field to a value near i64::MIN
+    // i64::MIN = -9223372036854775808
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "-9223372036854775708" }, // MIN + 100
+    };
+    _ = try cmdHset(allocator, storage, &set_args);
+
+    // Try to decrement by 200, which would underflow
+    const args = [_]RespValue{
+        .{ .bulk_string = "HINCRBY" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "counter" },
+        .{ .bulk_string = "-200" },
+    };
+    const response = try cmdHincrby(allocator, storage, &args);
+    defer allocator.free(response);
+
+    // Should return an error about overflow/underflow
+    try std.testing.expect(std.mem.startsWith(u8, response, "-"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "overflow") != null or
+                          std.mem.indexOf(u8, response, "out of range") != null);
 }
 
 test "cmdHincrbyfloat - increment float field" {

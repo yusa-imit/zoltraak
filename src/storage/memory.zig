@@ -2549,6 +2549,7 @@ pub const Storage = struct {
     /// Returns new integer value after increment
     /// Returns error.WrongType if key is not a hash
     /// Returns error.InvalidValue if field value is not an integer
+    /// Returns error.Overflow if increment would overflow i64 range
     pub fn hincrby(
         self: *Storage,
         allocator: std.mem.Allocator,
@@ -2566,7 +2567,7 @@ pub const Storage = struct {
                     const field_val = hash_val.data.get(field);
                     const current_str = if (field_val) |fv| fv.data else "0";
                     const current = std.fmt.parseInt(i64, current_str, 10) catch return error.InvalidValue;
-                    const new_value = current + increment;
+                    const new_value = std.math.add(i64, current, increment) catch return error.Overflow;
 
                     // Format new value as string
                     var buf: [32]u8 = undefined;
