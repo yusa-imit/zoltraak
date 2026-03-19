@@ -4,6 +4,7 @@
 const std = @import("std");
 const lua = @import("lua_ffi.zig");
 const redis_api = @import("redis_api.zig");
+const lua_libraries = @import("lua_libraries.zig");
 const Storage = @import("../storage/memory.zig").Storage;
 const protocol = @import("../protocol/parser.zig");
 const RespValue = protocol.RespValue;
@@ -26,6 +27,10 @@ pub const LuaEngine = struct {
 
         // Open standard libraries
         lua.luaL_openlibs(L);
+
+        // Register Redis Lua libraries (cjson, cmsgpack, struct)
+        // bit module is already built into LuaJIT
+        try lua_libraries.registerLibraries(L);
 
         // Apply sandboxing to restrict dangerous operations
         applySandbox(L);
