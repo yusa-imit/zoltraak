@@ -287,7 +287,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_script_kill_tests = b.addRunArtifact(script_kill_tests);
-    test_step.dependOn(&run_script_kill_tests.step);
+    integration_test_step.dependOn(&run_script_kill_tests.step);
 
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
