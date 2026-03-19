@@ -42,7 +42,7 @@ fn registerCJson(L: *lua.lua_State) !void {
 
 /// cjson.encode(value) - encode Lua value to JSON string
 /// Minimal implementation - handles: nil, boolean, number, string, table (array/object)
-export fn cjsonEncode(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn cjsonEncode(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
     if (lua.lua_gettop(state) < 1) {
@@ -114,7 +114,7 @@ export fn cjsonEncode(L: ?*lua.lua_State) callconv(.C) c_int {
 
 /// cjson.decode(json_string) - decode JSON string to Lua value
 /// Minimal implementation
-export fn cjsonDecode(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn cjsonDecode(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
     if (lua.lua_gettop(state) < 1) {
@@ -177,7 +177,7 @@ export fn cjsonDecode(L: ?*lua.lua_State) callconv(.C) c_int {
 
 /// cjson.encode_sparse_array(table, max_array_size, max_array_sparseness)
 /// Stub implementation - just calls regular encode
-export fn cjsonEncodeSparse(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn cjsonEncodeSparse(L: ?*lua.lua_State) callconv(.c) c_int {
     return cjsonEncode(L);
 }
 
@@ -199,7 +199,7 @@ fn registerCMsgPack(L: *lua.lua_State) !void {
 
 /// cmsgpack.pack(value) - encode to MessagePack binary
 /// Minimal implementation - returns a stub binary representation
-export fn cmsgpackPack(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn cmsgpackPack(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
     if (lua.lua_gettop(state) < 1) {
@@ -216,7 +216,7 @@ export fn cmsgpackPack(L: ?*lua.lua_State) callconv(.C) c_int {
 
 /// cmsgpack.unpack(binary) - decode from MessagePack binary
 /// Minimal implementation - returns nil
-export fn cmsgpackUnpack(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn cmsgpackUnpack(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
     lua.lua_pushnil(state);
     return 1;
@@ -245,7 +245,7 @@ fn registerStruct(L: *lua.lua_State) !void {
 /// struct.pack(format, ...) - pack values according to format string
 /// Format: c (char), b (byte), h (short), i (int), l (long), f (float), d (double)
 /// Minimal stub implementation
-export fn structPack(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn structPack(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
     if (lua.lua_gettop(state) < 1) {
@@ -261,7 +261,7 @@ export fn structPack(L: ?*lua.lua_State) callconv(.C) c_int {
 
 /// struct.unpack(format, binary) - unpack values from binary
 /// Minimal stub implementation
-export fn structUnpack(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn structUnpack(L: ?*lua.lua_State) callconv(.c) c_int {
     _ = L;
     // Return empty results
     return 0;
@@ -269,7 +269,7 @@ export fn structUnpack(L: ?*lua.lua_State) callconv(.C) c_int {
 
 /// struct.size(format) - calculate size of packed data
 /// Minimal stub implementation
-export fn structSize(L: ?*lua.lua_State) callconv(.C) c_int {
+export fn structSize(L: ?*lua.lua_State) callconv(.c) c_int {
     if (L) |state| {
         lua.lua_pushnumber(state, 0);
     }

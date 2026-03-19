@@ -83,7 +83,11 @@ pub extern "c" fn lua_rawseti(L: *lua_State, idx: c_int, n: c_int) void;
 
 // Table manipulation
 pub extern "c" fn lua_createtable(L: *lua_State, narr: c_int, nrec: c_int) void;
-pub extern "c" fn lua_newtable(L: *lua_State) void;
+
+// lua_newtable is a macro: #define lua_newtable(L) lua_createtable(L, 0, 0)
+pub inline fn lua_newtable(L: *lua_State) void {
+    lua_createtable(L, 0, 0);
+}
 
 // Auxiliary library functions
 pub extern "c" fn luaL_openlibs(L: *lua_State) void;
