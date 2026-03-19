@@ -4,10 +4,12 @@ const blocking_mod = @import("blocking.zig");
 const slowlog_mod = @import("slowlog.zig");
 const latency_mod = @import("latency.zig");
 const memory_tracker_mod = @import("memory_tracker.zig");
+const acl_mod = @import("acl.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
 pub const BlockedClient = blocking_mod.BlockedClient;
+pub const ACLStore = acl_mod.ACLStore;
 pub const BlockedXreadgroupClient = blocking_mod.BlockedXreadgroupClient;
 pub const SlowLog = slowlog_mod.SlowLog;
 pub const LatencyMonitor = latency_mod.LatencyMonitor;
@@ -450,6 +452,7 @@ pub const Storage = struct {
     allocator: std.mem.Allocator,
     data: std.StringHashMap(Value),
     config: *Config,
+    acl: ?*ACLStore, // ACL user management
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -473,15 +476,22 @@ pub const Storage = struct {
         const cfg = try Config.init(allocator, port, bind);
         errdefer cfg.deinit();
 
-        const latency_mon = try LatencyMonitor.init(allocator);
+        var latency_mon = try LatencyMonitor.init(allocator);
         errdefer latency_mon.deinit();
 
         const mem_tracker = MemoryTracker.init();
+
+        // Initialize ACL store with default user
+        const acl_store = try allocator.create(ACLStore);
+        errdefer allocator.destroy(acl_store);
+        acl_store.* = try ACLStore.init(allocator);
+        errdefer acl_store.deinit();
 
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
             .config = cfg,
+            .acl = acl_store,
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
@@ -497,6 +507,12 @@ pub const Storage = struct {
     /// Deinitialize storage and free all keys and values
     pub fn deinit(self: *Storage) void {
         self.mutex.lock();
+
+        // Free ACL store
+        if (self.acl) |acl| {
+            acl.deinit();
+            self.allocator.destroy(acl);
+        }
 
         // Free all keys and values
         var it = self.data.iterator();

@@ -29,6 +29,7 @@ const server_cmds = @import("server_commands.zig");
 const scripting_cmds = @import("scripting.zig");
 const scripting_mod = @import("../storage/scripting.zig");
 const acl_cmds = @import("acl.zig");
+const auth_cmds = @import("auth.zig");
 const cluster_cmds = @import("cluster.zig");
 const utility_cmds = @import("utility.zig");
 pub const TxState = tx_mod.TxState;
@@ -278,8 +279,10 @@ pub fn executeCommand(
 
     // Execute command
     const response = blk: {
-        // Server commands
-        if (std.mem.eql(u8, cmd_upper, "HELLO")) {
+        // Server & Auth commands
+        if (std.mem.eql(u8, cmd_upper, "AUTH")) {
+            break :blk try auth_cmds.cmdAuth(allocator, array, storage);
+        } else if (std.mem.eql(u8, cmd_upper, "HELLO")) {
             const args_slice = if (array.len > 1) array[1..] else array[0..0];
             break :blk try server_cmds.cmdHello(allocator, client_registry, client_id, args_slice);
         }
