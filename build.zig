@@ -12,6 +12,13 @@ pub fn build(b: *std.Build) void {
     });
     const sailor_mod = sailor_dep.module("sailor");
 
+    // Import zuda dependency
+    const zuda_dep = b.dependency("zuda", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zuda_mod = zuda_dep.module("zuda");
+
     // Executable: zoltraak (server)
     const exe = b.addExecutable(.{
         .name = "zoltraak",
@@ -22,6 +29,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("sailor", sailor_mod);
+    exe.root_module.addImport("zuda", zuda_mod);
 
     // Link LuaJIT for Lua scripting support
     exe.linkSystemLibrary("luajit-5.1");

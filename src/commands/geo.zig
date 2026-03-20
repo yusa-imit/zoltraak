@@ -2,10 +2,12 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const zuda = @import("zuda");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const Coord = zuda.algorithms.geometry.Coord;
 
 // Geospatial constants
 const EARTH_RADIUS_METERS = 6372797.560856; // Earth radius in meters (WGS84)
@@ -119,18 +121,11 @@ fn isInBox(point_lat: f64, point_lon: f64, center_lat: f64, center_lon: f64, wid
 }
 
 /// Calculates distance between two points using Haversine formula
+/// Migrated to zuda.algorithms.geometry.haversineDistanceM()
 fn haversineDistance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) f64 {
-    const lat1_rad = lat1 * std.math.pi / 180.0;
-    const lat2_rad = lat2 * std.math.pi / 180.0;
-    const dlat = (lat2 - lat1) * std.math.pi / 180.0;
-    const dlon = (lon2 - lon1) * std.math.pi / 180.0;
-
-    const a = @sin(dlat / 2.0) * @sin(dlat / 2.0) +
-        @cos(lat1_rad) * @cos(lat2_rad) *
-        @sin(dlon / 2.0) * @sin(dlon / 2.0);
-
-    const c = 2.0 * std.math.atan2(@sqrt(a), @sqrt(1.0 - a));
-    return EARTH_RADIUS_METERS * c;
+    const from = Coord.init(lat1, lon1);
+    const to = Coord.init(lat2, lon2);
+    return zuda.algorithms.geometry.haversineDistanceM(from, to);
 }
 
 /// Encodes a geohash into base32 string (11 character precision)

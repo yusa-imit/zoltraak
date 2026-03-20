@@ -8,6 +8,10 @@
             .url = "https://github.com/yusa-imit/sailor/archive/refs/tags/v1.16.0.tar.gz",
             .hash = "sailor-1.16.0-53_z3K8MGQApNWbuJ16kRSnUtat4iiWS5L6xrwWXU-L2",
         },
+        .zuda = .{
+            .url = "https://github.com/yusa-imit/zuda/archive/refs/tags/v1.15.0.tar.gz",
+            .hash = "zuda-1.15.0-ih6_-FEAJgCMw1r7iXElqo7XO3UlSBp1arjTBqSk_CFS",
+        },
     },
     .paths = .{
         "build.zig",
