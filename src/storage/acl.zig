@@ -1,18 +1,43 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const CommandRegistry = @import("../commands/command_registry.zig");
 
-/// ACL user representation
+/// ACL command category enum (21 core categories)
+pub const CommandCategory = CommandRegistry.CommandCategory;
+
+/// ACL user representation with command permission support
 pub const User = struct {
     username: []const u8,
     password: ?[]const u8, // null = nopass
     enabled: bool,
-    // Simplified: all commands allowed for now (stub implementation)
+
+    // Permission management
+    all_commands_allowed: bool = false, // false = starts with -@all (deny all)
+    allowed_commands: std.StringHashMap(void), // Set of explicitly allowed commands
+    denied_commands: std.StringHashMap(void), // Set of explicitly denied commands
+    allowed_categories: std.AutoHashMap(CommandCategory, void), // Set of allowed categories
+    denied_categories: std.AutoHashMap(CommandCategory, void), // Set of denied categories
 
     pub fn deinit(self: *User, allocator: Allocator) void {
         allocator.free(self.username);
         if (self.password) |pwd| {
             allocator.free(pwd);
         }
+        // Deinit permission maps
+        var iter = self.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        self.allowed_commands.deinit();
+
+        iter = self.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        self.denied_commands.deinit();
+
+        self.allowed_categories.deinit();
+        self.denied_categories.deinit();
     }
 
     pub fn clone(self: *const User, allocator: Allocator) !User {
@@ -23,12 +48,118 @@ pub const User = struct {
             try allocator.dupe(u8, pwd)
         else
             null;
+        errdefer if (password_copy) |pwd| allocator.free(pwd);
+
+        // Clone allowed_commands
+        var allowed_cmds = std.StringHashMap(void).init(allocator);
+        errdefer {
+            var it = allowed_cmds.keyIterator();
+            while (it.next()) |key| {
+                allocator.free(key.*);
+            }
+            allowed_cmds.deinit();
+        }
+
+        var iter = self.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            const key_copy = try allocator.dupe(u8, key.*);
+            errdefer allocator.free(key_copy);
+            try allowed_cmds.put(key_copy, {});
+        }
+
+        // Clone denied_commands
+        var denied_cmds = std.StringHashMap(void).init(allocator);
+        errdefer {
+            var it = denied_cmds.keyIterator();
+            while (it.next()) |key| {
+                allocator.free(key.*);
+            }
+            denied_cmds.deinit();
+        }
+
+        iter = self.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            const key_copy = try allocator.dupe(u8, key.*);
+            errdefer allocator.free(key_copy);
+            try denied_cmds.put(key_copy, {});
+        }
+
+        // Clone allowed_categories
+        var allowed_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+        errdefer allowed_cats.deinit();
+
+        var cat_iter = self.allowed_categories.keyIterator();
+        while (cat_iter.next()) |cat| {
+            try allowed_cats.put(cat.*, {});
+        }
+
+        // Clone denied_categories
+        var denied_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+        errdefer denied_cats.deinit();
+
+        cat_iter = self.denied_categories.keyIterator();
+        while (cat_iter.next()) |cat| {
+            try denied_cats.put(cat.*, {});
+        }
 
         return User{
             .username = username_copy,
             .password = password_copy,
             .enabled = self.enabled,
+            .all_commands_allowed = self.all_commands_allowed,
+            .allowed_commands = allowed_cmds,
+            .denied_commands = denied_cmds,
+            .allowed_categories = allowed_cats,
+            .denied_categories = denied_cats,
         };
+    }
+
+    /// Check if a user has permission to execute a command
+    /// Implements left-to-right precedence: last matching rule wins
+    pub fn hasCommandPermission(self: *const User, command_name: []const u8) bool {
+        // Always-allowed commands bypass ACL
+        const always_allowed = [_][]const u8{
+            "AUTH", "HELLO", "PING",
+        };
+        for (always_allowed) |cmd| {
+            if (std.mem.eql(u8, command_name, cmd)) {
+                return true;
+            }
+        }
+
+        // Uppercase for comparison
+        var buf: [64]u8 = undefined;
+        const cmd_upper = std.ascii.upperString(&buf, command_name);
+
+        // Check explicit denied commands first (highest priority)
+        if (self.denied_commands.contains(cmd_upper)) {
+            return false;
+        }
+
+        // Check explicit allowed commands
+        if (self.allowed_commands.contains(cmd_upper)) {
+            return true;
+        }
+
+        // Check category-based permissions
+        const categories = CommandRegistry.getCategoriesForCommand(cmd_upper) catch return false;
+
+        // Check if any category is explicitly denied
+        for (categories) |cat| {
+            if (self.denied_categories.contains(cat)) {
+                return false;
+            }
+        }
+
+        // Check if any category is explicitly allowed
+        for (categories) |cat| {
+            if (self.allowed_categories.contains(cat)) {
+                return true;
+            }
+        }
+
+        // Fall back to all_commands_allowed setting
+        return self.all_commands_allowed;
     }
 };
 
@@ -69,6 +200,11 @@ pub const ACLStore = struct {
             .username = default_username,
             .password = null, // nopass
             .enabled = true,
+            .all_commands_allowed = true, // Default user has all commands
+            .allowed_commands = std.StringHashMap(void).init(self.allocator),
+            .denied_commands = std.StringHashMap(void).init(self.allocator),
+            .allowed_categories = std.AutoHashMap(CommandCategory, void).init(self.allocator),
+            .denied_categories = std.AutoHashMap(CommandCategory, void).init(self.allocator),
         };
         try self.users.put(default_username, user);
     }
@@ -83,6 +219,24 @@ pub const ACLStore = struct {
 
     /// Set or update user
     pub fn setUser(self: *ACLStore, username: []const u8, enabled: bool, password: ?[]const u8) !void {
+        self.setUserWithPermissions(username, enabled, password, false, null, null, null, null) catch |err| {
+            return err;
+        };
+    }
+
+    /// Set or update user with explicit permission parameters
+    /// If permissions are null, uses defaults: all_commands_allowed=false, empty sets
+    pub fn setUserWithPermissions(
+        self: *ACLStore,
+        username: []const u8,
+        enabled: bool,
+        password: ?[]const u8,
+        all_commands_allowed: ?bool,
+        allowed_commands: ?std.StringHashMap(void),
+        denied_commands: ?std.StringHashMap(void),
+        allowed_categories: ?std.AutoHashMap(CommandCategory, void),
+        denied_categories: ?std.AutoHashMap(CommandCategory, void),
+    ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -100,10 +254,40 @@ pub const ACLStore = struct {
         else
             null;
 
+        // Initialize permission sets with defaults or provided values
+        var allowed_cmds = if (allowed_commands) |cmds| cmds else std.StringHashMap(void).init(self.allocator);
+        errdefer {
+            var iter = allowed_cmds.keyIterator();
+            while (iter.next()) |key| {
+                self.allocator.free(key.*);
+            }
+            allowed_cmds.deinit();
+        }
+
+        var denied_cmds = if (denied_commands) |cmds| cmds else std.StringHashMap(void).init(self.allocator);
+        errdefer {
+            var iter = denied_cmds.keyIterator();
+            while (iter.next()) |key| {
+                self.allocator.free(key.*);
+            }
+            denied_cmds.deinit();
+        }
+
+        var allowed_cats = if (allowed_categories) |cats| cats else std.AutoHashMap(CommandCategory, void).init(self.allocator);
+        errdefer allowed_cats.deinit();
+
+        var denied_cats = if (denied_categories) |cats| cats else std.AutoHashMap(CommandCategory, void).init(self.allocator);
+        errdefer denied_cats.deinit();
+
         const user = User{
             .username = username_copy,
             .password = password_copy,
             .enabled = enabled,
+            .all_commands_allowed = all_commands_allowed orelse false,
+            .allowed_commands = allowed_cmds,
+            .denied_commands = denied_cmds,
+            .allowed_categories = allowed_cats,
+            .denied_categories = denied_cats,
         };
 
         try self.users.put(username_copy, user);
@@ -133,7 +317,7 @@ pub const ACLStore = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var list = std.ArrayList([]const u8).init(allocator);
+        var list = std.ArrayList([]const u8){};
         errdefer list.deinit();
 
         var iter = self.users.keyIterator();
@@ -150,7 +334,7 @@ pub const ACLStore = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var list = std.ArrayList([]const u8).init(allocator);
+        var list = std.ArrayList([]const u8){};
         errdefer {
             for (list.items) |item| {
                 allocator.free(item);
@@ -174,10 +358,10 @@ pub const ACLStore = struct {
                     if (user.enabled) "on" else "off",
                 });
 
-            try list.append(rule);
+            try list.append(allocator, rule);
         }
 
-        return list.toOwnedSlice();
+        return list.toOwnedSlice(allocator);
     }
 };
 
@@ -272,4 +456,178 @@ test "ACLStore: get ACL list" {
     }
 
     try std.testing.expect(rules.len == 2); // default + alice
+}
+
+test "User: hasCommandPermission allows AUTH/HELLO/PING always" {
+    const allocator = std.testing.allocator;
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+    };
+    defer user.deinit(allocator);
+
+    // Even with no permissions, AUTH/HELLO/PING should work
+    try std.testing.expect(user.hasCommandPermission("AUTH"));
+    try std.testing.expect(user.hasCommandPermission("HELLO"));
+    try std.testing.expect(user.hasCommandPermission("PING"));
+}
+
+test "User: hasCommandPermission respects all_commands_allowed flag" {
+    const allocator = std.testing.allocator;
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = true,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+    };
+    defer user.deinit(allocator);
+
+    try std.testing.expect(user.hasCommandPermission("GET"));
+    try std.testing.expect(user.hasCommandPermission("SET"));
+    try std.testing.expect(user.hasCommandPermission("ANYCOMMAND"));
+}
+
+test "User: hasCommandPermission denies by default (all_commands_allowed=false)" {
+    const allocator = std.testing.allocator;
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+    };
+    defer user.deinit(allocator);
+
+    // GET should be denied (not in allowed set, not in allowed categories)
+    try std.testing.expect(!user.hasCommandPermission("GET"));
+    try std.testing.expect(!user.hasCommandPermission("SET"));
+}
+
+test "User: hasCommandPermission respects explicit allowed commands" {
+    const allocator = std.testing.allocator;
+
+    var allowed = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = allowed.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        allowed.deinit();
+    }
+
+    try allowed.put(try allocator.dupe(u8, "GET"), {});
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = allowed,
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+    };
+    defer user.deinit(allocator);
+
+    try std.testing.expect(user.hasCommandPermission("GET"));
+    try std.testing.expect(!user.hasCommandPermission("SET")); // Not in allowed set
+}
+
+test "User: hasCommandPermission respects explicit denied commands (takes priority)" {
+    const allocator = std.testing.allocator;
+
+    var denied = std.StringHashMap(void).init(allocator);
+    defer {
+        var iter = denied.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        denied.deinit();
+    }
+
+    try denied.put(try allocator.dupe(u8, "DEL"), {});
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = true, // All allowed
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = denied,
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+    };
+    defer user.deinit(allocator);
+
+    // DEL should be denied even though all_commands_allowed=true
+    try std.testing.expect(!user.hasCommandPermission("DEL"));
+    try std.testing.expect(user.hasCommandPermission("SET")); // Other commands allowed
+}
+
+test "User: hasCommandPermission respects allowed categories" {
+    const allocator = std.testing.allocator;
+
+    var allowed_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+    try allowed_cats.put(CommandCategory.fast, {});
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = allowed_cats,
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+    };
+    defer user.deinit(allocator);
+
+    // GET is in fast category, should be allowed
+    try std.testing.expect(user.hasCommandPermission("GET"));
+    try std.testing.expect(user.hasCommandPermission("PING"));
+    // LPUSH is not in fast category, should be denied
+    try std.testing.expect(!user.hasCommandPermission("LPUSH"));
+}
+
+test "User: hasCommandPermission respects denied categories (takes priority)" {
+    const allocator = std.testing.allocator;
+
+    var allowed_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+    try allowed_cats.put(CommandCategory.string, {});
+
+    var denied_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+    try denied_cats.put(CommandCategory.write, {});
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = allowed_cats,
+        .denied_categories = denied_cats,
+    };
+    defer user.deinit(allocator);
+
+    // GET is in string+read, allowed
+    try std.testing.expect(user.hasCommandPermission("GET"));
+    // APPEND is in string+write, write is denied so should be denied
+    try std.testing.expect(!user.hasCommandPermission("APPEND"));
 }

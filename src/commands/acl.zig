@@ -2,6 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = @import("../protocol/writer.zig").Writer;
 const RespValue = @import("../protocol/parser.zig").RespValue;
+const CommandRegistry = @import("command_registry.zig");
+const ACLStorage = @import("../storage/acl.zig");
+const CommandCategory = CommandRegistry.CommandCategory;
 
 /// ACL WHOAMI - Returns current connection username
 pub fn cmdACLWhoami(
@@ -123,14 +126,223 @@ pub fn cmdACLGetuser(
     return buffer.toOwnedSlice(allocator);
 }
 
+/// Parse ACL rules for a user (+cmd, -cmd, +@cat, -@cat, etc.)
+/// Implements left-to-right precedence: last matching rule wins per command
+pub const PermissionChangeError = error{
+    InvalidRule,
+    InvalidCategory,
+    InvalidCommand,
+    OutOfMemory,
+};
+
+/// Parse ACL rules and return permission sets
+/// Rules are processed left-to-right, last rule wins per command
+pub fn parsePermissionRules(
+    allocator: Allocator,
+    rules: []const []const u8,
+) PermissionChangeError!struct {
+    all_commands_allowed: bool,
+    allowed_commands: std.StringHashMap(void),
+    denied_commands: std.StringHashMap(void),
+    allowed_categories: std.AutoHashMap(CommandCategory, void),
+    denied_categories: std.AutoHashMap(CommandCategory, void),
+} {
+    var allowed_commands = std.StringHashMap(void).init(allocator);
+    errdefer {
+        var iter = allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        allowed_commands.deinit();
+    }
+
+    var denied_commands = std.StringHashMap(void).init(allocator);
+    errdefer {
+        var iter = denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        denied_commands.deinit();
+    }
+
+    var allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator);
+    errdefer allowed_categories.deinit();
+
+    var denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator);
+    errdefer denied_categories.deinit();
+
+    var all_commands_allowed = false;
+
+    for (rules) |rule| {
+        if (std.mem.eql(u8, rule, "allcommands") or std.mem.eql(u8, rule, "+@all")) {
+            // Allow all commands
+            all_commands_allowed = true;
+            // Clear denied to match Redis semantics
+            denied_commands.clearRetainingCapacity();
+            denied_categories.clearRetainingCapacity();
+        } else if (std.mem.eql(u8, rule, "nocommands") or std.mem.eql(u8, rule, "-@all")) {
+            // Deny all commands (reset to default deny)
+            all_commands_allowed = false;
+            allowed_commands.clearRetainingCapacity();
+            allowed_categories.clearRetainingCapacity();
+        } else if (std.mem.startsWith(u8, rule, "+@")) {
+            // Allow category
+            const cat_name = rule[2..];
+            if (stringToCategory(cat_name)) |cat| {
+                try allowed_categories.put(cat, {});
+                // Remove from denied categories
+                _ = denied_categories.remove(cat);
+            } else {
+                return PermissionChangeError.InvalidCategory;
+            }
+        } else if (std.mem.startsWith(u8, rule, "-@")) {
+            // Deny category
+            const cat_name = rule[2..];
+            if (stringToCategory(cat_name)) |cat| {
+                try denied_categories.put(cat, {});
+                // Remove from allowed categories
+                _ = allowed_categories.remove(cat);
+            } else {
+                return PermissionChangeError.InvalidCategory;
+            }
+        } else if (std.mem.startsWith(u8, rule, "+")) {
+            // Allow command
+            const cmd_name = rule[1..];
+            var buf: [64]u8 = undefined;
+            const cmd_upper = std.ascii.upperString(&buf, cmd_name);
+            const cmd_copy = try allocator.dupe(u8, cmd_upper);
+            errdefer allocator.free(cmd_copy);
+
+            try allowed_commands.put(cmd_copy, {});
+            // Remove from denied commands
+            if (denied_commands.fetchRemove(cmd_upper)) |kv| {
+                allocator.free(kv.key);
+            }
+        } else if (std.mem.startsWith(u8, rule, "-")) {
+            // Deny command
+            const cmd_name = rule[1..];
+            var buf: [64]u8 = undefined;
+            const cmd_upper = std.ascii.upperString(&buf, cmd_name);
+            const cmd_copy = try allocator.dupe(u8, cmd_upper);
+            errdefer allocator.free(cmd_copy);
+
+            try denied_commands.put(cmd_copy, {});
+            // Remove from allowed commands
+            if (allowed_commands.fetchRemove(cmd_upper)) |kv| {
+                allocator.free(kv.key);
+            }
+        } else if (std.mem.eql(u8, rule, "on")) {
+            // Enable user - handled separately
+        } else if (std.mem.eql(u8, rule, "off")) {
+            // Disable user - handled separately
+        } else if (std.mem.startsWith(u8, rule, ">") or std.mem.startsWith(u8, rule, "<")) {
+            // Password - handled separately
+        } else if (std.mem.eql(u8, rule, "nopass")) {
+            // No password - handled separately
+        } else if (std.mem.startsWith(u8, rule, "~")) {
+            // Key pattern - handled separately, not yet implemented
+        } else {
+            return PermissionChangeError.InvalidRule;
+        }
+    }
+
+    return .{
+        .all_commands_allowed = all_commands_allowed,
+        .allowed_commands = allowed_commands,
+        .denied_commands = denied_commands,
+        .allowed_categories = allowed_categories,
+        .denied_categories = denied_categories,
+    };
+}
+
+/// Convert string to CommandCategory
+fn stringToCategory(name: []const u8) ?CommandCategory {
+    inline for (@typeInfo(CommandCategory).@"enum".fields) |field| {
+        if (std.mem.eql(u8, name, field.name)) {
+            return @enumFromInt(field.value);
+        }
+    }
+    return null;
+}
+
 /// ACL SETUSER - Create or modify user
 pub fn cmdACLSetuser(
     allocator: Allocator,
-    _: []const RespValue,
+    array: []const RespValue,
 ) ![]const u8 {
-    // Stub: pretend to accept but don't actually store
     var w = Writer.init(allocator);
     defer w.deinit();
+
+    if (array.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'acl|setuser' command");
+    }
+
+    const _username = switch (array[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid username"),
+    };
+    _ = _username; // TODO: Wire into ACLStore
+
+    // Parse all rules (starting from array[2])
+    var enabled = true;
+    var password: ?[]const u8 = null;
+    var permission_rules = std.ArrayList([]const u8){};
+    defer permission_rules.deinit(allocator);
+
+    for (array[2..]) |arg| {
+        const rule = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid rule format"),
+        };
+
+        if (std.mem.eql(u8, rule, "on")) {
+            enabled = true;
+        } else if (std.mem.eql(u8, rule, "off")) {
+            enabled = false;
+        } else if (std.mem.startsWith(u8, rule, ">")) {
+            // Set password (SHA256 hash format, but we'll store plaintext for now)
+            password = rule[1..];
+        } else if (std.mem.startsWith(u8, rule, "<")) {
+            // Remove password? Not standard, skip
+        } else if (std.mem.eql(u8, rule, "nopass")) {
+            password = null;
+        } else if (std.mem.startsWith(u8, rule, "~") or std.mem.startsWith(u8, rule, "+~") or std.mem.startsWith(u8, rule, "-~")) {
+            // Key pattern rules - not yet implemented, skip silently
+        } else {
+            // Permission rule
+            try permission_rules.append(allocator, rule);
+        }
+    }
+
+    // Parse permission rules
+    var perm_result = parsePermissionRules(allocator, permission_rules.items) catch |err| {
+        return w.writeError(switch (err) {
+            PermissionChangeError.InvalidCategory => "ERR invalid category",
+            PermissionChangeError.InvalidRule => "ERR invalid rule",
+            else => "ERR invalid permissions",
+        });
+    };
+
+    // Stub: we can't actually store without access to ACLStore
+    // For now, just return OK
+    // TODO: Wire this into actual ACLStore
+
+    // Clean up allocated permission sets
+    {
+        var iter = perm_result.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+    }
+    {
+        var iter = perm_result.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+    }
+    perm_result.allowed_categories.deinit();
+    perm_result.denied_categories.deinit();
+
     return w.writeSimpleString("OK");
 }
 
@@ -350,4 +562,133 @@ test "ACL CAT lists categories" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "keyspace") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "string") != null);
+}
+
+test "parsePermissionRules handles +@fast" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{"+@fast"};
+    const result = try parsePermissionRules(allocator, &rules);
+    defer {
+        var iter = result.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.allowed_commands.deinit();
+
+        iter = result.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.denied_commands.deinit();
+
+        result.allowed_categories.deinit();
+        result.denied_categories.deinit();
+    }
+
+    try std.testing.expect(!result.all_commands_allowed);
+    try std.testing.expect(result.allowed_categories.contains(CommandCategory.fast));
+}
+
+test "parsePermissionRules handles +GET -SET" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "+GET", "-SET" };
+    const result = try parsePermissionRules(allocator, &rules);
+    defer {
+        var iter = result.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.allowed_commands.deinit();
+
+        iter = result.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.denied_commands.deinit();
+
+        result.allowed_categories.deinit();
+        result.denied_categories.deinit();
+    }
+
+    try std.testing.expect(result.allowed_commands.contains("GET"));
+    try std.testing.expect(result.denied_commands.contains("SET"));
+}
+
+test "parsePermissionRules handles allcommands" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{"allcommands"};
+    const result = try parsePermissionRules(allocator, &rules);
+    defer {
+        var iter = result.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.allowed_commands.deinit();
+
+        iter = result.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.denied_commands.deinit();
+
+        result.allowed_categories.deinit();
+        result.denied_categories.deinit();
+    }
+
+    try std.testing.expect(result.all_commands_allowed);
+}
+
+test "parsePermissionRules handles nocommands" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "allcommands", "nocommands" };
+    const result = try parsePermissionRules(allocator, &rules);
+    defer {
+        var iter = result.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.allowed_commands.deinit();
+
+        iter = result.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.denied_commands.deinit();
+
+        result.allowed_categories.deinit();
+        result.denied_categories.deinit();
+    }
+
+    try std.testing.expect(!result.all_commands_allowed);
+}
+
+test "parsePermissionRules implements left-to-right precedence" {
+    const allocator = std.testing.allocator;
+
+    // +GET then -GET: last rule wins, so GET should be denied
+    const rules = [_][]const u8{ "+GET", "-GET" };
+    const result = try parsePermissionRules(allocator, &rules);
+    defer {
+        var iter = result.allowed_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.allowed_commands.deinit();
+
+        iter = result.denied_commands.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        result.denied_commands.deinit();
+
+        result.allowed_categories.deinit();
+        result.denied_categories.deinit();
+    }
+
+    try std.testing.expect(!result.allowed_commands.contains("GET"));
+    try std.testing.expect(result.denied_commands.contains("GET"));
 }
