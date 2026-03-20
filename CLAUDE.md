@@ -278,7 +278,8 @@ gh issue list --state open --limit 10 --json number,title,labels,createdAt
 
 **작업 선택 규칙**:
 - bug 이슈가 있으면 → 버그 수정 우선
-- bug 없으면 → PRD.md의 Phase 순서를 따름 (Phase 1 → Phase 2 → ...)
+- bug 없고 READY 상태 zuda 마이그레이션이 있으면 → **간단한 마이그레이션 1개 먼저 수행** (Glob, Haversine 등 100 LOC 이하)
+- 그 외 → PRD.md의 Phase 순서를 따름 (Phase 1 → Phase 2 → ...)
 - 사이클당 하나의 이터레이션만 구현
 - 이전 세션의 미완료 작업(빌드 실패, 테스트 실패)이 있으면 먼저 수정
 
@@ -469,14 +470,35 @@ gh issue create --repo yusa-imit/sailor --title "feat: <기능>" --label "featur
 
 ## zuda Migration
 
-**Current**: Not yet integrated — all modules PENDING. See `docs/milestones.md` for migration targets.
+- **Current**: Not yet integrated — **READY for migration** (zuda v1.15.0 available with all target modules)
+- **Repository**: https://github.com/yusa-imit/zuda
+- **Tracking**: See `docs/milestones.md` for migration targets and status
+- **Compatibility layers**: `zuda.compat.zoltraak_sortedset` — drop-in SortedSet wrapper (Redis API-compatible)
 
-**마이그레이션 프로토콜**:
-1. zuda에서 `from:zuda` 라벨 이슈가 도착하면 status를 `READY`로 변경
-2. `build.zig.zon`에 zuda 의존성 추가, 자체 구현을 zuda import로 교체
-3. Sorted Set 마이그레이션 시: SkipList의 `(score, member)` 복합 정렬 + rank/score range query 지원 확인 필수
-4. `zig build test` + `tests/integration_test.sh` 전체 통과 확인
-5. status를 `DONE`으로 변경하고 커밋
+### Migration Targets & Readiness
 
-**로컬 워크어라운드 금지 (CRITICAL)**: zuda에 버그가 있으면 자체 구현으로 우회하지 않고, `gh issue create --repo yusa-imit/zuda --label "bug,from:zoltraak"` 발행 후 수정 대기. zuda 에이전트가 `from:*` 라벨 이슈를 최우선 처리한다.
+| Target | LOC | Status | Notes |
+|--------|-----|--------|-------|
+| Glob Pattern Matching | 90 | **READY** | `zuda.algorithms.string.globMatch` — 가장 간단, 먼저 마이그레이션 |
+| HyperLogLog | 80 | **READY** | `zuda.containers.probabilistic.HyperLogLog` — 독립 모듈 |
+| Haversine Distance | 15 | **READY** | `zuda.algorithms.geometry.haversineDistance` — 단일 함수 교체 |
+| Geohash encoding | 1400 | **READY** | `zuda.algorithms.geometry.geohashEncode/Decode` |
+| Sorted Set | 1800 | **READY** | `zuda.compat.zoltraak_sortedset` or `zuda.containers.lists.SkipList` |
+
+### Migration Protocol (ACTIVE)
+1. READY 상태 마이그레이션은 **자율 세션에서 적극적으로 수행**한다 — 이슈 도착을 기다리지 않는다
+2. **마이그레이션 순서**: 간단한 것부터 → Glob (90 LOC) → Haversine (15 LOC) → HyperLogLog (80 LOC) → Geohash (1400 LOC) → Sorted Set (1800 LOC)
+3. `build.zig.zon`에 zuda 의존성 추가, 자체 구현을 zuda import로 교체
+4. Sorted Set 마이그레이션 시: SkipList의 `(score, member)` 복합 정렬 + rank/score range query 지원 확인 필수
+5. `zig build test` + `tests/integration_test.sh` 전체 통과 확인
+6. 완료된 마이그레이션의 자체 구현 코드 삭제, 관련 GitHub 이슈 닫기
+
+### zuda-first Policy (CRITICAL)
+- 새로운 Redis 명령어 구현 시 데이터 구조/알고리즘이 필요하면, **zuda에 해당 모듈이 있는지 먼저 확인**한다
+- zuda에 있으면 → 자체 구현하지 않고 zuda를 import하여 사용
+- zuda에 없으면 → `gh issue create --repo yusa-imit/zuda --label "feature-request,from:zoltraak"` 발행 후, 긴급도에 따라 자체 구현 또는 대기 결정
+- **자체 구현을 새로 작성하는 것은 최후의 수단**이다
+
+### No Local Workaround (CRITICAL)
+- zuda에 버그가 있으면 자체 구현으로 우회하지 않고, `gh issue create --repo yusa-imit/zuda --label "bug,from:zoltraak"` 발행 후 수정 대기.
 

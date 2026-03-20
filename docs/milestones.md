@@ -7,7 +7,7 @@
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 3 ACL enforcement (75% complete — AUTH + command permissions + dispatcher integration done, key/channel patterns pending)
 - **Next milestone**: Phase 3 (key/channel patterns), Phase 7 (multi-DB)
-- **Blockers**: zuda library migrations blocked until zuda releases target modules
+- **zuda migrations**: All 5 targets **READY** (zuda v1.15.0 available) — Glob, HyperLogLog, Haversine, Geohash, Sorted Set
 - **Known stubs**: ACL (AUTH done, command/key permissions not enforced), Cluster (single-node), SELECT (DB 0 only)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH (all have real implementations as of Iteration 95-115)
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
@@ -100,18 +100,21 @@
 
 ### zuda Library
 
-- **Current**: Not yet integrated (all modules PENDING)
+- **Current**: Not yet integrated — **READY for migration** (zuda v1.15.0 available)
 - **Repository**: https://github.com/yusa-imit/zuda
-- **Trigger**: `from:zuda` label issues will arrive when modules are ready
+- **Compatibility layers**: `zuda.compat.zoltraak_sortedset` — drop-in SortedSet wrapper
+- **Migration guides**: See zuda `docs/migrations/ZOLTRAAK_SORTEDSET.md` for detailed API mapping
 - **Open issues**: #1, #2, #3 (all `enhancement`, `from:zuda` label)
 
-| Custom Implementation | File | zuda Target | Status |
-|----------------------|------|-------------|--------|
-| Sorted Set (HashMap + sorted list) | `src/storage/memory.zig` | `zuda.containers.lists.SkipList` | Pending |
-| HyperLogLog | `src/storage/memory.zig` | `zuda.containers.probabilistic.HyperLogLog` | Pending |
-| Glob Pattern Matching | `src/utils/glob.zig` | `zuda.algorithms.string.glob_match` | Pending |
-| Geohash encoding | `src/commands/geo.zig` | `zuda.algorithms.geometry.geohash` | Pending |
-| Haversine Distance | `src/commands/geo.zig` | `zuda.algorithms.geometry.haversine` | Pending |
+| Custom Implementation | File | LOC | zuda Target | Status |
+|----------------------|------|-----|-------------|--------|
+| Glob Pattern Matching | `src/utils/glob.zig` | 90 | `zuda.algorithms.string.globMatch` | **READY** |
+| Haversine Distance | `src/commands/geo.zig` | 15 | `zuda.algorithms.geometry.haversineDistance` | **READY** |
+| HyperLogLog | `src/storage/memory.zig` | 80 | `zuda.containers.probabilistic.HyperLogLog` | **READY** |
+| Geohash encoding | `src/commands/geo.zig` | 1400 | `zuda.algorithms.geometry.geohashEncode` | **READY** |
+| Sorted Set (HashMap + sorted list) | `src/storage/memory.zig` | 1800 | `zuda.compat.zoltraak_sortedset` or `zuda.containers.lists.SkipList` | **READY** |
+
+**Migration order**: 간단한 것부터 순서대로 (Glob → Haversine → HyperLogLog → Geohash → Sorted Set)
 
 **Excluded from migration** (domain-specific):
 - `src/storage/memory.zig` (core storage) — Redis semantics
@@ -120,7 +123,7 @@
 - `src/commands/streams.zig` — Redis Stream logic
 - `src/commands/bits.zig` — Redis BITOP logic
 
-> Sorted Set is the most complex custom implementation (1800 LOC). Requires zuda SkipList to support `(score: f64, member: []const u8)` composite key sorting + rank-based and score-based range queries.
+> **Sorted Set note**: 가장 복잡한 마이그레이션 대상 (1800 LOC). `zuda.compat.zoltraak_sortedset`가 Redis ZADD/ZRANGE/ZRANK/ZSCORE 호환 래퍼를 제공. 또는 `zuda.containers.lists.SkipList`를 직접 사용하여 `(score: f64, member: []const u8)` 복합 키 정렬 + rank/score range query 구현 가능.
 
 ---
 
