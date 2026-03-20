@@ -70,9 +70,14 @@ pub const ClientInfo = struct {
     monitor_mode: bool,
     /// Replication offset of the last write command executed by this client (for WAIT command)
     client_repl_offset: i64,
+    /// Currently authenticated ACL user (null = unauthenticated, defaults to "default" user)
+    authenticated_user: ?[]const u8,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
+        if (self.authenticated_user) |user| {
+            allocator.free(user);
+        }
         if (self.name) |n| {
             allocator.free(n);
         }
@@ -188,6 +193,7 @@ pub const ClientRegistry = struct {
             .tracking_prefixes = std.ArrayList([]const u8){},
             .monitor_mode = false, // Monitor mode off by default
             .client_repl_offset = 0, // Start at offset 0
+            .authenticated_user = null, // Unauthenticated by default (will use "default" user)
         };
 
         try self.clients.put(client_id, info);
@@ -229,6 +235,33 @@ pub const ClientRegistry = struct {
             }
         }
         return null;
+    }
+
+    /// Set the authenticated ACL user for a client connection
+    pub fn setAuthenticatedUser(self: *ClientRegistry, client_id: u64, username: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            if (info.authenticated_user) |old_user| {
+                self.allocator.free(old_user);
+            }
+            info.authenticated_user = try self.allocator.dupe(u8, username);
+        }
+    }
+
+    /// Get the authenticated ACL user for a client connection (returns "default" if null)
+    pub fn getAuthenticatedUser(self: *ClientRegistry, client_id: u64, allocator: std.mem.Allocator) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            if (info.authenticated_user) |user| {
+                return try allocator.dupe(u8, user);
+            }
+        }
+        // Return "default" user if no authentication has occurred
+        return try allocator.dupe(u8, "default");
     }
 
     /// Update the last command timestamp and name for a client

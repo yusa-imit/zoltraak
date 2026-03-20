@@ -5,6 +5,7 @@ const protocol = @import("../protocol/parser.zig");
 const RespValue = protocol.RespValue;
 const Storage = @import("../storage/memory.zig").Storage;
 const ACLStore = @import("../storage/acl.zig").ACLStore;
+const ClientRegistry = @import("./client.zig").ClientRegistry;
 
 /// AUTH command - authenticate to the server
 /// Syntax: AUTH password (Redis <6.0 legacy)
@@ -13,6 +14,8 @@ pub fn cmdAuth(
     allocator: std.mem.Allocator,
     array: []const RespValue,
     storage: *Storage,
+    client_registry: *ClientRegistry,
+    client_id: u64,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -65,7 +68,9 @@ pub fn cmdAuth(
         // But for now, accepting any password for nopass user (default behavior)
     }
 
-    // Authentication successful
+    // Authentication successful - update client's authenticated user
+    try client_registry.setAuthenticatedUser(client_id, username);
+
     return w.writeSimpleString("OK");
 }
 
@@ -76,21 +81,34 @@ test "AUTH - successful authentication with default user nopass" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "AUTH" },
         RespValue{ .bulk_string = "anypassword" }, // default user has nopass
     };
 
-    const result = try cmdAuth(allocator, &args, storage);
+    const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Verify authenticated_user was set
+    const auth_user = try client_registry.getAuthenticatedUser(client_id, allocator);
+    defer allocator.free(auth_user);
+    try std.testing.expectEqualStrings("default", auth_user);
 }
 
 test "AUTH - successful authentication with username and password" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
 
     // Create a test user with password
     const acl_store = storage.acl.?;
@@ -102,16 +120,25 @@ test "AUTH - successful authentication with username and password" {
         RespValue{ .bulk_string = "secret123" },
     };
 
-    const result = try cmdAuth(allocator, &args, storage);
+    const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Verify authenticated_user was set
+    const auth_user = try client_registry.getAuthenticatedUser(client_id, allocator);
+    defer allocator.free(auth_user);
+    try std.testing.expectEqualStrings("testuser", auth_user);
 }
 
 test "AUTH - wrong password" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
 
     // Create a test user with password
     const acl_store = storage.acl.?;
@@ -123,7 +150,7 @@ test "AUTH - wrong password" {
         RespValue{ .bulk_string = "wrongpassword" },
     };
 
-    const result = try cmdAuth(allocator, &args, storage);
+    const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGPASS"));
@@ -134,13 +161,17 @@ test "AUTH - non-existent user" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "AUTH" },
         RespValue{ .bulk_string = "nonexistent" },
         RespValue{ .bulk_string = "password" },
     };
 
-    const result = try cmdAuth(allocator, &args, storage);
+    const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGPASS"));
@@ -150,6 +181,10 @@ test "AUTH - disabled user" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
 
     // Create a disabled user
     const acl_store = storage.acl.?;
@@ -161,7 +196,7 @@ test "AUTH - disabled user" {
         RespValue{ .bulk_string = "password" },
     };
 
-    const result = try cmdAuth(allocator, &args, storage);
+    const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGPASS"));
@@ -172,12 +207,16 @@ test "AUTH - wrong number of arguments" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+
     // No arguments
     {
         const args = [_]RespValue{
             RespValue{ .bulk_string = "AUTH" },
         };
-        const result = try cmdAuth(allocator, &args, storage);
+        const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
         defer allocator.free(result);
         try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
     }
@@ -190,7 +229,7 @@ test "AUTH - wrong number of arguments" {
             RespValue{ .bulk_string = "pass" },
             RespValue{ .bulk_string = "extra" },
         };
-        const result = try cmdAuth(allocator, &args, storage);
+        const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
         defer allocator.free(result);
         try std.testing.expect(std.mem.startsWith(u8, result, "-ERR wrong number of arguments"));
     }
@@ -201,13 +240,17 @@ test "AUTH - legacy single argument form with default user" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+
     // Legacy AUTH password (should work with default user's nopass)
     const args = [_]RespValue{
         RespValue{ .bulk_string = "AUTH" },
         RespValue{ .bulk_string = "anypassword" },
     };
 
-    const result = try cmdAuth(allocator, &args, storage);
+    const result = try cmdAuth(allocator, &args, storage, &client_registry, client_id);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);

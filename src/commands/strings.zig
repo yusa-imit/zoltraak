@@ -32,6 +32,8 @@ const acl_cmds = @import("acl.zig");
 const auth_cmds = @import("auth.zig");
 const cluster_cmds = @import("cluster.zig");
 const utility_cmds = @import("utility.zig");
+const ACLStore = @import("../storage/acl.zig").ACLStore;
+const command_registry = @import("command_registry.zig");
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 pub const ScriptStore = scripting_mod.ScriptStore;
@@ -118,6 +120,36 @@ pub fn executeCommand(
     // Command dispatch (case-insensitive)
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
+
+    // ── ACL Permission Check ──────────────────────────────────────────────────
+    // Always allow AUTH, HELLO, PING (used before/during authentication)
+    const always_allowed = std.mem.eql(u8, cmd_upper, "AUTH") or
+        std.mem.eql(u8, cmd_upper, "HELLO") or
+        std.mem.eql(u8, cmd_upper, "PING");
+
+    if (!always_allowed) {
+        // Get authenticated user (defaults to "default" if unauthenticated)
+        const username = try client_registry.getAuthenticatedUser(client_id, allocator);
+        defer allocator.free(username);
+
+        // Get ACL store
+        if (storage.acl) |acl_store| {
+            // Get user from ACL
+            if (acl_store.getUser(username)) |user| {
+                // Check if user has permission for this command
+                if (!user.hasCommandPermission(cmd_upper)) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    return w.writeError("NOPERM this user has no permissions to run this command");
+                }
+            } else {
+                // User not found in ACL - deny
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                return w.writeError("NOPERM user not found in ACL");
+            }
+        }
+    }
 
     // ── MONITOR: Broadcast command to monitoring clients ──────────────────────
     // Broadcast to all monitoring clients BEFORE execution (except MONITOR command itself)
@@ -281,7 +313,7 @@ pub fn executeCommand(
     const response = blk: {
         // Server & Auth commands
         if (std.mem.eql(u8, cmd_upper, "AUTH")) {
-            break :blk try auth_cmds.cmdAuth(allocator, array, storage);
+            break :blk try auth_cmds.cmdAuth(allocator, array, storage, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "HELLO")) {
             const args_slice = if (array.len > 1) array[1..] else array[0..0];
             break :blk try server_cmds.cmdHello(allocator, client_registry, client_id, args_slice);
