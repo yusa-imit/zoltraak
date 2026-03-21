@@ -126,6 +126,103 @@ pub fn cmdACLGetuser(
     return buffer.toOwnedSlice(allocator);
 }
 
+/// Parse ACL key pattern rules (~pattern, %R~pattern, %W~pattern, allkeys, resetkeys)
+/// Returns pattern lists for key access control
+pub fn parseKeyPatternRules(
+    allocator: Allocator,
+    rules: []const []const u8,
+) error{OutOfMemory}!struct {
+    all_keys_allowed: bool,
+    allowed_key_patterns: std.ArrayList([]const u8),
+    read_only_key_patterns: std.ArrayList([]const u8),
+    write_only_key_patterns: std.ArrayList([]const u8),
+} {
+    var all_keys_allowed = false;
+    var allowed_key_patterns = std.ArrayList([]const u8){};
+    errdefer {
+        for (allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        allowed_key_patterns.deinit(allocator);
+    }
+
+    var read_only_key_patterns = std.ArrayList([]const u8){};
+    errdefer {
+        for (read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        read_only_key_patterns.deinit(allocator);
+    }
+
+    var write_only_key_patterns = std.ArrayList([]const u8){};
+    errdefer {
+        for (write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        write_only_key_patterns.deinit(allocator);
+    }
+
+    for (rules) |rule| {
+        if (std.mem.eql(u8, rule, "allkeys")) {
+            // Set all_keys_allowed flag and clear all patterns
+            all_keys_allowed = true;
+            for (allowed_key_patterns.items) |pattern| {
+                allocator.free(pattern);
+            }
+            allowed_key_patterns.clearRetainingCapacity();
+            for (read_only_key_patterns.items) |pattern| {
+                allocator.free(pattern);
+            }
+            read_only_key_patterns.clearRetainingCapacity();
+            for (write_only_key_patterns.items) |pattern| {
+                allocator.free(pattern);
+            }
+            write_only_key_patterns.clearRetainingCapacity();
+        } else if (std.mem.eql(u8, rule, "resetkeys")) {
+            // Reset all_keys_allowed and clear all patterns
+            all_keys_allowed = false;
+            for (allowed_key_patterns.items) |pattern| {
+                allocator.free(pattern);
+            }
+            allowed_key_patterns.clearRetainingCapacity();
+            for (read_only_key_patterns.items) |pattern| {
+                allocator.free(pattern);
+            }
+            read_only_key_patterns.clearRetainingCapacity();
+            for (write_only_key_patterns.items) |pattern| {
+                allocator.free(pattern);
+            }
+            write_only_key_patterns.clearRetainingCapacity();
+        } else if (std.mem.startsWith(u8, rule, "%R~")) {
+            // Read-only pattern: %R~pattern
+            const pattern = rule[3..];
+            const pattern_copy = try allocator.dupe(u8, pattern);
+            errdefer allocator.free(pattern_copy);
+            try read_only_key_patterns.append(allocator, pattern_copy);
+        } else if (std.mem.startsWith(u8, rule, "%W~")) {
+            // Write-only pattern: %W~pattern
+            const pattern = rule[3..];
+            const pattern_copy = try allocator.dupe(u8, pattern);
+            errdefer allocator.free(pattern_copy);
+            try write_only_key_patterns.append(allocator, pattern_copy);
+        } else if (std.mem.startsWith(u8, rule, "~")) {
+            // Full access pattern: ~pattern
+            const pattern = rule[1..];
+            const pattern_copy = try allocator.dupe(u8, pattern);
+            errdefer allocator.free(pattern_copy);
+            try allowed_key_patterns.append(allocator, pattern_copy);
+        }
+        // Other rules (not key patterns) are ignored
+    }
+
+    return .{
+        .all_keys_allowed = all_keys_allowed,
+        .allowed_key_patterns = allowed_key_patterns,
+        .read_only_key_patterns = read_only_key_patterns,
+        .write_only_key_patterns = write_only_key_patterns,
+    };
+}
+
 /// Parse ACL rules for a user (+cmd, -cmd, +@cat, -@cat, etc.)
 /// Implements left-to-right precedence: last matching rule wins per command
 pub const PermissionChangeError = error{
@@ -288,6 +385,8 @@ pub fn cmdACLSetuser(
     var password: ?[]const u8 = null;
     var permission_rules = std.ArrayList([]const u8){};
     defer permission_rules.deinit(allocator);
+    var key_pattern_rules = std.ArrayList([]const u8){};
+    defer key_pattern_rules.deinit(allocator);
 
     for (array[2..]) |arg| {
         const rule = switch (arg) {
@@ -306,8 +405,9 @@ pub fn cmdACLSetuser(
             // Remove password? Not standard, skip
         } else if (std.mem.eql(u8, rule, "nopass")) {
             password = null;
-        } else if (std.mem.startsWith(u8, rule, "~") or std.mem.startsWith(u8, rule, "+~") or std.mem.startsWith(u8, rule, "-~")) {
-            // Key pattern rules - not yet implemented, skip silently
+        } else if (std.mem.startsWith(u8, rule, "~") or std.mem.startsWith(u8, rule, "%R~") or std.mem.startsWith(u8, rule, "%W~") or std.mem.eql(u8, rule, "allkeys") or std.mem.eql(u8, rule, "resetkeys")) {
+            // Key pattern rules
+            try key_pattern_rules.append(allocator, rule);
         } else {
             // Permission rule
             try permission_rules.append(allocator, rule);
@@ -322,26 +422,46 @@ pub fn cmdACLSetuser(
             else => "ERR invalid permissions",
         });
     };
-
-    // Stub: we can't actually store without access to ACLStore
-    // For now, just return OK
-    // TODO: Wire this into actual ACLStore
-
-    // Clean up allocated permission sets
-    {
+    defer {
         var iter = perm_result.allowed_commands.keyIterator();
         while (iter.next()) |key| {
             allocator.free(key.*);
         }
-    }
-    {
-        var iter = perm_result.denied_commands.keyIterator();
+        perm_result.allowed_commands.deinit();
+
+        iter = perm_result.denied_commands.keyIterator();
         while (iter.next()) |key| {
             allocator.free(key.*);
         }
+        perm_result.denied_commands.deinit();
+
+        perm_result.allowed_categories.deinit();
+        perm_result.denied_categories.deinit();
     }
-    perm_result.allowed_categories.deinit();
-    perm_result.denied_categories.deinit();
+
+    // Parse key pattern rules
+    var key_result = try parseKeyPatternRules(allocator, key_pattern_rules.items);
+    defer {
+        for (key_result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        key_result.allowed_key_patterns.deinit(allocator);
+
+        for (key_result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        key_result.read_only_key_patterns.deinit(allocator);
+
+        for (key_result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        key_result.write_only_key_patterns.deinit(allocator);
+    }
+
+    // Stub: we can't actually store without access to ACLStore
+    // For now, just return OK after validating rules parse correctly
+    // TODO: Wire this into actual ACLStore
+    // enabled and password variables are parsed but not yet used
 
     return w.writeSimpleString("OK");
 }
@@ -664,6 +784,190 @@ test "parsePermissionRules handles nocommands" {
     }
 
     try std.testing.expect(!result.all_commands_allowed);
+}
+
+test "parseKeyPatternRules parses ~pattern for full access" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "~user:*", "~session:*" };
+    const result = try parseKeyPatternRules(allocator, &rules);
+    defer {
+        for (result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.allowed_key_patterns.deinit(allocator);
+
+        for (result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.read_only_key_patterns.deinit(allocator);
+
+        for (result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.write_only_key_patterns.deinit(allocator);
+    }
+
+    try std.testing.expect(!result.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 2), result.allowed_key_patterns.items.len);
+    try std.testing.expectEqualStrings("user:*", result.allowed_key_patterns.items[0]);
+    try std.testing.expectEqualStrings("session:*", result.allowed_key_patterns.items[1]);
+}
+
+test "parseKeyPatternRules parses %R~pattern for read-only" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "%R~cache:*", "%R~tmp:*" };
+    const result = try parseKeyPatternRules(allocator, &rules);
+    defer {
+        for (result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.allowed_key_patterns.deinit(allocator);
+
+        for (result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.read_only_key_patterns.deinit(allocator);
+
+        for (result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.write_only_key_patterns.deinit(allocator);
+    }
+
+    try std.testing.expect(!result.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 2), result.read_only_key_patterns.items.len);
+    try std.testing.expectEqualStrings("cache:*", result.read_only_key_patterns.items[0]);
+    try std.testing.expectEqualStrings("tmp:*", result.read_only_key_patterns.items[1]);
+}
+
+test "parseKeyPatternRules parses %W~pattern for write-only" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "%W~log:*", "%W~metric:*" };
+    const result = try parseKeyPatternRules(allocator, &rules);
+    defer {
+        for (result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.allowed_key_patterns.deinit(allocator);
+
+        for (result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.read_only_key_patterns.deinit(allocator);
+
+        for (result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.write_only_key_patterns.deinit(allocator);
+    }
+
+    try std.testing.expect(!result.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 2), result.write_only_key_patterns.items.len);
+    try std.testing.expectEqualStrings("log:*", result.write_only_key_patterns.items[0]);
+    try std.testing.expectEqualStrings("metric:*", result.write_only_key_patterns.items[1]);
+}
+
+test "parseKeyPatternRules handles allkeys flag" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{"allkeys"};
+    const result = try parseKeyPatternRules(allocator, &rules);
+    defer {
+        for (result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.allowed_key_patterns.deinit(allocator);
+
+        for (result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.read_only_key_patterns.deinit(allocator);
+
+        for (result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.write_only_key_patterns.deinit(allocator);
+    }
+
+    try std.testing.expect(result.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 0), result.allowed_key_patterns.items.len);
+}
+
+test "parseKeyPatternRules handles resetkeys flag" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "allkeys", "resetkeys" };
+    const result = try parseKeyPatternRules(allocator, &rules);
+    defer {
+        for (result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.allowed_key_patterns.deinit(allocator);
+
+        for (result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.read_only_key_patterns.deinit(allocator);
+
+        for (result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.write_only_key_patterns.deinit(allocator);
+    }
+
+    try std.testing.expect(!result.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 0), result.allowed_key_patterns.items.len);
+}
+
+test "parseKeyPatternRules handles mixed pattern types" {
+    const allocator = std.testing.allocator;
+
+    const rules = [_][]const u8{ "~user:*", "%R~cache:*", "%W~log:*" };
+    const result = try parseKeyPatternRules(allocator, &rules);
+    defer {
+        for (result.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.allowed_key_patterns.deinit(allocator);
+
+        for (result.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.read_only_key_patterns.deinit(allocator);
+
+        for (result.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        result.write_only_key_patterns.deinit(allocator);
+    }
+
+    try std.testing.expect(!result.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 1), result.allowed_key_patterns.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.read_only_key_patterns.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.write_only_key_patterns.items.len);
+}
+
+test "ACL SETUSER parses key pattern rules" {
+    const allocator = std.testing.allocator;
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "SETUSER" },
+        RespValue{ .bulk_string = "testuser" },
+        RespValue{ .bulk_string = "~user:*" },
+        RespValue{ .bulk_string = "%R~cache:*" },
+        RespValue{ .bulk_string = "%W~log:*" },
+        RespValue{ .bulk_string = "allkeys" },
+        RespValue{ .bulk_string = "resetkeys" },
+    };
+
+    const result = try cmdACLSetuser(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "+OK\r\n") != null);
 }
 
 test "parsePermissionRules implements left-to-right precedence" {
