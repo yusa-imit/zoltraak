@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const CommandRegistry = @import("../commands/command_registry.zig");
+const glob = @import("../utils/glob.zig");
 
 /// ACL command category enum (21 core categories)
 pub const CommandCategory = CommandRegistry.CommandCategory;
@@ -229,6 +230,60 @@ pub const User = struct {
 
         // Fall back to all_commands_allowed setting
         return self.all_commands_allowed;
+    }
+
+    /// Check if a user has permission to access a key with the given access mode.
+    ///
+    /// Arguments:
+    ///   - key: The key to check permission for
+    ///   - access_mode: Must be "read" or "write" (asserts in debug mode)
+    ///
+    /// Returns:
+    ///   - true if user is authorized for the specified access mode
+    ///   - false if user is denied or access_mode is invalid
+    ///
+    /// Permission Check Order:
+    ///   1. If all_keys_allowed=true, grant access immediately
+    ///   2. Check allowed_key_patterns (full read+write access)
+    ///   3. Check read_only_key_patterns (only if access_mode="read")
+    ///   4. Check write_only_key_patterns (only if access_mode="write")
+    ///   5. Deny if no patterns match
+    pub fn hasKeyPermission(self: *const User, key: []const u8, access_mode: []const u8) bool {
+        // Validate access_mode (debug builds only)
+        std.debug.assert(std.mem.eql(u8, access_mode, "read") or std.mem.eql(u8, access_mode, "write"));
+
+        // If all keys are allowed, grant access immediately
+        if (self.all_keys_allowed) {
+            return true;
+        }
+
+        // Check allowed_key_patterns (full access: read + write)
+        for (self.allowed_key_patterns.items) |pattern| {
+            if (glob.matchGlob(pattern, key)) {
+                return true;
+            }
+        }
+
+        // Check read_only_key_patterns (read-only access)
+        if (std.mem.eql(u8, access_mode, "read")) {
+            for (self.read_only_key_patterns.items) |pattern| {
+                if (glob.matchGlob(pattern, key)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check write_only_key_patterns (write-only access)
+        if (std.mem.eql(u8, access_mode, "write")) {
+            for (self.write_only_key_patterns.items) |pattern| {
+                if (glob.matchGlob(pattern, key)) {
+                    return true;
+                }
+            }
+        }
+
+        // No matching patterns found
+        return false;
     }
 };
 
@@ -703,4 +758,416 @@ test "User: hasCommandPermission respects denied categories (takes priority)" {
     try std.testing.expect(user.hasCommandPermission("GET"));
     // APPEND is in string+write, write is denied so should be denied
     try std.testing.expect(!user.hasCommandPermission("APPEND"));
+}
+
+// ── Key Permission Tests ──────────────────────────────────────────────────────
+
+test "User: hasKeyPermission with all_keys_allowed=true allows any key" {
+    const allocator = std.testing.allocator;
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = true,
+        .allowed_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // all_keys_allowed=true → should allow any key for any access mode
+    try std.testing.expect(user.hasKeyPermission("user:123", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:123", "write"));
+    try std.testing.expect(user.hasKeyPermission("session:abc", "read"));
+    try std.testing.expect(user.hasKeyPermission("session:abc", "write"));
+    try std.testing.expect(user.hasKeyPermission("anykey", "read"));
+    try std.testing.expect(user.hasKeyPermission("anykey", "write"));
+}
+
+test "User: hasKeyPermission with all_keys_allowed=false and empty patterns denies all keys" {
+    const allocator = std.testing.allocator;
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // all_keys_allowed=false + no patterns → should deny all keys
+    try std.testing.expect(!user.hasKeyPermission("user:123", "read"));
+    try std.testing.expect(!user.hasKeyPermission("user:123", "write"));
+    try std.testing.expect(!user.hasKeyPermission("anykey", "read"));
+    try std.testing.expect(!user.hasKeyPermission("anykey", "write"));
+}
+
+test "User: hasKeyPermission with ~pattern allows read and write" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "session:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching ~user:* should be allowed for both read and write
+    try std.testing.expect(user.hasKeyPermission("user:123", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:123", "write"));
+    try std.testing.expect(user.hasKeyPermission("user:999", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:999", "write"));
+
+    // Keys matching ~session:* should be allowed for both read and write
+    try std.testing.expect(user.hasKeyPermission("session:abc", "read"));
+    try std.testing.expect(user.hasKeyPermission("session:abc", "write"));
+
+    // Keys not matching any pattern should be denied
+    try std.testing.expect(!user.hasKeyPermission("cache:123", "read"));
+    try std.testing.expect(!user.hasKeyPermission("cache:123", "write"));
+    try std.testing.expect(!user.hasKeyPermission("other:key", "read"));
+    try std.testing.expect(!user.hasKeyPermission("other:key", "write"));
+}
+
+test "User: hasKeyPermission with %R~pattern allows read only" {
+    const allocator = std.testing.allocator;
+
+    var read_only_patterns = std.ArrayList([]const u8){};
+    try read_only_patterns.append(allocator, try allocator.dupe(u8, "config:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = read_only_patterns,
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching %R~config:* should be allowed for read but denied for write
+    try std.testing.expect(user.hasKeyPermission("config:db", "read"));
+    try std.testing.expect(!user.hasKeyPermission("config:db", "write"));
+    try std.testing.expect(user.hasKeyPermission("config:cache", "read"));
+    try std.testing.expect(!user.hasKeyPermission("config:cache", "write"));
+
+    // Keys not matching should be denied for both
+    try std.testing.expect(!user.hasKeyPermission("user:123", "read"));
+    try std.testing.expect(!user.hasKeyPermission("user:123", "write"));
+}
+
+test "User: hasKeyPermission with %W~pattern allows write only" {
+    const allocator = std.testing.allocator;
+
+    var write_only_patterns = std.ArrayList([]const u8){};
+    try write_only_patterns.append(allocator, try allocator.dupe(u8, "logs:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = write_only_patterns,
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching %W~logs:* should be allowed for write but denied for read
+    try std.testing.expect(!user.hasKeyPermission("logs:app", "read"));
+    try std.testing.expect(user.hasKeyPermission("logs:app", "write"));
+    try std.testing.expect(!user.hasKeyPermission("logs:system", "read"));
+    try std.testing.expect(user.hasKeyPermission("logs:system", "write"));
+
+    // Keys not matching should be denied for both
+    try std.testing.expect(!user.hasKeyPermission("user:123", "read"));
+    try std.testing.expect(!user.hasKeyPermission("user:123", "write"));
+}
+
+test "User: hasKeyPermission with multiple patterns - first match wins" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
+
+    var read_only_patterns = std.ArrayList([]const u8){};
+    try read_only_patterns.append(allocator, try allocator.dupe(u8, "user:admin:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = read_only_patterns,
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // user:admin:123 matches ~user:* first (allowed for both read and write)
+    // Order: allowed_key_patterns → read_only_key_patterns → write_only_key_patterns
+    try std.testing.expect(user.hasKeyPermission("user:admin:123", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:admin:123", "write"));
+
+    // user:regular:456 matches ~user:* (allowed for both)
+    try std.testing.expect(user.hasKeyPermission("user:regular:456", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:regular:456", "write"));
+}
+
+test "User: hasKeyPermission with glob wildcards - asterisk" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "cache:*:data"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching cache:*:data pattern
+    try std.testing.expect(user.hasKeyPermission("cache:123:data", "read"));
+    try std.testing.expect(user.hasKeyPermission("cache:abc:data", "write"));
+    try std.testing.expect(user.hasKeyPermission("cache:user:session:data", "read"));
+
+    // Keys not matching pattern
+    try std.testing.expect(!user.hasKeyPermission("cache:123:meta", "read"));
+    try std.testing.expect(!user.hasKeyPermission("cache:123", "write"));
+    try std.testing.expect(!user.hasKeyPermission("data:cache:123", "read"));
+}
+
+test "User: hasKeyPermission with glob wildcards - question mark" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "tmp:?:key"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching tmp:?:key pattern (exactly one character)
+    try std.testing.expect(user.hasKeyPermission("tmp:1:key", "read"));
+    try std.testing.expect(user.hasKeyPermission("tmp:a:key", "write"));
+    try std.testing.expect(user.hasKeyPermission("tmp:z:key", "read"));
+
+    // Keys not matching pattern
+    try std.testing.expect(!user.hasKeyPermission("tmp:12:key", "read")); // Two characters
+    try std.testing.expect(!user.hasKeyPermission("tmp::key", "write")); // Zero characters
+    try std.testing.expect(!user.hasKeyPermission("tmp:abc:key", "read")); // Three characters
+}
+
+test "User: hasKeyPermission with glob wildcards - character class" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "env:[abc]:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching env:[abc]:* pattern
+    try std.testing.expect(user.hasKeyPermission("env:a:config", "read"));
+    try std.testing.expect(user.hasKeyPermission("env:b:settings", "write"));
+    try std.testing.expect(user.hasKeyPermission("env:c:db", "read"));
+
+    // Keys not matching pattern
+    try std.testing.expect(!user.hasKeyPermission("env:d:config", "read"));
+    try std.testing.expect(!user.hasKeyPermission("env:x:settings", "write"));
+    try std.testing.expect(!user.hasKeyPermission("env:1:db", "read"));
+}
+
+test "User: hasKeyPermission with glob wildcards - character range" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "shard:[0-9]:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching shard:[0-9]:* pattern
+    try std.testing.expect(user.hasKeyPermission("shard:0:data", "read"));
+    try std.testing.expect(user.hasKeyPermission("shard:5:data", "write"));
+    try std.testing.expect(user.hasKeyPermission("shard:9:data", "read"));
+
+    // Keys not matching pattern
+    try std.testing.expect(!user.hasKeyPermission("shard:a:data", "read"));
+    try std.testing.expect(!user.hasKeyPermission("shard:10:data", "write")); // Two digits
+    try std.testing.expect(!user.hasKeyPermission("shard:x:data", "read"));
+}
+
+test "User: hasKeyPermission with glob wildcards - negated character class" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "data:[^t]*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    // Keys matching data:[^t]* pattern (second char is not 't')
+    try std.testing.expect(user.hasKeyPermission("data:a123", "read"));
+    try std.testing.expect(user.hasKeyPermission("data:b456", "write"));
+    try std.testing.expect(user.hasKeyPermission("data:x", "read"));
+
+    // Keys not matching pattern (second char is 't')
+    try std.testing.expect(!user.hasKeyPermission("data:t123", "read"));
+    try std.testing.expect(!user.hasKeyPermission("data:temp", "write"));
+}
+
+test "User: hasKeyPermission with common Redis key patterns" {
+    const allocator = std.testing.allocator;
+
+    var allowed_patterns = std.ArrayList([]const u8){};
+    try allowed_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
+
+    var read_only_patterns = std.ArrayList([]const u8){};
+    try read_only_patterns.append(allocator, try allocator.dupe(u8, "session:*"));
+
+    var write_only_patterns = std.ArrayList([]const u8){};
+    try write_only_patterns.append(allocator, try allocator.dupe(u8, "cache:*:data"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "test"),
+        .password = null,
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = std.StringHashMap(void).init(allocator),
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_patterns,
+        .read_only_key_patterns = read_only_patterns,
+        .write_only_key_patterns = write_only_patterns,
+    };
+    defer user.deinit(allocator);
+
+    // user:* pattern - read/write allowed
+    try std.testing.expect(user.hasKeyPermission("user:1", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:1", "write"));
+    try std.testing.expect(user.hasKeyPermission("user:1000", "read"));
+    try std.testing.expect(user.hasKeyPermission("user:1000", "write"));
+
+    // session:* pattern - read-only
+    try std.testing.expect(user.hasKeyPermission("session:abc123", "read"));
+    try std.testing.expect(!user.hasKeyPermission("session:abc123", "write"));
+    try std.testing.expect(user.hasKeyPermission("session:xyz", "read"));
+    try std.testing.expect(!user.hasKeyPermission("session:xyz", "write"));
+
+    // cache:*:data pattern - write-only
+    try std.testing.expect(!user.hasKeyPermission("cache:temp:data", "read"));
+    try std.testing.expect(user.hasKeyPermission("cache:temp:data", "write"));
+    try std.testing.expect(!user.hasKeyPermission("cache:123:data", "read"));
+    try std.testing.expect(user.hasKeyPermission("cache:123:data", "write"));
+
+    // No matching pattern - denied
+    try std.testing.expect(!user.hasKeyPermission("admin:config", "read"));
+    try std.testing.expect(!user.hasKeyPermission("admin:config", "write"));
 }

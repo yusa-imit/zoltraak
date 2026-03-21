@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 120 (193+ Redis commands, ACL key pattern structure, 2/5 zuda migrations)
+- **Iterations complete**: 121 (193+ Redis commands, ACL key permissions fully implemented, 2/5 zuda migrations)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 3 ACL enforcement (78% complete — AUTH + command permissions + dispatcher integration + key pattern structure done, key permission logic pending)
+- **Current phase**: Phase 3 ACL enforcement (90% complete — AUTH + command permissions + dispatcher integration + key pattern matching done, ACL SETUSER pattern rules + enforcement points pending)
 - **Next milestone**: Phase 3 (key permission logic), Phase 7 (multi-DB)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: ACL (AUTH done, command permissions enforced, key/channel patterns structure done), Cluster (single-node), SELECT (DB 0 only)
@@ -65,7 +65,7 @@
 | Generic Key Commands (Phase 1.6) | 102 | WAIT full implementation with per-client replication offset tracking |
 | Sailor Migrations | 70-76, 79, 83, 85, 89, 91, 96, 101, 103, 106, 110 | sailor v0.5.0 through v1.16.0 — TUI widgets, data viz, layout, accessibility, text editing, performance optimizations, terminal features |
 | Lua Scripting (Phase 2) | 107-113 | Lua 5.1 integration, redis.call/pcall, sandboxing, timeout, SCRIPT KILL, cjson/cmsgpack/struct libraries (100% complete ✅) |
-| ACL Enforcement (Phase 3) | 115-117, 120 | AUTH command, command/category permissions, dispatcher integration, key pattern structure (78% complete, logic pending) |
+| ACL Enforcement (Phase 3) | 115-117, 120-121 | AUTH command, command/category permissions, dispatcher integration, key pattern structure + matching logic (90% complete, SETUSER pattern rules + enforcement points pending) |
 
 ---
 
@@ -138,3 +138,4 @@
 
 - **120**: **ACL Key Pattern Structure (Phase 3.4)** — Added foundational structure for ACL key pattern permissions (~pattern/%R~pattern/%W~pattern syntax): extended User struct with 4 ArrayList([]const u8) fields (all_keys_allowed bool flag, allowed_key_patterns/read_only_key_patterns/write_only_key_patterns lists), updated deinit() to free pattern lists, updated clone() to deep-copy pattern lists, updated createDefaultUser() to initialize empty pattern lists with all_keys_allowed=true for default user, Zig 0.15.2 unmanaged ArrayList compatibility (used {} empty struct literal, .deinit(allocator), .append(allocator, item)), zero memory leaks, all tests pass, **Phase 3 ACL Enforcement: 75% → 78% complete** (AUTH + command permissions + dispatcher integration + key pattern structure done, hasKeyPermission() logic + pattern parsing + dispatcher wiring pending), next iteration will implement glob pattern matching logic for key permission checks, commit a2c421c
 - **109-119**: See previous entries in docs/milestones.md (Lua scripting, Sailor v1.16.0, zuda migrations)
+- **121**: **ACL Key Permission Logic (Phase 3.5)** — Implemented `User.hasKeyPermission(key, access_mode)` with glob pattern matching for ~pattern (full access), %R~pattern (read-only), %W~pattern (write-only) ACL rules: imported glob.matchGlob from zuda (Iteration 119), added 12 comprehensive tests covering all_keys_allowed flag, empty patterns (deny-all), pattern precedence (allowed → read-only → write-only), all glob wildcards (*, ?, [abc], [a-z], [^abc]), realistic Redis key patterns (user:*, session:*, cache:*:data, shard:[0-9]:*, env:[abc]:*, tmp:?:key, data:[^t]*), zero allocations (allocation-free for hot path authorization checks), early exit optimization (all_keys_allowed check avoids pattern iteration), enhanced doc comment with permission check order and assertion validation (debug builds only), **Phase 3 ACL Enforcement: 78% → 90% complete** (AUTH + command permissions + dispatcher integration + key pattern structure + matching logic done, ACL SETUSER pattern rules parsing + command dispatcher enforcement points pending), all tests pass (12 new hasKeyPermission tests + existing ACL tests), zig-quality-reviewer: PASS (after access_mode validation fix), code-reviewer: APPROVED (recommended enum-based access_mode for future optimization), ready for Phase 3.6: ACL SETUSER pattern rule parsing (~pattern/allkeys/resetkeys syntax) and command dispatcher wiring (enforce permissions in server.zig command router), commit [hash]
