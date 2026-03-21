@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 121 (193+ Redis commands, ACL key permissions fully implemented, 2/5 zuda migrations)
+- **Iterations complete**: 122 (193+ Redis commands, ACL key permissions fully implemented, 2/5 zuda migrations, sailor v1.18.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 3 ACL enforcement (90% complete — AUTH + command permissions + dispatcher integration + key pattern matching done, ACL SETUSER pattern rules + enforcement points pending)
 - **Next milestone**: Phase 3 (key permission logic), Phase 7 (multi-DB)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.16.0 (advanced terminal features: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking)
+- **Sailor library**: v1.18.0 (advanced terminal features + developer experience: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking, hot reload, widget inspector, benchmarks)
 
 ---
 
@@ -73,9 +73,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.16.0 (build.zig.zon)
-- **Latest available**: v1.16.0
-- **Migration status**: All versions through v1.16.0 migrated.
+- **Current in zoltraak**: v1.18.0 (build.zig.zon)
+- **Latest available**: v1.18.0
+- **Migration status**: All versions through v1.18.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -99,6 +99,8 @@
 | v1.14.0 | Memory pooling, render profiling, virtual rendering, incremental layout, buffer compression | Done (Iter 103) |
 | v1.15.0 | Thread safety enhancements, XTGETTCAP terminal capability query, memory leak fixes (repl.zig), multi-platform CI (Linux, macOS, Windows), 13 platform tests | Done (Iter 106) |
 | v1.16.0 | Advanced terminal features: terminal capability database (termcap module), bracketed paste mode (DEC 2004), synchronized output protocol (DEC 2026), hyperlink support (OSC 8), focus tracking (DEC 1004) | Done (Iter 110) |
+| v1.17.0 | (skipped — direct upgrade to v1.18.0) | N/A |
+| v1.18.0 | Developer experience: hot reload for themes, widget inspector, benchmark suite, example gallery, documentation generator — backward compatible, zero breaking changes | Done (Iter 122) |
 
 ### zuda Library
 
@@ -139,3 +141,4 @@
 - **120**: **ACL Key Pattern Structure (Phase 3.4)** — Added foundational structure for ACL key pattern permissions (~pattern/%R~pattern/%W~pattern syntax): extended User struct with 4 ArrayList([]const u8) fields (all_keys_allowed bool flag, allowed_key_patterns/read_only_key_patterns/write_only_key_patterns lists), updated deinit() to free pattern lists, updated clone() to deep-copy pattern lists, updated createDefaultUser() to initialize empty pattern lists with all_keys_allowed=true for default user, Zig 0.15.2 unmanaged ArrayList compatibility (used {} empty struct literal, .deinit(allocator), .append(allocator, item)), zero memory leaks, all tests pass, **Phase 3 ACL Enforcement: 75% → 78% complete** (AUTH + command permissions + dispatcher integration + key pattern structure done, hasKeyPermission() logic + pattern parsing + dispatcher wiring pending), next iteration will implement glob pattern matching logic for key permission checks, commit a2c421c
 - **109-119**: See previous entries in docs/milestones.md (Lua scripting, Sailor v1.16.0, zuda migrations)
 - **121**: **ACL Key Permission Logic (Phase 3.5)** — Implemented `User.hasKeyPermission(key, access_mode)` with glob pattern matching for ~pattern (full access), %R~pattern (read-only), %W~pattern (write-only) ACL rules: imported glob.matchGlob from zuda (Iteration 119), added 12 comprehensive tests covering all_keys_allowed flag, empty patterns (deny-all), pattern precedence (allowed → read-only → write-only), all glob wildcards (*, ?, [abc], [a-z], [^abc]), realistic Redis key patterns (user:*, session:*, cache:*:data, shard:[0-9]:*, env:[abc]:*, tmp:?:key, data:[^t]*), zero allocations (allocation-free for hot path authorization checks), early exit optimization (all_keys_allowed check avoids pattern iteration), enhanced doc comment with permission check order and assertion validation (debug builds only), **Phase 3 ACL Enforcement: 78% → 90% complete** (AUTH + command permissions + dispatcher integration + key pattern structure + matching logic done, ACL SETUSER pattern rules parsing + command dispatcher enforcement points pending), all tests pass (12 new hasKeyPermission tests + existing ACL tests), zig-quality-reviewer: PASS (after access_mode validation fix), code-reviewer: APPROVED (recommended enum-based access_mode for future optimization), ready for Phase 3.6: ACL SETUSER pattern rule parsing (~pattern/allkeys/resetkeys syntax) and command dispatcher wiring (enforce permissions in server.zig command router), commit 7f40e3b
+- **122**: **Sailor v1.18.0 Migration** — Migrated from sailor v1.16.0 to v1.18.0 (backward compatible, zero breaking changes): `zig fetch --save` updated build.zig.zon dependency URL + hash, new features include hot reload for themes (watch theme files for instant visual feedback), widget inspector (runtime widget tree analysis for layout debugging), benchmark suite (performance regression detection with CI integration), example gallery (interactive widget showcase with copy-pasteable code), documentation generator (auto-generate API docs from source comments), all tests pass (full test suite verification), docs/milestones.md updated with v1.18.0 entry in sailor migration table, closed GitHub issue #8, commit TBD
