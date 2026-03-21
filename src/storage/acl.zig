@@ -5,18 +5,24 @@ const CommandRegistry = @import("../commands/command_registry.zig");
 /// ACL command category enum (21 core categories)
 pub const CommandCategory = CommandRegistry.CommandCategory;
 
-/// ACL user representation with command permission support
+/// ACL user representation with command and key permission support
 pub const User = struct {
     username: []const u8,
     password: ?[]const u8, // null = nopass
     enabled: bool,
 
-    // Permission management
+    // Command permission management
     all_commands_allowed: bool = false, // false = starts with -@all (deny all)
     allowed_commands: std.StringHashMap(void), // Set of explicitly allowed commands
     denied_commands: std.StringHashMap(void), // Set of explicitly denied commands
     allowed_categories: std.AutoHashMap(CommandCategory, void), // Set of allowed categories
     denied_categories: std.AutoHashMap(CommandCategory, void), // Set of denied categories
+
+    // Key pattern permission management
+    all_keys_allowed: bool = true, // true = default user can access all keys
+    allowed_key_patterns: std.ArrayList([]const u8), // ~pattern — allowed glob patterns
+    read_only_key_patterns: std.ArrayList([]const u8), // %R~pattern — read-only glob patterns
+    write_only_key_patterns: std.ArrayList([]const u8), // %W~pattern — write-only glob patterns
 
     pub fn deinit(self: *User, allocator: Allocator) void {
         allocator.free(self.username);
@@ -38,6 +44,22 @@ pub const User = struct {
 
         self.allowed_categories.deinit();
         self.denied_categories.deinit();
+
+        // Deinit key pattern lists
+        for (self.allowed_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        self.allowed_key_patterns.deinit(allocator);
+
+        for (self.read_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        self.read_only_key_patterns.deinit(allocator);
+
+        for (self.write_only_key_patterns.items) |pattern| {
+            allocator.free(pattern);
+        }
+        self.write_only_key_patterns.deinit(allocator);
     }
 
     pub fn clone(self: *const User, allocator: Allocator) !User {
@@ -102,6 +124,49 @@ pub const User = struct {
             try denied_cats.put(cat.*, {});
         }
 
+        // Clone key pattern lists
+        var allowed_key_pats = std.ArrayList([]const u8){};
+        errdefer {
+            for (allowed_key_pats.items) |pat| {
+                allocator.free(pat);
+            }
+            allowed_key_pats.deinit(allocator);
+        }
+
+        for (self.allowed_key_patterns.items) |pat| {
+            const pat_copy = try allocator.dupe(u8, pat);
+            errdefer allocator.free(pat_copy);
+            try allowed_key_pats.append(allocator, pat_copy);
+        }
+
+        var read_only_pats = std.ArrayList([]const u8){};
+        errdefer {
+            for (read_only_pats.items) |pat| {
+                allocator.free(pat);
+            }
+            read_only_pats.deinit(allocator);
+        }
+
+        for (self.read_only_key_patterns.items) |pat| {
+            const pat_copy = try allocator.dupe(u8, pat);
+            errdefer allocator.free(pat_copy);
+            try read_only_pats.append(allocator, pat_copy);
+        }
+
+        var write_only_pats = std.ArrayList([]const u8){};
+        errdefer {
+            for (write_only_pats.items) |pat| {
+                allocator.free(pat);
+            }
+            write_only_pats.deinit(allocator);
+        }
+
+        for (self.write_only_key_patterns.items) |pat| {
+            const pat_copy = try allocator.dupe(u8, pat);
+            errdefer allocator.free(pat_copy);
+            try write_only_pats.append(allocator, pat_copy);
+        }
+
         return User{
             .username = username_copy,
             .password = password_copy,
@@ -111,6 +176,10 @@ pub const User = struct {
             .denied_commands = denied_cmds,
             .allowed_categories = allowed_cats,
             .denied_categories = denied_cats,
+            .all_keys_allowed = self.all_keys_allowed,
+            .allowed_key_patterns = allowed_key_pats,
+            .read_only_key_patterns = read_only_pats,
+            .write_only_key_patterns = write_only_pats,
         };
     }
 
@@ -205,6 +274,10 @@ pub const ACLStore = struct {
             .denied_commands = std.StringHashMap(void).init(self.allocator),
             .allowed_categories = std.AutoHashMap(CommandCategory, void).init(self.allocator),
             .denied_categories = std.AutoHashMap(CommandCategory, void).init(self.allocator),
+            .all_keys_allowed = true, // Default user has all keys
+            .allowed_key_patterns = std.ArrayList([]const u8){},
+            .read_only_key_patterns = std.ArrayList([]const u8){},
+            .write_only_key_patterns = std.ArrayList([]const u8){},
         };
         try self.users.put(default_username, user);
     }
