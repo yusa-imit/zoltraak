@@ -152,7 +152,7 @@ pub fn main() !void {
     // Load RDB snapshot if it exists (skip when starting as a replica — RDB comes from primary)
     if (config.replicaof_host == null) {
         const Persistence = persistence.Persistence;
-        const loaded = Persistence.load(server.storage, "dump.rdb", allocator) catch |err| blk: {
+        const loaded = Persistence.load(&server.databases[0], "dump.rdb", allocator) catch |err| blk: {
             std.debug.print("Warning: could not load dump.rdb: {any}\n", .{err});
             break :blk 0;
         };
@@ -162,7 +162,7 @@ pub fn main() !void {
 
         // Replay AOF if it exists (applied on top of RDB)
         const Aof = aof.Aof;
-        const replayed = Aof.replay(server.storage, "appendonly.aof", allocator) catch |err| blk: {
+        const replayed = Aof.replay(&server.databases[0], "appendonly.aof", allocator) catch |err| blk: {
             std.debug.print("Warning: could not replay appendonly.aof: {any}\n", .{err});
             break :blk 0;
         };

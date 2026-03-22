@@ -73,7 +73,8 @@ pub const ShutdownState = struct {
 pub const Server = struct {
     allocator: std.mem.Allocator,
     config: Config,
-    storage: *Storage,
+    databases: []Storage,
+    num_databases: u16,
     aof: ?*Aof,
     pubsub: PubSub,
     /// Replication state (always initialised; role depends on config)
@@ -94,8 +95,27 @@ pub const Server = struct {
         const server = try allocator.create(Server);
         errdefer allocator.destroy(server);
 
-        const storage = try Storage.init(allocator, config.port, config.host);
-        errdefer storage.deinit();
+        // Initialize databases array (default 16 databases)
+        const num_databases: u16 = 16;
+        const databases = try allocator.alloc(Storage, num_databases);
+        errdefer allocator.free(databases);
+
+        var db_idx: usize = 0;
+        errdefer {
+            // Free all initialized databases
+            for (0..db_idx) |i| {
+                databases[i].deinit();
+            }
+            allocator.free(databases);
+        }
+
+        // Initialize each database
+        for (0..num_databases) |i| {
+            const db_ptr = try Storage.init(allocator, config.port, config.host);
+            databases[i] = db_ptr.*;
+            db_ptr.allocator.destroy(db_ptr); // Free the pointer wrapper, keep the value
+            db_idx += 1;
+        }
 
         // Initialise replication state based on config
         const repl = if (config.replicaof_host != null)
@@ -106,7 +126,8 @@ pub const Server = struct {
         server.* = Server{
             .allocator = allocator,
             .config = config,
-            .storage = storage,
+            .databases = databases,
+            .num_databases = num_databases,
             .aof = null,
             .pubsub = PubSub.init(allocator),
             .repl = repl,
@@ -123,7 +144,10 @@ pub const Server = struct {
     /// Deinitialize the server and free resources
     pub fn deinit(self: *Server) void {
         if (self.aof) |a| a.close();
-        self.storage.deinit();
+        for (self.databases) |*db| {
+            db.deinit();
+        }
+        self.allocator.free(self.databases);
         self.pubsub.deinit();
         self.repl.deinit();
         self.client_registry.deinit();
@@ -141,7 +165,7 @@ pub const Server = struct {
                 self.repl.primary_host orelse "?",
                 self.repl.primary_port,
             });
-            self.repl.connectToPrimary(self.storage, self.config.port) catch |err| {
+            self.repl.connectToPrimary(&self.databases[0], self.config.port) catch |err| {
                 std.debug.print("Replication: handshake failed: {any} — continuing as standalone\n", .{err});
                 // Demote to primary on failure so clients can still connect
                 self.repl.role = .primary;
@@ -212,7 +236,7 @@ pub const Server = struct {
         if (req.save) {
             std.debug.print("Saving RDB snapshot before shutdown...\n", .{});
             const persistence = @import("storage/persistence.zig");
-            persistence.Persistence.save(self.storage, "dump.rdb", self.allocator) catch |err| {
+            persistence.Persistence.save(&self.databases[0], "dump.rdb", self.allocator) catch |err| {
                 if (!req.force) {
                     std.debug.print("\x1b[1;31mError saving RDB: {any}\x1b[0m\n", .{err});
                     std.debug.print("Shutdown aborted (use FORCE to override)\n", .{});
@@ -342,10 +366,14 @@ pub const Server = struct {
                 break :blk name;
             };
 
+            // Get selected database for this client
+            const selected_db = self.client_registry.getSelectedDb(client_id);
+            const storage = &self.databases[@intCast(selected_db)];
+
             // Execute command
             const response = commands.executeCommand(
                 arena_allocator,
-                self.storage,
+                storage,
                 cmd,
                 self.aof,
                 &self.pubsub,

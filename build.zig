@@ -321,6 +321,18 @@ pub fn build(b: *std.Build) void {
     const run_acl_dispatcher_tests = b.addRunArtifact(acl_dispatcher_tests);
     integration_test_step.dependOn(&run_acl_dispatcher_tests.step);
 
+    // Multi-database integration tests (Iteration 126)
+    const multi_database_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_multi_database.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_multi_database_tests = b.addRunArtifact(multi_database_tests);
+    integration_test_step.dependOn(&run_multi_database_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

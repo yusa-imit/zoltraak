@@ -96,7 +96,7 @@ pub const Config = struct {
             .{ .name = "appendfsync", .value = .{ .string = "everysec" }, .read_only = false },
 
             // Database
-            .{ .name = "databases", .value = .{ .int = 1 }, .read_only = true }, // Zoltraak uses single DB
+            .{ .name = "databases", .value = .{ .int = 16 }, .read_only = true }, // Default: 16 databases
 
             // Slowlog
             .{ .name = "slowlog-log-slower-than", .value = .{ .int = 10000 }, .read_only = false }, // microseconds, 10ms default
