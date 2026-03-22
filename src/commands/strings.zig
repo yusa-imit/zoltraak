@@ -65,6 +65,248 @@ fn getClientProtocol(client_registry: *ClientRegistry, client_id: u64) RespProto
     return .RESP2; // Default to RESP2
 }
 
+/// Check ACL key permissions for a command.
+/// Returns null if all key permissions are granted, or an error message if denied.
+/// Caller must free the returned error message if non-null.
+fn checkKeyPermissions(
+    allocator: std.mem.Allocator,
+    user: *const ACLStore.User,
+    cmd_upper: []const u8,
+    args: []const RespValue,
+) !?[]const u8 {
+    // Classify command access mode and extract key positions
+    const access_mode = getCommandAccessMode(cmd_upper);
+    if (access_mode == null) {
+        // Command doesn't operate on keys — no check needed
+        return null;
+    }
+
+    const key_positions = getCommandKeyPositions(cmd_upper, args);
+    if (key_positions.len == 0) {
+        // No keys in this command — no check needed
+        return null;
+    }
+
+    // Check each key against ACL permissions
+    for (key_positions) |key_idx| {
+        if (key_idx >= args.len) continue; // Safety check
+        const key = switch (args[key_idx]) {
+            .bulk_string => |s| s,
+            else => continue,
+        };
+
+        // Check permission using User.hasKeyPermission()
+        if (!user.hasKeyPermission(key, access_mode.?)) {
+            // Permission denied — format error message
+            const err_msg = try std.fmt.allocPrint(
+                allocator,
+                "NOPERM this user has no permissions to access key '{s}'",
+                .{key},
+            );
+            return err_msg;
+        }
+    }
+
+    // All keys passed permission check
+    return null;
+}
+
+/// Get the access mode for a command (Read or Write).
+/// Returns null for commands that don't operate on keys.
+fn getCommandAccessMode(cmd_upper: []const u8) ?ACLStore.AccessMode {
+    // Read commands
+    const read_commands = [_][]const u8{
+        "GET", "MGET", "EXISTS", "TTL", "PTTL", "TYPE", "STRLEN",
+        "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS",
+        "LLEN", "LINDEX", "LRANGE", "LPOS",
+        "SMEMBERS", "SCARD", "SISMEMBER", "SMISMEMBER", "SRANDMEMBER",
+        "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
+        "ZREVRANGEBYLEX", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZSCORE", "ZMSCORE",
+        "ZRANK", "ZREVRANK", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION",
+        "SDIFF", "SINTER", "SUNION",
+        "XLEN", "XRANGE", "XREVRANGE", "XREAD", "XREADGROUP", "XPENDING", "XINFO",
+        "GETRANGE", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
+        "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
+        "PFCOUNT",
+        "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
+    };
+    for (read_commands) |rc| {
+        if (std.mem.eql(u8, cmd_upper, rc)) return .read;
+    }
+
+    // Write commands
+    const write_commands = [_][]const u8{
+        "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "MSETEX",
+        "SETRANGE", "APPEND", "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
+        "GETSET", "GETDEL", "GETEX",
+        "DEL", "UNLINK", "RENAME", "RENAMENX", "COPY", "MOVE",
+        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
+        "HSET", "HMSET", "HSETNX", "HINCRBY", "HINCRBYFLOAT", "HDEL",
+        "HGETDEL", "HGETEX", "HSETEX",
+        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LSET",
+        "LINSERT", "LREM", "LTRIM", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP",
+        "BLMOVE", "LMPOP", "BLMPOP",
+        "SADD", "SREM", "SPOP", "SMOVE", "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
+        "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZMPOP", "BZPOPMIN",
+        "BZPOPMAX", "BZMPOP", "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
+        "XADD", "XDEL", "XTRIM", "XSETID", "XCFGSET", "XGROUP", "XACK", "XCLAIM",
+        "XAUTOCLAIM", "XACKDEL", "XDELEX",
+        "SETBIT", "BITOP", "BITFIELD",
+        "GEOADD", "PFADD", "PFMERGE",
+        "RESTORE", "SORT", "DELEX",
+    };
+    for (write_commands) |wc| {
+        if (std.mem.eql(u8, cmd_upper, wc)) return .write;
+    }
+
+    // Commands that don't operate on keys
+    return null;
+}
+
+/// Get the argument positions containing keys for a command.
+/// Returns a slice of indexes (0-based) into the args array.
+/// This is a simplified version — production Redis uses command metadata.
+fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []const usize {
+    // Static array to hold key positions (max 64 keys per command)
+    const static = struct {
+        var positions: [64]usize = undefined;
+    };
+
+    var count: usize = 0;
+
+    // Single-key commands (key at position 1)
+    const single_key_commands = [_][]const u8{
+        "GET", "SET", "SETEX", "PSETEX", "SETNX", "GETSET", "GETDEL", "GETEX",
+        "APPEND", "STRLEN", "SETRANGE", "GETRANGE",
+        "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
+        "EXISTS", "DEL", "UNLINK", "TYPE", "TTL", "PTTL",
+        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
+        "DUMP", "OBJECT",
+        "HSET", "HGET", "HMSET", "HMGET", "HGETALL", "HDEL", "HEXISTS",
+        "HINCRBY", "HINCRBYFLOAT", "HKEYS", "HVALS", "HLEN", "HSETNX",
+        "HGETDEL", "HGETEX", "HSETEX", "HRANDFIELD", "HSCAN",
+        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LLEN",
+        "LINDEX", "LSET", "LRANGE", "LTRIM", "LREM", "LINSERT", "LPOS", "LMPOP",
+        "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SMISMEMBER", "SCARD",
+        "SPOP", "SRANDMEMBER",
+        "ZADD", "ZREM", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZRANGE", "ZREVRANGE",
+        "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGEBYLEX",
+        "ZSCORE", "ZMSCORE", "ZRANK", "ZREVRANK", "ZINCRBY", "ZPOPMIN", "ZPOPMAX",
+        "ZMPOP", "ZRANDMEMBER",
+        "XADD", "XDEL", "XTRIM", "XLEN", "XRANGE", "XREVRANGE", "XREAD",
+        "XREADGROUP", "XPENDING", "XINFO", "XSETID", "XCFGSET", "XGROUP",
+        "XACK", "XCLAIM", "XAUTOCLAIM", "XACKDEL", "XDELEX",
+        "SETBIT", "GETBIT", "BITCOUNT", "BITPOS", "BITOP", "BITFIELD", "BITFIELD_RO",
+        "GEOADD", "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER",
+        "GEOHASH", "GEOSEARCH", "GEOSEARCHSTORE",
+        "PFADD", "PFCOUNT", "PFMERGE",
+        "LCS", "DELEX", "SORT", "SORT_RO",
+    };
+    for (single_key_commands) |cmd| {
+        if (std.mem.eql(u8, cmd_upper, cmd)) {
+            if (args.len > 1) {
+                static.positions[0] = 1; // Key is at position 1
+                count = 1;
+            }
+            return static.positions[0..count];
+        }
+    }
+
+    // Multi-key commands
+    if (std.mem.eql(u8, cmd_upper, "MGET") or std.mem.eql(u8, cmd_upper, "DEL") or std.mem.eql(u8, cmd_upper, "UNLINK") or std.mem.eql(u8, cmd_upper, "EXISTS") or std.mem.eql(u8, cmd_upper, "TOUCH")) {
+        // All arguments after command name are keys
+        for (1..args.len) |i| {
+            if (count >= 64) break; // Prevent overflow
+            static.positions[count] = i;
+            count += 1;
+        }
+        return static.positions[0..count];
+    }
+
+    if (std.mem.eql(u8, cmd_upper, "MSET") or std.mem.eql(u8, cmd_upper, "MSETNX") or std.mem.eql(u8, cmd_upper, "MSETEX")) {
+        // Keys at odd positions: 1, 3, 5, ... (key-value pairs)
+        var i: usize = 1;
+        while (i < args.len) : (i += 2) {
+            if (count >= 64) break;
+            static.positions[count] = i;
+            count += 1;
+        }
+        return static.positions[0..count];
+    }
+
+    if (std.mem.eql(u8, cmd_upper, "RENAME") or std.mem.eql(u8, cmd_upper, "RENAMENX")) {
+        // Two keys: source and destination
+        if (args.len > 2) {
+            static.positions[0] = 1; // source key
+            static.positions[1] = 2; // dest key
+            count = 2;
+        }
+        return static.positions[0..count];
+    }
+
+    if (std.mem.eql(u8, cmd_upper, "COPY") or std.mem.eql(u8, cmd_upper, "LMOVE") or std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "RPOPLPUSH") or std.mem.eql(u8, cmd_upper, "SMOVE")) {
+        // Two keys: source and destination
+        if (args.len > 2) {
+            static.positions[0] = 1;
+            static.positions[1] = 2;
+            count = 2;
+        }
+        return static.positions[0..count];
+    }
+
+    if (std.mem.eql(u8, cmd_upper, "BLPOP") or std.mem.eql(u8, cmd_upper, "BRPOP") or std.mem.eql(u8, cmd_upper, "BLMPOP") or std.mem.eql(u8, cmd_upper, "BZPOPMIN") or std.mem.eql(u8, cmd_upper, "BZPOPMAX") or std.mem.eql(u8, cmd_upper, "BZMPOP")) {
+        // All arguments except last (timeout) are keys
+        if (args.len > 2) {
+            for (1..args.len - 1) |i| {
+                if (count >= 64) break;
+                static.positions[count] = i;
+                count += 1;
+            }
+        }
+        return static.positions[0..count];
+    }
+
+    // Set operations with destination
+    if (std.mem.eql(u8, cmd_upper, "SUNIONSTORE") or std.mem.eql(u8, cmd_upper, "SINTERSTORE") or std.mem.eql(u8, cmd_upper, "SDIFFSTORE") or std.mem.eql(u8, cmd_upper, "ZUNIONSTORE") or std.mem.eql(u8, cmd_upper, "ZINTERSTORE") or std.mem.eql(u8, cmd_upper, "ZDIFFSTORE") or std.mem.eql(u8, cmd_upper, "ZRANGESTORE")) {
+        // First key is destination, rest are source keys
+        // All are keys and need write permission to destination
+        for (1..args.len) |i| {
+            if (count >= 64) break;
+            // Stop at WEIGHTS/AGGREGATE keywords for sorted set operations
+            const arg_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => continue,
+            };
+            if (std.mem.eql(u8, arg_str, "WEIGHTS") or std.mem.eql(u8, arg_str, "AGGREGATE")) break;
+            static.positions[count] = i;
+            count += 1;
+        }
+        return static.positions[0..count];
+    }
+
+    // Set operations without destination (read-only)
+    if (std.mem.eql(u8, cmd_upper, "SUNION") or std.mem.eql(u8, cmd_upper, "SINTER") or std.mem.eql(u8, cmd_upper, "SDIFF") or std.mem.eql(u8, cmd_upper, "ZUNION") or std.mem.eql(u8, cmd_upper, "ZINTER") or std.mem.eql(u8, cmd_upper, "ZDIFF")) {
+        // All arguments after numkeys are keys
+        // Format: ZUNION numkeys key [key ...] [WEIGHTS ...] [AGGREGATE ...]
+        if (args.len > 2) {
+            // Skip command name and numkeys
+            const numkeys_arg = switch (args[1]) {
+                .bulk_string => |s| std.fmt.parseInt(usize, s, 10) catch 0,
+                else => 0,
+            };
+            for (2..@min(2 + numkeys_arg, args.len)) |i| {
+                if (count >= 64) break;
+                static.positions[count] = i;
+                count += 1;
+            }
+        }
+        return static.positions[0..count];
+    }
+
+    // No keys found
+    return static.positions[0..0];
+}
+
 /// Execute a RESP command and return the serialized response.
 /// Caller owns returned memory and must free it.
 /// If `aof` is non-null, write commands are appended to it after successful execution.
@@ -141,6 +383,21 @@ pub fn executeCommand(
                     var w = Writer.init(allocator);
                     defer w.deinit();
                     return w.writeError("NOPERM this user has no permissions to run this command");
+                }
+
+                // ── ACL Key Permission Check ──────────────────────────────────
+                // Extract keys from command and check key-level permissions
+                const key_check_result = try checkKeyPermissions(
+                    allocator,
+                    user,
+                    cmd_upper,
+                    array,
+                );
+                if (key_check_result) |err_msg| {
+                    defer allocator.free(err_msg);
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    return w.writeError(err_msg);
                 }
             } else {
                 // User not found in ACL - deny

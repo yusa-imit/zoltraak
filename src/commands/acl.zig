@@ -996,3 +996,169 @@ test "parsePermissionRules implements left-to-right precedence" {
     try std.testing.expect(!result.allowed_commands.contains("GET"));
     try std.testing.expect(result.denied_commands.contains("GET"));
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Integration Tests for Key Permission Enforcement (Iteration 124)
+// ────────────────────────────────────────────────────────────────────────────
+
+test "Key permission enforcement: pattern allows matching keys" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var acl_store = ACLStore.init(allocator);
+    defer acl_store.deinit();
+
+    // Create user with ~user:* pattern (full access to user:* keys)
+    var user = try ACLStore.User.init(allocator, "testuser");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = false;
+    try user.allowed_key_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
+
+    // Test that user CAN access user:123
+    try std.testing.expect(user.hasKeyPermission("user:123", .read));
+    try std.testing.expect(user.hasKeyPermission("user:123", .write));
+    try std.testing.expect(user.hasKeyPermission("user:foo", .read));
+
+    // Test that user CANNOT access other keys
+    try std.testing.expect(!user.hasKeyPermission("cache:123", .read));
+    try std.testing.expect(!user.hasKeyPermission("session:abc", .write));
+}
+
+test "Key permission enforcement: read-only pattern restricts writes" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var user = try ACLStore.User.init(allocator, "readonly_user");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = false;
+    try user.read_only_key_patterns.append(allocator, try allocator.dupe(u8, "cache:*"));
+
+    // Can read cache:* keys
+    try std.testing.expect(user.hasKeyPermission("cache:foo", .read));
+    try std.testing.expect(user.hasKeyPermission("cache:bar", .read));
+
+    // Cannot write to cache:* keys
+    try std.testing.expect(!user.hasKeyPermission("cache:foo", .write));
+    try std.testing.expect(!user.hasKeyPermission("cache:bar", .write));
+}
+
+test "Key permission enforcement: write-only pattern restricts reads" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var user = try ACLStore.User.init(allocator, "writeonly_user");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = false;
+    try user.write_only_key_patterns.append(allocator, try allocator.dupe(u8, "log:*"));
+
+    // Can write to log:* keys
+    try std.testing.expect(user.hasKeyPermission("log:event", .write));
+    try std.testing.expect(user.hasKeyPermission("log:error", .write));
+
+    // Cannot read from log:* keys
+    try std.testing.expect(!user.hasKeyPermission("log:event", .read));
+    try std.testing.expect(!user.hasKeyPermission("log:error", .read));
+}
+
+test "Key permission enforcement: all_keys_allowed grants access to all keys" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var user = try ACLStore.User.init(allocator, "admin");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = true;
+
+    // Can access any key with any permission
+    try std.testing.expect(user.hasKeyPermission("any:key", .read));
+    try std.testing.expect(user.hasKeyPermission("any:key", .write));
+    try std.testing.expect(user.hasKeyPermission("another:key", .read));
+    try std.testing.expect(user.hasKeyPermission("xyz", .write));
+}
+
+test "Key permission enforcement: empty patterns deny all keys" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var user = try ACLStore.User.init(allocator, "restricted");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = false;
+    // No patterns added — should deny all
+
+    // Cannot access any key
+    try std.testing.expect(!user.hasKeyPermission("user:123", .read));
+    try std.testing.expect(!user.hasKeyPermission("cache:foo", .write));
+    try std.testing.expect(!user.hasKeyPermission("any", .read));
+}
+
+test "Key permission enforcement: mixed patterns with precedence" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var user = try ACLStore.User.init(allocator, "mixed");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = false;
+
+    // Full access to user:*
+    try user.allowed_key_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
+    // Read-only for cache:*
+    try user.read_only_key_patterns.append(allocator, try allocator.dupe(u8, "cache:*"));
+    // Write-only for log:*
+    try user.write_only_key_patterns.append(allocator, try allocator.dupe(u8, "log:*"));
+
+    // user:* — full access
+    try std.testing.expect(user.hasKeyPermission("user:123", .read));
+    try std.testing.expect(user.hasKeyPermission("user:123", .write));
+
+    // cache:* — read only
+    try std.testing.expect(user.hasKeyPermission("cache:foo", .read));
+    try std.testing.expect(!user.hasKeyPermission("cache:foo", .write));
+
+    // log:* — write only
+    try std.testing.expect(!user.hasKeyPermission("log:error", .read));
+    try std.testing.expect(user.hasKeyPermission("log:error", .write));
+
+    // other:* — no access
+    try std.testing.expect(!user.hasKeyPermission("other:key", .read));
+    try std.testing.expect(!user.hasKeyPermission("other:key", .write));
+}
+
+test "Key permission enforcement: glob wildcard patterns" {
+    const allocator = std.testing.allocator;
+    const ACLStore = @import("../storage/acl.zig").ACLStore;
+
+    var user = try ACLStore.User.init(allocator, "glob_user");
+    defer user.deinit();
+
+    user.enabled = true;
+    user.all_keys_allowed = false;
+    try user.allowed_key_patterns.append(allocator, try allocator.dupe(u8, "shard:[0-9]:*"));
+    try user.allowed_key_patterns.append(allocator, try allocator.dupe(u8, "env:[abc]:*"));
+    try user.allowed_key_patterns.append(allocator, try allocator.dupe(u8, "tmp:?:key"));
+
+    // shard:[0-9]:* — matches single digit
+    try std.testing.expect(user.hasKeyPermission("shard:1:data", .read));
+    try std.testing.expect(user.hasKeyPermission("shard:9:config", .write));
+    try std.testing.expect(!user.hasKeyPermission("shard:10:data", .read)); // two digits
+
+    // env:[abc]:* — matches a, b, or c
+    try std.testing.expect(user.hasKeyPermission("env:a:config", .read));
+    try std.testing.expect(user.hasKeyPermission("env:b:setting", .write));
+    try std.testing.expect(!user.hasKeyPermission("env:d:config", .read)); // d not in [abc]
+
+    // tmp:?:key — matches single character
+    try std.testing.expect(user.hasKeyPermission("tmp:x:key", .read));
+    try std.testing.expect(user.hasKeyPermission("tmp:1:key", .write));
+    try std.testing.expect(!user.hasKeyPermission("tmp:ab:key", .read)); // two chars
+}
