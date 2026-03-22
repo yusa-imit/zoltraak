@@ -32,8 +32,13 @@ const acl_cmds = @import("acl.zig");
 const auth_cmds = @import("auth.zig");
 const cluster_cmds = @import("cluster.zig");
 const utility_cmds = @import("utility.zig");
-const ACLStore = @import("../storage/acl.zig").ACLStore;
+const acl_storage = @import("../storage/acl.zig");
+const ACLStore = acl_storage.ACLStore;
+const AclUser = acl_storage.User;
 const command_registry = @import("command_registry.zig");
+
+/// Access mode for key-based command permission checking
+pub const AccessMode = enum { read, write };
 pub const TxState = tx_mod.TxState;
 pub const ReplicationState = repl_mod.ReplicationState;
 pub const ScriptStore = scripting_mod.ScriptStore;
@@ -70,7 +75,7 @@ fn getClientProtocol(client_registry: *ClientRegistry, client_id: u64) RespProto
 /// Caller must free the returned error message if non-null.
 fn checkKeyPermissions(
     allocator: std.mem.Allocator,
-    user: *const ACLStore.User,
+    user: *const AclUser,
     cmd_upper: []const u8,
     args: []const RespValue,
 ) !?[]const u8 {
@@ -96,7 +101,8 @@ fn checkKeyPermissions(
         };
 
         // Check permission using User.hasKeyPermission()
-        if (!user.hasKeyPermission(key, access_mode.?)) {
+        const mode_str = if (access_mode.? == .read) "read" else "write";
+        if (!user.hasKeyPermission(key, mode_str)) {
             // Permission denied — format error message
             const err_msg = try std.fmt.allocPrint(
                 allocator,
@@ -113,7 +119,7 @@ fn checkKeyPermissions(
 
 /// Get the access mode for a command (Read or Write).
 /// Returns null for commands that don't operate on keys.
-fn getCommandAccessMode(cmd_upper: []const u8) ?ACLStore.AccessMode {
+fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
     // Read commands
     const read_commands = [_][]const u8{
         "GET", "MGET", "EXISTS", "TTL", "PTTL", "TYPE", "STRLEN",

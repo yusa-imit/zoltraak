@@ -72,6 +72,8 @@ pub const ClientInfo = struct {
     client_repl_offset: i64,
     /// Currently authenticated ACL user (null = unauthenticated, defaults to "default" user)
     authenticated_user: ?[]const u8,
+    /// Currently selected database (0-15, default 0)
+    selected_db: u16,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -194,6 +196,7 @@ pub const ClientRegistry = struct {
             .monitor_mode = false, // Monitor mode off by default
             .client_repl_offset = 0, // Start at offset 0
             .authenticated_user = null, // Unauthenticated by default (will use "default" user)
+            .selected_db = 0, // Start at database 0
         };
 
         try self.clients.put(client_id, info);
@@ -301,6 +304,27 @@ pub const ClientRegistry = struct {
             return info.protocol;
         }
         return .RESP2; // Default to RESP2 if client not found
+    }
+
+    /// Set the selected database for a client connection (SELECT command)
+    pub fn setSelectedDb(self: *ClientRegistry, client_id: u64, db_index: u16) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.selected_db = db_index;
+        }
+    }
+
+    /// Get the selected database for a client connection
+    pub fn getSelectedDb(self: *ClientRegistry, client_id: u64) u16 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.selected_db;
+        }
+        return 0; // Default to DB 0 if client not found
     }
 
     /// Set reply mode for a client (CLIENT REPLY)
@@ -437,9 +461,9 @@ pub const ClientRegistry = struct {
             const age_sec = @divFloor(now - info.connected_at, 1000);
             const idle_sec = @divFloor(now - info.last_cmd_at, 1000);
 
-            // Format: id=<id> addr=<addr> fd=<fd> name=<name> age=<age> idle=<idle> flags=<flags> db=0 sub=0 psub=0 cmd=<cmd>
+            // Format: id=<id> addr=<addr> fd=<fd> name=<name> age=<age> idle=<idle> flags=<flags> db=<db> sub=0 psub=0 cmd=<cmd>
             const name_str = info.name orelse "";
-            try buf.writer(allocator).print("id={d} addr={s} fd={d} name={s} age={d} idle={d} flags={s} db=0 sub=0 psub=0 cmd={s}\n", .{
+            try buf.writer(allocator).print("id={d} addr={s} fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 cmd={s}\n", .{
                 info.id,
                 info.addr,
                 info.fd,
@@ -447,6 +471,7 @@ pub const ClientRegistry = struct {
                 age_sec,
                 idle_sec,
                 info.flags,
+                info.selected_db,
                 info.last_cmd,
             });
         }

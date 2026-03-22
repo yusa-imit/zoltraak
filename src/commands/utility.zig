@@ -91,7 +91,8 @@ pub fn cmdReset(
     // 4. Reset protocol to RESP2
     client_registry.setProtocol(client_id, .RESP2);
 
-    // 5. Switch to database 0 (no-op in current single-DB implementation)
+    // 5. Switch to database 0
+    client_registry.setSelectedDb(client_id, 0);
 
     // Return "RESET" as simple string
     return try w.writeSimpleString("RESET");
@@ -272,15 +273,17 @@ pub fn cmdMonitor(
     return try w.writeSimpleString("OK");
 }
 
-/// SELECT command - select database by index (stub for single-DB mode)
+/// SELECT command - select database by index
+/// Syntax: SELECT db
+/// Selects the database at the specified index for the current connection
 pub fn cmdSelect(
     allocator: std.mem.Allocator,
     args: []const []const u8,
-    _: *Storage,
+    storage: *Storage,
     _: *PubSub,
     _: ?*TxState,
-    _: *ClientRegistry,
-    _: u64,
+    client_registry: *ClientRegistry,
+    client_id: u64,
     _: *ServerConfig,
     _: u8,
 ) ![]const u8 {
@@ -296,14 +299,25 @@ pub fn cmdSelect(
         return try w.writeError("ERR invalid DB index");
     };
 
-    // Zoltraak only supports database 0 (single database mode)
+    // Validate index range
     if (db_index < 0) {
         return try w.writeError("ERR DB index is out of range");
     }
 
-    if (db_index != 0) {
+    // Validate against configured number of databases (default 16)
+    // TODO: Once storage refactoring is complete in Iteration 126, use storage.num_databases
+    const num_databases = if (storage.config.get("databases") catch null) |val_str| blk: {
+        defer storage.config.allocator.free(val_str);
+        const db_count = std.fmt.parseInt(i64, val_str, 10) catch 16;
+        break :blk @as(u16, @intCast(@max(1, @min(16384, db_count))));
+    } else 16;
+
+    if (db_index >= num_databases) {
         return try w.writeError("ERR DB index is out of range");
     }
+
+    // Set the selected database for this client
+    client_registry.setSelectedDb(client_id, @as(u16, @intCast(db_index)));
 
     return try w.writeSimpleString("OK");
 }
