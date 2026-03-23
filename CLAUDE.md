@@ -458,6 +458,30 @@ gh issue create --repo yusa-imit/sailor --title "feat: <기능>" --label "featur
 
 ---
 
+## Test Execution Policy — 로컬 vs CI/Docker
+
+로컬 머신에서 리소스 집약적 테스트(벤치마크, 스트레스 테스트, 크로스 컴파일 등)를 동시에 실행하면 메모리 압박으로 시스템 불안정(커널 패닉)을 유발할 수 있다. 다음 정책을 따른다:
+
+### 로컬에서 실행 (OK)
+- `zig build test` — 단위 테스트, 통합 테스트
+- `zig build` — 단일 타겟 빌드
+- `zig build run` — 서버 실행 및 기능 테스트
+- `redis-cli` 수동 동작 확인
+
+### CI(GitHub Actions)에서만 실행
+- **크로스 컴파일**: 6개 타겟 동시 빌드
+- **벤치마크**: `redis-benchmark` — Redis 대비 성능 비교 (>= 70% throughput 검증)
+- **스트레스 테스트**: 대량 클라이언트 동시 접속, 장시간 부하 테스트
+- **쉘 통합 테스트**: `integration_test.sh` — 서버 프로세스 기동 + redis-cli 전체 시나리오
+- **차등 테스트**: 실제 Redis 바이너리 대비 byte-by-byte RESP 비교
+
+### cron 작업 규칙
+- 로컬 cron에서 `zig build test`는 허용하되, 벤치마크/크로스 컴파일/통합 테스트는 **금지**
+- 여러 Zig 프로젝트(zuda, zr, silica, sailor)의 cron이 동시에 실행될 수 있으므로, 로컬 cron은 경량 작업만 수행
+- 무거운 검증은 `git push` 후 GitHub Actions에서 결과 확인
+
+---
+
 ## Resources
 
 - [Redis Commands](https://redis.io/commands/)
