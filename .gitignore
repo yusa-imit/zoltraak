@@ -8,3 +8,4 @@ dump.rdb
 
 # Claude Code
 .claude/scratchpad.md
+.claude/session-counter
