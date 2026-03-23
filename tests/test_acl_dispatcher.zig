@@ -51,6 +51,8 @@ test "ACL dispatcher - default user can execute all commands by default" {
         client_id,
         &script_store,
         null, // shutdown_state
+        server.databases,
+        server.num_databases,
     );
     defer allocator.free(result);
 

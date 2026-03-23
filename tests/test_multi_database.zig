@@ -65,6 +65,8 @@ fn executeCommandWithArgs(
         client_id,
         &server.script_store,
         null, // shutdown_state
+        server.databases,
+        server.num_databases,
     );
 }
 

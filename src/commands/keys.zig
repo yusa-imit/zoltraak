@@ -514,10 +514,17 @@ pub fn cmdTouch(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 }
 
 /// MOVE key db
-/// Move a key to another database (stub - Zoltraak uses single DB).
-/// Always returns 0 since we don't support multiple databases.
-pub fn cmdMove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    _ = storage;
+/// Move a key from the current database to another database.
+/// Returns 1 if the key was moved successfully, 0 otherwise.
+/// Fails if the key doesn't exist in source DB or if it already exists in destination DB.
+pub fn cmdMove(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    args: []const RespValue,
+    databases: []Storage,
+    num_databases: u16,
+    selected_db: u16,
+) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -525,21 +532,61 @@ pub fn cmdMove(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return w.writeError("ERR wrong number of arguments for 'move' command");
     }
 
-    // Just validate arguments but always return 0
-    _ = switch (args[1]) {
+    const key = switch (args[1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid key"),
     };
 
-    _ = switch (args[2]) {
-        .bulk_string => |s| std.fmt.parseInt(i32, s, 10) catch {
+    const dest_db_index = switch (args[2]) {
+        .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
             return w.writeError("ERR invalid DB index");
         },
         else => return w.writeError("ERR invalid DB index"),
     };
 
-    // Zoltraak uses single database - always return 0
-    return w.writeInteger(0);
+    // Validate destination DB index
+    if (dest_db_index < 0 or dest_db_index >= num_databases) {
+        return w.writeError("ERR DB index is out of range");
+    }
+
+    const dest_idx = @as(usize, @intCast(dest_db_index));
+
+    // If source and destination are the same, return 0 (no-op)
+    if (dest_idx == selected_db) {
+        return w.writeInteger(0);
+    }
+
+    // Check if key exists in source database
+    if (!storage.exists(key)) {
+        return w.writeInteger(0);
+    }
+
+    // Check if key already exists in destination database
+    const dest_storage = &databases[dest_idx];
+    if (dest_storage.exists(key)) {
+        return w.writeInteger(0);
+    }
+
+    // Get the value and TTL from source database
+    const value = storage.get(key) orelse return w.writeInteger(0);
+    const ttl_ms = storage.getTtlMs(key);
+
+    // Clone the value to avoid lifetime issues
+    const cloned_value = try value.clone(allocator);
+    errdefer cloned_value.deinit(allocator);
+
+    // Set in destination database (with TTL if it exists)
+    if (ttl_ms > 0) {
+        const expiry_ms = @as(u64, @intCast(std.time.milliTimestamp())) + @as(u64, @intCast(ttl_ms));
+        try dest_storage.setWithExpiry(key, cloned_value, expiry_ms);
+    } else {
+        try dest_storage.set(key, cloned_value);
+    }
+
+    // Delete from source database
+    _ = storage.delete(key);
+
+    return w.writeInteger(1);
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────

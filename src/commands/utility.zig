@@ -534,8 +534,10 @@ pub fn cmdSwapdb(
     _: ?*TxState,
     _: *ClientRegistry,
     _: u64,
-    _: *ServerConfig,
+    config: *ServerConfig,
     _: u8,
+    databases: []Storage,
+    num_databases: u16,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -558,13 +560,25 @@ pub fn cmdSwapdb(
         return try w.writeError("ERR DB index is out of range");
     }
 
-    // Zoltraak only supports database 0 (single database mode)
-    // SWAPDB 0 0 is allowed (no-op), but any other index is rejected
-    if (index1 != 0 or index2 != 0) {
+    // Validate indices are within range
+    const db_count = config.databases orelse num_databases;
+    if (index1 >= db_count or index2 >= db_count) {
         return try w.writeError("ERR DB index is out of range");
     }
 
-    // SWAPDB 0 0 is a no-op but returns OK
+    // SWAPDB i i is a no-op
+    if (index1 == index2) {
+        return try w.writeSimpleString("OK");
+    }
+
+    // Atomically swap the two databases by swapping their Storage structs
+    const idx1 = @as(usize, @intCast(index1));
+    const idx2 = @as(usize, @intCast(index2));
+
+    const temp = databases[idx1];
+    databases[idx1] = databases[idx2];
+    databases[idx2] = temp;
+
     return try w.writeSimpleString("OK");
 }
 

@@ -340,6 +340,8 @@ pub fn executeCommand(
     client_id: u64,
     script_store: *ScriptStore,
     shutdown_state: ?*@import("../server.zig").ShutdownState,
+    databases: []Storage,
+    num_databases: u16,
 ) ![]const u8 {
     const array = switch (cmd) {
         .array => |arr| arr,
@@ -681,7 +683,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "TOUCH")) {
             break :blk try keys_cmds.cmdTouch(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "MOVE")) {
-            break :blk try keys_cmds.cmdMove(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdMove(allocator, storage, array, databases, num_databases, selected_db);
         }
         // List commands
         else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
@@ -1486,7 +1489,7 @@ pub fn executeCommand(
                 };
             }
             const client_protocol = client_registry.getProtocol(client_id);
-            break :blk try utility_cmds.cmdSwapdb(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+            break :blk try utility_cmds.cmdSwapdb(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol), databases, num_databases);
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();

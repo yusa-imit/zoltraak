@@ -42,6 +42,8 @@ fn execLatency(
         1, // client_id
         script_store,
         null, // shutdown_state
+        server.databases,
+        server.num_databases,
     );
 }
 

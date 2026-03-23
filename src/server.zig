@@ -387,6 +387,8 @@ pub const Server = struct {
                 client_id,
                 &self.script_store,
                 &self.shutdown_state,
+                self.databases,
+                self.num_databases,
             ) catch |err| {
                 std.debug.print("Command execution error: {any}\n", .{err});
                 const error_response = "-ERR Internal server error\r\n";
