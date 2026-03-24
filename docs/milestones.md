@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 130 (193+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, 2/5 zuda migrations, sailor v1.19.0 migrated)
+- **Iterations complete**: 131 (193+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, 2/5 zuda migrations, sailor v1.20.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 7 Multi-Database Support (100% COMPLETE ✅ — SELECT, client DB tracking, storage array, per-DB operations, SWAPDB, MOVE, RDB/AOF multi-DB persistence all done)
 - **Next milestone**: Phase 1 (Core Command Gaps) or Phase 8 (Cluster)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.19.0 (advanced terminal features + developer experience + CLI enhancements: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking, hot reload, widget inspector, benchmarks, progress bar templates, env config, color themes, table formatting)
+- **Sailor library**: v1.20.0 (quality & completeness: Windows console Unicode tests, comprehensive pattern documentation, error message context improvements, edge case hardening)
 
 ---
 
@@ -73,9 +73,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.19.0 (build.zig.zon)
-- **Latest available**: v1.19.0
-- **Migration status**: All versions through v1.19.0 migrated.
+- **Current in zoltraak**: v1.20.0 (build.zig.zon)
+- **Latest available**: v1.20.0
+- **Migration status**: All versions through v1.20.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -102,6 +102,7 @@
 | v1.17.0 | (skipped — direct upgrade to v1.18.0) | N/A |
 | v1.18.0 | Developer experience: hot reload for themes, widget inspector, benchmark suite, example gallery, documentation generator — backward compatible, zero breaking changes | Done (Iter 122) |
 | v1.19.0 | CLI enhancements: progress bar templates (5 presets: download/build/test_run/install/processing), environment variable config (env.get/getBool/getInt), color themes (light/dark presets with auto-detection), table formatting (alignment, padding, multi-line cells), argument groups — backward compatible, zero breaking changes | Done (Iter 129) |
+| v1.20.0 | Quality & completeness: Windows console Unicode tests (23 tests for UTF-16, CJK, ANSI, emoji), comprehensive pattern documentation (docs/patterns.md), error message context improvements (error_context.zig), edge case hardening (division by zero fixes) — backward compatible, zero breaking changes | Done (Iter 131) |
 
 ### zuda Library
 
@@ -151,3 +152,4 @@
 - **128**: **Multi-DB RDB and AOF Persistence (Phase 7.4)** — Implemented multi-database persistence for RDB and AOF formats to complete Phase 7 (100%): **RDB multi-database support**: added `RDB_DB_SELECTOR` (0xFE) opcode to mark database switches in RDB files, implemented Redis-compatible length encoding for database indices (6-bit/14-bit/32-bit formats), updated `Persistence.save()` to iterate all databases and write 0xFE markers before each non-empty database, updated `Persistence.load()` to parse 0xFE opcodes and route keys to correct database, updated `saveToBytes()` and `loadFromBytes()` for multi-DB serialization, backward compatibility (old single-DB RDB files load into databases[0]), **AOF multi-database support**: added `last_db: u16` field to Aof struct to track current database, modified `appendCommand()` to accept `db` parameter, implemented automatic SELECT injection (writes `SELECT db` when database changes), created `appendCommandDb0()` backward-compatible wrapper, **backward compatibility wrappers**: `saveSingleDb()`, `loadSingleDb()`, `saveToBytesSingleDb()`, `loadFromBytesSingleDb()` for existing single-DB code, **updated all callers**: src/main.zig (multi-DB load), src/server.zig (multi-DB save), src/commands/strings.zig (SAVE/BGSAVE use single-DB wrappers, fixed EXEC signature), src/commands/utility.zig (DEBUG RELOAD uses single-DB wrappers), src/commands/keys.zig (fixed MOVE to properly clone string values), src/storage/replication.zig (replica RDB loading uses single-DB wrapper), **RDB format**: MAGIC[8] VERSION[1] [DB_SELECTOR[1] DB_INDEX[1-4] keys...]* EOF[1] CHECKSUM[4], **AOF format**: includes `SELECT db` commands when database changes, all tests pass (36/36), zero memory leaks, backward compatible with existing single-DB code, **Phase 7 Multi-Database Support: 95% → 100% COMPLETE** ✅, commit 937b9b8
 - **129**: **Sailor v1.19.0 Migration** — Migrated from sailor v1.18.0 to v1.19.0 (backward compatible, zero breaking changes): `zig fetch --save` updated build.zig.zon dependency URL + hash, new features include progress bar templates (5 presets: download/build/test_run/install/processing for streamlined progress indicators), environment variable config (env.zig module with env.get/getBool/getInt for runtime customization), color themes (ColorTheme structure with Solarized/Dracula/Nord presets + automatic terminal environment detection), table formatting (column alignment left/center/right, customizable padding, multi-line cell support with intelligent text wrapping), argument groups (organized CLI option presentation with improved help output), all tests pass (36/36), docs/milestones.md updated with v1.19.0 entry in sailor migration table, closed GitHub issue #9, commit 1959e4a
 - **130**: **Lua Scripting Multi-DB Fix** — Fixed compilation errors from Iteration 127-129 multi-database refactoring: added databases[] and num_databases fields to RedisContext struct for redis.call/pcall bridge, updated cmdEval/cmdEvalSHA signatures, fixed cmdSwapdb parameter usage, fixed AOF SELECT injection type mismatch, all Lua scripts now have full multi-database support via redis.call/pcall, build succeeds, commit b04b5d4
+- **131**: **Sailor v1.20.0 Migration** — Migrated from sailor v1.19.0 to v1.20.0 (backward compatible, zero breaking changes): `zig fetch --save` updated build.zig.zon dependency URL + hash, new features include Windows console Unicode tests (23 comprehensive tests covering UTF-16 surrogate pairs, CJK character width, ANSI escape sequences, console mode detection, bidirectional text, emoji with skin tones and ZWJ sequences, control characters, CRLF vs LF), comprehensive pattern documentation (docs/patterns.md with examples for terminal setup, colors, argument parsing, progress indicators, REPL, formatted output, TUI applications, layout management, widget composition, best practices), error message context improvements (error_context.zig module), edge case hardening (division by zero fixes, comprehensive audit), all tests pass (full test suite verification), docs/milestones.md updated with v1.20.0 entry in sailor migration table, closed GitHub issue #10
