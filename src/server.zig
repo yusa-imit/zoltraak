@@ -236,7 +236,7 @@ pub const Server = struct {
         if (req.save) {
             std.debug.print("Saving RDB snapshot before shutdown...\n", .{});
             const persistence = @import("storage/persistence.zig");
-            persistence.Persistence.save(&self.databases[0], "dump.rdb", self.allocator) catch |err| {
+            persistence.Persistence.save(self.databases, "dump.rdb", self.allocator) catch |err| {
                 if (!req.force) {
                     std.debug.print("\x1b[1;31mError saving RDB: {any}\x1b[0m\n", .{err});
                     std.debug.print("Shutdown aborted (use FORCE to override)\n", .{});

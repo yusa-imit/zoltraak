@@ -572,15 +572,15 @@ pub fn cmdMove(
     const ttl_ms = storage.getTtlMs(key);
 
     // Clone the value to avoid lifetime issues
-    const cloned_value = try value.clone(allocator);
-    errdefer cloned_value.deinit(allocator);
+    const cloned_value = try allocator.dupe(u8, value);
+    errdefer allocator.free(cloned_value);
 
     // Set in destination database (with TTL if it exists)
     if (ttl_ms > 0) {
         const expiry_ms = @as(u64, @intCast(std.time.milliTimestamp())) + @as(u64, @intCast(ttl_ms));
-        try dest_storage.setWithExpiry(key, cloned_value, expiry_ms);
+        try dest_storage.set(key, cloned_value, @as(i64, @intCast(expiry_ms)));
     } else {
-        try dest_storage.set(key, cloned_value);
+        try dest_storage.set(key, cloned_value, null);
     }
 
     // Delete from source database

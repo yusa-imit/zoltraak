@@ -343,7 +343,7 @@ pub const ReplicationState = struct {
         }
 
         // 7. Load RDB into storage
-        _ = try Persistence.loadFromBytes(storage, rdb_data, std.heap.page_allocator);
+        _ = try Persistence.loadFromBytesSingleDb(storage, rdb_data, std.heap.page_allocator);
 
         self.primary_stream = stream;
         self.primary_link_up = true;
@@ -392,7 +392,7 @@ fn readLine(stream: std.net.Stream, buf: []u8) !usize {
 
 /// Build an RDB snapshot of `storage` into `buf` using the Persistence format.
 fn buildRdbInMemory(storage: *Storage, buf: *std.ArrayList(u8)) !void {
-    const bytes = try Persistence.saveToBytes(storage, std.heap.page_allocator);
+    const bytes = try Persistence.saveToBytesSingleDb(storage, std.heap.page_allocator);
     defer std.heap.page_allocator.free(bytes);
     try buf.appendSlice(std.heap.page_allocator, bytes);
 }

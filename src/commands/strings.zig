@@ -525,7 +525,7 @@ pub fn executeCommand(
     } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
         return tx_mod.cmdUnwatch(allocator, tx, array);
     } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
-        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store, shutdown_state);
+        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store, shutdown_state, databases, num_databases);
     }
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
@@ -1526,7 +1526,7 @@ pub fn executeCommand(
                 };
             }
             if (valid) {
-                a.appendCommand(aof_args) catch |err| {
+                a.appendCommandDb0(aof_args) catch |err| {
                     std.debug.print("AOF write warning: {any}\n", .{err});
                 };
             }
@@ -1572,6 +1572,8 @@ fn cmdExec(
     client_id: u64,
     script_store: *ScriptStore,
     shutdown_state: ?*@import("../server.zig").ShutdownState,
+    databases: []Storage,
+    num_databases: u16,
 ) anyerror![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -1627,6 +1629,8 @@ fn cmdExec(
             client_id,
             script_store,
             shutdown_state,
+            databases,
+            num_databases,
         ) catch |err| blk: {
             var buf: [64]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "ERR command error: {any}", .{err}) catch "ERR internal error";
@@ -1857,7 +1861,7 @@ fn cmdSave(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    Persistence.save(storage, DEFAULT_RDB_PATH, allocator) catch |err| {
+    Persistence.saveSingleDb(storage, DEFAULT_RDB_PATH, allocator) catch |err| {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ERR SAVE failed: {any}", .{err}) catch "ERR SAVE failed";
         return w.writeError(msg);
@@ -1871,7 +1875,7 @@ fn cmdBgsave(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    Persistence.save(storage, DEFAULT_RDB_PATH, allocator) catch |err| {
+    Persistence.saveSingleDb(storage, DEFAULT_RDB_PATH, allocator) catch |err| {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ERR BGSAVE failed: {any}", .{err}) catch "ERR BGSAVE failed";
         return w.writeError(msg);

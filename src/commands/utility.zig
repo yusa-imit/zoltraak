@@ -435,7 +435,7 @@ pub fn cmdDebug(
         const full_path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ rdb_path, dbfilename });
 
         // Save current data
-        try Persistence.save(storage, full_path, allocator);
+        try Persistence.saveSingleDb(storage, full_path, allocator);
 
         // Clear current data
         storage.mutex.lock();
@@ -448,7 +448,7 @@ pub fn cmdDebug(
         storage.mutex.unlock();
 
         // Reload from disk
-        _ = try Persistence.load(storage, full_path, allocator);
+        _ = try Persistence.loadSingleDb(storage, full_path, allocator);
 
         return try w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "CHANGE-REPL-ID")) {

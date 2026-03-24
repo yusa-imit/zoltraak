@@ -6,12 +6,15 @@ const Storage = memory.Storage;
 ///
 /// Every write command is appended to the AOF file as a RESP array.
 /// On startup, the AOF is replayed to restore state.
+/// When switching databases, a SELECT command is injected before the next command.
 ///
 /// File format: standard RESP protocol arrays, e.g.:
+///   *2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n     (SELECT 1 to switch to DB 1)
 ///   *3\r\n$3\r\nSET\r\n$5\r\nhello\r\n$5\r\nworld\r\n
 pub const Aof = struct {
     file: std.fs.File,
     mutex: std.Thread.Mutex,
+    last_db: u16, // Track last written database (starts at 0)
 
     /// Open (or create) the AOF file for appending.
     /// Returned pointer is heap-allocated via page_allocator; call close() to free.
@@ -32,6 +35,7 @@ pub const Aof = struct {
         aof.* = .{
             .file = file,
             .mutex = .{},
+            .last_db = 0, // Start at database 0
         };
         return aof;
     }
@@ -41,9 +45,16 @@ pub const Aof = struct {
         std.heap.page_allocator.destroy(self);
     }
 
+    /// Append a command to database 0 (backward-compatible wrapper).
+    pub fn appendCommandDb0(self: *Aof, args: []const []const u8) !void {
+        return self.appendCommand(args, 0);
+    }
+
     /// Append a RESP command to the AOF file.
+    /// If database changes, injects a SELECT command before the new command.
     /// `args` is a slice of string arguments (command name first).
-    pub fn appendCommand(self: *Aof, args: []const []const u8) !void {
+    /// `db` is the target database (0-15).
+    pub fn appendCommand(self: *Aof, args: []const []const u8, db: u16) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -52,7 +63,15 @@ pub const Aof = struct {
 
         const w = buf.writer(std.heap.page_allocator);
 
-        // Write RESP array header
+        // Inject SELECT command if database changed
+        if (db != self.last_db) {
+            var db_str: [20]u8 = undefined;
+            const db_len = try std.fmt.bufPrint(&db_str, "{d}", .{db});
+            try w.print("*2\r\n$6\r\nSELECT\r\n${d}\r\n{s}\r\n", .{ db_len, db_str[0..db_len] });
+            self.last_db = db;
+        }
+
+        // Write the actual RESP command
         try w.print("*{d}\r\n", .{args.len});
         for (args) |arg| {
             try w.print("${d}\r\n{s}\r\n", .{ arg.len, arg });
@@ -396,9 +415,9 @@ test "aof - appendCommand and replay strings" {
         const aof = try Aof.open(path);
         defer aof.close();
 
-        try aof.appendCommand(&[_][]const u8{ "SET", "hello", "world" });
-        try aof.appendCommand(&[_][]const u8{ "SET", "foo", "bar" });
-        try aof.appendCommand(&[_][]const u8{ "DEL", "foo" });
+        try aof.appendCommandDb0(&[_][]const u8{ "SET", "hello", "world" });
+        try aof.appendCommandDb0(&[_][]const u8{ "SET", "foo", "bar" });
+        try aof.appendCommandDb0(&[_][]const u8{ "DEL", "foo" });
     }
 
     const storage = try Storage.init(allocator);
@@ -465,8 +484,8 @@ test "aof - replay list commands" {
     {
         const aof = try Aof.open(path);
         defer aof.close();
-        try aof.appendCommand(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
-        try aof.appendCommand(&[_][]const u8{ "LPOP", "mylist" });
+        try aof.appendCommandDb0(&[_][]const u8{ "RPUSH", "mylist", "a", "b", "c" });
+        try aof.appendCommandDb0(&[_][]const u8{ "LPOP", "mylist" });
     }
 
     const storage = try Storage.init(allocator);

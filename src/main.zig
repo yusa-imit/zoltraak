@@ -152,7 +152,7 @@ pub fn main() !void {
     // Load RDB snapshot if it exists (skip when starting as a replica — RDB comes from primary)
     if (config.replicaof_host == null) {
         const Persistence = persistence.Persistence;
-        const loaded = Persistence.load(&server.databases[0], "dump.rdb", allocator) catch |err| blk: {
+        const loaded = Persistence.load(server.databases, "dump.rdb", allocator) catch |err| blk: {
             std.debug.print("Warning: could not load dump.rdb: {any}\n", .{err});
             break :blk 0;
         };
