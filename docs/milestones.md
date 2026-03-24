@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 128 (193+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, 2/5 zuda migrations, sailor v1.18.0 migrated)
+- **Iterations complete**: 129 (193+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, 2/5 zuda migrations, sailor v1.19.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 7 Multi-Database Support (100% COMPLETE ✅ — SELECT, client DB tracking, storage array, per-DB operations, SWAPDB, MOVE, RDB/AOF multi-DB persistence all done)
 - **Next milestone**: Phase 1 (Core Command Gaps) or Phase 8 (Cluster)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.18.0 (advanced terminal features + developer experience: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking, hot reload, widget inspector, benchmarks)
+- **Sailor library**: v1.19.0 (advanced terminal features + developer experience + CLI enhancements: capability database, bracketed paste, synchronized output, hyperlinks, focus tracking, hot reload, widget inspector, benchmarks, progress bar templates, env config, color themes, table formatting)
 
 ---
 
@@ -73,9 +73,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.18.0 (build.zig.zon)
-- **Latest available**: v1.18.0
-- **Migration status**: All versions through v1.18.0 migrated.
+- **Current in zoltraak**: v1.19.0 (build.zig.zon)
+- **Latest available**: v1.19.0
+- **Migration status**: All versions through v1.19.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -101,6 +101,7 @@
 | v1.16.0 | Advanced terminal features: terminal capability database (termcap module), bracketed paste mode (DEC 2004), synchronized output protocol (DEC 2026), hyperlink support (OSC 8), focus tracking (DEC 1004) | Done (Iter 110) |
 | v1.17.0 | (skipped — direct upgrade to v1.18.0) | N/A |
 | v1.18.0 | Developer experience: hot reload for themes, widget inspector, benchmark suite, example gallery, documentation generator — backward compatible, zero breaking changes | Done (Iter 122) |
+| v1.19.0 | CLI enhancements: progress bar templates (5 presets: download/build/test_run/install/processing), environment variable config (env.get/getBool/getInt), color themes (light/dark presets with auto-detection), table formatting (alignment, padding, multi-line cells), argument groups — backward compatible, zero breaking changes | Done (Iter 129) |
 
 ### zuda Library
 
@@ -148,3 +149,4 @@
 - **126**: **Storage Array Refactoring (Phase 7.2)** — Replaced single global Storage with databases[] array to enable true multi-database support: refactored Server structure (replaced `storage: *Storage` with `databases: []Storage` + `num_databases: u16`), allocated and initialized 16 databases in Server.init() with proper errdefer cleanup chains, updated config default from `databases = 1` to `databases = 16` (read-only parameter), modified command dispatcher (server.zig:369-371) to get `selected_db` from ClientRegistry and pass `&databases[selected_db]` to command handlers, updated persistence/replication to use `databases[0]`, created comprehensive test suite (tests/test_multi_database.zig with 8 tests covering database isolation, SELECT, FLUSHDB per-DB, DBSIZE per-DB, SWAPDB response format, MOVE response format), registered tests in build.zig, **Phase 7 Multi-DB: 25% → 75% complete** (SELECT + client tracking + storage array + per-DB operations done, SWAPDB/MOVE real implementation + multi-DB persistence pending), all tests pass (36/36), zero memory leaks, zig-quality-reviewer: flagged pointer copy pattern as anti-pattern (acceptable for current Storage struct design, documented for future refactoring), code-reviewer: APPROVED (architecture sound, ready for SWAPDB/MOVE), backward compatible (all clients default to DB 0, existing code unchanged), ready for Iteration 127: SWAPDB and MOVE real implementation, commit 93ddaf5
 - **127**: **SWAPDB and MOVE Real Implementation (Phase 7.3)** — Implemented real multi-database SWAPDB and MOVE commands to complete Phase 7 core functionality: **cmdSwapdb**: added databases[] and num_databases parameters to signature, implemented atomic database swap via Storage struct swap (validates DB indices against configured database count, handles same-index no-op, swaps databases[idx1] and databases[idx2]), **cmdMove**: rewrote from stub to full implementation (validates source key exists, validates destination key doesn't exist, validates dest DB index in range, clones value with allocator, preserves TTL during transfer via getTtlMs + setWithExpiry, deletes from source after successful destination set, returns 1 on success / 0 on failure), **dispatcher changes**: added databases[] and num_databases to executeCommand signature (propagated to server.zig handleClient, all 10 test files), updated MOVE dispatch to pass databases/num_databases/selected_db, updated SWAPDB dispatch to pass databases/num_databases, **Phase 7 Multi-DB: 75% → 95% complete** (SELECT + client tracking + storage array + per-DB operations + SWAPDB + MOVE done, multi-DB persistence pending for 100%), all tests pass (36/36 including 8 multi-DB tests: database isolation, SELECT, FLUSHDB per-DB, DBSIZE per-DB, SWAPDB atomic swap, MOVE success/failure/dest-exists), zero memory leaks, backward compatible (single-DB workloads unchanged), ready for Iteration 128: multi-DB persistence (RDB/AOF support for all 16 databases)
 - **128**: **Multi-DB RDB and AOF Persistence (Phase 7.4)** — Implemented multi-database persistence for RDB and AOF formats to complete Phase 7 (100%): **RDB multi-database support**: added `RDB_DB_SELECTOR` (0xFE) opcode to mark database switches in RDB files, implemented Redis-compatible length encoding for database indices (6-bit/14-bit/32-bit formats), updated `Persistence.save()` to iterate all databases and write 0xFE markers before each non-empty database, updated `Persistence.load()` to parse 0xFE opcodes and route keys to correct database, updated `saveToBytes()` and `loadFromBytes()` for multi-DB serialization, backward compatibility (old single-DB RDB files load into databases[0]), **AOF multi-database support**: added `last_db: u16` field to Aof struct to track current database, modified `appendCommand()` to accept `db` parameter, implemented automatic SELECT injection (writes `SELECT db` when database changes), created `appendCommandDb0()` backward-compatible wrapper, **backward compatibility wrappers**: `saveSingleDb()`, `loadSingleDb()`, `saveToBytesSingleDb()`, `loadFromBytesSingleDb()` for existing single-DB code, **updated all callers**: src/main.zig (multi-DB load), src/server.zig (multi-DB save), src/commands/strings.zig (SAVE/BGSAVE use single-DB wrappers, fixed EXEC signature), src/commands/utility.zig (DEBUG RELOAD uses single-DB wrappers), src/commands/keys.zig (fixed MOVE to properly clone string values), src/storage/replication.zig (replica RDB loading uses single-DB wrapper), **RDB format**: MAGIC[8] VERSION[1] [DB_SELECTOR[1] DB_INDEX[1-4] keys...]* EOF[1] CHECKSUM[4], **AOF format**: includes `SELECT db` commands when database changes, all tests pass (36/36), zero memory leaks, backward compatible with existing single-DB code, **Phase 7 Multi-Database Support: 95% → 100% COMPLETE** ✅, commit 937b9b8
+- **129**: **Sailor v1.19.0 Migration** — Migrated from sailor v1.18.0 to v1.19.0 (backward compatible, zero breaking changes): `zig fetch --save` updated build.zig.zon dependency URL + hash, new features include progress bar templates (5 presets: download/build/test_run/install/processing for streamlined progress indicators), environment variable config (env.zig module with env.get/getBool/getInt for runtime customization), color themes (ColorTheme structure with Solarized/Dracula/Nord presets + automatic terminal environment detection), table formatting (column alignment left/center/right, customizable padding, multi-line cell support with intelligent text wrapping), argument groups (organized CLI option presentation with improved help output), all tests pass (36/36), docs/milestones.md updated with v1.19.0 entry in sailor migration table, closed GitHub issue #9, commit pending

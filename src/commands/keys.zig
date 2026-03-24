@@ -584,7 +584,8 @@ pub fn cmdMove(
     }
 
     // Delete from source database
-    _ = storage.delete(key);
+    const keys_to_delete = [_][]const u8{key};
+    _ = storage.del(&keys_to_delete);
 
     return w.writeInteger(1);
 }
