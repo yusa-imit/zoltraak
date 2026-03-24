@@ -534,7 +534,7 @@ pub fn cmdSwapdb(
     _: ?*TxState,
     _: *ClientRegistry,
     _: u64,
-    config: *ServerConfig,
+    _: *ServerConfig,
     _: u8,
     databases: []Storage,
     num_databases: u16,
@@ -560,9 +560,8 @@ pub fn cmdSwapdb(
         return try w.writeError("ERR DB index is out of range");
     }
 
-    // Validate indices are within range
-    const db_count = config.databases orelse num_databases;
-    if (index1 >= db_count or index2 >= db_count) {
+    // Validate indices are within range (use num_databases passed from server)
+    if (index1 >= num_databases or index2 >= num_databases) {
         return try w.writeError("ERR DB index is out of range");
     }
 

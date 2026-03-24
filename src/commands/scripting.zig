@@ -31,6 +31,8 @@ pub fn cmdEval(
     client_registry: *ClientRegistry,
     client_id: u64,
     shutdown_state: ?*@import("../server.zig").ShutdownState,
+    databases: []Storage,
+    num_databases: u16,
 ) ![]const u8 {
     _ = resp_version;
 
@@ -82,6 +84,8 @@ pub fn cmdEval(
         .client_id = client_id,
         .script_store = script_store,
         .shutdown_state = shutdown_state,
+        .databases = databases,
+        .num_databases = num_databases,
     };
 
     // Get lua-time-limit from config
@@ -127,6 +131,8 @@ pub fn cmdEvalSHA(
     client_registry: *ClientRegistry,
     client_id: u64,
     shutdown_state: ?*@import("../server.zig").ShutdownState,
+    databases: []Storage,
+    num_databases: u16,
 ) ![]const u8 {
     _ = resp_version;
 
@@ -189,6 +195,8 @@ pub fn cmdEvalSHA(
         .client_id = client_id,
         .script_store = script_store,
         .shutdown_state = shutdown_state,
+        .databases = databases,
+        .num_databases = num_databases,
     };
 
     // Get lua-time-limit from config

@@ -66,8 +66,8 @@ pub const Aof = struct {
         // Inject SELECT command if database changed
         if (db != self.last_db) {
             var db_str: [20]u8 = undefined;
-            const db_len = try std.fmt.bufPrint(&db_str, "{d}", .{db});
-            try w.print("*2\r\n$6\r\nSELECT\r\n${d}\r\n{s}\r\n", .{ db_len, db_str[0..db_len] });
+            const db_slice = try std.fmt.bufPrint(&db_str, "{d}", .{db});
+            try w.print("*2\r\n$6\r\nSELECT\r\n${d}\r\n{s}\r\n", .{ db_slice.len, db_slice });
             self.last_db = db;
         }
 

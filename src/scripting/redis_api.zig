@@ -36,6 +36,8 @@ pub const RedisContext = struct {
     client_id: u64,
     script_store: *ScriptStore,
     shutdown_state: ?*@import("../server.zig").ShutdownState,
+    databases: []Storage,
+    num_databases: u16,
 };
 
 /// C callback for redis.call()
@@ -174,6 +176,8 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
         ctx.client_id,
         ctx.script_store,
         ctx.shutdown_state,
+        ctx.databases,
+        ctx.num_databases,
     ) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR {s}", .{@errorName(err)});
         defer ctx.allocator.free(err_msg);
