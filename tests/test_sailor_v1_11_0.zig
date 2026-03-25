@@ -155,10 +155,18 @@ test "sailor v1.11.0 - color interpolation" {
     const start_color = tui.Color.red;
     const end_color = tui.Color.blue;
 
-    // Test color interpolation
-    const mid_color = tui.animation.lerpColor(start_color, end_color, 0.5);
-    _ = mid_color;
+    // Test color interpolation at start (t=0)
+    const start_interp = tui.animation.lerpColor(start_color, end_color, 0.0);
+    try std.testing.expectEqual(start_color, start_interp);
 
-    // Verify interpolated color exists
-    try std.testing.expect(true);
+    // Test color interpolation at end (t=1)
+    const end_interp = tui.animation.lerpColor(start_color, end_color, 1.0);
+    try std.testing.expectEqual(end_color, end_interp);
+
+    // Test color interpolation at midpoint (t=0.5)
+    const mid_color = tui.animation.lerpColor(start_color, end_color, 0.5);
+    // Red (255, 0, 0) to Blue (0, 0, 255) at t=0.5 should be (127, 0, 127) approximately
+    try std.testing.expect(mid_color.r < 200 and mid_color.r > 50);
+    try std.testing.expect(mid_color.g == 0);
+    try std.testing.expect(mid_color.b < 200 and mid_color.b > 50);
 }
