@@ -1238,12 +1238,12 @@ pub fn executeCommand(
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
             const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
-            break :blk try scripting_cmds.cmdEval(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state);
+            break :blk try scripting_cmds.cmdEval(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state, databases, num_databases);
         } else if (std.mem.eql(u8, cmd_upper, "EVALSHA")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
             const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
-            break :blk try scripting_cmds.cmdEvalSHA(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state);
+            break :blk try scripting_cmds.cmdEvalSHA(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state, databases, num_databases);
         } else if (std.mem.eql(u8, cmd_upper, "SCRIPT")) {
             if (array.len < 2) {
                 var w = Writer.init(allocator);
