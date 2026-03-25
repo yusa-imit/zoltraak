@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 132 (193+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, 2/5 zuda migrations, sailor v1.21.0 migrated)
+- **Iterations complete**: 133 (193+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 7 Multi-Database Support (100% COMPLETE ✅ — SELECT, client DB tracking, storage array, per-DB operations, SWAPDB, MOVE, RDB/AOF multi-DB persistence all done)
 - **Next milestone**: Phase 1 (Core Command Gaps) or Phase 8 (Cluster)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.21.0 (streaming & large data: DataSource abstraction for lazy-loading massive datasets, VirtualList/StreamingTable/ChunkedBuffer benchmarks for 1M+ items)
+- **Sailor library**: v1.22.0 (rich text & formatting: SpanBuilder/LineBuilder fluent APIs, RichTextParser for markdown, LineBreaker with hyphenation, Unicode-aware width calculation)
 
 ---
 
@@ -104,6 +104,7 @@
 | v1.19.0 | CLI enhancements: progress bar templates (5 presets: download/build/test_run/install/processing), environment variable config (env.get/getBool/getInt), color themes (light/dark presets with auto-detection), table formatting (alignment, padding, multi-line cells), argument groups — backward compatible, zero breaking changes | Done (Iter 129) |
 | v1.20.0 | Quality & completeness: Windows console Unicode tests (23 tests for UTF-16, CJK, ANSI, emoji), comprehensive pattern documentation (docs/patterns.md), error message context improvements (error_context.zig), edge case hardening (division by zero fixes) — backward compatible, zero breaking changes | Done (Iter 131) |
 | v1.21.0 | Streaming & large data: DataSource abstraction (ItemDataSource, TableDataSource, LineDataSource for lazy-loading massive datasets), large data benchmarks (1M+ items for VirtualList/StreamingTable/ChunkedBuffer), memory efficiency tests — backward compatible, zero breaking changes | Done (Iter 132) |
+| v1.22.0 | Rich text & formatting: SpanBuilder/LineBuilder fluent APIs for styled text, RichTextParser for markdown conversion (bold/italic/code/strikethrough), LineBreaker with word wrapping and hyphenation, Unicode-aware width calculation (CJK, emoji), multiline height tracking — backward compatible, zero breaking changes | Done (Iter 133) |
 
 ### zuda Library
 
