@@ -5,6 +5,7 @@ const slowlog_mod = @import("slowlog.zig");
 const latency_mod = @import("latency.zig");
 const memory_tracker_mod = @import("memory_tracker.zig");
 const acl_mod = @import("acl.zig");
+const cluster_mod = @import("cluster.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -14,6 +15,7 @@ pub const BlockedXreadgroupClient = blocking_mod.BlockedXreadgroupClient;
 pub const SlowLog = slowlog_mod.SlowLog;
 pub const LatencyMonitor = latency_mod.LatencyMonitor;
 pub const MemoryTracker = memory_tracker_mod.MemoryTracker;
+pub const ClusterState = cluster_mod.ClusterState;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -453,6 +455,7 @@ pub const Storage = struct {
     data: std.StringHashMap(Value),
     config: *Config,
     acl: ?*ACLStore, // ACL user management
+    cluster: ClusterState, // Cluster state management
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -487,11 +490,46 @@ pub const Storage = struct {
         acl_store.* = try ACLStore.init(allocator);
         errdefer acl_store.deinit();
 
+        // Initialize cluster state (single-node by default)
+        var cluster_state = ClusterState.init(allocator);
+        errdefer cluster_state.deinit();
+
+        // Generate a 40-character node ID (hex string of 20 bytes)
+        var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.microTimestamp())));
+        var random = prng.random();
+
+        var node_id: [40]u8 = undefined;
+        for (0..20) |i| {
+            const byte = random.int(u8);
+            _ = std.fmt.bufPrint(node_id[i * 2 .. i * 2 + 2], "{x:0>2}", .{byte}) catch unreachable;
+        }
+
+        // Create a single node for this instance
+        const node = try allocator.create(cluster_mod.ClusterNode);
+        errdefer allocator.destroy(node);
+
+        node.* = try cluster_mod.ClusterNode.init(allocator, node_id, bind, port);
+        errdefer node.deinit(allocator);
+
+        // Set as self
+        cluster_state.myself = node;
+        cluster_state.enabled = false; // Cluster not enabled by default
+        cluster_state.state = .ok;
+        cluster_state.current_epoch = 1;
+
+        // Add node to cluster nodes map (need to dup the key for the hashmap)
+        const node_id_key = try allocator.dupe(u8, &node_id);
+        try cluster_state.nodes.put(node_id_key, node);
+
+        // Assign all slots to this node
+        try cluster_state.assignSlots(node, 0, cluster_mod.CLUSTER_SLOTS - 1);
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
             .config = cfg,
             .acl = acl_store,
+            .cluster = cluster_state,
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
@@ -513,6 +551,9 @@ pub const Storage = struct {
             acl.deinit();
             self.allocator.destroy(acl);
         }
+
+        // Free cluster state
+        self.cluster.deinit();
 
         // Free all keys and values
         var it = self.data.iterator();
