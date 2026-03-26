@@ -1327,6 +1327,20 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterCountKeysInSlot(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "GETKEYSINSLOT")) {
                 break :blk try cluster_cmds.cmdClusterGetKeysInSlot(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "ADDSLOTS")) {
+                break :blk try cluster_cmds.cmdClusterAddSlots(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "ADDSLOTSRANGE")) {
+                break :blk try cluster_cmds.cmdClusterAddSlotsRange(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "DELSLOTS")) {
+                break :blk try cluster_cmds.cmdClusterDelSlots(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "DELSLOTSRANGE")) {
+                break :blk try cluster_cmds.cmdClusterDelSlotsRange(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "FLUSHSLOTS")) {
+                break :blk try cluster_cmds.cmdClusterFlushSlots(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "MEET")) {
+                break :blk try cluster_cmds.cmdClusterMeet(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "FORGET")) {
+                break :blk try cluster_cmds.cmdClusterForget(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try cluster_cmds.cmdClusterHelp(allocator, args, storage, null, 0);
             } else {

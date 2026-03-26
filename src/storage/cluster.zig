@@ -163,6 +163,20 @@ pub const ClusterNode = struct {
     }
 };
 
+/// Error types for cluster slot operations
+pub const ClusterError = error{
+    SlotAlreadyBusy,
+    SlotNotAssignedToNode,
+    InvalidSlot,
+    InvalidSlotRange,
+    InvalidNodeId,
+    UnknownNode,
+    CannotForgetMyself,
+    CannotForgetMaster,
+    DatabaseNotEmpty,
+    OutOfMemory,
+};
+
 /// Cluster state management
 pub const ClusterState = struct {
     allocator: std.mem.Allocator,
@@ -178,6 +192,8 @@ pub const ClusterState = struct {
     current_epoch: u64,
     /// Cluster state (ok/fail)
     state: State,
+    /// Banned node IDs with expiration timestamps (Unix milliseconds)
+    banned_nodes: std.StringHashMap(i64),
 
     pub const State = enum {
         ok,
@@ -193,6 +209,7 @@ pub const ClusterState = struct {
             .slots = [_]?*ClusterNode{null} ** CLUSTER_SLOTS,
             .current_epoch = 0,
             .state = .fail,
+            .banned_nodes = std.StringHashMap(i64).init(allocator),
         };
     }
 
@@ -203,6 +220,7 @@ pub const ClusterState = struct {
             self.allocator.destroy(node.*);
         }
         self.nodes.deinit();
+        self.banned_nodes.deinit();
     }
 
     /// Get the node responsible for a given slot
@@ -228,6 +246,184 @@ pub const ClusterState = struct {
         }
 
         try node.slots.append(self.allocator, .{ .start = start, .end = end });
+    }
+
+    /// Add individual slots to a node (used by CLUSTER ADDSLOTS)
+    /// Validates all slots are unassigned before assignment
+    pub fn addSlotsToNode(self: *ClusterState, node: *ClusterNode, slots_to_add: []const u16) ClusterError!void {
+        // Validate all slots unassigned first
+        for (slots_to_add) |slot| {
+            if (slot >= CLUSTER_SLOTS) {
+                return ClusterError.InvalidSlot;
+            }
+            if (self.slots[slot] != null) {
+                return ClusterError.SlotAlreadyBusy;
+            }
+        }
+
+        // Assign all slots
+        for (slots_to_add) |slot| {
+            self.slots[slot] = node;
+        }
+
+        // Recompress node's slot ranges
+        try self.recompressNodeSlots(node);
+        self.updateClusterState();
+    }
+
+    /// Remove slots from a node (used by CLUSTER DELSLOTS)
+    /// Validates all slots are assigned to this node before removal
+    pub fn removeSlotsFromNode(self: *ClusterState, node: *ClusterNode, slots_to_remove: []const u16) ClusterError!void {
+        // Validate all slots assigned to this node first
+        for (slots_to_remove) |slot| {
+            if (slot >= CLUSTER_SLOTS) {
+                return ClusterError.InvalidSlot;
+            }
+            if (self.slots[slot] != node) {
+                return ClusterError.SlotNotAssignedToNode;
+            }
+        }
+
+        // Unassign all slots
+        for (slots_to_remove) |slot| {
+            self.slots[slot] = null;
+        }
+
+        // Recompress node's slot ranges
+        try self.recompressNodeSlots(node);
+        self.updateClusterState();
+    }
+
+    /// Recompress a node's slot ranges after modification
+    /// Rebuilds the slot ranges array to maintain consecutive ranges
+    fn recompressNodeSlots(self: *ClusterState, node: *ClusterNode) ClusterError!void {
+        node.slots.clearRetainingCapacity();
+
+        var start: ?u16 = null;
+        var prev: ?u16 = null;
+
+        for (0..CLUSTER_SLOTS) |i| {
+            const slot = @as(u16, @intCast(i));
+            if (self.slots[slot] == node) {
+                if (start == null) {
+                    start = slot;
+                } else if (prev != null and slot != prev.? + 1) {
+                    // Non-consecutive, save previous range
+                    try node.slots.append(self.allocator, .{
+                        .start = start.?,
+                        .end = prev.?,
+                    });
+                    start = slot;
+                }
+                prev = slot;
+            }
+        }
+
+        // Save final range if any
+        if (start != null and prev != null) {
+            try node.slots.append(self.allocator, .{
+                .start = start.?,
+                .end = prev.?,
+            });
+        }
+    }
+
+    /// Flush all slot assignments (used by CLUSTER FLUSHSLOTS)
+    /// Clears all slots and cluster state
+    pub fn flushSlots(self: *ClusterState) void {
+        // Clear all slot assignments
+        for (&self.slots) |*slot| {
+            slot.* = null;
+        }
+
+        // Clear all nodes' slot ranges
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node_ptr| {
+            node_ptr.*.slots.clearRetainingCapacity();
+        }
+
+        self.state = .fail;
+    }
+
+    /// Update cluster state based on slot coverage
+    /// Sets state to .ok if all 16384 slots are covered, .fail otherwise
+    pub fn updateClusterState(self: *ClusterState) void {
+        var covered: u32 = 0;
+        for (self.slots) |maybe_node| {
+            if (maybe_node != null) covered += 1;
+        }
+        self.state = if (covered == CLUSTER_SLOTS) .ok else .fail;
+    }
+
+    /// Check if database is empty (required for FLUSHSLOTS)
+    pub fn isDatabaseEmpty(storage: *const @import("memory.zig").Storage) bool {
+        return storage.data.count() == 0;
+    }
+
+    /// Add a node to the cluster (used by CLUSTER MEET)
+    pub fn meetNode(self: *ClusterState, allocator: std.mem.Allocator, ip: []const u8, port: u16, cluster_port: u16) ClusterError!*ClusterNode {
+        // Validate port
+        if (port < 1 or port > 65535) {
+            return ClusterError.InvalidSlot; // Reuse for invalid parameter
+        }
+
+        // Generate a new node ID (random 40-char hex)
+        var node_id: [40]u8 = undefined;
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        const random = prng.random();
+        const hex_chars = "0123456789abcdef";
+        for (&node_id) |*c| {
+            c.* = hex_chars[random.intRangeLessThan(u8, 0, 16)];
+        }
+
+        // Create new node
+        const node = try allocator.create(ClusterNode);
+        errdefer allocator.destroy(node);
+
+        node.* = try ClusterNode.init(allocator, node_id, ip, port);
+        errdefer node.deinit(allocator);
+
+        node.cluster_port = cluster_port;
+        node.flags.handshake = true;
+        node.link_state = .disconnected;
+
+        // Add to nodes map
+        const key = try allocator.dupe(u8, &node_id);
+        errdefer allocator.free(key);
+
+        self.nodes.put(key, node) catch |err| {
+            allocator.free(key);
+            return err;
+        };
+        return node;
+    }
+
+    /// Remove a node from the cluster (used by CLUSTER FORGET)
+    pub fn forgetNode(self: *ClusterState, allocator: std.mem.Allocator, node_id: []const u8, now_ms: i64) ClusterError!void {
+        // Check if node exists
+        const node_entry = self.nodes.fetchRemove(node_id) orelse {
+            return ClusterError.UnknownNode;
+        };
+
+        const node = node_entry.value;
+
+        // Clear any slots owned by this node
+        for (&self.slots) |*slot| {
+            if (slot.* == node) {
+                slot.* = null;
+            }
+        }
+
+        // Add to ban-list with 60 second expiration
+        const ban_key = try allocator.dupe(u8, node_id);
+        try self.banned_nodes.put(ban_key, now_ms + 60000); // 60 seconds in milliseconds
+
+        // Clean up the node
+        node.deinit(allocator);
+        allocator.destroy(node);
+        allocator.free(node_entry.key);
+
+        self.updateClusterState();
     }
 };
 
@@ -346,4 +542,214 @@ test "ClusterState key routing" {
     const routed_node = cluster.getNodeByKey("mykey");
     try std.testing.expect(routed_node != null);
     try std.testing.expectEqual(node, routed_node.?);
+}
+
+test "addSlotsToNode - assign individual slots" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Add slots 100, 101, 102
+    const slots = [_]u16{ 100, 101, 102 };
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Verify slots are assigned
+    try std.testing.expectEqual(node, cluster.slots[100]);
+    try std.testing.expectEqual(node, cluster.slots[101]);
+    try std.testing.expectEqual(node, cluster.slots[102]);
+
+    // Verify slot ranges compressed
+    try std.testing.expectEqual(@as(usize, 1), node.slots.items.len);
+    try std.testing.expectEqual(@as(u16, 100), node.slots.items[0].start);
+    try std.testing.expectEqual(@as(u16, 102), node.slots.items[0].end);
+}
+
+test "addSlotsToNode - reject already busy slot" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Pre-assign slot 100
+    cluster.slots[100] = node;
+
+    // Try to add slot 100 again - should fail
+    const slots = [_]u16{100};
+    const result = cluster.addSlotsToNode(node, &slots);
+    try std.testing.expectError(ClusterError.SlotAlreadyBusy, result);
+}
+
+test "removeSlotsFromNode - remove assigned slots" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Add slots first
+    var slots = [_]u16{ 100, 101, 102 };
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Remove slot 101
+    const remove_slots = [_]u16{101};
+    try cluster.removeSlotsFromNode(node, &remove_slots);
+
+    // Verify slot 101 is unassigned
+    try std.testing.expectEqual(null, cluster.slots[101]);
+    try std.testing.expectEqual(node, cluster.slots[100]);
+    try std.testing.expectEqual(node, cluster.slots[102]);
+
+    // Verify ranges are split
+    try std.testing.expectEqual(@as(usize, 2), node.slots.items.len);
+}
+
+test "removeSlotsFromNode - reject unassigned slot" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Try to remove unassigned slot
+    const slots = [_]u16{100};
+    const result = cluster.removeSlotsFromNode(node, &slots);
+    try std.testing.expectError(ClusterError.SlotNotAssignedToNode, result);
+}
+
+test "flushSlots - clear all assignments" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Assign all slots
+    try cluster.assignSlots(node, 0, 16383);
+    try std.testing.expectEqual(ClusterState.State.ok, cluster.state);
+
+    // Flush slots
+    cluster.flushSlots();
+
+    // Verify all slots unassigned
+    for (0..CLUSTER_SLOTS) |i| {
+        const slot = @as(u16, @intCast(i));
+        try std.testing.expectEqual(null, cluster.slots[slot]);
+    }
+
+    // Verify node has no ranges
+    try std.testing.expectEqual(@as(usize, 0), node.slots.items.len);
+
+    // Verify cluster state is fail
+    try std.testing.expectEqual(ClusterState.State.fail, cluster.state);
+}
+
+test "updateClusterState - ok when all slots covered" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Assign all slots
+    try cluster.assignSlots(node, 0, 16383);
+    cluster.updateClusterState();
+
+    try std.testing.expectEqual(ClusterState.State.ok, cluster.state);
+}
+
+test "updateClusterState - fail when slots missing" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Assign only partial slots
+    try cluster.assignSlots(node, 0, 5000);
+    cluster.updateClusterState();
+
+    try std.testing.expectEqual(ClusterState.State.fail, cluster.state);
+}
+
+test "meetNode - add new node to cluster" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node = try cluster.meetNode(allocator, "127.0.0.1", 7001, 17001);
+
+    // Verify node in nodes map
+    try std.testing.expectEqual(@as(usize, 1), cluster.nodes.count());
+
+    // Verify node properties
+    try std.testing.expectEqual(@as(u16, 7001), node.port);
+    try std.testing.expectEqual(@as(u16, 17001), node.cluster_port);
+    try std.testing.expect(node.flags.handshake);
+    try std.testing.expectEqual(ClusterNode.LinkState.disconnected, node.link_state);
+}
+
+test "forgetNode - remove node from cluster" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node = try cluster.meetNode(allocator, "127.0.0.1", 7001, 17001);
+    const node_id_str = node.id;
+
+    // Verify node in map
+    try std.testing.expectEqual(@as(usize, 1), cluster.nodes.count());
+
+    // Forget the node
+    try cluster.forgetNode(allocator, &node_id_str, 1000000);
+
+    // Verify node removed
+    try std.testing.expectEqual(@as(usize, 0), cluster.nodes.count());
+
+    // Verify banned
+    try std.testing.expectEqual(@as(usize, 1), cluster.banned_nodes.count());
 }
