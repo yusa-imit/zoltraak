@@ -1364,7 +1364,7 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, subcmd_upper, "GETUSER")) {
                 break :blk try acl_cmds.cmdACLGetuser(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "SETUSER")) {
-                break :blk try acl_cmds.cmdACLSetuser(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLSetuser(allocator, storage, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "DELUSER")) {
                 break :blk try acl_cmds.cmdACLDeluser(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "CAT")) {

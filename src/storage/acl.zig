@@ -416,6 +416,62 @@ pub const ACLStore = struct {
             .denied_commands = denied_cmds,
             .allowed_categories = allowed_cats,
             .denied_categories = denied_cats,
+            .all_keys_allowed = false, // Default to restrictive
+            .allowed_key_patterns = std.ArrayList([]const u8){},
+            .read_only_key_patterns = std.ArrayList([]const u8){},
+            .write_only_key_patterns = std.ArrayList([]const u8){},
+        };
+
+        try self.users.put(username_copy, user);
+    }
+
+    /// Create or update user with full permissions including key patterns
+    /// This is the complete version used by ACL SETUSER command
+    pub fn createOrUpdateUser(
+        self: *ACLStore,
+        username: []const u8,
+        enabled: bool,
+        password: ?[]const u8,
+        all_commands_allowed: bool,
+        allowed_commands: std.StringHashMap(void),
+        denied_commands: std.StringHashMap(void),
+        allowed_categories: std.AutoHashMap(CommandCategory, void),
+        denied_categories: std.AutoHashMap(CommandCategory, void),
+        all_keys_allowed: bool,
+        allowed_key_patterns: std.ArrayList([]const u8),
+        read_only_key_patterns: std.ArrayList([]const u8),
+        write_only_key_patterns: std.ArrayList([]const u8),
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Remove existing user if present
+        if (self.users.fetchRemove(username)) |kv| {
+            var old_user = kv.value;
+            old_user.deinit(self.allocator);
+        }
+
+        const username_copy = try self.allocator.dupe(u8, username);
+        errdefer self.allocator.free(username_copy);
+
+        const password_copy = if (password) |pwd|
+            try self.allocator.dupe(u8, pwd)
+        else
+            null;
+
+        const user = User{
+            .username = username_copy,
+            .password = password_copy,
+            .enabled = enabled,
+            .all_commands_allowed = all_commands_allowed,
+            .allowed_commands = allowed_commands,
+            .denied_commands = denied_commands,
+            .allowed_categories = allowed_categories,
+            .denied_categories = denied_categories,
+            .all_keys_allowed = all_keys_allowed,
+            .allowed_key_patterns = allowed_key_patterns,
+            .read_only_key_patterns = read_only_key_patterns,
+            .write_only_key_patterns = write_only_key_patterns,
         };
 
         try self.users.put(username_copy, user);
@@ -1170,4 +1226,126 @@ test "User: hasKeyPermission with common Redis key patterns" {
     // No matching pattern - denied
     try std.testing.expect(!user.hasKeyPermission("admin:config", "read"));
     try std.testing.expect(!user.hasKeyPermission("admin:config", "write"));
+}
+
+test "ACLStore: createOrUpdateUser creates new user with all permissions" {
+    const allocator = std.testing.allocator;
+
+    var store = try ACLStore.init(allocator);
+    defer store.deinit();
+
+    // Create permission structures
+    var allowed_cmds = std.StringHashMap(void).init(allocator);
+    try allowed_cmds.put(try allocator.dupe(u8, "GET"), {});
+    try allowed_cmds.put(try allocator.dupe(u8, "SET"), {});
+
+    const denied_cmds = std.StringHashMap(void).init(allocator);
+
+    const allowed_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+    const denied_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
+
+    var allowed_keys = std.ArrayList([]const u8){};
+    try allowed_keys.append(allocator, try allocator.dupe(u8, "user:*"));
+
+    const read_only_keys = std.ArrayList([]const u8){};
+    const write_only_keys = std.ArrayList([]const u8){};
+
+    // Create user
+    try store.createOrUpdateUser(
+        "testuser",
+        true,
+        "password123",
+        false,
+        allowed_cmds,
+        denied_cmds,
+        allowed_cats,
+        denied_cats,
+        false,
+        allowed_keys,
+        read_only_keys,
+        write_only_keys,
+    );
+
+    // Verify user was created
+    const user = store.getUser("testuser");
+    try std.testing.expect(user != null);
+    try std.testing.expectEqualStrings("testuser", user.?.username);
+    try std.testing.expect(user.?.enabled);
+    try std.testing.expectEqualStrings("password123", user.?.password.?);
+    try std.testing.expect(!user.?.all_commands_allowed);
+    try std.testing.expectEqual(@as(usize, 2), user.?.allowed_commands.count());
+    try std.testing.expect(user.?.allowed_commands.contains("GET"));
+    try std.testing.expect(user.?.allowed_commands.contains("SET"));
+    try std.testing.expect(!user.?.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 1), user.?.allowed_key_patterns.items.len);
+}
+
+test "ACLStore: createOrUpdateUser updates existing user" {
+    const allocator = std.testing.allocator;
+
+    var store = try ACLStore.init(allocator);
+    defer store.deinit();
+
+    // Create initial user
+    var allowed_cmds1 = std.StringHashMap(void).init(allocator);
+    try allowed_cmds1.put(try allocator.dupe(u8, "GET"), {});
+    const denied_cmds1 = std.StringHashMap(void).init(allocator);
+    const allowed_cats1 = std.AutoHashMap(CommandCategory, void).init(allocator);
+    const denied_cats1 = std.AutoHashMap(CommandCategory, void).init(allocator);
+    const allowed_keys1 = std.ArrayList([]const u8){};
+    const read_only_keys1 = std.ArrayList([]const u8){};
+    const write_only_keys1 = std.ArrayList([]const u8){};
+
+    try store.createOrUpdateUser(
+        "testuser",
+        true,
+        "oldpass",
+        false,
+        allowed_cmds1,
+        denied_cmds1,
+        allowed_cats1,
+        denied_cats1,
+        false,
+        allowed_keys1,
+        read_only_keys1,
+        write_only_keys1,
+    );
+
+    // Update user with new permissions
+    var allowed_cmds2 = std.StringHashMap(void).init(allocator);
+    try allowed_cmds2.put(try allocator.dupe(u8, "SET"), {});
+    try allowed_cmds2.put(try allocator.dupe(u8, "DEL"), {});
+    const denied_cmds2 = std.StringHashMap(void).init(allocator);
+    const allowed_cats2 = std.AutoHashMap(CommandCategory, void).init(allocator);
+    const denied_cats2 = std.AutoHashMap(CommandCategory, void).init(allocator);
+    var allowed_keys2 = std.ArrayList([]const u8){};
+    try allowed_keys2.append(allocator, try allocator.dupe(u8, "cache:*"));
+    const read_only_keys2 = std.ArrayList([]const u8){};
+    const write_only_keys2 = std.ArrayList([]const u8){};
+
+    try store.createOrUpdateUser(
+        "testuser",
+        false,
+        "newpass",
+        false,
+        allowed_cmds2,
+        denied_cmds2,
+        allowed_cats2,
+        denied_cats2,
+        false,
+        allowed_keys2,
+        read_only_keys2,
+        write_only_keys2,
+    );
+
+    // Verify user was updated (not duplicated)
+    const user = store.getUser("testuser");
+    try std.testing.expect(user != null);
+    try std.testing.expect(!user.?.enabled); // Changed from true to false
+    try std.testing.expectEqualStrings("newpass", user.?.password.?); // Changed password
+    try std.testing.expectEqual(@as(usize, 2), user.?.allowed_commands.count());
+    try std.testing.expect(user.?.allowed_commands.contains("SET"));
+    try std.testing.expect(user.?.allowed_commands.contains("DEL"));
+    try std.testing.expect(!user.?.allowed_commands.contains("GET")); // Old permission removed
+    try std.testing.expectEqual(@as(usize, 1), user.?.allowed_key_patterns.items.len);
 }

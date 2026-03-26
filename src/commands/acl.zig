@@ -4,6 +4,7 @@ const Writer = @import("../protocol/writer.zig").Writer;
 const RespValue = @import("../protocol/parser.zig").RespValue;
 const CommandRegistry = @import("command_registry.zig");
 const ACLStorage = @import("../storage/acl.zig");
+const Storage = @import("../storage/memory.zig").Storage;
 const CommandCategory = CommandRegistry.CommandCategory;
 
 /// ACL WHOAMI - Returns current connection username
@@ -365,6 +366,7 @@ fn stringToCategory(name: []const u8) ?CommandCategory {
 /// ACL SETUSER - Create or modify user
 pub fn cmdACLSetuser(
     allocator: Allocator,
+    storage: *Storage,
     array: []const RespValue,
 ) ![]const u8 {
     var w = Writer.init(allocator);
@@ -374,11 +376,10 @@ pub fn cmdACLSetuser(
         return w.writeError("ERR wrong number of arguments for 'acl|setuser' command");
     }
 
-    const _username = switch (array[1]) {
+    const username = switch (array[1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid username"),
     };
-    _ = _username; // TODO: Wire into ACLStore
 
     // Parse all rules (starting from array[2])
     var enabled = true;
@@ -458,10 +459,25 @@ pub fn cmdACLSetuser(
         key_result.write_only_key_patterns.deinit(allocator);
     }
 
-    // Stub: we can't actually store without access to ACLStore
-    // For now, just return OK after validating rules parse correctly
-    // TODO: Wire this into actual ACLStore
-    // enabled and password variables are parsed but not yet used
+    // Store user in ACL store with all parsed permissions
+    if (storage.acl) |acl_store| {
+        try acl_store.createOrUpdateUser(
+        username,
+        enabled,
+        password,
+        perm_result.all_commands_allowed,
+        perm_result.allowed_commands,
+        perm_result.denied_commands,
+        perm_result.allowed_categories,
+        perm_result.denied_categories,
+        key_result.all_keys_allowed,
+        key_result.allowed_key_patterns,
+        key_result.read_only_key_patterns,
+        key_result.write_only_key_patterns,
+        );
+    } else {
+        return w.writeError("ERR ACL not initialized");
+    }
 
     return w.writeSimpleString("OK");
 }
