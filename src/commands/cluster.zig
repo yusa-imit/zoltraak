@@ -96,11 +96,25 @@ fn addSlotRange(
     const id_str = try allocator.dupe(u8, &node.id);
     try master_info.append(allocator, RespValue{ .bulk_string = id_str });
 
-    try range_array.append(allocator, RespValue{ .array = try master_info.toOwnedSlice(allocator) });
+    const master_array_slice = try master_info.toOwnedSlice(allocator);
+    errdefer {
+        for (master_array_slice) |item| {
+            deinitRespValue(allocator, item);
+        }
+        allocator.free(master_array_slice);
+    }
+    try range_array.append(allocator, RespValue{ .array = master_array_slice });
 
     // For now, no replica info (would be added here for multi-node clusters)
 
-    try response.append(allocator, RespValue{ .array = try range_array.toOwnedSlice(allocator) });
+    const range_array_slice = try range_array.toOwnedSlice(allocator);
+    errdefer {
+        for (range_array_slice) |item| {
+            deinitRespValue(allocator, item);
+        }
+        allocator.free(range_array_slice);
+    }
+    try response.append(allocator, RespValue{ .array = range_array_slice });
 }
 
 fn deinitRespValue(allocator: std.mem.Allocator, value: RespValue) void {
@@ -278,7 +292,13 @@ pub fn cmdClusterInfo(
     return w.writeBulkString(info_buf.items);
 }
 
-/// CLUSTER MYID - Return node ID (stub - returns fixed node ID)
+/// CLUSTER MYID - Return node ID
+///
+/// Returns the unique ID of the current cluster node.
+/// The ID is a 40-character hexadecimal string generated at startup.
+///
+/// Returns:
+///   RESP bulk string containing the node ID
 pub fn cmdClusterMyId(
     allocator: std.mem.Allocator,
     _: []const []const u8,
@@ -286,12 +306,11 @@ pub fn cmdClusterMyId(
     _: ?*anyopaque,
     _: u64,
 ) ![]const u8 {
-    _ = storage;
-
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    return w.writeBulkString("zoltraak-standalone-node");
+    const node = storage.cluster.myself orelse return w.writeError("ERR no cluster node");
+    return w.writeBulkString(&node.id);
 }
 
 /// CLUSTER KEYSLOT - Return hash slot for a key
@@ -313,7 +332,7 @@ pub fn cmdClusterKeyslot(
     }
 
     const key = args[2];
-    const slot = calculateKeySlot(key);
+    const slot = cluster_mod.keySlot(key);
 
     return w.writeInteger(@intCast(slot));
 }
@@ -431,92 +450,9 @@ pub fn cmdClusterHelp(
     return w.writeArray(values);
 }
 
-/// Calculate CRC16 hash slot for a key (Redis cluster hash slot algorithm)
-fn calculateKeySlot(key: []const u8) u16 {
-    // Find hash tags {...}
-    var start: ?usize = null;
-    var end: ?usize = null;
-
-    for (key, 0..) |c, i| {
-        if (c == '{') {
-            start = i;
-        } else if (c == '}' and start != null) {
-            end = i;
-            break;
-        }
-    }
-
-    // Use content between braces if valid, otherwise use full key
-    const hash_key = if (start != null and end != null and end.? > start.? + 1)
-        key[start.? + 1 .. end.?]
-    else
-        key;
-
-    // CRC16 XMODEM
-    return crc16(hash_key) % 16384;
-}
-
-/// CRC16 implementation (XMODEM polynomial)
-fn crc16(data: []const u8) u16 {
-    var crc: u16 = 0;
-
-    for (data) |byte| {
-        crc ^= @as(u16, byte) << 8;
-
-        var i: u8 = 0;
-        while (i < 8) : (i += 1) {
-            if (crc & 0x8000 != 0) {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc = crc << 1;
-            }
-        }
-    }
-
-    return crc;
-}
-
-// Unit tests
-test "calculateKeySlot - basic keys" {
-    const slot1 = calculateKeySlot("user:1000");
-    const slot2 = calculateKeySlot("user:2000");
-
-    // Different keys should (usually) have different slots
-    try std.testing.expect(slot1 >= 0 and slot1 <= 16383);
-    try std.testing.expect(slot2 >= 0 and slot2 <= 16383);
-}
-
-test "calculateKeySlot - hash tags" {
-    // Keys with same hash tag should map to same slot
-    const slot1 = calculateKeySlot("user:{123}:profile");
-    const slot2 = calculateKeySlot("user:{123}:settings");
-    const slot3 = calculateKeySlot("{123}");
-
-    try std.testing.expectEqual(slot1, slot2);
-    try std.testing.expectEqual(slot1, slot3);
-}
-
-test "calculateKeySlot - empty hash tag ignored" {
-    const slot1 = calculateKeySlot("user:{}:profile");
-    const slot2 = calculateKeySlot("user::profile");
-
-    // Empty hash tag should be ignored, hash full key
-    // These will be different since we hash different strings
-    // Just verify they're in valid range
-    try std.testing.expect(slot1 >= 0 and slot1 <= 16383);
-    try std.testing.expect(slot2 >= 0 and slot2 <= 16383);
-}
-
-test "crc16 - known values" {
-    // Test CRC16 with empty string
-    const crc1 = crc16("");
-    try std.testing.expectEqual(@as(u16, 0), crc1);
-
-    // Test with simple string
-    const crc2 = crc16("123456789");
-    // CRC16-XMODEM of "123456789" is 0x31C3
-    try std.testing.expectEqual(@as(u16, 0x31C3), crc2);
-}
+// Note: calculateKeySlot and crc16 are now provided by cluster_mod.keySlot()
+// The duplicate implementation was removed to avoid code duplication.
+// Tests for key slot calculation are in src/storage/cluster.zig
 
 test "cmdClusterInfo - single node returns valid info" {
     const allocator = std.testing.allocator;

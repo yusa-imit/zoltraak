@@ -519,6 +519,7 @@ pub const Storage = struct {
 
         // Add node to cluster nodes map (need to dup the key for the hashmap)
         const node_id_key = try allocator.dupe(u8, &node_id);
+        errdefer allocator.free(node_id_key); // Free key if put fails
         try cluster_state.nodes.put(node_id_key, node);
 
         // Assign all slots to this node
