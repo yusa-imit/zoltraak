@@ -207,6 +207,8 @@ pub const ClusterState = struct {
     state: State,
     /// Banned node IDs with expiration timestamps (Unix milliseconds)
     banned_nodes: std.StringHashMap(i64),
+    /// Client IDs that have sent ASKING command (for ASK redirect bypass)
+    asking_clients: std.AutoHashMap(u64, void),
 
     pub const State = enum {
         ok,
@@ -224,6 +226,7 @@ pub const ClusterState = struct {
             .current_epoch = 0,
             .state = .fail,
             .banned_nodes = std.StringHashMap(i64).init(allocator),
+            .asking_clients = std.AutoHashMap(u64, void).init(allocator),
         };
     }
 
@@ -235,6 +238,7 @@ pub const ClusterState = struct {
         }
         self.nodes.deinit();
         self.banned_nodes.deinit();
+        self.asking_clients.deinit();
     }
 
     /// Get the node responsible for a given slot
@@ -527,6 +531,82 @@ pub const ClusterState = struct {
 
         // Recompress node's slot ranges
         try self.recompressNodeSlots(target_node);
+    }
+
+    /// Set ASKING flag for a client (allows next command to execute on IMPORTING slot)
+    /// Client must send ASKING before every command that needs to access IMPORTING slot
+    pub fn setAsking(self: *ClusterState, client_id: u64) !void {
+        try self.asking_clients.put(client_id, {});
+    }
+
+    /// Clear ASKING flag for a client (automatically cleared after command execution)
+    pub fn clearAsking(self: *ClusterState, client_id: u64) void {
+        _ = self.asking_clients.remove(client_id);
+    }
+
+    /// Check if client has ASKING flag set
+    pub fn hasAsking(self: *const ClusterState, client_id: u64) bool {
+        return self.asking_clients.contains(client_id);
+    }
+
+    /// Determine if a slot access should be redirected with ASK
+    /// Returns the node to redirect to, or null if no redirect needed
+    ///
+    /// ASK redirect happens when:
+    /// - Slot is MIGRATING from current node
+    /// - Caller can provide dest_node from migration state
+    ///
+    /// Returns null (allow execution) when:
+    /// - Slot is owned by current node and not MIGRATING
+    /// - Slot is IMPORTING and client has ASKING flag set
+    pub fn shouldAskRedirect(self: *const ClusterState, slot: u16, client_has_asking: bool) ?*ClusterNode {
+        if (slot >= CLUSTER_SLOTS) return null;
+
+        const migration_state = self.slot_migration_states[slot];
+
+        // If slot is MIGRATING, redirect to destination (ASK redirect)
+        if (migration_state.migrating_to) |dest_node_id| {
+            return self.nodes.get(&dest_node_id);
+        }
+
+        // If slot is IMPORTING and client has ASKING flag, allow execution
+        if (migration_state.importing_from != null and client_has_asking) {
+            return null; // Allow execution
+        }
+
+        // If slot is IMPORTING but client hasn't sent ASKING, redirect to source (MOVED)
+        // This case is handled by shouldMovedRedirect
+
+        return null; // No ASK redirect needed
+    }
+
+    /// Determine if a slot access should be redirected with MOVED
+    /// Returns the node to redirect to, or null if no redirect needed
+    ///
+    /// MOVED redirect happens when:
+    /// - Slot is owned by a different node
+    /// - Slot is IMPORTING but client hasn't sent ASKING
+    ///
+    /// Returns null (allow execution) when:
+    /// - Slot is owned by current node
+    /// - Slot is IMPORTING and client has ASKING flag set
+    pub fn shouldMovedRedirect(self: *const ClusterState, slot: u16, client_has_asking: bool) ?*ClusterNode {
+        if (slot >= CLUSTER_SLOTS) return null;
+
+        const migration_state = self.slot_migration_states[slot];
+        const current_owner = self.slots[slot];
+
+        // If slot is IMPORTING and client has ASKING flag, allow execution
+        if (migration_state.importing_from != null and client_has_asking) {
+            return null; // Allow execution
+        }
+
+        // If slot is not owned by current node, redirect to owner (MOVED)
+        if (current_owner != self.myself) {
+            return current_owner;
+        }
+
+        return null; // No MOVED redirect needed
     }
 };
 
@@ -1262,5 +1342,152 @@ test "setSlotNode - unknown node ID" {
 
     // Should fail with UnknownNode
     try std.testing.expectError(ClusterError.UnknownNode, result);
+}
+
+test "shouldAskRedirect - slot MIGRATING returns destination node" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create two nodes
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    const dest_node_id = "fedcba9876543210fedcba9876543210fedcba98".*;
+    const dest_node = try allocator.create(ClusterNode);
+    dest_node.* = try ClusterNode.init(allocator, dest_node_id, "127.0.0.2", 7001);
+
+    cluster.myself = my_node;
+    const key = try allocator.dupe(u8, &dest_node_id);
+    try cluster.nodes.put(key, dest_node);
+
+    // Assign slot to myself
+    cluster.slots[100] = my_node;
+
+    // Set slot as MIGRATING to dest_node
+    try cluster.setSlotMigrating(100, dest_node_id);
+
+    // Check redirect - should return dest_node regardless of ASKING flag
+    const redirect1 = cluster.shouldAskRedirect(100, false);
+    try std.testing.expectEqual(dest_node, redirect1);
+
+    const redirect2 = cluster.shouldAskRedirect(100, true);
+    try std.testing.expectEqual(dest_node, redirect2);
+}
+
+test "shouldAskRedirect - slot IMPORTING with ASKING allows execution" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    const source_node_id = "fedcba9876543210fedcba9876543210fedcba98".*;
+
+    // Set slot as IMPORTING
+    try cluster.setSlotImporting(100, source_node_id);
+
+    // Without ASKING flag, should not redirect (handled by MOVED)
+    const redirect1 = cluster.shouldAskRedirect(100, false);
+    try std.testing.expectEqual(null, redirect1);
+
+    // With ASKING flag, should allow execution (no redirect)
+    const redirect2 = cluster.shouldAskRedirect(100, true);
+    try std.testing.expectEqual(null, redirect2);
+}
+
+test "shouldMovedRedirect - slot not owned returns owner node" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create two nodes
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    const owner_node_id = "fedcba9876543210fedcba9876543210fedcba98".*;
+    const owner_node = try allocator.create(ClusterNode);
+    owner_node.* = try ClusterNode.init(allocator, owner_node_id, "127.0.0.2", 7001);
+
+    cluster.myself = my_node;
+    const key = try allocator.dupe(u8, &owner_node_id);
+    try cluster.nodes.put(key, owner_node);
+
+    // Assign slot to owner_node (not myself)
+    cluster.slots[100] = owner_node;
+
+    // Should redirect to owner_node
+    const redirect = cluster.shouldMovedRedirect(100, false);
+    try std.testing.expectEqual(owner_node, redirect);
+}
+
+test "shouldMovedRedirect - slot owned by myself allows execution" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    // Assign slot to myself
+    cluster.slots[100] = my_node;
+
+    // Should allow execution (no redirect)
+    const redirect = cluster.shouldMovedRedirect(100, false);
+    try std.testing.expectEqual(null, redirect);
+}
+
+test "shouldMovedRedirect - IMPORTING with ASKING allows execution" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    const source_node_id = "fedcba9876543210fedcba9876543210fedcba98".*;
+
+    // Set slot as IMPORTING (not owned by myself)
+    try cluster.setSlotImporting(100, source_node_id);
+
+    // Without ASKING flag, should redirect (slot not owned)
+    const redirect1 = cluster.shouldMovedRedirect(100, false);
+    try std.testing.expectEqual(null, redirect1); // No owner set, returns null
+
+    // With ASKING flag, should allow execution
+    const redirect2 = cluster.shouldMovedRedirect(100, true);
+    try std.testing.expectEqual(null, redirect2);
 }
 

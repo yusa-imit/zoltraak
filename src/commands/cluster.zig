@@ -1081,6 +1081,36 @@ pub fn cmdClusterSetslot(
     }
 }
 
+/// ASKING - Tell cluster client is willing to receive redirects for IMPORTING slots
+/// This command sets a flag on the connection that allows the next command to be executed
+/// even if the slot is in IMPORTING state. The flag is automatically cleared after the next command.
+///
+/// Used during slot migration:
+/// 1. Client tries to access key on old node
+/// 2. Old node returns -ASK redirect
+/// 3. Client sends ASKING to new node
+/// 4. Client resends command, which is now allowed to execute on IMPORTING slot
+pub fn cmdAsking(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    client_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "ASKING"
+    if (args.len != 1) {
+        return w.writeError("ERR wrong number of arguments for 'asking' command");
+    }
+
+    // Set ASKING flag for this client
+    try storage.cluster.setAsking(client_id);
+
+    return w.writeSimpleString("OK");
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
@@ -1410,4 +1440,81 @@ test "cmdClusterSlots - returns array of arrays" {
     // Check for integers representing slots 0 and 16383
     try std.testing.expect(std.mem.indexOf(u8, result, ":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, ":16383") != null);
+}
+
+test "cmdAsking - sets ASKING flag" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client_id: u64 = 12345;
+
+    // ASKING flag should not be set initially
+    try std.testing.expect(!storage.cluster.hasAsking(client_id));
+
+    // Send ASKING command
+    const args = [_][]const u8{"ASKING"};
+    const result = try cmdAsking(allocator, &args, storage, null, client_id);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+
+    // ASKING flag should now be set
+    try std.testing.expect(storage.cluster.hasAsking(client_id));
+}
+
+test "cmdAsking - wrong argument count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "ASKING", "extra_arg" };
+    const result = try cmdAsking(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "ClusterState - ASKING flag lifecycle" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client_id: u64 = 42;
+
+    // Initially not set
+    try std.testing.expect(!storage.cluster.hasAsking(client_id));
+
+    // Set ASKING flag
+    try storage.cluster.setAsking(client_id);
+    try std.testing.expect(storage.cluster.hasAsking(client_id));
+
+    // Clear ASKING flag
+    storage.cluster.clearAsking(client_id);
+    try std.testing.expect(!storage.cluster.hasAsking(client_id));
+}
+
+test "ClusterState - multiple clients ASKING flags" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client1: u64 = 100;
+    const client2: u64 = 200;
+
+    // Set ASKING for client1 only
+    try storage.cluster.setAsking(client1);
+    try std.testing.expect(storage.cluster.hasAsking(client1));
+    try std.testing.expect(!storage.cluster.hasAsking(client2));
+
+    // Set ASKING for client2
+    try storage.cluster.setAsking(client2);
+    try std.testing.expect(storage.cluster.hasAsking(client1));
+    try std.testing.expect(storage.cluster.hasAsking(client2));
+
+    // Clear ASKING for client1
+    storage.cluster.clearAsking(client1);
+    try std.testing.expect(!storage.cluster.hasAsking(client1));
+    try std.testing.expect(storage.cluster.hasAsking(client2));
 }

@@ -36,6 +36,7 @@ const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
 const AclUser = acl_storage.User;
 const command_registry = @import("command_registry.zig");
+const cluster_mod = @import("../storage/cluster.zig");
 
 /// Access mode for key-based command permission checking
 pub const AccessMode = enum { read, write };
@@ -458,6 +459,70 @@ pub fn executeCommand(
         monitor_messages.deinit(allocator);
     }
 
+    // ── Cluster: Slot redirect check ──────────────────────────────────────────
+    // Check if the command should be redirected to another node (ASK or MOVED)
+    // Skip redirect check for non-key commands and cluster management commands
+    const skip_redirect_cmds = [_][]const u8{
+        "PING", "INFO", "AUTH", "HELLO", "CLUSTER", "ASKING",
+        "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH",
+        "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",
+        "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT",
+    };
+    var should_check_redirect = true;
+    for (skip_redirect_cmds) |skip_cmd| {
+        if (std.mem.eql(u8, cmd_upper, skip_cmd)) {
+            should_check_redirect = false;
+            break;
+        }
+    }
+
+    if (should_check_redirect and storage.cluster.enabled) {
+        // Extract the first key from command arguments
+        // Most commands have the key as the second argument (array[1])
+        var key_arg: ?[]const u8 = null;
+        if (array.len >= 2) {
+            key_arg = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => null,
+            };
+        }
+
+        if (key_arg) |key| {
+            const slot = cluster_mod.keySlot(key);
+            const client_has_asking = storage.cluster.hasAsking(client_id);
+
+            // Check for ASK redirect (slot is MIGRATING)
+            if (storage.cluster.shouldAskRedirect(slot, client_has_asking)) |dest_node| {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const redirect_msg = try std.fmt.bufPrint(
+                    &buf,
+                    "ASK {d} {s}:{d}",
+                    .{slot, dest_node.addr, dest_node.port}
+                );
+                return w.writeError(redirect_msg);
+            }
+
+            // Check for MOVED redirect (slot not owned by current node)
+            if (storage.cluster.shouldMovedRedirect(slot, client_has_asking)) |dest_node| {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const redirect_msg = try std.fmt.bufPrint(
+                    &buf,
+                    "MOVED {d} {s}:{d}",
+                    .{slot, dest_node.addr, dest_node.port}
+                );
+                return w.writeError(redirect_msg);
+            }
+
+            // Clear ASKING flag after command execution check
+            // (it's a one-time flag that must be reset after each command)
+            defer storage.cluster.clearAsking(client_id);
+        }
+    }
+
     // ── Replication: read-only guard ──────────────────────────────────────────
     // When this instance is a replica, reject write commands.
     // Replication protocol commands (REPLCONF, PSYNC) are always allowed.
@@ -582,6 +647,17 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "HELLO")) {
             const args_slice = if (array.len > 1) array[1..] else array[0..0];
             break :blk try server_cmds.cmdHello(allocator, client_registry, client_id, args_slice);
+        } else if (std.mem.eql(u8, cmd_upper, "ASKING")) {
+            // Convert RespValue array to string args
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            break :blk try cluster_cmds.cmdAsking(allocator, args, storage, null, client_id);
         }
         // String commands
         else if (std.mem.eql(u8, cmd_upper, "PING")) {
