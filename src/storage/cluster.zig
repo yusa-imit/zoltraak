@@ -175,6 +175,17 @@ pub const ClusterError = error{
     CannotForgetMaster,
     DatabaseNotEmpty,
     OutOfMemory,
+    SlotNotOwnedByNode,
+    SlotAlreadyOwned,
+    SlotHasKeys,
+};
+
+/// Slot migration state
+pub const SlotMigrationState = struct {
+    /// Slot is being migrated to this node ID
+    migrating_to: ?[40]u8 = null,
+    /// Slot is being imported from this node ID
+    importing_from: ?[40]u8 = null,
 };
 
 /// Cluster state management
@@ -188,6 +199,8 @@ pub const ClusterState = struct {
     nodes: std.StringHashMap(*ClusterNode),
     /// Slot to node mapping
     slots: [CLUSTER_SLOTS]?*ClusterNode,
+    /// Slot migration states
+    slot_migration_states: [CLUSTER_SLOTS]SlotMigrationState,
     /// Current configuration epoch
     current_epoch: u64,
     /// Cluster state (ok/fail)
@@ -207,6 +220,7 @@ pub const ClusterState = struct {
             .myself = null,
             .nodes = std.StringHashMap(*ClusterNode).init(allocator),
             .slots = [_]?*ClusterNode{null} ** CLUSTER_SLOTS,
+            .slot_migration_states = [_]SlotMigrationState{.{}} ** CLUSTER_SLOTS,
             .current_epoch = 0,
             .state = .fail,
             .banned_nodes = std.StringHashMap(i64).init(allocator),
@@ -424,6 +438,95 @@ pub const ClusterState = struct {
         allocator.free(node_entry.key);
 
         self.updateClusterState();
+    }
+
+    /// Set a slot as migrating to a destination node
+    /// Validates that the current node owns the slot
+    /// Returns SlotNotOwnedByNode if slot is not owned by myself
+    pub fn setSlotMigrating(self: *ClusterState, slot: u16, dest_node_id: [40]u8) ClusterError!void {
+        if (slot >= CLUSTER_SLOTS) {
+            return ClusterError.InvalidSlot;
+        }
+
+        // Validate that myself owns this slot
+        if (self.slots[slot] != self.myself) {
+            return ClusterError.SlotNotOwnedByNode;
+        }
+
+        // Set the migration state
+        self.slot_migration_states[slot].migrating_to = dest_node_id;
+    }
+
+    /// Set a slot as importing from a source node
+    /// Validates that the current node does NOT own the slot
+    /// Returns SlotAlreadyOwned if slot is already owned by myself
+    pub fn setSlotImporting(self: *ClusterState, slot: u16, source_node_id: [40]u8) ClusterError!void {
+        if (slot >= CLUSTER_SLOTS) {
+            return ClusterError.InvalidSlot;
+        }
+
+        // Validate that myself does NOT own this slot
+        if (self.slots[slot] == self.myself) {
+            return ClusterError.SlotAlreadyOwned;
+        }
+
+        // Set the import state
+        self.slot_migration_states[slot].importing_from = source_node_id;
+    }
+
+    /// Set a slot to stable state (clear all migration states)
+    /// Idempotent operation - succeeds even if no migration state exists
+    pub fn setSlotStable(self: *ClusterState, slot: u16) ClusterError!void {
+        if (slot >= CLUSTER_SLOTS) {
+            return ClusterError.InvalidSlot;
+        }
+
+        // Clear both migration states
+        self.slot_migration_states[slot].migrating_to = null;
+        self.slot_migration_states[slot].importing_from = null;
+    }
+
+    /// Finalize slot ownership assignment
+    /// If transitioning from importing→owner (slot being assigned to myself after importing),
+    /// increments the config epoch. Otherwise, just updates ownership.
+    /// Returns SlotHasKeys if attempting to reassign a slot with keys to a different node
+    /// Returns UnknownNode if target node_id doesn't exist in the cluster
+    pub fn setSlotNode(self: *ClusterState, slot: u16, node_id: [40]u8, slot_has_keys: bool) ClusterError!void {
+        if (slot >= CLUSTER_SLOTS) {
+            return ClusterError.InvalidSlot;
+        }
+
+        // Look up the target node
+        const target_node = self.nodes.get(&node_id) orelse {
+            return ClusterError.UnknownNode;
+        };
+
+        // Check if slot has keys and we're reassigning to a different node
+        if (slot_has_keys and self.slots[slot] != target_node) {
+            return ClusterError.SlotHasKeys;
+        }
+
+        // Check for importing→owner transition (increment config epoch)
+        const is_importing_to_owner = self.slot_migration_states[slot].importing_from != null and
+                                      target_node == self.myself;
+
+        if (is_importing_to_owner) {
+            // Increment config epoch and update myself's epoch
+            self.current_epoch += 1;
+            if (self.myself) |myself| {
+                myself.config_epoch = self.current_epoch;
+            }
+        }
+
+        // Clear migration states
+        self.slot_migration_states[slot].migrating_to = null;
+        self.slot_migration_states[slot].importing_from = null;
+
+        // Update slot assignment
+        self.slots[slot] = target_node;
+
+        // Recompress node's slot ranges
+        try self.recompressNodeSlots(target_node);
     }
 };
 
@@ -753,3 +856,411 @@ test "forgetNode - remove node from cluster" {
     // Verify banned
     try std.testing.expectEqual(@as(usize, 1), cluster.banned_nodes.count());
 }
+
+// CLUSTER SETSLOT tests
+
+test "setSlotMigrating - success when node owns slot" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Assign slot 100 to myself
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Set slot 100 as migrating to another node
+    const dest_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    try cluster.setSlotMigrating(100, dest_node_id);
+
+    // Verify migration state
+    try std.testing.expectEqual(dest_node_id, cluster.slot_migration_states[100].migrating_to.?);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+}
+
+test "setSlotMigrating - error when node doesn't own slot" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Slot 100 is NOT assigned to myself
+    const dest_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const result = cluster.setSlotMigrating(100, dest_node_id);
+
+    // Should fail with SlotNotOwnedByNode
+    try std.testing.expectError(ClusterError.SlotNotOwnedByNode, result);
+}
+
+test "setSlotImporting - success when node doesn't own slot" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Slot 100 is NOT assigned to myself (correct for importing)
+    const source_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    try cluster.setSlotImporting(100, source_node_id);
+
+    // Verify import state
+    try std.testing.expectEqual(source_node_id, cluster.slot_migration_states[100].importing_from.?);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+}
+
+test "setSlotImporting - error when node owns slot" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Assign slot 100 to myself
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Try to import - should fail because we already own it
+    const source_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const result = cluster.setSlotImporting(100, source_node_id);
+
+    // Should fail with SlotAlreadyOwned
+    try std.testing.expectError(ClusterError.SlotAlreadyOwned, result);
+}
+
+test "setSlotStable - clears migration states" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Assign slot 100
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Set as migrating
+    const dest_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    try cluster.setSlotMigrating(100, dest_node_id);
+
+    // Verify migrating state is set
+    try std.testing.expect(cluster.slot_migration_states[100].migrating_to != null);
+
+    // Set to stable
+    try cluster.setSlotStable(100);
+
+    // Verify states are cleared
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+}
+
+test "setSlotStable - idempotent when no migration state" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Slot 100 has no migration state
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+
+    // Set to stable (should succeed without error)
+    try cluster.setSlotStable(100);
+
+    // States should still be null
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+}
+
+test "setSlotNode - finalizes ownership without config epoch change" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    const other_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const other_node = try allocator.create(ClusterNode);
+    other_node.* = try ClusterNode.init(allocator, other_node_id, "127.0.0.1", 7001);
+    defer {
+        other_node.deinit(allocator);
+        allocator.destroy(other_node);
+    }
+
+    // Add other node to cluster
+    const node_key = try allocator.dupe(u8, &other_node_id);
+    try cluster.nodes.put(node_key, other_node);
+
+    // Assign slot 100 to myself initially
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(my_node, &slots);
+
+    const initial_epoch = cluster.current_epoch;
+
+    // Reassign to other_node (no importing state, so no epoch bump)
+    try cluster.setSlotNode(100, other_node_id, false);
+
+    // Verify slot ownership changed
+    try std.testing.expectEqual(other_node, cluster.slots[100]);
+
+    // Verify migration states cleared
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+
+    // Verify epoch did NOT increase (no importing→owner transition)
+    try std.testing.expectEqual(initial_epoch, cluster.current_epoch);
+}
+
+test "setSlotNode - generates config epoch on importing to owner transition" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    // Slot 100 is not owned by myself (importing scenario)
+    const source_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+
+    // Set as importing
+    try cluster.setSlotImporting(100, source_node_id);
+
+    const initial_epoch = cluster.current_epoch;
+
+    // Finalize ownership to myself (importing→owner transition)
+    try cluster.setSlotNode(100, my_node_id, false);
+
+    // Verify slot ownership assigned
+    try std.testing.expectEqual(my_node, cluster.slots[100]);
+
+    // Verify migration states cleared
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+
+    // Verify epoch increased (config epoch bump on importing→owner)
+    try std.testing.expect(cluster.current_epoch > initial_epoch);
+}
+
+test "setSlotNode - error when slot has keys" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    const other_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const other_node = try allocator.create(ClusterNode);
+    other_node.* = try ClusterNode.init(allocator, other_node_id, "127.0.0.1", 7001);
+    defer {
+        other_node.deinit(allocator);
+        allocator.destroy(other_node);
+    }
+
+    // Add other node to cluster
+    const node_key = try allocator.dupe(u8, &other_node_id);
+    try cluster.nodes.put(node_key, other_node);
+
+    // Assign slot 100 to myself
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(my_node, &slots);
+
+    // Try to reassign slot with keys present (simulated by flag)
+    const result = cluster.setSlotNode(100, other_node_id, true);
+
+    // Should fail with SlotHasKeys
+    try std.testing.expectError(ClusterError.SlotHasKeys, result);
+}
+
+test "setSlotNode - allows reassignment when slot is empty" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    const other_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const other_node = try allocator.create(ClusterNode);
+    other_node.* = try ClusterNode.init(allocator, other_node_id, "127.0.0.1", 7001);
+    defer {
+        other_node.deinit(allocator);
+        allocator.destroy(other_node);
+    }
+
+    // Add other node to cluster
+    const node_key = try allocator.dupe(u8, &other_node_id);
+    try cluster.nodes.put(node_key, other_node);
+
+    // Assign slot 100 to myself
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(my_node, &slots);
+
+    // Reassign to other_node (slot is empty)
+    try cluster.setSlotNode(100, other_node_id, false);
+
+    // Verify ownership changed
+    try std.testing.expectEqual(other_node, cluster.slots[100]);
+}
+
+test "setSlot state transitions - MIGRATING to STABLE" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Assign slot 100
+    const slots = [_]u16{100};
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Transition: NORMAL → MIGRATING
+    const dest_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    try cluster.setSlotMigrating(100, dest_node_id);
+    try std.testing.expect(cluster.slot_migration_states[100].migrating_to != null);
+
+    // Transition: MIGRATING → STABLE
+    try cluster.setSlotStable(100);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+}
+
+test "setSlot state transitions - IMPORTING to NODE" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    // Slot 100 is not owned (correct for importing)
+    const source_node_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+
+    // Transition: NORMAL → IMPORTING
+    try cluster.setSlotImporting(100, source_node_id);
+    try std.testing.expect(cluster.slot_migration_states[100].importing_from != null);
+
+    // Transition: IMPORTING → OWNER (finalize with NODE)
+    try cluster.setSlotNode(100, my_node_id, false);
+    try std.testing.expectEqual(my_node, cluster.slots[100]);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].importing_from);
+    try std.testing.expectEqual(null, cluster.slot_migration_states[100].migrating_to);
+}
+
+test "setSlotNode - unknown node ID" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const my_node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_node_id, "127.0.0.1", 7000);
+    defer {
+        my_node.deinit(allocator);
+        allocator.destroy(my_node);
+    }
+
+    cluster.myself = my_node;
+
+    // Try to assign slot to unknown node
+    const unknown_node_id = "ffffffffffffffffffffffffffffffffffffffff".*;
+    const result = cluster.setSlotNode(100, unknown_node_id, false);
+
+    // Should fail with UnknownNode
+    try std.testing.expectError(ClusterError.UnknownNode, result);
+}
+

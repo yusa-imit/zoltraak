@@ -1341,6 +1341,8 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterMeet(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "FORGET")) {
                 break :blk try cluster_cmds.cmdClusterForget(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SETSLOT")) {
+                break :blk try cluster_cmds.cmdClusterSetslot(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try cluster_cmds.cmdClusterHelp(allocator, args, storage, null, 0);
             } else {

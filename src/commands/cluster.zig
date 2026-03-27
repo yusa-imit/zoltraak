@@ -932,6 +932,155 @@ pub fn cmdClusterForget(
     return w.writeSimpleString("OK");
 }
 
+/// CLUSTER SETSLOT - Manage slot migration states
+///
+/// Syntax: CLUSTER SETSLOT <slot> <IMPORTING node-id | MIGRATING node-id | NODE node-id | STABLE>
+///
+/// Subcommands:
+/// - MIGRATING <node-id>: Sets slot to migrating state on source node (requires ownership)
+/// - IMPORTING <node-id>: Sets slot to importing state on destination node (requires non-ownership)
+/// - NODE <node-id>: Finalizes slot ownership to specified node, clears migration states
+/// - STABLE: Clears migration states without changing ownership
+///
+/// Returns:
+///   Simple string "OK" on success
+///   Error if validation fails (wrong ownership, unknown node, etc.)
+pub fn cmdClusterSetslot(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "SETSLOT", args[2] = slot, args[3] = subcommand, args[4] = node_id (optional)
+    if (args.len < 4) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|setslot' command");
+    }
+
+    const slot_str = args[2];
+    const subcommand = args[3];
+
+    // Parse slot number
+    const slot = std.fmt.parseInt(u16, slot_str, 10) catch {
+        return w.writeError("ERR invalid slot");
+    };
+
+    if (slot >= cluster_mod.CLUSTER_SLOTS) {
+        return w.writeError("ERR invalid slot");
+    }
+
+    // Handle subcommands
+    const subcommand_upper = try std.ascii.allocUpperString(allocator, subcommand);
+    defer allocator.free(subcommand_upper);
+
+    if (std.mem.eql(u8, subcommand_upper, "MIGRATING")) {
+        if (args.len != 5) {
+            return w.writeError("ERR wrong number of arguments for 'cluster|setslot|migrating' command");
+        }
+
+        const dest_node_id = args[4];
+        if (dest_node_id.len != 40) {
+            return w.writeError("ERR invalid node ID");
+        }
+
+        var node_id_buf: [40]u8 = undefined;
+        @memcpy(&node_id_buf, dest_node_id);
+
+        storage.cluster.setSlotMigrating(slot, node_id_buf) catch |err| {
+            switch (err) {
+                ClusterError.SlotNotOwnedByNode => {
+                    return w.writeError("ERR I'm not the owner of hash slot");
+                },
+                ClusterError.InvalidSlot => {
+                    return w.writeError("ERR invalid slot");
+                },
+                else => return w.writeError("ERR internal error"),
+            }
+        };
+
+        return w.writeSimpleString("OK");
+    } else if (std.mem.eql(u8, subcommand_upper, "IMPORTING")) {
+        if (args.len != 5) {
+            return w.writeError("ERR wrong number of arguments for 'cluster|setslot|importing' command");
+        }
+
+        const source_node_id = args[4];
+        if (source_node_id.len != 40) {
+            return w.writeError("ERR invalid node ID");
+        }
+
+        var node_id_buf: [40]u8 = undefined;
+        @memcpy(&node_id_buf, source_node_id);
+
+        storage.cluster.setSlotImporting(slot, node_id_buf) catch |err| {
+            switch (err) {
+                ClusterError.SlotAlreadyOwned => {
+                    return w.writeError("ERR I'm already the owner of hash slot");
+                },
+                ClusterError.InvalidSlot => {
+                    return w.writeError("ERR invalid slot");
+                },
+                else => return w.writeError("ERR internal error"),
+            }
+        };
+
+        return w.writeSimpleString("OK");
+    } else if (std.mem.eql(u8, subcommand_upper, "STABLE")) {
+        if (args.len != 4) {
+            return w.writeError("ERR wrong number of arguments for 'cluster|setslot|stable' command");
+        }
+
+        storage.cluster.setSlotStable(slot) catch |err| {
+            switch (err) {
+                ClusterError.InvalidSlot => {
+                    return w.writeError("ERR invalid slot");
+                },
+                else => return w.writeError("ERR internal error"),
+            }
+        };
+
+        return w.writeSimpleString("OK");
+    } else if (std.mem.eql(u8, subcommand_upper, "NODE")) {
+        if (args.len != 5) {
+            return w.writeError("ERR wrong number of arguments for 'cluster|setslot|node' command");
+        }
+
+        const target_node_id = args[4];
+        if (target_node_id.len != 40) {
+            return w.writeError("ERR invalid node ID");
+        }
+
+        var node_id_buf: [40]u8 = undefined;
+        @memcpy(&node_id_buf, target_node_id);
+
+        // For now, we always pass slot_has_keys=false
+        // In a real implementation, this would check if the slot has any keys
+        const slot_has_keys = false;
+
+        storage.cluster.setSlotNode(slot, node_id_buf, slot_has_keys) catch |err| {
+            switch (err) {
+                ClusterError.UnknownNode => {
+                    return w.writeError("ERR unknown node");
+                },
+                ClusterError.SlotHasKeys => {
+                    return w.writeError("ERR slot has keys");
+                },
+                ClusterError.InvalidSlot => {
+                    return w.writeError("ERR invalid slot");
+                },
+                else => return w.writeError("ERR internal error"),
+            }
+        };
+
+        return w.writeSimpleString("OK");
+    } else {
+        return w.writeError("ERR invalid subcommand");
+    }
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
@@ -1112,6 +1261,136 @@ test "cmdClusterForget - remove node" {
 
     // Verify node removed
     try std.testing.expectEqual(@as(usize, 1), storage.cluster.nodes.count());
+}
+
+test "cmdClusterSetslot - MIGRATING success" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // First assign slot 100 to myself
+    const add_args = [_][]const u8{ "CLUSTER", "ADDSLOTS", "100" };
+    const add_result = try cmdClusterAddSlots(allocator, &add_args, storage, null, 0);
+    defer allocator.free(add_result);
+
+    // Create destination node
+    const node_id = "1234567890abcdef1234567890abcdef12345678";
+    const meet_args = [_][]const u8{ "CLUSTER", "MEET", "192.168.1.2", "6380" };
+    const meet_result = try cmdClusterMeet(allocator, &meet_args, storage, null, 0);
+    defer allocator.free(meet_result);
+
+    // Set slot to MIGRATING
+    const setslot_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "MIGRATING", node_id };
+    const result = try cmdClusterSetslot(allocator, &setslot_args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+}
+
+test "cmdClusterSetslot - MIGRATING error when not owner" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Don't assign slot 100 - try to migrate without ownership
+    const node_id = "1234567890abcdef1234567890abcdef12345678";
+    const setslot_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "MIGRATING", node_id };
+    const result = try cmdClusterSetslot(allocator, &setslot_args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "not the owner") != null);
+}
+
+test "cmdClusterSetslot - IMPORTING success" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Don't assign slot 100 to myself - we're the destination
+    const node_id = "1234567890abcdef1234567890abcdef12345678";
+    const setslot_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "IMPORTING", node_id };
+    const result = try cmdClusterSetslot(allocator, &setslot_args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+}
+
+test "cmdClusterSetslot - IMPORTING error when already owner" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Assign slot 100 to myself
+    const add_args = [_][]const u8{ "CLUSTER", "ADDSLOTS", "100" };
+    const add_result = try cmdClusterAddSlots(allocator, &add_args, storage, null, 0);
+    defer allocator.free(add_result);
+
+    // Try to set as importing - should fail
+    const node_id = "1234567890abcdef1234567890abcdef12345678";
+    const setslot_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "IMPORTING", node_id };
+    const result = try cmdClusterSetslot(allocator, &setslot_args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "already the owner") != null);
+}
+
+test "cmdClusterSetslot - STABLE clears migration states" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Assign slot 100 and set to MIGRATING
+    const add_args = [_][]const u8{ "CLUSTER", "ADDSLOTS", "100" };
+    const add_result = try cmdClusterAddSlots(allocator, &add_args, storage, null, 0);
+    defer allocator.free(add_result);
+
+    const node_id = "1234567890abcdef1234567890abcdef12345678";
+    const migrating_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "MIGRATING", node_id };
+    const migrating_result = try cmdClusterSetslot(allocator, &migrating_args, storage, null, 0);
+    defer allocator.free(migrating_result);
+
+    // Now clear with STABLE
+    const stable_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "STABLE" };
+    const result = try cmdClusterSetslot(allocator, &stable_args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+}
+
+test "cmdClusterSetslot - NODE finalizes ownership" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set slot to IMPORTING first
+    const source_id = "fedcba0987654321fedcba0987654321fedcba09";
+    const importing_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "IMPORTING", source_id };
+    const importing_result = try cmdClusterSetslot(allocator, &importing_args, storage, null, 0);
+    defer allocator.free(importing_result);
+
+    // Finalize with NODE (assign to myself)
+    const myself = storage.cluster.myself.?;
+    const my_id = &myself.id;
+    const node_args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "NODE", my_id };
+    const result = try cmdClusterSetslot(allocator, &node_args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+}
+
+test "cmdClusterSetslot - invalid subcommand" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "SETSLOT", "100", "INVALID" };
+    const result = try cmdClusterSetslot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "invalid subcommand") != null);
 }
 
 test "cmdClusterSlots - returns array of arrays" {
