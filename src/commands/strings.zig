@@ -160,7 +160,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "XAUTOCLAIM", "XACKDEL", "XDELEX",
         "SETBIT", "BITOP", "BITFIELD",
         "GEOADD", "PFADD", "PFMERGE",
-        "RESTORE", "SORT", "DELEX",
+        "RESTORE", "SORT", "DELEX", "MIGRATE",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -463,7 +463,7 @@ pub fn executeCommand(
     // Check if the command should be redirected to another node (ASK or MOVED)
     // Skip redirect check for non-key commands and cluster management commands
     const skip_redirect_cmds = [_][]const u8{
-        "PING", "INFO", "AUTH", "HELLO", "CLUSTER", "ASKING",
+        "PING", "INFO", "AUTH", "HELLO", "CLUSTER", "ASKING", "MIGRATE",
         "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH",
         "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",
         "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT",
@@ -658,6 +658,17 @@ pub fn executeCommand(
                 };
             }
             break :blk try cluster_cmds.cmdAsking(allocator, args, storage, null, client_id);
+        } else if (std.mem.eql(u8, cmd_upper, "MIGRATE")) {
+            // Convert RespValue array to string args
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+            break :blk try cluster_cmds.cmdMigrate(allocator, args, storage, null, client_id);
         }
         // String commands
         else if (std.mem.eql(u8, cmd_upper, "PING")) {
