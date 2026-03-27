@@ -188,6 +188,33 @@ pub const SlotMigrationState = struct {
     importing_from: ?[40]u8 = null,
 };
 
+/// Gossip protocol message types
+pub const GossipMessageType = enum {
+    ping,
+    pong,
+    meet,
+};
+
+/// Gossip information about a node
+pub const GossipNodeInfo = struct {
+    node_id: [40]u8,
+    addr: []const u8,
+    port: u16,
+    flags: ClusterNode.NodeFlags,
+    pong_recv: i64,
+};
+
+/// Cluster gossip message
+pub const GossipMessage = struct {
+    msg_type: GossipMessageType,
+    sender_id: [40]u8,
+    sender_addr: []const u8,
+    sender_port: u16,
+    timestamp: i64,
+    config_epoch: u64,
+    gossip_nodes: []const GossipNodeInfo,
+};
+
 /// Cluster state management
 pub const ClusterState = struct {
     allocator: std.mem.Allocator,
@@ -607,6 +634,208 @@ pub const ClusterState = struct {
         }
 
         return null; // No MOVED redirect needed
+    }
+
+    /// Create a PING gossip message
+    /// PING messages are sent periodically to random nodes to maintain cluster health
+    pub fn createPingMessage(self: *const ClusterState, allocator: std.mem.Allocator) !GossipMessage {
+        const myself = self.myself orelse return error.NoSelfNode;
+
+        // Select up to 3 random nodes to gossip about
+        const gossip_nodes = try self.selectRandomNodesForGossip(allocator, 3);
+
+        return GossipMessage{
+            .msg_type = .ping,
+            .sender_id = myself.id,
+            .sender_addr = myself.addr,
+            .sender_port = myself.port,
+            .timestamp = std.time.milliTimestamp(),
+            .config_epoch = self.current_epoch,
+            .gossip_nodes = gossip_nodes,
+        };
+    }
+
+    /// Create a PONG gossip message (response to PING)
+    pub fn createPongMessage(self: *const ClusterState, allocator: std.mem.Allocator) !GossipMessage {
+        const myself = self.myself orelse return error.NoSelfNode;
+
+        // Select up to 3 random nodes to gossip about
+        const gossip_nodes = try self.selectRandomNodesForGossip(allocator, 3);
+
+        return GossipMessage{
+            .msg_type = .pong,
+            .sender_id = myself.id,
+            .sender_addr = myself.addr,
+            .sender_port = myself.port,
+            .timestamp = std.time.milliTimestamp(),
+            .config_epoch = self.current_epoch,
+            .gossip_nodes = gossip_nodes,
+        };
+    }
+
+    /// Process a MEET message (add new node to cluster)
+    /// MEET is like PING but forces the receiver to accept the sender as part of the cluster
+    pub fn processMeetMessage(self: *ClusterState, allocator: std.mem.Allocator, msg: *const GossipMessage) !void {
+        // Check if node already exists
+        const existing = self.nodes.get(&msg.sender_id);
+        if (existing != null) {
+            return; // Node already known
+        }
+
+        // Create new node
+        const new_node = try allocator.create(ClusterNode);
+        errdefer allocator.destroy(new_node);
+
+        new_node.* = try ClusterNode.init(allocator, msg.sender_id, msg.sender_addr, msg.sender_port);
+        new_node.config_epoch = msg.config_epoch;
+        new_node.pong_recv = msg.timestamp;
+        new_node.flags.master = true; // Default to master
+        new_node.flags.handshake = true; // Mark as in handshake state
+
+        // Add to nodes map
+        const node_key = try allocator.dupe(u8, &msg.sender_id);
+        errdefer allocator.free(node_key);
+        try self.nodes.put(node_key, new_node);
+    }
+
+    /// Process a PING message and return a PONG response
+    pub fn processPingMessage(self: *ClusterState, allocator: std.mem.Allocator, msg: *const GossipMessage) !GossipMessage {
+        // Update sender's state if we know them
+        if (self.nodes.get(&msg.sender_id)) |sender_node| {
+            sender_node.pong_recv = msg.timestamp;
+            sender_node.config_epoch = msg.config_epoch;
+        }
+
+        // Process gossip information about other nodes
+        for (msg.gossip_nodes) |gossip_info| {
+            // Skip if it's about ourselves
+            if (self.myself) |myself| {
+                if (std.mem.eql(u8, &gossip_info.node_id, &myself.id)) {
+                    continue;
+                }
+            }
+
+            // Add or update node information
+            const existing = self.nodes.get(&gossip_info.node_id);
+            if (existing == null) {
+                // Learn about new node
+                const new_node = try allocator.create(ClusterNode);
+                errdefer allocator.destroy(new_node);
+
+                new_node.* = try ClusterNode.init(allocator, gossip_info.node_id, gossip_info.addr, gossip_info.port);
+                errdefer new_node.deinit(allocator);
+                new_node.pong_recv = gossip_info.pong_recv;
+                new_node.flags = gossip_info.flags;
+
+                const node_key = try allocator.dupe(u8, &gossip_info.node_id);
+                errdefer allocator.free(node_key);
+                try self.nodes.put(node_key, new_node);
+            }
+        }
+
+        // Create and return PONG response
+        return self.createPongMessage(allocator);
+    }
+
+    /// Process a PONG message (update node state)
+    pub fn processPongMessage(self: *ClusterState, msg: *const GossipMessage) !void {
+        // Update sender's state
+        if (self.nodes.get(&msg.sender_id)) |sender_node| {
+            sender_node.pong_recv = msg.timestamp;
+            sender_node.config_epoch = msg.config_epoch;
+            sender_node.flags.handshake = false; // Handshake complete
+
+            // Clear pfail flag if set
+            if (sender_node.flags.pfail) {
+                sender_node.flags.pfail = false;
+            }
+        }
+
+        // Process gossip information about other nodes
+        for (msg.gossip_nodes) |gossip_info| {
+            // Skip if it's about ourselves
+            if (self.myself) |myself| {
+                if (std.mem.eql(u8, &gossip_info.node_id, &myself.id)) {
+                    continue;
+                }
+            }
+
+            // Update node information if we know about them
+            if (self.nodes.get(&gossip_info.node_id)) |known_node| {
+                // Update timestamp if newer
+                if (gossip_info.pong_recv > known_node.pong_recv) {
+                    known_node.pong_recv = gossip_info.pong_recv;
+                }
+            }
+        }
+    }
+
+    /// Select random nodes for gossip (up to max_nodes)
+    /// Returns array of GossipNodeInfo that caller must free
+    pub fn selectRandomNodesForGossip(self: *const ClusterState, allocator: std.mem.Allocator, max_nodes: usize) ![]GossipNodeInfo {
+        var result = std.ArrayList(GossipNodeInfo).init(allocator);
+        errdefer result.deinit();
+
+        var it = self.nodes.valueIterator();
+        var count: usize = 0;
+
+        // Simple selection: just take first N nodes
+        // TODO: Make this truly random using RNG
+        while (it.next()) |node| {
+            if (count >= max_nodes) break;
+
+            // Skip ourselves
+            if (self.myself) |myself| {
+                if (std.mem.eql(u8, &node.*.id, &myself.id)) {
+                    continue;
+                }
+            }
+
+            try result.append(GossipNodeInfo{
+                .node_id = node.*.id,
+                .addr = node.*.addr,
+                .port = node.*.port,
+                .flags = node.*.flags,
+                .pong_recv = node.*.pong_recv,
+            });
+
+            count += 1;
+        }
+
+        return result.toOwnedSlice();
+    }
+
+    /// Update node health status based on ping/pong timestamps
+    /// Marks nodes as pfail if no PONG received within timeout (5 seconds)
+    pub fn updateNodeHealth(self: *ClusterState) void {
+        const now = std.time.milliTimestamp();
+        const timeout_ms = 5000; // 5 second timeout
+
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node| {
+            // Skip ourselves
+            if (self.myself) |myself| {
+                if (std.mem.eql(u8, &node.*.id, &myself.id)) {
+                    continue;
+                }
+            }
+
+            // Check if node has timed out
+            if (node.*.ping_sent > 0 and node.*.pong_recv < node.*.ping_sent) {
+                const elapsed = now - node.*.ping_sent;
+                if (elapsed > timeout_ms) {
+                    // Mark as possibly failing
+                    node.*.flags.pfail = true;
+                }
+            }
+        }
+    }
+
+    /// Send PING to a specific node (updates ping_sent timestamp)
+    pub fn sendPingToNode(self: *ClusterState, node_id: [40]u8) void {
+        if (self.nodes.get(&node_id)) |node| {
+            node.ping_sent = std.time.milliTimestamp();
+        }
     }
 };
 
@@ -1489,5 +1718,284 @@ test "shouldMovedRedirect - IMPORTING with ASKING allows execution" {
     // With ASKING flag, should allow execution
     const redirect2 = cluster.shouldMovedRedirect(100, true);
     try std.testing.expectEqual(null, redirect2);
+}
+
+// ==================== Gossip Protocol Tests ====================
+
+test "Gossip message creation - PING" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Create PING message
+    const ping_msg = try cluster.createPingMessage(allocator);
+    defer allocator.free(ping_msg.gossip_nodes);
+
+    // Verify message type
+    try std.testing.expectEqual(GossipMessageType.ping, ping_msg.msg_type);
+    // Verify sender is myself
+    try std.testing.expectEqualSlices(u8, &node_id, &ping_msg.sender_id);
+    // Verify timestamp is set
+    try std.testing.expect(ping_msg.timestamp > 0);
+}
+
+test "Gossip message creation - PONG" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+
+    // Create PONG message
+    const pong_msg = try cluster.createPongMessage(allocator);
+    defer allocator.free(pong_msg.gossip_nodes);
+
+    // Verify message type
+    try std.testing.expectEqual(GossipMessageType.pong, pong_msg.msg_type);
+    // Verify sender is myself
+    try std.testing.expectEqualSlices(u8, &node_id, &pong_msg.sender_id);
+}
+
+test "Process MEET message - add new node" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Create MEET message from another node
+    const other_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    var meet_msg = GossipMessage{
+        .msg_type = .meet,
+        .sender_id = other_id,
+        .sender_addr = "127.0.0.1",
+        .sender_port = 7001,
+        .timestamp = std.time.milliTimestamp(),
+        .config_epoch = 1,
+        .gossip_nodes = &[_]GossipNodeInfo{},
+    };
+
+    // Process MEET message
+    try cluster.processMeetMessage(allocator, &meet_msg);
+
+    // Verify new node was added
+    const added_node = cluster.nodes.get(&other_id);
+    try std.testing.expect(added_node != null);
+    try std.testing.expectEqualSlices(u8, "127.0.0.1", added_node.?.addr);
+    try std.testing.expectEqual(@as(u16, 7001), added_node.?.port);
+}
+
+test "Process PING message - respond with PONG" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add another node
+    const other_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const other_node = try allocator.create(ClusterNode);
+    other_node.* = try ClusterNode.init(allocator, other_id, "127.0.0.1", 7001);
+    const node_key = try allocator.dupe(u8, &other_id);
+    try cluster.nodes.put(node_key, other_node);
+
+    // Create PING message
+    var ping_msg = GossipMessage{
+        .msg_type = .ping,
+        .sender_id = other_id,
+        .sender_addr = "127.0.0.1",
+        .sender_port = 7001,
+        .timestamp = std.time.milliTimestamp(),
+        .config_epoch = 1,
+        .gossip_nodes = &[_]GossipNodeInfo{},
+    };
+
+    // Process PING (should return PONG)
+    const pong_msg = try cluster.processPingMessage(allocator, &ping_msg);
+    defer allocator.free(pong_msg.gossip_nodes);
+
+    // Verify PONG response
+    try std.testing.expectEqual(GossipMessageType.pong, pong_msg.msg_type);
+    try std.testing.expectEqualSlices(u8, &my_id, &pong_msg.sender_id);
+}
+
+test "Process PONG message - update node state" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add another node with old timestamp
+    const other_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const other_node = try allocator.create(ClusterNode);
+    other_node.* = try ClusterNode.init(allocator, other_id, "127.0.0.1", 7001);
+    other_node.pong_recv = 1000; // Old timestamp
+    const node_key = try allocator.dupe(u8, &other_id);
+    try cluster.nodes.put(node_key, other_node);
+
+    const now = std.time.milliTimestamp();
+
+    // Create PONG message
+    var pong_msg = GossipMessage{
+        .msg_type = .pong,
+        .sender_id = other_id,
+        .sender_addr = "127.0.0.1",
+        .sender_port = 7001,
+        .timestamp = now,
+        .config_epoch = 1,
+        .gossip_nodes = &[_]GossipNodeInfo{},
+    };
+
+    // Process PONG
+    try cluster.processPongMessage(&pong_msg);
+
+    // Verify pong_recv was updated
+    const updated_node = cluster.nodes.get(&other_id).?;
+    try std.testing.expect(updated_node.pong_recv > 1000);
+}
+
+test "Gossip node discovery - learn about third node" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself (Node A)
+    const my_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add Node B
+    const node_b_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const node_b = try allocator.create(ClusterNode);
+    node_b.* = try ClusterNode.init(allocator, node_b_id, "127.0.0.1", 7001);
+    const node_b_key = try allocator.dupe(u8, &node_b_id);
+    try cluster.nodes.put(node_b_key, node_b);
+
+    // Node B tells Node A about Node C via gossip
+    const node_c_id = "cccccccccccccccccccccccccccccccccccccccc".*;
+    const node_c_info = GossipNodeInfo{
+        .node_id = node_c_id,
+        .addr = "127.0.0.1",
+        .port = 7002,
+        .flags = .{ .master = true },
+        .pong_recv = std.time.milliTimestamp(),
+    };
+
+    var ping_msg = GossipMessage{
+        .msg_type = .ping,
+        .sender_id = node_b_id,
+        .sender_addr = "127.0.0.1",
+        .sender_port = 7001,
+        .timestamp = std.time.milliTimestamp(),
+        .config_epoch = 1,
+        .gossip_nodes = &[_]GossipNodeInfo{node_c_info},
+    };
+
+    // Process PING with gossip about Node C
+    _ = try cluster.processPingMessage(allocator, &ping_msg);
+
+    // Verify Node A learned about Node C
+    const node_c = cluster.nodes.get(&node_c_id);
+    try std.testing.expect(node_c != null);
+    try std.testing.expectEqualSlices(u8, "127.0.0.1", node_c.?.addr);
+    try std.testing.expectEqual(@as(u16, 7002), node_c.?.port);
+}
+
+test "Node health detection - mark pfail on missing PONG" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add another node
+    const other_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcd".*;
+    const other_node = try allocator.create(ClusterNode);
+    other_node.* = try ClusterNode.init(allocator, other_id, "127.0.0.1", 7001);
+    const node_key = try allocator.dupe(u8, &other_id);
+    try cluster.nodes.put(node_key, other_node);
+
+    // Simulate old ping_sent and no pong_recv (timeout)
+    const now = std.time.milliTimestamp();
+    other_node.ping_sent = now - 6000; // 6 seconds ago (> 5 sec timeout)
+    other_node.pong_recv = 0; // Never received PONG
+
+    // Check health
+    cluster.updateNodeHealth();
+
+    // Verify node marked as pfail
+    const updated_node = cluster.nodes.get(&other_id).?;
+    try std.testing.expect(updated_node.flags.pfail);
+}
+
+test "Select random nodes for gossip" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add 10 nodes
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) {
+        var node_id: [40]u8 = undefined;
+        @memset(&node_id, '0' + i);
+        const node = try allocator.create(ClusterNode);
+        node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000 + i);
+        const node_key = try allocator.dupe(u8, &node_id);
+        try cluster.nodes.put(node_key, node);
+    }
+
+    // Select 3 random nodes
+    const selected = try cluster.selectRandomNodesForGossip(allocator, 3);
+    defer allocator.free(selected);
+
+    // Verify we got 3 nodes
+    try std.testing.expectEqual(@as(usize, 3), selected.len);
+
+    // Verify they are all different
+    try std.testing.expect(!std.mem.eql(u8, &selected[0].id, &selected[1].id));
+    try std.testing.expect(!std.mem.eql(u8, &selected[1].id, &selected[2].id));
+    try std.testing.expect(!std.mem.eql(u8, &selected[0].id, &selected[2].id));
 }
 
