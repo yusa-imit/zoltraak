@@ -1436,6 +1436,10 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterReplicas(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "REPLICATE")) {
                 break :blk try cluster_cmds.cmdClusterReplicate(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SAVECONFIG")) {
+                break :blk try cluster_cmds.cmdClusterSaveConfig(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "BUMPEPOCH")) {
+                break :blk try cluster_cmds.cmdClusterBumpEpoch(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try cluster_cmds.cmdClusterHelp(allocator, args, storage, null, 0);
             } else {

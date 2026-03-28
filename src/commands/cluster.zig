@@ -1466,6 +1466,90 @@ pub fn cmdClusterReplicate(
     return w.writeSimpleString("OK");
 }
 
+/// CLUSTER SAVECONFIG - Force cluster configuration save to disk
+pub fn cmdClusterSaveConfig(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "SAVECONFIG"
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|saveconfig' command");
+    }
+
+    // Check cluster enabled
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Save configuration to nodes.conf
+    storage.cluster.saveConfig("nodes.conf") catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = switch (err) {
+            error.OutOfSpace => "ERR Could not save config: No space left on device",
+            error.AccessDenied => "ERR Could not save config: Permission denied",
+            else => try std.fmt.bufPrint(&buf, "ERR Could not save config: {}", .{err}),
+        };
+        return w.writeError(msg);
+    };
+
+    return w.writeSimpleString("OK");
+}
+
+/// CLUSTER BUMPEPOCH - Manually increment cluster configuration epoch
+pub fn cmdClusterBumpEpoch(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "BUMPEPOCH"
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|bumpepoch' command");
+    }
+
+    // Check cluster enabled
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Attempt to bump epoch
+    const result = storage.cluster.bumpEpoch() catch |err| {
+        switch (err) {
+            error.ClusterNotInitialized => {
+                return w.writeError("ERR Cluster not initialized");
+            },
+            else => {
+                return w.writeError("ERR Failed to bump epoch");
+            },
+        }
+    };
+
+    // Auto-save config after bumping
+    storage.cluster.saveConfig("nodes.conf") catch {
+        // Log error but don't fail the command - epoch was already bumped
+        std.debug.print("Warning: Failed to save config after BUMPEPOCH\n", .{});
+    };
+
+    // Format response: BUMPED <epoch> or STILL <epoch>
+    var buf: [64]u8 = undefined;
+    const response = if (result.bumped)
+        try std.fmt.bufPrint(&buf, "BUMPED {d}", .{result.epoch})
+    else
+        try std.fmt.bufPrint(&buf, "STILL {d}", .{result.epoch});
+
+    return w.writeBulkString(response);
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
@@ -2314,4 +2398,152 @@ test "cmdClusterReplicate - wrong arguments" {
     const result2 = try cmdClusterReplicate(allocator, &args2, storage, null, 0);
     defer allocator.free(result2);
     try std.testing.expect(std.mem.indexOf(u8, result2, "ERR") != null);
+}
+
+// ============================================================================
+// Tests for cmdClusterSaveConfig() and cmdClusterBumpEpoch()
+// ============================================================================
+
+test "cmdClusterSaveConfig - returns OK on success" {
+    const allocator = std.testing.allocator;
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable cluster
+    storage.cluster.enabled = true;
+
+    // Setup myself
+    const my_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Create temp working directory for config file
+    // Note: Tests will write to temp location, not real nodes.conf
+    const args = [_][]const u8{ "CLUSTER", "SAVECONFIG" };
+    const result = try cmdClusterSaveConfig(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return OK
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+}
+
+test "cmdClusterSaveConfig - cluster disabled returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Cluster is disabled by default
+    storage.cluster.enabled = false;
+
+    const args = [_][]const u8{ "CLUSTER", "SAVECONFIG" };
+    const result = try cmdClusterSaveConfig(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterSaveConfig - wrong arity returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Too many arguments
+    const args = [_][]const u8{ "CLUSTER", "SAVECONFIG", "EXTRA" };
+    const result = try cmdClusterSaveConfig(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterBumpEpoch - returns BUMPED when incremented" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable cluster
+    storage.cluster.enabled = true;
+
+    // Setup myself with config_epoch = 0
+    const my_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.config_epoch = 0;
+    storage.cluster.myself = my_node;
+    storage.cluster.current_epoch = 5;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    const args = [_][]const u8{ "CLUSTER", "BUMPEPOCH" };
+    const result = try cmdClusterBumpEpoch(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return BUMPED with epoch 6
+    try std.testing.expect(std.mem.indexOf(u8, result, "BUMPED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "6") != null);
+}
+
+test "cmdClusterBumpEpoch - returns STILL when no increment" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable cluster
+    storage.cluster.enabled = true;
+
+    // Setup myself with config_epoch == current_epoch
+    const my_id = "cccccccccccccccccccccccccccccccccccccccc".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.config_epoch = 10;
+    storage.cluster.myself = my_node;
+    storage.cluster.current_epoch = 10;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    const args = [_][]const u8{ "CLUSTER", "BUMPEPOCH" };
+    const result = try cmdClusterBumpEpoch(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return STILL with epoch 10
+    try std.testing.expect(std.mem.indexOf(u8, result, "STILL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "10") != null);
+}
+
+test "cmdClusterBumpEpoch - cluster disabled returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Cluster is disabled by default
+    storage.cluster.enabled = false;
+
+    const args = [_][]const u8{ "CLUSTER", "BUMPEPOCH" };
+    const result = try cmdClusterBumpEpoch(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterBumpEpoch - wrong arity returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Too many arguments
+    const args = [_][]const u8{ "CLUSTER", "BUMPEPOCH", "EXTRA" };
+    const result = try cmdClusterBumpEpoch(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
 }

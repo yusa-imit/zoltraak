@@ -1121,6 +1121,120 @@ pub const ClusterState = struct {
             }
         }
     }
+
+    /// Save cluster configuration to nodes.conf file
+    /// Writes one line per node and a vars line for cluster epochs
+    /// Calls fsync(2) to ensure durability before returning
+    /// Format: <node-id> <ip>:<port@cluster-port> <flags> <master-id|-> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot-ranges>
+    pub fn saveConfig(self: *ClusterState, config_path: []const u8) !void {
+        var file = try std.fs.cwd().createFile(config_path, .{});
+        defer file.close();
+
+        var writer = file.writer();
+
+        // Write header comment
+        try writer.print("# Cluster configuration file, created by zoltraak\n", .{});
+
+        // Write each node's line
+        var node_it = self.nodes.valueIterator();
+        while (node_it.next()) |node_ptr| {
+            const node = node_ptr.*;
+
+            // Flags
+            var flags_buf: [100]u8 = undefined;
+            var flags_len: usize = 0;
+            if (node.flags.myself) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}myself", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.master) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}master", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.slave) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}slave", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.fail) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}fail", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.pfail) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}pfail", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.handshake) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}handshake", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.noaddr) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}noaddr", .{if (flags_len > 0) "," else ""}).len;
+            }
+            if (node.flags.nofailover) {
+                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}nofailover", .{if (flags_len > 0) "," else ""}).len;
+            }
+
+            // Link state
+            const link_state_str = switch (node.link_state) {
+                .connected => "connected",
+                .disconnected => "disconnected",
+            };
+
+            // Slot ranges (compress consecutive slots)
+            var slots_buf: [1024]u8 = undefined;
+            var slots_len: usize = 0;
+
+            if (node.slots.items.len > 0) {
+                for (node.slots.items, 0..) |range, i| {
+                    if (i > 0) {
+                        slots_buf[slots_len] = ' ';
+                        slots_len += 1;
+                    }
+                    if (range.start == range.end) {
+                        slots_len += try std.fmt.bufPrint(slots_buf[slots_len..], "{d}", .{range.start}).len;
+                    } else {
+                        slots_len += try std.fmt.bufPrint(slots_buf[slots_len..], "{d}-{d}", .{ range.start, range.end }).len;
+                    }
+                }
+            }
+
+            // Write node line
+            try writer.print("{s} {s}:{d}@{d} {s} {s} {d} {d} {d} {s} {s}\n", .{
+                &node.id,
+                node.addr,
+                node.port,
+                node.cluster_port,
+                flags_buf[0..flags_len],
+                if (node.master_id != null) node.master_id.?[0..] else "-",
+                node.ping_sent,
+                node.pong_recv,
+                node.config_epoch,
+                link_state_str,
+                slots_buf[0..slots_len],
+            });
+        }
+
+        // Write vars line
+        try writer.print("vars currentEpoch {d} lastVoteEpoch 0\n", .{self.current_epoch});
+
+        // Sync to disk
+        try file.sync();
+    }
+
+    /// Attempt to bump the configuration epoch
+    /// Returns the new epoch if bumped, or the current epoch if already highest
+    /// Returns { bumped = true, epoch = new_epoch } if epoch was incremented
+    /// Returns { bumped = false, epoch = current_epoch } if already at highest
+    pub fn bumpEpoch(self: *ClusterState) !struct { bumped: bool, epoch: u64 } {
+        const myself = self.myself orelse return error.ClusterNotInitialized;
+
+        // Check if bump is needed:
+        // Increment if config_epoch == 0 OR config_epoch < current_epoch
+        if (myself.config_epoch == 0 or myself.config_epoch < self.current_epoch) {
+            // Increment to current_epoch + 1
+            const new_epoch = self.current_epoch + 1;
+            myself.config_epoch = new_epoch;
+            self.current_epoch = new_epoch;
+            return .{ .bumped = true, .epoch = new_epoch };
+        } else {
+            // Already at or above current_epoch
+            return .{ .bumped = false, .epoch = myself.config_epoch };
+        }
+    }
 };
 
 // Tests
@@ -2786,4 +2900,206 @@ test "ClusterState: getReplicasOfMaster - multiple replicas" {
     defer replicas.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), replicas.items.len);
+}
+
+// ============================================================================
+// Tests for saveConfig() and bumpEpoch()
+// ============================================================================
+
+test "ClusterState: saveConfig writes nodes.conf with correct format" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself with some slots
+    const my_id = "1111111111111111111111111111111111111111".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.flags.myself = true;
+    my_node.flags.master = true;
+    my_node.config_epoch = 5;
+    my_node.pong_recv = 1000;
+    cluster.myself = my_node;
+    cluster.current_epoch = 5;
+    cluster.enabled = true;
+
+    // Add myself to nodes map
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Add some slots to myself
+    try my_node.slots.append(allocator, .{ .start = 0, .end = 100 });
+    try my_node.slots.append(allocator, .{ .start = 200, .end = 300 });
+
+    // Assign slots to myself in slot array
+    for (0..101) |i| {
+        cluster.slots[i] = my_node;
+    }
+    for (200..301) |i| {
+        cluster.slots[i] = my_node;
+    }
+
+    // Create temp file for nodes.conf
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const config_path = try tmpdir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(config_path);
+
+    // Call saveConfig
+    try cluster.saveConfig(config_path ++ "/nodes.conf");
+
+    // Read file back and verify format
+    var file = try tmpdir.dir.openFile("nodes.conf", .{});
+    defer file.close();
+
+    const file_content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(file_content);
+
+    // Verify file contains node line with correct format
+    try std.testing.expect(std.mem.containsAtLeast(u8, file_content, 1, "1111111111111111111111111111111111111111"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, file_content, 1, "127.0.0.1:7000@17000"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, file_content, 1, "myself,master"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, file_content, 1, "currentEpoch 5"));
+    // Slots should be compressed as "0-100 200-300"
+    try std.testing.expect(std.mem.containsAtLeast(u8, file_content, 1, "0-100"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, file_content, 1, "200-300"));
+}
+
+test "ClusterState: saveConfig creates file with fsync" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup minimal cluster
+    const my_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.flags.myself = true;
+    cluster.myself = my_node;
+    cluster.enabled = true;
+
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Create temp directory
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const config_path = try tmpdir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(config_path);
+
+    // Call saveConfig
+    try cluster.saveConfig(config_path ++ "/nodes.conf");
+
+    // Verify file exists (fsync was called if file can be opened)
+    var file = try tmpdir.dir.openFile("nodes.conf", .{});
+    defer file.close();
+
+    const file_size = try file.getEndPos();
+    try std.testing.expect(file_size > 0);
+}
+
+test "ClusterState: bumpEpoch increments when config_epoch is zero" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself with config_epoch = 0
+    const my_id = "1111111111111111111111111111111111111111".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.config_epoch = 0;
+    cluster.myself = my_node;
+    cluster.current_epoch = 5;
+
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Call bumpEpoch
+    const result = try cluster.bumpEpoch();
+
+    // Should have bumped to current_epoch + 1
+    try std.testing.expectEqual(true, result.bumped);
+    try std.testing.expectEqual(@as(u64, 6), result.epoch);
+    try std.testing.expectEqual(@as(u64, 6), my_node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 6), cluster.current_epoch);
+}
+
+test "ClusterState: bumpEpoch increments when config_epoch < current_epoch" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself with config_epoch < current_epoch
+    const my_id = "2222222222222222222222222222222222222222".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.config_epoch = 3;
+    cluster.myself = my_node;
+    cluster.current_epoch = 8;
+
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Call bumpEpoch
+    const result = try cluster.bumpEpoch();
+
+    // Should have bumped to current_epoch + 1
+    try std.testing.expectEqual(true, result.bumped);
+    try std.testing.expectEqual(@as(u64, 9), result.epoch);
+    try std.testing.expectEqual(@as(u64, 9), my_node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 9), cluster.current_epoch);
+}
+
+test "ClusterState: bumpEpoch returns STILL when already at highest" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself with config_epoch == current_epoch
+    const my_id = "3333333333333333333333333333333333333333".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.config_epoch = 10;
+    cluster.myself = my_node;
+    cluster.current_epoch = 10;
+
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Call bumpEpoch
+    const result = try cluster.bumpEpoch();
+
+    // Should return STILL with no increment
+    try std.testing.expectEqual(false, result.bumped);
+    try std.testing.expectEqual(@as(u64, 10), result.epoch);
+    try std.testing.expectEqual(@as(u64, 10), my_node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 10), cluster.current_epoch);
+}
+
+test "ClusterState: bumpEpoch returns STILL when config_epoch > current_epoch" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself with config_epoch > current_epoch
+    const my_id = "4444444444444444444444444444444444444444".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.config_epoch = 12;
+    cluster.myself = my_node;
+    cluster.current_epoch = 10;
+
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Call bumpEpoch
+    const result = try cluster.bumpEpoch();
+
+    // Should return STILL with no increment
+    try std.testing.expectEqual(false, result.bumped);
+    try std.testing.expectEqual(@as(u64, 12), result.epoch);
+    try std.testing.expectEqual(@as(u64, 12), my_node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 10), cluster.current_epoch);
 }
