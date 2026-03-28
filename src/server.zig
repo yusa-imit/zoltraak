@@ -163,6 +163,25 @@ pub const GossipTask = struct {
 
         // Update health status for all nodes
         self.cluster.updateNodeHealth();
+
+        // Promote pfail nodes to fail if majority agrees
+        self.cluster.promoteFailures();
+
+        // Check if we should start election (we're a replica of a failed master)
+        if (self.cluster.shouldStartElection()) {
+            // Start election process
+            const won = self.cluster.startElection(self.allocator) catch |err| {
+                std.log.err("Failed to start election: {}", .{err});
+                return;
+            };
+
+            if (won) {
+                // We won the election, promote to master
+                self.cluster.promoteToMaster(self.allocator) catch |err| {
+                    std.log.err("Failed to promote to master: {}", .{err});
+                };
+            }
+        }
     }
 };
 

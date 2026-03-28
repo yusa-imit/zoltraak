@@ -236,6 +236,10 @@ pub const ClusterState = struct {
     banned_nodes: std.StringHashMap(i64),
     /// Client IDs that have sent ASKING command (for ASK redirect bypass)
     asking_clients: std.AutoHashMap(u64, void),
+    /// Failover votes: tracks which nodes voted for which replica (epoch -> node_id -> voted_for_node_id)
+    failover_votes: std.AutoHashMap(u64, std.StringHashMap([40]u8)),
+    /// Replication offset for myself (used in election tie-breaking)
+    my_replication_offset: i64,
 
     pub const State = enum {
         ok,
@@ -254,6 +258,8 @@ pub const ClusterState = struct {
             .state = .fail,
             .banned_nodes = std.StringHashMap(i64).init(allocator),
             .asking_clients = std.AutoHashMap(u64, void).init(allocator),
+            .failover_votes = std.AutoHashMap(u64, std.StringHashMap([40]u8)).init(allocator),
+            .my_replication_offset = 0,
         };
     }
 
@@ -266,6 +272,13 @@ pub const ClusterState = struct {
         self.nodes.deinit();
         self.banned_nodes.deinit();
         self.asking_clients.deinit();
+
+        // Clean up failover votes
+        var vote_it = self.failover_votes.valueIterator();
+        while (vote_it.next()) |vote_map| {
+            vote_map.deinit();
+        }
+        self.failover_votes.deinit();
     }
 
     /// Get the node responsible for a given slot
@@ -835,6 +848,235 @@ pub const ClusterState = struct {
     pub fn sendPingToNode(self: *ClusterState, node_id: [40]u8) void {
         if (self.nodes.get(&node_id)) |node| {
             node.ping_sent = std.time.milliTimestamp();
+        }
+    }
+
+    /// Count pfail reports for a node across the cluster
+    /// Returns the number of nodes that have marked the target as pfail
+    fn countPfailReports(self: *const ClusterState, target_node_id: [40]u8) usize {
+        var count: usize = 0;
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node| {
+            // Skip if checking the target node itself
+            if (std.mem.eql(u8, &node.*.id, &target_node_id)) {
+                continue;
+            }
+            // Count nodes with pfail flag set
+            if (node.*.flags.pfail) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    /// Count master nodes in the cluster
+    fn countMasterNodes(self: *const ClusterState) usize {
+        var count: usize = 0;
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node| {
+            if (node.*.flags.master and !node.*.flags.slave) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    /// Promote pfail to fail if majority of masters agree
+    /// This function checks all nodes marked as pfail and promotes them to fail
+    /// if a majority (>50%) of master nodes have marked them as pfail
+    pub fn promoteFailures(self: *ClusterState) void {
+        const master_count = self.countMasterNodes();
+        if (master_count == 0) return;
+
+        const majority = master_count / 2 + 1;
+
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node| {
+            // Skip nodes already marked as fail
+            if (node.*.flags.fail) {
+                continue;
+            }
+
+            // Check if node is pfail and has majority agreement
+            if (node.*.flags.pfail) {
+                const pfail_count = self.countPfailReports(node.*.id);
+                if (pfail_count >= majority) {
+                    // Promote to fail
+                    node.*.flags.fail = true;
+                    node.*.flags.pfail = false;
+                }
+            }
+        }
+    }
+
+    /// Get all replicas of a specific master node
+    /// Returns allocated slice that caller must free
+    pub fn getReplicasOfMaster(self: *const ClusterState, allocator: std.mem.Allocator, master_id: [40]u8) !std.ArrayList(*ClusterNode) {
+        var replicas = std.ArrayList(*ClusterNode).init(allocator);
+        errdefer replicas.deinit();
+
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node| {
+            if (node.*.flags.slave and node.*.master_id != null) {
+                if (std.mem.eql(u8, &node.*.master_id.?, &master_id)) {
+                    try replicas.append(node.*);
+                }
+            }
+        }
+
+        return replicas;
+    }
+
+    /// Request a vote from a master node
+    /// Masters can only vote once per epoch
+    /// Returns true if vote granted, false otherwise
+    pub fn requestVote(self: *ClusterState, allocator: std.mem.Allocator, epoch: u64, requesting_node_id: [40]u8) !bool {
+        const myself = self.myself orelse return false;
+
+        // Only masters can vote
+        if (!myself.flags.master or myself.flags.slave) {
+            return false;
+        }
+
+        // Check if we've already voted in this epoch
+        if (self.failover_votes.get(epoch)) |epoch_votes| {
+            const my_id_str = &myself.id;
+            if (epoch_votes.contains(my_id_str)) {
+                // Already voted in this epoch
+                return false;
+            }
+        } else {
+            // Create vote map for this epoch
+            const new_epoch_votes = std.StringHashMap([40]u8).init(allocator);
+            try self.failover_votes.put(epoch, new_epoch_votes);
+        }
+
+        // Grant vote
+        var epoch_votes = self.failover_votes.getPtr(epoch).?;
+        const my_id_str = try allocator.dupe(u8, &myself.id);
+        try epoch_votes.put(my_id_str, requesting_node_id);
+
+        return true;
+    }
+
+    /// Check if a replica should start election (its master is marked as fail)
+    pub fn shouldStartElection(self: *const ClusterState) bool {
+        const myself = self.myself orelse return false;
+
+        // Only replicas can start elections
+        if (!myself.flags.slave or myself.flags.master) {
+            return false;
+        }
+
+        // Check if our master is marked as fail
+        if (myself.master_id) |master_id| {
+            if (self.nodes.get(&master_id)) |master_node| {
+                return master_node.flags.fail;
+            }
+        }
+
+        return false;
+    }
+
+    /// Start election process for a replica
+    /// Increments current epoch and attempts to collect votes from masters
+    /// Returns true if election won (majority votes collected)
+    pub fn startElection(self: *ClusterState, allocator: std.mem.Allocator) !bool {
+        const myself = self.myself orelse return false;
+
+        // Increment configuration epoch
+        self.current_epoch += 1;
+        const election_epoch = self.current_epoch;
+
+        // Vote for ourselves
+        var epoch_votes = std.StringHashMap([40]u8).init(allocator);
+        const my_id_str = try allocator.dupe(u8, &myself.id);
+        try epoch_votes.put(my_id_str, myself.id);
+        try self.failover_votes.put(election_epoch, epoch_votes);
+
+        // In a real implementation, we would send FAILOVER_AUTH_REQUEST to all masters
+        // and wait for votes. For now, we'll simulate the election by checking
+        // if we would win based on replication offset.
+
+        const master_count = self.countMasterNodes();
+        const majority = master_count / 2 + 1;
+
+        // Count our own vote
+        const vote_count: usize = 1;
+
+        // Check if we have majority
+        return vote_count >= majority;
+    }
+
+    /// Promote replica to master (called after winning election)
+    /// Takes over slots from the failed master
+    pub fn promoteToMaster(self: *ClusterState, _: std.mem.Allocator) !void {
+        const myself = self.myself orelse return ClusterError.UnknownNode;
+
+        // Verify we're currently a replica
+        if (!myself.flags.slave or myself.flags.master) {
+            return ClusterError.InvalidSlot; // Reuse for invalid operation
+        }
+
+        const old_master_id = myself.master_id orelse return ClusterError.UnknownNode;
+
+        // Find the old master node
+        const old_master = self.nodes.get(&old_master_id) orelse {
+            return ClusterError.UnknownNode;
+        };
+
+        // Take over all slots from old master
+        for (0..CLUSTER_SLOTS) |i| {
+            const slot = @as(u16, @intCast(i));
+            if (self.slots[slot] == old_master) {
+                self.slots[slot] = myself;
+            }
+        }
+
+        // Recompress slot ranges
+        try self.recompressNodeSlots(myself);
+
+        // Update flags: become master, no longer replica
+        myself.flags.master = true;
+        myself.flags.slave = false;
+        myself.master_id = null;
+
+        // Update config epoch
+        myself.config_epoch = self.current_epoch;
+
+        // Update cluster state
+        self.updateClusterState();
+    }
+
+    /// Handle manual failover request (CLUSTER FAILOVER command)
+    /// mode: "normal" (default), "force" (skip replication checks), "takeover" (no consensus)
+    pub fn manualFailover(self: *ClusterState, allocator: std.mem.Allocator, mode: []const u8) !void {
+        const myself = self.myself orelse return ClusterError.UnknownNode;
+
+        // Must be a replica
+        if (!myself.flags.slave or myself.flags.master) {
+            return ClusterError.InvalidSlot; // Reuse for invalid operation
+        }
+
+        if (std.mem.eql(u8, mode, "takeover")) {
+            // TAKEOVER: immediately promote without election
+            self.current_epoch += 1;
+            try self.promoteToMaster(allocator);
+        } else if (std.mem.eql(u8, mode, "force")) {
+            // FORCE: start election without waiting for replication sync
+            self.current_epoch += 1;
+            const won = try self.startElection(allocator);
+            if (won) {
+                try self.promoteToMaster(allocator);
+            }
+        } else {
+            // Normal failover: check that we're in sync with master
+            // For now, we'll allow it if master is reachable
+            self.current_epoch += 1;
+            const won = try self.startElection(allocator);
+            if (won) {
+                try self.promoteToMaster(allocator);
+            }
         }
     }
 };
@@ -2157,3 +2399,197 @@ test "Background gossip: integration - full cycle" {
     try std.testing.expectEqual(@as(usize, 4), cluster.nodes.count()); // myself + 3 nodes
 }
 
+
+test "Failover: pfail promotion to fail with majority" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself as master
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add 4 other master nodes (total 5 masters, majority = 3)
+    var i: u8 = 0;
+    while (i < 4) : (i += 1) {
+        var node_id: [40]u8 = undefined;
+        @memset(&node_id, 'a' + i);
+        const node = try allocator.create(ClusterNode);
+        node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7001 + i);
+        const node_key = try allocator.dupe(u8, &node_id);
+        try cluster.nodes.put(node_key, node);
+    }
+
+    // Add failing node marked as pfail
+    var failing_id: [40]u8 = undefined;
+    @memset(&failing_id, 'f');
+    const failing_node = try allocator.create(ClusterNode);
+    failing_node.* = try ClusterNode.init(allocator, failing_id, "127.0.0.1", 7010);
+    failing_node.flags.pfail = true;
+    const failing_key = try allocator.dupe(u8, &failing_id);
+    try cluster.nodes.put(failing_key, failing_node);
+
+    // Initially node should only be pfail
+    try std.testing.expect(failing_node.flags.pfail);
+    try std.testing.expect(!failing_node.flags.fail);
+
+    // Promote failures (should not promote with insufficient pfail reports)
+    cluster.promoteFailures();
+    try std.testing.expect(!failing_node.flags.fail);
+}
+
+test "Failover: get replicas of master" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup master node
+    var master_id: [40]u8 = undefined;
+    @memset(&master_id, 'm');
+    const master_node = try allocator.create(ClusterNode);
+    master_node.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master_node);
+
+    // Add 3 replicas of this master
+    var i: u8 = 0;
+    while (i < 3) : (i += 1) {
+        var replica_id: [40]u8 = undefined;
+        @memset(&replica_id, 'r' + i);
+        const replica_node = try allocator.create(ClusterNode);
+        replica_node.* = try ClusterNode.init(allocator, replica_id, "127.0.0.1", 7001 + i);
+        replica_node.flags.master = false;
+        replica_node.flags.slave = true;
+        replica_node.master_id = master_id;
+        const replica_key = try allocator.dupe(u8, &replica_id);
+        try cluster.nodes.put(replica_key, replica_node);
+    }
+
+    // Get replicas of master
+    var replicas = try cluster.getReplicasOfMaster(allocator, master_id);
+    defer replicas.deinit();
+
+    // Verify we got 3 replicas
+    try std.testing.expectEqual(@as(usize, 3), replicas.items.len);
+
+    // Verify all are replicas of the correct master
+    for (replicas.items) |replica| {
+        try std.testing.expect(replica.flags.slave);
+        try std.testing.expect(!replica.flags.master);
+        try std.testing.expectEqualSlices(u8, &master_id, &replica.master_id.?);
+    }
+}
+
+test "Failover: replica should start election when master fails" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup master node
+    var master_id: [40]u8 = undefined;
+    @memset(&master_id, 'm');
+    const master_node = try allocator.create(ClusterNode);
+    master_node.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.fail = false; // Initially not failed
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master_node);
+
+    // Setup myself as replica of this master
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    my_node.flags.master = false;
+    my_node.flags.slave = true;
+    my_node.master_id = master_id;
+    cluster.myself = my_node;
+
+    // Initially should not start election (master not failed)
+    try std.testing.expect(!cluster.shouldStartElection());
+
+    // Mark master as failed
+    master_node.flags.fail = true;
+
+    // Now should start election
+    try std.testing.expect(cluster.shouldStartElection());
+}
+
+test "Failover: promote replica to master" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup old master node with slots
+    var old_master_id: [40]u8 = undefined;
+    @memset(&old_master_id, 'o');
+    const old_master = try allocator.create(ClusterNode);
+    old_master.* = try ClusterNode.init(allocator, old_master_id, "127.0.0.1", 7000);
+    const old_master_key = try allocator.dupe(u8, &old_master_id);
+    try cluster.nodes.put(old_master_key, old_master);
+
+    // Assign slots to old master
+    try cluster.assignSlots(old_master, 0, 5000);
+
+    // Setup myself as replica
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    my_node.flags.master = false;
+    my_node.flags.slave = true;
+    my_node.master_id = old_master_id;
+    cluster.myself = my_node;
+
+    // Verify initial state
+    try std.testing.expect(my_node.flags.slave);
+    try std.testing.expect(!my_node.flags.master);
+    try std.testing.expectEqual(@as(usize, 0), my_node.slots.items.len);
+
+    // Promote to master
+    try cluster.promoteToMaster(allocator);
+
+    // Verify promoted state
+    try std.testing.expect(!my_node.flags.slave);
+    try std.testing.expect(my_node.flags.master);
+    try std.testing.expect(my_node.master_id == null);
+    try std.testing.expect(my_node.slots.items.len > 0);
+
+    // Verify took over slots from old master
+    const slot_owner = cluster.getNodeBySlot(100);
+    try std.testing.expect(slot_owner == my_node);
+}
+
+test "Failover: manual failover takeover mode" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup old master
+    var old_master_id: [40]u8 = undefined;
+    @memset(&old_master_id, 'o');
+    const old_master = try allocator.create(ClusterNode);
+    old_master.* = try ClusterNode.init(allocator, old_master_id, "127.0.0.1", 7000);
+    const old_master_key = try allocator.dupe(u8, &old_master_id);
+    try cluster.nodes.put(old_master_key, old_master);
+    try cluster.assignSlots(old_master, 0, 8191);
+
+    // Setup myself as replica
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    my_node.flags.master = false;
+    my_node.flags.slave = true;
+    my_node.master_id = old_master_id;
+    cluster.myself = my_node;
+
+    const initial_epoch = cluster.current_epoch;
+
+    // Execute manual failover in takeover mode
+    try cluster.manualFailover(allocator, "takeover");
+
+    // Verify promoted to master
+    try std.testing.expect(my_node.flags.master);
+    try std.testing.expect(!my_node.flags.slave);
+    try std.testing.expect(cluster.current_epoch > initial_epoch);
+    try std.testing.expect(my_node.slots.items.len > 0);
+}

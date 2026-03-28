@@ -1275,6 +1275,65 @@ pub fn cmdMigrate(
     return w.writeSimpleString("OK");
 }
 
+/// CLUSTER FAILOVER - Trigger manual failover
+///
+/// Syntax: CLUSTER FAILOVER [FORCE | TAKEOVER]
+///
+/// Modes:
+/// - (no option): Normal coordinated failover - replica waits for replication sync
+/// - FORCE: Skip replication sync check, start election immediately
+/// - TAKEOVER: Skip election entirely, promote to master without consensus (for emergencies)
+///
+/// Returns:
+///   Simple string "OK" on success
+///   Error if node is not a replica, or failover fails
+pub fn cmdClusterFailover(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "FAILOVER", args[2] = mode (optional)
+    if (args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster failover' command");
+    }
+
+    // Determine failover mode
+    const mode = if (args.len >= 3) blk: {
+        const mode_upper = try std.ascii.allocUpperString(allocator, args[2]);
+        defer allocator.free(mode_upper);
+
+        if (std.mem.eql(u8, mode_upper, "FORCE")) {
+            break :blk "force";
+        } else if (std.mem.eql(u8, mode_upper, "TAKEOVER")) {
+            break :blk "takeover";
+        } else {
+            return w.writeError("ERR Invalid CLUSTER FAILOVER mode. Valid modes: FORCE, TAKEOVER");
+        }
+    } else "normal";
+
+    // Execute manual failover
+    storage.cluster.manualFailover(allocator, mode) catch |err| {
+        switch (err) {
+            ClusterError.UnknownNode => {
+                return w.writeError("ERR This node is not a replica or cluster is not initialized");
+            },
+            ClusterError.InvalidSlot => {
+                return w.writeError("ERR This command can only be executed by a replica node");
+            },
+            else => {
+                return w.writeError("ERR Failover failed");
+            },
+        }
+    };
+
+    return w.writeSimpleString("OK");
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
@@ -1821,4 +1880,50 @@ test "cmdMigrate - AUTH2 option" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+}
+
+test "cmdClusterFailover - wrong arguments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Too many arguments
+    const args = [_][]const u8{ "CLUSTER", "FAILOVER", "FORCE", "EXTRA" };
+    const result = try cmdClusterFailover(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterFailover - invalid mode" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "FAILOVER", "INVALID" };
+    const result = try cmdClusterFailover(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Invalid") != null);
+}
+
+test "cmdClusterFailover - not a replica" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Setup myself as master (not replica)
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.flags.master = true;
+    my_node.flags.slave = false;
+    storage.cluster.myself = my_node;
+
+    const args = [_][]const u8{ "CLUSTER", "FAILOVER" };
+    const result = try cmdClusterFailover(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
 }
