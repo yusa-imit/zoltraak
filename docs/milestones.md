@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 144 (202 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 60% complete**, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 145 (204 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 70% complete**, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 8 Cluster Mode (60% complete — hash slot foundation + CLUSTER INFO/NODES/SLOTS/MYID + MEET/FORGET/ADDSLOTS/ADDSLOTSRANGE/DELSLOTS/DELSLOTSRANGE/FLUSHSLOTS + CLUSTER SETSLOT migration states + ASK/ASKING redirects + MIGRATE command (stub) + gossip protocol (MEET/PING/PONG) + background gossip task + failover + **CLUSTER REPLICAS/REPLICATE** ✅ done)
-- **Next milestone**: Phase 8.11 (CLUSTER SAVECONFIG/BUMPEPOCH — config management)
+- **Current phase**: Phase 8 Cluster Mode (70% complete — hash slot foundation + CLUSTER INFO/NODES/SLOTS/MYID + MEET/FORGET/ADDSLOTS/ADDSLOTSRANGE/DELSLOTS/DELSLOTSRANGE/FLUSHSLOTS + CLUSTER SETSLOT migration states + ASK/ASKING redirects + MIGRATE command (stub) + gossip protocol (MEET/PING/PONG) + background gossip task + failover + **CLUSTER REPLICAS/REPLICATE** ✅ + **CLUSTER SAVECONFIG/BUMPEPOCH** ✅ done)
+- **Next milestone**: Phase 8.12 (CLUSTER COUNTKEYSINSLOT/GETKEYSINSLOT/KEYSLOT — slot key introspection)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
