@@ -927,6 +927,48 @@ pub const ClusterState = struct {
         return replicas;
     }
 
+    /// Configure the current node as a replica of a master node
+    /// Validates that the master node exists and updates the current node's flags and master_id
+    /// Returns ClusterError.UnknownNode if the master node is not found
+    /// Returns ClusterError.InvalidNodeId if trying to replicate self
+    pub fn configureAsReplica(self: *ClusterState, master_id: [40]u8) !void {
+        const myself = self.myself orelse return ClusterError.UnknownNode;
+
+        // Cannot replicate yourself
+        if (std.mem.eql(u8, &myself.id, &master_id)) {
+            return ClusterError.InvalidNodeId;
+        }
+
+        // Verify master node exists
+        const master_id_str = &master_id;
+        const master_node = self.nodes.get(master_id_str) orelse return ClusterError.UnknownNode;
+
+        // Verify master is actually a master (not a replica)
+        if (master_node.flags.slave) {
+            return ClusterError.InvalidNodeId;
+        }
+
+        // Update current node to be a replica
+        myself.flags.master = false;
+        myself.flags.slave = true;
+        myself.master_id = master_id;
+
+        // Clear all slot assignments when becoming a replica
+        // Replicas don't own slots directly, they inherit from master
+        for (&self.slots, 0..) |*slot, i| {
+            if (slot.* == myself) {
+                slot.* = null;
+                self.slot_migration_states[i] = .{};
+            }
+        }
+
+        // Clear slot ranges (retain capacity for potential future master promotion)
+        myself.slots.clearRetainingCapacity(self.allocator);
+
+        // Increment config epoch to signal topology change
+        self.current_epoch += 1;
+    }
+
     /// Request a vote from a master node
     /// Masters can only vote once per epoch
     /// Returns true if vote granted, false otherwise
@@ -2592,4 +2634,156 @@ test "Failover: manual failover takeover mode" {
     try std.testing.expect(!my_node.flags.slave);
     try std.testing.expect(cluster.current_epoch > initial_epoch);
     try std.testing.expect(my_node.slots.items.len > 0);
+}
+
+test "ClusterState: configureAsReplica - success" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master_node = try allocator.create(ClusterNode);
+    master_node.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.master = true;
+    master_node.flags.slave = false;
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master_node);
+
+    // Setup myself as a master
+    const my_id = "2222222222222222222222222222222222222222".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    my_node.flags.master = true;
+    my_node.flags.slave = false;
+    cluster.myself = my_node;
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Assign some slots to myself
+    try cluster.assignSlots(my_node, 1000, 1010);
+
+    // Verify initial state
+    try std.testing.expect(my_node.flags.master);
+    try std.testing.expect(!my_node.flags.slave);
+    try std.testing.expect(my_node.master_id == null);
+    try std.testing.expect(cluster.slots[1000] == my_node);
+
+    // Configure as replica
+    try cluster.configureAsReplica(master_id);
+
+    // Verify node is now a replica
+    try std.testing.expect(!my_node.flags.master);
+    try std.testing.expect(my_node.flags.slave);
+    try std.testing.expect(my_node.master_id != null);
+    try std.testing.expect(std.mem.eql(u8, &my_node.master_id.?, &master_id));
+
+    // Verify slots are cleared
+    try std.testing.expect(cluster.slots[1000] == null);
+    try std.testing.expectEqual(@as(usize, 0), my_node.slots.items.len);
+}
+
+test "ClusterState: configureAsReplica - cannot replicate self" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "1111111111111111111111111111111111111111".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.flags.master = true;
+    cluster.myself = my_node;
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Try to replicate self - should fail
+    const result = cluster.configureAsReplica(my_id);
+    try std.testing.expectError(ClusterError.InvalidNodeId, result);
+}
+
+test "ClusterState: configureAsReplica - unknown master" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "1111111111111111111111111111111111111111".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Try to replicate unknown node
+    const unknown_id = "9999999999999999999999999999999999999999".*;
+    const result = cluster.configureAsReplica(unknown_id);
+    try std.testing.expectError(ClusterError.UnknownNode, result);
+}
+
+test "ClusterState: configureAsReplica - cannot replicate a replica" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create a replica node (not a master)
+    const replica_id = "1111111111111111111111111111111111111111".*;
+    const replica_node = try allocator.create(ClusterNode);
+    replica_node.* = try ClusterNode.init(allocator, replica_id, "127.0.0.1", 7000);
+    replica_node.flags.master = false;
+    replica_node.flags.slave = true;
+    const replica_key = try allocator.dupe(u8, &replica_id);
+    try cluster.nodes.put(replica_key, replica_node);
+
+    // Setup myself
+    const my_id = "2222222222222222222222222222222222222222".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    cluster.myself = my_node;
+    const my_key = try allocator.dupe(u8, &my_id);
+    try cluster.nodes.put(my_key, my_node);
+
+    // Try to replicate a replica - should fail
+    const result = cluster.configureAsReplica(replica_id);
+    try std.testing.expectError(ClusterError.InvalidNodeId, result);
+}
+
+test "ClusterState: getReplicasOfMaster - multiple replicas" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master_node = try allocator.create(ClusterNode);
+    master_node.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.master = true;
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master_node);
+
+    // Create replica 1
+    const replica1_id = "2222222222222222222222222222222222222222".*;
+    const replica1_node = try allocator.create(ClusterNode);
+    replica1_node.* = try ClusterNode.init(allocator, replica1_id, "127.0.0.1", 7001);
+    replica1_node.flags.master = false;
+    replica1_node.flags.slave = true;
+    replica1_node.master_id = master_id;
+    const replica1_key = try allocator.dupe(u8, &replica1_id);
+    try cluster.nodes.put(replica1_key, replica1_node);
+
+    // Create replica 2
+    const replica2_id = "3333333333333333333333333333333333333333".*;
+    const replica2_node = try allocator.create(ClusterNode);
+    replica2_node.* = try ClusterNode.init(allocator, replica2_id, "127.0.0.1", 7002);
+    replica2_node.flags.master = false;
+    replica2_node.flags.slave = true;
+    replica2_node.master_id = master_id;
+    const replica2_key = try allocator.dupe(u8, &replica2_id);
+    try cluster.nodes.put(replica2_key, replica2_node);
+
+    // Get replicas
+    const replicas = try cluster.getReplicasOfMaster(allocator, master_id);
+    defer replicas.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), replicas.items.len);
 }

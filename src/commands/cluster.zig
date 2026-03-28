@@ -1334,6 +1334,138 @@ pub fn cmdClusterFailover(
     return w.writeSimpleString("OK");
 }
 
+/// CLUSTER REPLICAS - List all replicas of a specific master node
+///
+/// Returns array of node descriptors in CLUSTER NODES format for each replica.
+/// Each line contains: <id> <ip:port@cport> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot> ...
+///
+/// Syntax: CLUSTER REPLICAS <node-id>
+///
+/// Returns:
+///   Array of strings, one per replica
+///   Empty array if master has no replicas or node not found
+pub fn cmdClusterReplicas(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "REPLICAS", args[2] = <node-id>
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster replicas' command");
+    }
+
+    const node_id_str = args[2];
+    if (node_id_str.len != 40) {
+        return w.writeError("ERR Invalid node ID: must be 40 hex characters");
+    }
+
+    // Parse node ID
+    var master_id: [40]u8 = undefined;
+    @memcpy(&master_id, node_id_str[0..40]);
+
+    // Check if master node exists
+    _ = storage.cluster.nodes.get(node_id_str) orelse {
+        return w.writeError("ERR Unknown node");
+    };
+
+    // Get all replicas of this master
+    const replicas = storage.cluster.getReplicasOfMaster(allocator, master_id) catch |err| {
+        switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return w.writeError("ERR Failed to get replicas"),
+        }
+    };
+    defer replicas.deinit();
+
+    // Build response array
+    var response = std.ArrayList(RespValue).init(allocator);
+    defer {
+        for (response.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        response.deinit();
+    }
+
+    for (replicas.items) |replica| {
+        // Format: <id> <ip:port@cport> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state>
+        const node_line = try std.fmt.allocPrint(allocator, "{s} {s}:{d}@{d} {s} {s} {d} {d} {d} {s}", .{
+            replica.id,
+            replica.addr,
+            replica.port,
+            replica.cluster_port,
+            if (replica.flags.slave) "slave" else "master",
+            if (replica.master_id) |mid| &mid else "-",
+            replica.ping_sent,
+            replica.pong_recv,
+            replica.config_epoch,
+            @tagName(replica.link_state),
+        });
+        errdefer allocator.free(node_line);
+
+        // Ownership of node_line transfers to response
+        try response.append(RespValue{ .BulkString = node_line });
+    }
+
+    return w.writeArray(try response.toOwnedSlice());
+}
+
+/// CLUSTER REPLICATE - Configure current node as a replica of a master
+///
+/// Changes the current node from master to replica, assigns it to replicate a specific master node.
+/// Clears all slot assignments from the current node (replicas don't own slots).
+///
+/// Syntax: CLUSTER REPLICATE <node-id>
+///
+/// Returns:
+///   Simple string "OK" on success
+///   Error if node-id is invalid, unknown, or same as current node
+pub fn cmdClusterReplicate(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "REPLICATE", args[2] = <node-id>
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster replicate' command");
+    }
+
+    const node_id_str = args[2];
+    if (node_id_str.len != 40) {
+        return w.writeError("ERR Invalid node ID: must be 40 hex characters");
+    }
+
+    // Parse node ID
+    var master_id: [40]u8 = undefined;
+    @memcpy(&master_id, node_id_str[0..40]);
+
+    // Configure as replica
+    storage.cluster.configureAsReplica(master_id) catch |err| {
+        switch (err) {
+            ClusterError.UnknownNode => {
+                return w.writeError("ERR Unknown node ID or cluster not initialized");
+            },
+            ClusterError.InvalidNodeId => {
+                return w.writeError("ERR Can't replicate myself or target node is not a master");
+            },
+            else => {
+                return w.writeError("ERR Failed to configure replication");
+            },
+        }
+    };
+
+    return w.writeSimpleString("OK");
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
@@ -1926,4 +2058,260 @@ test "cmdClusterFailover - not a replica" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterReplicas - list replicas of master" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master_node = try allocator.create(cluster_mod.ClusterNode);
+    master_node.* = try cluster_mod.ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.master = true;
+    master_node.flags.slave = false;
+    try storage.cluster.nodes.put(&master_id, master_node);
+
+    // Create replica 1
+    const replica1_id = "2222222222222222222222222222222222222222".*;
+    const replica1_node = try allocator.create(cluster_mod.ClusterNode);
+    replica1_node.* = try cluster_mod.ClusterNode.init(allocator, replica1_id, "127.0.0.1", 7001);
+    replica1_node.flags.master = false;
+    replica1_node.flags.slave = true;
+    replica1_node.master_id = master_id;
+    try storage.cluster.nodes.put(&replica1_id, replica1_node);
+
+    // Create replica 2
+    const replica2_id = "3333333333333333333333333333333333333333".*;
+    const replica2_node = try allocator.create(cluster_mod.ClusterNode);
+    replica2_node.* = try cluster_mod.ClusterNode.init(allocator, replica2_id, "127.0.0.1", 7002);
+    replica2_node.flags.master = false;
+    replica2_node.flags.slave = true;
+    replica2_node.master_id = master_id;
+    try storage.cluster.nodes.put(&replica2_id, replica2_node);
+
+    // Get replicas
+    const args = [_][]const u8{ "CLUSTER", "REPLICAS", "1111111111111111111111111111111111111111" };
+    const result = try cmdClusterReplicas(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return array with 2 replicas
+    try std.testing.expect(std.mem.indexOf(u8, result, "2222222222222222222222222222222222222222") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "3333333333333333333333333333333333333333") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "slave") != null);
+}
+
+test "cmdClusterReplicas - no replicas" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create master node with no replicas
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master_node = try allocator.create(cluster_mod.ClusterNode);
+    master_node.* = try cluster_mod.ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.master = true;
+    try storage.cluster.nodes.put(&master_id, master_node);
+
+    const args = [_][]const u8{ "CLUSTER", "REPLICAS", "1111111111111111111111111111111111111111" };
+    const result = try cmdClusterReplicas(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return empty array
+    try std.testing.expect(std.mem.indexOf(u8, result, "*0") != null);
+}
+
+test "cmdClusterReplicas - unknown node" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "REPLICAS", "9999999999999999999999999999999999999999" };
+    const result = try cmdClusterReplicas(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown node") != null);
+}
+
+test "cmdClusterReplicas - invalid node id length" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "REPLICAS", "short" };
+    const result = try cmdClusterReplicas(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Invalid node ID") != null);
+}
+
+test "cmdClusterReplicate - configure as replica" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master_node = try allocator.create(cluster_mod.ClusterNode);
+    master_node.* = try cluster_mod.ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.master = true;
+    master_node.flags.slave = false;
+    try storage.cluster.nodes.put(&master_id, master_node);
+
+    // Setup myself as a master (to be converted to replica)
+    const my_id = "2222222222222222222222222222222222222222".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    my_node.flags.master = true;
+    my_node.flags.slave = false;
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Replicate the master
+    const args = [_][]const u8{ "CLUSTER", "REPLICATE", "1111111111111111111111111111111111111111" };
+    const result = try cmdClusterReplicate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+
+    // Verify node is now a replica
+    try std.testing.expect(my_node.flags.slave);
+    try std.testing.expect(!my_node.flags.master);
+    try std.testing.expect(my_node.master_id != null);
+    try std.testing.expect(std.mem.eql(u8, &my_node.master_id.?, &master_id));
+}
+
+test "cmdClusterReplicate - cannot replicate self" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Setup myself
+    const my_id = "1111111111111111111111111111111111111111".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    my_node.flags.master = true;
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Try to replicate self
+    const args = [_][]const u8{ "CLUSTER", "REPLICATE", "1111111111111111111111111111111111111111" };
+    const result = try cmdClusterReplicate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "replicate myself") != null);
+}
+
+test "cmdClusterReplicate - unknown master" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Setup myself
+    const my_id = "1111111111111111111111111111111111111111".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Try to replicate unknown node
+    const args = [_][]const u8{ "CLUSTER", "REPLICATE", "9999999999999999999999999999999999999999" };
+    const result = try cmdClusterReplicate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown") != null);
+}
+
+test "cmdClusterReplicate - cannot replicate a replica" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create a replica node (not a master)
+    const replica_id = "1111111111111111111111111111111111111111".*;
+    const replica_node = try allocator.create(cluster_mod.ClusterNode);
+    replica_node.* = try cluster_mod.ClusterNode.init(allocator, replica_id, "127.0.0.1", 7000);
+    replica_node.flags.master = false;
+    replica_node.flags.slave = true;
+    try storage.cluster.nodes.put(&replica_id, replica_node);
+
+    // Setup myself
+    const my_id = "2222222222222222222222222222222222222222".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Try to replicate a replica
+    const args = [_][]const u8{ "CLUSTER", "REPLICATE", "1111111111111111111111111111111111111111" };
+    const result = try cmdClusterReplicate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "not a master") != null);
+}
+
+test "cmdClusterReplicate - clears slot assignments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master_node = try allocator.create(cluster_mod.ClusterNode);
+    master_node.* = try cluster_mod.ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    master_node.flags.master = true;
+    try storage.cluster.nodes.put(&master_id, master_node);
+
+    // Setup myself with slot assignments
+    const my_id = "2222222222222222222222222222222222222222".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7001);
+    my_node.flags.master = true;
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Assign some slots
+    const slots = [_]u16{ 1000, 1001, 1002 };
+    try storage.cluster.addSlotsToNode(allocator, &slots, my_node);
+
+    // Verify slots are assigned
+    try std.testing.expectEqual(my_node, storage.cluster.slots[1000]);
+    try std.testing.expectEqual(my_node, storage.cluster.slots[1001]);
+
+    // Replicate the master
+    const args = [_][]const u8{ "CLUSTER", "REPLICATE", "1111111111111111111111111111111111111111" };
+    const result = try cmdClusterReplicate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+
+    // Verify slots are cleared
+    try std.testing.expect(storage.cluster.slots[1000] == null);
+    try std.testing.expect(storage.cluster.slots[1001] == null);
+    try std.testing.expect(storage.cluster.slots[1002] == null);
+    try std.testing.expectEqual(@as(usize, 0), my_node.slots.items.len);
+}
+
+test "cmdClusterReplicate - wrong arguments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Too few arguments
+    const args1 = [_][]const u8{ "CLUSTER", "REPLICATE" };
+    const result1 = try cmdClusterReplicate(allocator, &args1, storage, null, 0);
+    defer allocator.free(result1);
+    try std.testing.expect(std.mem.indexOf(u8, result1, "ERR") != null);
+
+    // Too many arguments
+    const args2 = [_][]const u8{ "CLUSTER", "REPLICATE", "1111111111111111111111111111111111111111", "EXTRA" };
+    const result2 = try cmdClusterReplicate(allocator, &args2, storage, null, 0);
+    defer allocator.free(result2);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "ERR") != null);
 }
