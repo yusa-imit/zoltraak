@@ -456,6 +456,7 @@ pub const Storage = struct {
     config: *Config,
     acl: ?*ACLStore, // ACL user management
     cluster: ClusterState, // Cluster state management
+    cluster_config_path: []const u8, // Path to nodes.conf cluster config file
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -531,6 +532,7 @@ pub const Storage = struct {
             .config = cfg,
             .acl = acl_store,
             .cluster = cluster_state,
+            .cluster_config_path = "nodes.conf", // Default cluster config file
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),

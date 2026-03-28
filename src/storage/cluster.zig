@@ -170,6 +170,7 @@ pub const ClusterError = error{
     InvalidSlot,
     InvalidSlotRange,
     InvalidNodeId,
+    InvalidPath,
     UnknownNode,
     CannotForgetMyself,
     CannotForgetMaster,
@@ -178,6 +179,7 @@ pub const ClusterError = error{
     SlotNotOwnedByNode,
     SlotAlreadyOwned,
     SlotHasKeys,
+    ClusterNotInitialized,
 };
 
 /// Slot migration state
@@ -912,14 +914,14 @@ pub const ClusterState = struct {
     /// Get all replicas of a specific master node
     /// Returns allocated slice that caller must free
     pub fn getReplicasOfMaster(self: *const ClusterState, allocator: std.mem.Allocator, master_id: [40]u8) !std.ArrayList(*ClusterNode) {
-        var replicas = std.ArrayList(*ClusterNode).init(allocator);
-        errdefer replicas.deinit();
+        var replicas = try std.ArrayList(*ClusterNode).initCapacity(allocator, 0);
+        errdefer replicas.deinit(allocator);
 
         var it = self.nodes.valueIterator();
         while (it.next()) |node| {
             if (node.*.flags.slave and node.*.master_id != null) {
                 if (std.mem.eql(u8, &node.*.master_id.?, &master_id)) {
-                    try replicas.append(node.*);
+                    try replicas.append(allocator, node.*);
                 }
             }
         }
@@ -963,7 +965,7 @@ pub const ClusterState = struct {
         }
 
         // Clear slot ranges (retain capacity for potential future master promotion)
-        myself.slots.clearRetainingCapacity(self.allocator);
+        myself.slots.clearRetainingCapacity();
 
         // Increment config epoch to signal topology change
         self.current_epoch += 1;
@@ -1127,13 +1129,27 @@ pub const ClusterState = struct {
     /// Calls fsync(2) to ensure durability before returning
     /// Format: <node-id> <ip>:<port@cluster-port> <flags> <master-id|-> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot-ranges>
     pub fn saveConfig(self: *ClusterState, config_path: []const u8) !void {
-        var file = try std.fs.cwd().createFile(config_path, .{});
+        // Validate path is not empty
+        if (config_path.len == 0) return error.InvalidPath;
+
+        // Reject path traversal attempts
+        if (std.mem.indexOf(u8, config_path, "..") != null) {
+            std.log.err("Rejected path with .. component: {s}", .{config_path});
+            return error.InvalidPath;
+        }
+
+        var file = std.fs.cwd().createFile(config_path, .{}) catch |err| {
+            std.log.err("Failed to create config file at {s}: {}", .{config_path, err});
+            return err;
+        };
         defer file.close();
 
-        var writer = file.writer();
+        var buf = try std.ArrayList(u8).initCapacity(self.allocator, 4096);
+        defer buf.deinit(self.allocator);
+        const w = buf.writer(self.allocator);
 
         // Write header comment
-        try writer.print("# Cluster configuration file, created by zoltraak\n", .{});
+        try w.print("# Cluster configuration file, created by zoltraak\n", .{});
 
         // Write each node's line
         var node_it = self.nodes.valueIterator();
@@ -1193,7 +1209,7 @@ pub const ClusterState = struct {
             }
 
             // Write node line
-            try writer.print("{s} {s}:{d}@{d} {s} {s} {d} {d} {d} {s} {s}\n", .{
+            try w.print("{s} {s}:{d}@{d} {s} {s} {d} {d} {d} {s} {s}\n", .{
                 &node.id,
                 node.addr,
                 node.port,
@@ -1209,9 +1225,10 @@ pub const ClusterState = struct {
         }
 
         // Write vars line
-        try writer.print("vars currentEpoch {d} lastVoteEpoch 0\n", .{self.current_epoch});
+        try w.print("vars currentEpoch {d} lastVoteEpoch 0\n", .{self.current_epoch});
 
-        // Sync to disk
+        // Write buffer to file and sync to disk
+        try file.writeAll(buf.items);
         try file.sync();
     }
 

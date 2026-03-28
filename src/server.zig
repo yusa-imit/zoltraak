@@ -139,7 +139,7 @@ pub const GossipTask = struct {
             };
 
             // Sleep for the specified interval
-            std.time.sleep(self.interval_ms * std.time.ns_per_ms);
+            std.Thread.sleep(self.interval_ms * std.time.ns_per_ms);
         }
     }
 

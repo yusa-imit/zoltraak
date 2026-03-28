@@ -486,6 +486,8 @@ redis-cli -p 6379
 | CLUSTER KEYSLOT | `CLUSTER KEYSLOT <key>` | Return hash slot (0-16383) for a key using CRC16 algorithm |
 | CLUSTER COUNTKEYSINSLOT | `CLUSTER COUNTKEYSINSLOT <slot>` | Count keys in a hash slot (stub: always returns 0) |
 | CLUSTER GETKEYSINSLOT | `CLUSTER GETKEYSINSLOT <slot> <count>` | Return keys in a hash slot (stub: always returns empty array) |
+| CLUSTER SAVECONFIG | `CLUSTER SAVECONFIG` | Force immediate save of cluster configuration to nodes.conf file |
+| CLUSTER BUMPEPOCH | `CLUSTER BUMPEPOCH` | Manually increment cluster configuration epoch (returns BUMPED or STILL) |
 | CLUSTER HELP | `CLUSTER HELP` | Show help for CLUSTER command |
 
 **Note**: The CLUSTER commands provide Redis-compatible interfaces for cluster mode, but Zoltraak operates as a single standalone node. Most commands return stub values indicating a single-node cluster. CLUSTER KEYSLOT correctly implements the Redis CRC16 hash slot algorithm with hash tag support (e.g., `{foo}bar` uses "foo" for hashing), which is useful for understanding key distribution even in standalone mode.

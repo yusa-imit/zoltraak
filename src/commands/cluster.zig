@@ -1176,8 +1176,8 @@ pub fn cmdMigrate(
     var auth_password: ?[]const u8 = null;
     var auth_username: ?[]const u8 = null;
     var keys_mode = false;
-    var keys_list = std.ArrayList([]const u8).init(allocator);
-    defer keys_list.deinit();
+    var keys_list = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer keys_list.deinit(allocator);
 
     var i: usize = 6;
     while (i < args.len) : (i += 1) {
@@ -1211,7 +1211,7 @@ pub fn cmdMigrate(
             // Collect all remaining arguments as keys
             i += 1;
             while (i < args.len) : (i += 1) {
-                try keys_list.append(args[i]);
+                try keys_list.append(allocator, args[i]);
             }
             break;
         } else {
@@ -1222,8 +1222,8 @@ pub fn cmdMigrate(
     // They will be used when real TCP network transfer is implemented
 
     // Determine which keys to migrate
-    var migrate_keys = std.ArrayList([]const u8).init(allocator);
-    defer migrate_keys.deinit();
+    var migrate_keys = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer migrate_keys.deinit(allocator);
 
     if (keys_mode) {
         // KEYS option specified - migrate multiple keys
@@ -1231,21 +1231,20 @@ pub fn cmdMigrate(
             return w.writeError("ERR When using KEYS option, key argument must be empty string");
         }
         for (keys_list.items) |k| {
-            try migrate_keys.append(k);
+            try migrate_keys.append(allocator, k);
         }
     } else {
         // Single key mode
         if (key_arg.len == 0) {
             return w.writeError("ERR key argument cannot be empty without KEYS option");
         }
-        try migrate_keys.append(key_arg);
+        try migrate_keys.append(allocator, key_arg);
     }
 
     // Check if any keys exist
     var keys_exist = false;
     for (migrate_keys.items) |key| {
-        const exists = try storage.exists(&[_][]const u8{key});
-        if (exists > 0) {
+        if (storage.exists(key)) {
             keys_exist = true;
             break;
         }
@@ -1374,21 +1373,19 @@ pub fn cmdClusterReplicas(
     };
 
     // Get all replicas of this master
-    const replicas = storage.cluster.getReplicasOfMaster(allocator, master_id) catch |err| {
-        switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return w.writeError("ERR Failed to get replicas"),
-        }
+    var replicas = storage.cluster.getReplicasOfMaster(allocator, master_id) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return w.writeError("ERR Failed to get replicas");
     };
-    defer replicas.deinit();
+    defer replicas.deinit(allocator);
 
     // Build response array
-    var response = std.ArrayList(RespValue).init(allocator);
+    var response = try std.ArrayList(RespValue).initCapacity(allocator, replicas.items.len);
     defer {
         for (response.items) |item| {
             deinitRespValue(allocator, item);
         }
-        response.deinit();
+        response.deinit(allocator);
     }
 
     for (replicas.items) |replica| {
@@ -1408,10 +1405,10 @@ pub fn cmdClusterReplicas(
         errdefer allocator.free(node_line);
 
         // Ownership of node_line transfers to response
-        try response.append(RespValue{ .BulkString = node_line });
+        try response.append(allocator, RespValue{ .bulk_string = node_line });
     }
 
-    return w.writeArray(try response.toOwnedSlice());
+    return w.writeArray(try response.toOwnedSlice(allocator));
 }
 
 /// CLUSTER REPLICATE - Configure current node as a replica of a master
@@ -1488,12 +1485,16 @@ pub fn cmdClusterSaveConfig(
     }
 
     // Save configuration to nodes.conf
-    storage.cluster.saveConfig("nodes.conf") catch |err| {
+    storage.cluster.saveConfig(storage.cluster_config_path) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = switch (err) {
             error.OutOfSpace => "ERR Could not save config: No space left on device",
             error.AccessDenied => "ERR Could not save config: Permission denied",
-            else => try std.fmt.bufPrint(&buf, "ERR Could not save config: {}", .{err}),
+            error.InvalidPath => "ERR Invalid config file path",
+            else => blk: {
+                const formatted = std.fmt.bufPrint(&buf, "ERR Could not save config: {}", .{err}) catch "ERR Could not save config";
+                break :blk formatted;
+            },
         };
         return w.writeError(msg);
     };
@@ -1535,9 +1536,9 @@ pub fn cmdClusterBumpEpoch(
     };
 
     // Auto-save config after bumping
-    storage.cluster.saveConfig("nodes.conf") catch {
+    storage.cluster.saveConfig(storage.cluster_config_path) catch |err| {
         // Log error but don't fail the command - epoch was already bumped
-        std.debug.print("Warning: Failed to save config after BUMPEPOCH\n", .{});
+        std.log.warn("Failed to save config after BUMPEPOCH: {}", .{err});
     };
 
     // Format response: BUMPED <epoch> or STILL <epoch>
