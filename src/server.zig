@@ -9,6 +9,7 @@ const pubsub_mod = @import("storage/pubsub.zig");
 const repl_mod = @import("storage/replication.zig");
 const client_mod = @import("commands/client.zig");
 const scripting_mod = @import("storage/scripting.zig");
+const cluster_mod = @import("storage/cluster.zig");
 
 const Parser = protocol.Parser;
 const Writer = writer_mod.Writer;
@@ -18,6 +19,7 @@ const PubSub = pubsub_mod.PubSub;
 const ReplicationState = repl_mod.ReplicationState;
 const ClientRegistry = client_mod.ClientRegistry;
 const ScriptStore = scripting_mod.ScriptStore;
+const ClusterState = cluster_mod.ClusterState;
 
 /// Server configuration
 pub const Config = struct {
@@ -69,6 +71,101 @@ pub const ShutdownState = struct {
     }
 };
 
+/// Background task for cluster gossip protocol
+/// Periodically sends PING messages to random nodes and updates health status
+pub const GossipTask = struct {
+    allocator: std.mem.Allocator,
+    /// Pointer to the primary database's cluster state
+    cluster: *ClusterState,
+    /// Thread handle for the background task
+    thread: ?std.Thread,
+    /// Flag to signal shutdown
+    running: std.atomic.Value(bool),
+    /// Interval between gossip cycles (milliseconds)
+    interval_ms: u64,
+
+    /// Initialize a new gossip task
+    pub fn init(allocator: std.mem.Allocator, cluster: *ClusterState, interval_ms: u64) GossipTask {
+        return GossipTask{
+            .allocator = allocator,
+            .cluster = cluster,
+            .thread = null,
+            .running = std.atomic.Value(bool).init(false),
+            .interval_ms = interval_ms,
+        };
+    }
+
+    /// Start the background gossip task
+    /// Uses acquire/release ordering to ensure proper synchronization:
+    /// - .acquire on load: ensures we see any prior stores before proceeding
+    /// - .release on store: ensures running=true is visible to gossipLoop before thread starts
+    pub fn start(self: *GossipTask) !void {
+        if (self.running.load(.acquire)) {
+            return error.AlreadyRunning;
+        }
+
+        // Release: ensure running=true is visible to spawned thread
+        self.running.store(true, .release);
+        self.thread = try std.Thread.spawn(.{}, gossipLoop, .{self});
+    }
+
+    /// Stop the background gossip task
+    /// Uses acquire/release ordering for graceful shutdown:
+    /// - .acquire on load: check if already stopped
+    /// - .release on store: ensure running=false is visible to gossipLoop
+    pub fn stop(self: *GossipTask) void {
+        if (!self.running.load(.acquire)) {
+            return;
+        }
+
+        // Release: ensure running=false is visible to gossipLoop thread
+        self.running.store(false, .release);
+
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
+        }
+    }
+
+    /// Main loop for the gossip task.
+    /// Runs until the running flag is cleared by stop().
+    /// Performs a gossip cycle every interval_ms milliseconds.
+    /// Errors during gossip cycles are logged but do not terminate the loop.
+    fn gossipLoop(self: *GossipTask) void {
+        while (self.running.load(.acquire)) {
+            self.performGossipCycle() catch |err| {
+                // Log error but continue running
+                std.log.err("Cluster gossip cycle failed: {}", .{err});
+            };
+
+            // Sleep for the specified interval
+            std.time.sleep(self.interval_ms * std.time.ns_per_ms);
+        }
+    }
+
+    /// Perform one gossip cycle: select random node, send PING, update health
+    fn performGossipCycle(self: *GossipTask) !void {
+        // Skip if cluster has no other nodes
+        if (self.cluster.nodes.count() <= 1) {
+            return;
+        }
+
+        // Select random nodes for gossip
+        const gossip_nodes = try self.cluster.selectRandomNodesForGossip(self.allocator, 1);
+        defer self.allocator.free(gossip_nodes);
+
+        if (gossip_nodes.len == 0) {
+            return;
+        }
+
+        // Send PING to the first selected node
+        self.cluster.sendPingToNode(gossip_nodes[0].node_id);
+
+        // Update health status for all nodes
+        self.cluster.updateNodeHealth();
+    }
+};
+
 /// TCP server for handling Redis-compatible connections
 pub const Server = struct {
     allocator: std.mem.Allocator,
@@ -88,6 +185,8 @@ pub const Server = struct {
     running: std.atomic.Value(bool),
     /// Shutdown state tracking
     shutdown_state: ShutdownState,
+    /// Background gossip task for cluster protocol
+    gossip_task: ?GossipTask,
 
     /// Initialize a new server instance.
     /// If `config.replicaof_host` is set, the server starts as a replica.
@@ -136,13 +235,27 @@ pub const Server = struct {
             .next_subscriber_id = 1,
             .running = std.atomic.Value(bool).init(false),
             .shutdown_state = ShutdownState.init(),
+            .gossip_task = null,
         };
+
+        // Initialize gossip task if cluster mode is enabled
+        // For now, cluster mode is disabled by default, but we set up the task
+        // The task will be started in start() if cluster is enabled
+        const GOSSIP_INTERVAL_MS = 100;
+        if (databases.len > 0) {
+            server.gossip_task = GossipTask.init(allocator, &databases[0].cluster, GOSSIP_INTERVAL_MS);
+        }
 
         return server;
     }
 
     /// Deinitialize the server and free resources
     pub fn deinit(self: *Server) void {
+        // Stop gossip task if running
+        if (self.gossip_task) |*task| {
+            task.stop();
+        }
+
         if (self.aof) |a| a.close();
         for (self.databases) |*db| {
             db.deinit();
@@ -183,6 +296,15 @@ pub const Server = struct {
 
         self.running.store(true, .monotonic);
 
+        // Start gossip task if cluster mode is enabled
+        if (self.gossip_task) |*task| {
+            if (self.databases.len > 0 and self.databases[0].cluster.enabled) {
+                task.start() catch |err| {
+                    std.debug.print("Warning: Failed to start gossip task: {any}\n", .{err});
+                };
+            }
+        }
+
         // Colored startup logs using ANSI escape codes
         const cyan_bold = "\x1b[1;36m";
         const green = "\x1b[32m";
@@ -202,6 +324,12 @@ pub const Server = struct {
             .replica => yellow,
         };
         std.debug.print("Role: {s}{s}{s}\n", .{ role_color, role_str, reset });
+
+        // Show cluster status if enabled
+        if (self.databases.len > 0 and self.databases[0].cluster.enabled) {
+            std.debug.print("Cluster: {s}enabled{s} (gossip task running)\n", .{ green, reset });
+        }
+
         std.debug.print("{s}Ready to accept connections.{s}\n", .{ green_bold, reset });
 
         // Accept connections (single-threaded)

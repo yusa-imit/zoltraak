@@ -773,8 +773,8 @@ pub const ClusterState = struct {
     /// Select random nodes for gossip (up to max_nodes)
     /// Returns array of GossipNodeInfo that caller must free
     pub fn selectRandomNodesForGossip(self: *const ClusterState, allocator: std.mem.Allocator, max_nodes: usize) ![]GossipNodeInfo {
-        var result = std.ArrayList(GossipNodeInfo).init(allocator);
-        errdefer result.deinit();
+        var result = std.ArrayListUnmanaged(GossipNodeInfo){};
+        errdefer result.deinit(allocator);
 
         var it = self.nodes.valueIterator();
         var count: usize = 0;
@@ -791,7 +791,7 @@ pub const ClusterState = struct {
                 }
             }
 
-            try result.append(GossipNodeInfo{
+            try result.append(allocator, GossipNodeInfo{
                 .node_id = node.*.id,
                 .addr = node.*.addr,
                 .port = node.*.port,
@@ -802,7 +802,7 @@ pub const ClusterState = struct {
             count += 1;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(allocator);
     }
 
     /// Update node health status based on ping/pong timestamps
@@ -1994,8 +1994,166 @@ test "Select random nodes for gossip" {
     try std.testing.expectEqual(@as(usize, 3), selected.len);
 
     // Verify they are all different
-    try std.testing.expect(!std.mem.eql(u8, &selected[0].id, &selected[1].id));
-    try std.testing.expect(!std.mem.eql(u8, &selected[1].id, &selected[2].id));
-    try std.testing.expect(!std.mem.eql(u8, &selected[0].id, &selected[2].id));
+    try std.testing.expect(!std.mem.eql(u8, &selected[0].node_id, &selected[1].node_id));
+    try std.testing.expect(!std.mem.eql(u8, &selected[1].node_id, &selected[2].node_id));
+    try std.testing.expect(!std.mem.eql(u8, &selected[0].node_id, &selected[2].node_id));
+}
+
+test "Background gossip: periodic PING creation" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add 5 nodes to the cluster
+    var i: u8 = 0;
+    while (i < 5) : (i += 1) {
+        var node_id: [40]u8 = undefined;
+        @memset(&node_id, 'a' + i);
+        const node = try allocator.create(ClusterNode);
+        node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7001 + i);
+        const node_key = try allocator.dupe(u8, &node_id);
+        try cluster.nodes.put(node_key, node);
+    }
+
+    // Create PING message for gossip (this is what background task does)
+    const ping_msg = try cluster.createPingMessage(allocator);
+    defer allocator.free(ping_msg.gossip_nodes);
+
+    // Verify PING message structure
+    try std.testing.expectEqual(GossipMessageType.ping, ping_msg.msg_type);
+    try std.testing.expectEqualSlices(u8, &my_id, &ping_msg.sender_id);
+    try std.testing.expect(ping_msg.timestamp > 0);
+    try std.testing.expectEqual(@as(u64, 1), ping_msg.config_epoch);
+    try std.testing.expect(ping_msg.gossip_nodes.len > 0);
+    try std.testing.expect(ping_msg.gossip_nodes.len <= 3); // Max 3 nodes gossiped
+}
+
+test "Background gossip: node health monitoring" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add healthy node
+    var healthy_id: [40]u8 = undefined;
+    @memset(&healthy_id, 'h');
+    const healthy_node = try allocator.create(ClusterNode);
+    healthy_node.* = try ClusterNode.init(allocator, healthy_id, "127.0.0.1", 7001);
+    const healthy_key = try allocator.dupe(u8, &healthy_id);
+    try cluster.nodes.put(healthy_key, healthy_node);
+
+    // Add unhealthy node (timed out)
+    var unhealthy_id: [40]u8 = undefined;
+    @memset(&unhealthy_id, 'u');
+    const unhealthy_node = try allocator.create(ClusterNode);
+    unhealthy_node.* = try ClusterNode.init(allocator, unhealthy_id, "127.0.0.1", 7002);
+    const unhealthy_key = try allocator.dupe(u8, &unhealthy_id);
+    try cluster.nodes.put(unhealthy_key, unhealthy_node);
+
+    // Simulate PING sent to both nodes
+    const now = std.time.milliTimestamp();
+    healthy_node.ping_sent = now - 1000; // 1 second ago
+    healthy_node.pong_recv = now - 500; // PONG received 500ms ago (healthy)
+
+    unhealthy_node.ping_sent = now - 6000; // 6 seconds ago
+    unhealthy_node.pong_recv = 0; // No PONG received (unhealthy)
+
+    // Update health status (this is what background task does periodically)
+    cluster.updateNodeHealth();
+
+    // Verify healthy node is NOT marked as pfail
+    const healthy_check = cluster.nodes.get(&healthy_id).?;
+    try std.testing.expect(!healthy_check.flags.pfail);
+
+    // Verify unhealthy node IS marked as pfail
+    const unhealthy_check = cluster.nodes.get(&unhealthy_id).?;
+    try std.testing.expect(unhealthy_check.flags.pfail);
+}
+
+test "Background gossip: PING tracking" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add target node
+    var target_id: [40]u8 = undefined;
+    @memset(&target_id, 't');
+    const target_node = try allocator.create(ClusterNode);
+    target_node.* = try ClusterNode.init(allocator, target_id, "127.0.0.1", 7001);
+    const target_key = try allocator.dupe(u8, &target_id);
+    try cluster.nodes.put(target_key, target_node);
+
+    // Initially, no PING sent
+    try std.testing.expectEqual(@as(i64, 0), target_node.ping_sent);
+
+    // Send PING (this is what background task does)
+    cluster.sendPingToNode(target_id);
+
+    // Verify PING timestamp was updated
+    const updated_node = cluster.nodes.get(&target_id).?;
+    try std.testing.expect(updated_node.ping_sent > 0);
+}
+
+test "Background gossip: integration - full cycle" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add 3 nodes
+    var i: u8 = 0;
+    while (i < 3) : (i += 1) {
+        var node_id: [40]u8 = undefined;
+        @memset(&node_id, 'a' + i);
+        const node = try allocator.create(ClusterNode);
+        node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7001 + i);
+        const node_key = try allocator.dupe(u8, &node_id);
+        try cluster.nodes.put(node_key, node);
+    }
+
+    // Simulate one gossip cycle:
+    // 1. Create PING message
+    const ping_msg = try cluster.createPingMessage(allocator);
+    defer allocator.free(ping_msg.gossip_nodes);
+
+    // 2. "Send" PING to one of the gossiped nodes
+    if (ping_msg.gossip_nodes.len > 0) {
+        cluster.sendPingToNode(ping_msg.gossip_nodes[0].node_id);
+    }
+
+    // 3. Verify PING timestamp was set
+    if (ping_msg.gossip_nodes.len > 0) {
+        const target_node = cluster.nodes.get(&ping_msg.gossip_nodes[0].node_id);
+        try std.testing.expect(target_node != null);
+        try std.testing.expect(target_node.?.ping_sent > 0);
+    }
+
+    // 4. Update health status
+    cluster.updateNodeHealth();
+
+    // Verify system is functional (no crashes, data structures intact)
+    try std.testing.expectEqual(@as(usize, 4), cluster.nodes.count()); // myself + 3 nodes
 }
 
