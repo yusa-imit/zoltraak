@@ -2578,6 +2578,50 @@ pub fn cmdClusterKeyslot(
     return w.writeInteger(slot);
 }
 
+
+/// READONLY - Enable read queries on replica node
+pub fn cmdReadonly(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    client_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Validate arity: READONLY
+    if (args.len != 1) {
+        return w.writeError("ERR wrong number of arguments for 'readonly' command");
+    }
+
+    // Set readonly flag for this client
+    try storage.cluster.setReadonly(client_id);
+
+    return w.writeSimpleString("OK");
+}
+
+/// READWRITE - Disable read queries on replica node (return to default)
+pub fn cmdReadwrite(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    client_id: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Validate arity: READWRITE
+    if (args.len != 1) {
+        return w.writeError("ERR wrong number of arguments for 'readwrite' command");
+    }
+
+    // Clear readonly flag for this client
+    storage.cluster.clearReadonly(client_id);
+
+    return w.writeSimpleString("OK");
+}
 // ============================================================================
 // Tests for CLUSTER COUNTKEYSINSLOT, GETKEYSINSLOT, KEYSLOT
 // ============================================================================
@@ -2799,4 +2843,116 @@ test "cmdClusterKeyslot - cluster disabled returns error" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+// ============================================================================
+// Tests for READONLY/READWRITE Commands
+// ============================================================================
+
+test "cmdReadonly - sets readonly flag" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client_id: u64 = 555;
+    const args = [_][]const u8{"READONLY"};
+
+    const result = try cmdReadonly(allocator, &args, storage, null, client_id);
+    defer allocator.free(result);
+
+    // Should return OK
+    try std.testing.expect(std.mem.indexOf(u8, result, "+OK") != null);
+
+    // Verify flag is set
+    try std.testing.expect(storage.cluster.hasReadonly(client_id));
+}
+
+test "cmdReadwrite - clears readonly flag" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client_id: u64 = 666;
+
+    // First set readonly
+    try storage.cluster.setReadonly(client_id);
+    try std.testing.expect(storage.cluster.hasReadonly(client_id));
+
+    // Now clear it
+    const args = [_][]const u8{"READWRITE"};
+    const result = try cmdReadwrite(allocator, &args, storage, null, client_id);
+    defer allocator.free(result);
+
+    // Should return OK
+    try std.testing.expect(std.mem.indexOf(u8, result, "+OK") != null);
+
+    // Verify flag is cleared
+    try std.testing.expect(!storage.cluster.hasReadonly(client_id));
+}
+
+test "cmdReadonly - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client_id: u64 = 777;
+    const args = [_][]const u8{ "READONLY", "extra" };
+
+    const result = try cmdReadonly(allocator, &args, storage, null, client_id);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "cmdReadwrite - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client_id: u64 = 888;
+    const args = [_][]const u8{ "READWRITE", "extra" };
+
+    const result = try cmdReadwrite(allocator, &args, storage, null, client_id);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "cmdReadonly/cmdReadwrite - multiple clients independently" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const client1: u64 = 100;
+    const client2: u64 = 200;
+
+    // Set readonly for client1
+    const args1 = [_][]const u8{"READONLY"};
+    const result1 = try cmdReadonly(allocator, &args1, storage, null, client1);
+    defer allocator.free(result1);
+
+    // Verify only client1 has readonly
+    try std.testing.expect(storage.cluster.hasReadonly(client1));
+    try std.testing.expect(!storage.cluster.hasReadonly(client2));
+
+    // Set readonly for client2
+    const result2 = try cmdReadonly(allocator, &args1, storage, null, client2);
+    defer allocator.free(result2);
+
+    // Both should have readonly
+    try std.testing.expect(storage.cluster.hasReadonly(client1));
+    try std.testing.expect(storage.cluster.hasReadonly(client2));
+
+    // Clear readonly for client1
+    const args2 = [_][]const u8{"READWRITE"};
+    const result3 = try cmdReadwrite(allocator, &args2, storage, null, client1);
+    defer allocator.free(result3);
+
+    // Only client2 should have readonly
+    try std.testing.expect(!storage.cluster.hasReadonly(client1));
+    try std.testing.expect(storage.cluster.hasReadonly(client2));
 }

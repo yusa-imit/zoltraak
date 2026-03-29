@@ -238,6 +238,8 @@ pub const ClusterState = struct {
     banned_nodes: std.StringHashMap(i64),
     /// Client IDs that have sent ASKING command (for ASK redirect bypass)
     asking_clients: std.AutoHashMap(u64, void),
+    /// Client IDs that have enabled READONLY mode (allows reads on replica)
+    readonly_clients: std.AutoHashMap(u64, void),
     /// Failover votes: tracks which nodes voted for which replica (epoch -> node_id -> voted_for_node_id)
     failover_votes: std.AutoHashMap(u64, std.StringHashMap([40]u8)),
     /// Replication offset for myself (used in election tie-breaking)
@@ -260,6 +262,7 @@ pub const ClusterState = struct {
             .state = .fail,
             .banned_nodes = std.StringHashMap(i64).init(allocator),
             .asking_clients = std.AutoHashMap(u64, void).init(allocator),
+            .readonly_clients = std.AutoHashMap(u64, void).init(allocator),
             .failover_votes = std.AutoHashMap(u64, std.StringHashMap([40]u8)).init(allocator),
             .my_replication_offset = 0,
         };
@@ -274,6 +277,7 @@ pub const ClusterState = struct {
         self.nodes.deinit();
         self.banned_nodes.deinit();
         self.asking_clients.deinit();
+        self.readonly_clients.deinit();
 
         // Clean up failover votes
         var vote_it = self.failover_votes.valueIterator();
@@ -589,6 +593,22 @@ pub const ClusterState = struct {
     /// Check if client has ASKING flag set
     pub fn hasAsking(self: *const ClusterState, client_id: u64) bool {
         return self.asking_clients.contains(client_id);
+    }
+
+    /// Set READONLY flag for a client (allows read commands on replica)
+    /// When set, client can read from replica nodes in cluster mode
+    pub fn setReadonly(self: *ClusterState, client_id: u64) !void {
+        try self.readonly_clients.put(client_id, {});
+    }
+
+    /// Clear READONLY flag for a client (returns to default read-write mode)
+    pub fn clearReadonly(self: *ClusterState, client_id: u64) void {
+        _ = self.readonly_clients.remove(client_id);
+    }
+
+    /// Check if client has READONLY flag set
+    pub fn hasReadonly(self: *const ClusterState, client_id: u64) bool {
+        return self.readonly_clients.contains(client_id);
     }
 
     /// Determine if a slot access should be redirected with ASK
@@ -3386,4 +3406,63 @@ test "getKeysInSlot - invalid slot returns empty array" {
     }
 
     try std.testing.expectEqual(@as(usize, 0), keys.len);
+}
+
+test "ClusterState: setReadonly/hasReadonly/clearReadonly" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const client_id: u64 = 12345;
+
+    // Initially no readonly flag
+    try std.testing.expect(!cluster.hasReadonly(client_id));
+
+    // Set readonly flag
+    try cluster.setReadonly(client_id);
+    try std.testing.expect(cluster.hasReadonly(client_id));
+
+    // Clear readonly flag
+    cluster.clearReadonly(client_id);
+    try std.testing.expect(!cluster.hasReadonly(client_id));
+}
+
+test "ClusterState: readonly flag is per-client" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const client1: u64 = 100;
+    const client2: u64 = 200;
+
+    // Set readonly for client1 only
+    try cluster.setReadonly(client1);
+
+    try std.testing.expect(cluster.hasReadonly(client1));
+    try std.testing.expect(!cluster.hasReadonly(client2));
+
+    // Clear client1, set client2
+    cluster.clearReadonly(client1);
+    try cluster.setReadonly(client2);
+
+    try std.testing.expect(!cluster.hasReadonly(client1));
+    try std.testing.expect(cluster.hasReadonly(client2));
+}
+
+test "ClusterState: clearReadonly is idempotent" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const client_id: u64 = 999;
+
+    // Clear non-existent flag (should not error)
+    cluster.clearReadonly(client_id);
+    try std.testing.expect(!cluster.hasReadonly(client_id));
+
+    // Set and clear multiple times
+    try cluster.setReadonly(client_id);
+    cluster.clearReadonly(client_id);
+    cluster.clearReadonly(client_id);
+    try std.testing.expect(!cluster.hasReadonly(client_id));
 }
