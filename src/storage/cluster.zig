@@ -1252,6 +1252,63 @@ pub const ClusterState = struct {
             return .{ .bumped = false, .epoch = myself.config_epoch };
         }
     }
+
+    /// Count the number of keys in a specific hash slot
+    /// Iterates through all keys in the storage HashMap and counts those in the given slot
+    ///
+    /// Arguments:
+    ///   - data: The storage HashMap containing all keys
+    ///   - slot: The slot number (0-16383)
+    ///
+    /// Returns the count of keys in the slot
+    pub fn countKeysInSlot(_: *const ClusterState, data: anytype, slot: u16) usize {
+        if (slot >= CLUSTER_SLOTS) return 0;
+
+        var count: usize = 0;
+        var it = data.keyIterator();
+        while (it.next()) |key| {
+            if (keySlot(key.*) == slot) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    /// Get all keys in a specific hash slot
+    /// Iterates through all keys in the storage HashMap and collects those in the given slot
+    ///
+    /// Arguments:
+    ///   - allocator: Allocator for the returned array
+    ///   - data: The storage HashMap containing all keys
+    ///   - slot: The slot number (0-16383)
+    ///   - max_count: Maximum number of keys to return (0 = unlimited)
+    ///
+    /// Returns an allocated slice of key strings (caller must free)
+    pub fn getKeysInSlot(_: *const ClusterState, allocator: std.mem.Allocator, data: anytype, slot: u16, max_count: usize) ![][]const u8 {
+        if (slot >= CLUSTER_SLOTS) {
+            return &[_][]const u8{};
+        }
+
+        var keys = std.ArrayList([]const u8).init(allocator);
+        errdefer keys.deinit();
+
+        var it = data.keyIterator();
+        while (it.next()) |key| {
+            if (keySlot(key.*) == slot) {
+                // Duplicate key string for safety
+                const key_copy = try allocator.dupe(u8, key.*);
+                errdefer allocator.free(key_copy);
+                try keys.append(key_copy);
+
+                // Check max_count limit
+                if (max_count > 0 and keys.items.len >= max_count) {
+                    break;
+                }
+            }
+        }
+
+        return keys.toOwnedSlice();
+    }
 };
 
 // Tests
@@ -3119,4 +3176,214 @@ test "ClusterState: bumpEpoch returns STILL when config_epoch > current_epoch" {
     try std.testing.expectEqual(@as(u64, 12), result.epoch);
     try std.testing.expectEqual(@as(u64, 12), my_node.config_epoch);
     try std.testing.expectEqual(@as(u64, 10), cluster.current_epoch);
+}
+
+// ============================================================================
+// Tests for countKeysInSlot() and getKeysInSlot()
+// ============================================================================
+
+test "countKeysInSlot - empty data" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Count keys in slot 0 (should be 0 since data is empty)
+    const count = cluster.countKeysInSlot(&data, 0);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "countKeysInSlot - keys in different slots" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Add keys that we know map to specific slots
+    // We'll add keys and count them
+    try data.put("key1", {});
+    try data.put("key2", {});
+    try data.put("key3", {});
+
+    // Calculate slots for our keys
+    const slot1 = keySlot("key1");
+    _ = keySlot("key2");
+    _ = keySlot("key3");
+
+    // Count keys in slot1
+    const count1 = cluster.countKeysInSlot(&data, slot1);
+    try std.testing.expect(count1 >= 1); // At least key1 is in slot1
+
+    // Count all keys across all slots should equal total keys
+    var total_count: usize = 0;
+    for (0..CLUSTER_SLOTS) |i| {
+        const slot = @as(u16, @intCast(i));
+        total_count += cluster.countKeysInSlot(&data, slot);
+    }
+    try std.testing.expectEqual(@as(usize, 3), total_count);
+}
+
+test "countKeysInSlot - hash tag co-location" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Add keys with same hash tag (should map to same slot)
+    try data.put("user:{123}:name", {});
+    try data.put("user:{123}:email", {});
+    try data.put("user:{123}:age", {});
+
+    // All three keys should map to the same slot
+    const slot = keySlot("user:{123}:name");
+    const count = cluster.countKeysInSlot(&data, slot);
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "countKeysInSlot - invalid slot returns 0" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    try data.put("key1", {});
+
+    // Slot 16384 is invalid (valid range is 0-16383)
+    const count = cluster.countKeysInSlot(&data, 16384);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "getKeysInSlot - empty data" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Get keys in slot 0 (should return empty array)
+    const keys = try cluster.getKeysInSlot(allocator, &data, 0, 0);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), keys.len);
+}
+
+test "getKeysInSlot - returns keys in slot" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Add keys with same hash tag (same slot)
+    try data.put("user:{abc}:name", {});
+    try data.put("user:{abc}:email", {});
+    try data.put("session:{xyz}:token", {}); // Different slot
+
+    // Get keys in the slot containing user:{abc}:*
+    const slot = keySlot("user:{abc}:name");
+    const keys = try cluster.getKeysInSlot(allocator, &data, slot, 0);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+
+    // Verify both keys are present
+    var found_name = false;
+    var found_email = false;
+    for (keys) |key| {
+        if (std.mem.eql(u8, key, "user:{abc}:name")) found_name = true;
+        if (std.mem.eql(u8, key, "user:{abc}:email")) found_email = true;
+    }
+    try std.testing.expect(found_name);
+    try std.testing.expect(found_email);
+}
+
+test "getKeysInSlot - respects max_count limit" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Add 5 keys with same hash tag
+    try data.put("key:{tag}:1", {});
+    try data.put("key:{tag}:2", {});
+    try data.put("key:{tag}:3", {});
+    try data.put("key:{tag}:4", {});
+    try data.put("key:{tag}:5", {});
+
+    const slot = keySlot("key:{tag}:1");
+
+    // Request only 3 keys
+    const keys = try cluster.getKeysInSlot(allocator, &data, slot, 3);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), keys.len);
+}
+
+test "getKeysInSlot - max_count=0 returns all keys" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    // Add 10 keys with same hash tag
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) {
+        const key = try std.fmt.allocPrint(allocator, "key:{{tag}}:{d}", .{i});
+        defer allocator.free(key);
+        try data.put(key, {});
+    }
+
+    const slot = keySlot("key:{tag}:0");
+
+    // Request all keys (max_count=0)
+    const keys = try cluster.getKeysInSlot(allocator, &data, slot, 0);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 10), keys.len);
+}
+
+test "getKeysInSlot - invalid slot returns empty array" {
+    const allocator = std.testing.allocator;
+    const cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(void).init(allocator);
+    defer data.deinit();
+
+    try data.put("key1", {});
+
+    // Slot 20000 is invalid
+    const keys = try cluster.getKeysInSlot(allocator, &data, 20000, 0);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), keys.len);
 }

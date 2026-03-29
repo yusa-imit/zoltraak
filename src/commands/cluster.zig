@@ -350,100 +350,6 @@ pub fn cmdClusterMyId(
     return w.writeBulkString(&node.id);
 }
 
-/// CLUSTER KEYSLOT - Return hash slot for a key
-pub fn cmdClusterKeyslot(
-    allocator: std.mem.Allocator,
-    args: []const []const u8,
-    storage: *Storage,
-    _: ?*anyopaque,
-    _: u64,
-) ![]const u8 {
-    _ = storage;
-
-    var w = Writer.init(allocator);
-    defer w.deinit();
-
-    // args[0] = "CLUSTER", args[1] = "KEYSLOT", args[2] = key
-    if (args.len != 3) {
-        return w.writeError("ERR wrong number of arguments for 'cluster|keyslot' command");
-    }
-
-    const key = args[2];
-    const slot = cluster_mod.keySlot(key);
-
-    return w.writeInteger(@intCast(slot));
-}
-
-/// CLUSTER COUNTKEYSINSLOT - Count keys in a hash slot (stub - returns 0)
-pub fn cmdClusterCountKeysInSlot(
-    allocator: std.mem.Allocator,
-    args: []const []const u8,
-    storage: *Storage,
-    _: ?*anyopaque,
-    _: u64,
-) ![]const u8 {
-    _ = storage;
-
-    var w = Writer.init(allocator);
-    defer w.deinit();
-
-    // args[0] = "CLUSTER", args[1] = "COUNTKEYSINSLOT", args[2] = slot
-    if (args.len != 3) {
-        return w.writeError("ERR wrong number of arguments for 'cluster|countkeysinslot' command");
-    }
-
-    // Parse slot number
-    const slot_str = args[2];
-    const slot = std.fmt.parseInt(i64, slot_str, 10) catch {
-        return w.writeError("ERR invalid slot");
-    };
-
-    if (slot < 0 or slot > 16383) {
-        return w.writeError("ERR slot out of range");
-    }
-
-    // Stub: always return 0 (not implemented)
-    return w.writeInteger(0);
-}
-
-/// CLUSTER GETKEYSINSLOT - Return keys in a hash slot (stub - returns empty array)
-pub fn cmdClusterGetKeysInSlot(
-    allocator: std.mem.Allocator,
-    args: []const []const u8,
-    storage: *Storage,
-    _: ?*anyopaque,
-    _: u64,
-) ![]const u8 {
-    _ = storage;
-
-    var w = Writer.init(allocator);
-    defer w.deinit();
-
-    // args[0] = "CLUSTER", args[1] = "GETKEYSINSLOT", args[2] = slot, args[3] = count
-    if (args.len != 4) {
-        return w.writeError("ERR wrong number of arguments for 'cluster|getkeysinslot' command");
-    }
-
-    // Parse slot number
-    const slot_str = args[2];
-    const slot = std.fmt.parseInt(i64, slot_str, 10) catch {
-        return w.writeError("ERR invalid slot");
-    };
-
-    if (slot < 0 or slot > 16383) {
-        return w.writeError("ERR slot out of range");
-    }
-
-    // Parse count (not used in stub)
-    const count_str = args[3];
-    _ = std.fmt.parseInt(i64, count_str, 10) catch {
-        return w.writeError("ERR invalid count");
-    };
-
-    // Stub: always return empty array (not implemented)
-    const empty: []const RespValue = &[_]RespValue{};
-    return w.writeArray(empty);
-}
 
 /// CLUSTER HELP - Return help information for CLUSTER command
 pub fn cmdClusterHelp(
@@ -2546,5 +2452,351 @@ test "cmdClusterBumpEpoch - wrong arity returns error" {
     defer allocator.free(result);
 
     // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+/// CLUSTER COUNTKEYSINSLOT <slot>
+/// Returns the number of keys in the specified hash slot
+pub fn cmdClusterCountkeysInSlot(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Validate arity: CLUSTER COUNTKEYSINSLOT <slot>
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster countkeysinslot' command");
+    }
+
+    // Parse slot argument
+    const slot = std.fmt.parseInt(u16, args[2], 10) catch {
+        return w.writeError("ERR Invalid slot");
+    };
+
+    if (slot >= cluster_mod.CLUSTER_SLOTS) {
+        return w.writeError("ERR Invalid slot");
+    }
+
+    // Count keys in the slot
+    const count = storage.cluster.countKeysInSlot(&storage.data, slot);
+
+    return w.writeInteger(@intCast(count));
+}
+
+/// CLUSTER GETKEYSINSLOT <slot> <count>
+/// Returns up to <count> keys in the specified hash slot
+pub fn cmdClusterGetKeysInSlot(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Validate arity: CLUSTER GETKEYSINSLOT <slot> <count>
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'cluster getkeysinslot' command");
+    }
+
+    // Parse slot argument
+    const slot = std.fmt.parseInt(u16, args[2], 10) catch {
+        return w.writeError("ERR Invalid slot");
+    };
+
+    if (slot >= cluster_mod.CLUSTER_SLOTS) {
+        return w.writeError("ERR Invalid slot");
+    }
+
+    // Parse count argument
+    const count = std.fmt.parseInt(usize, args[3], 10) catch {
+        return w.writeError("ERR Invalid count");
+    };
+
+    // Get keys in the slot (limited to count)
+    const keys = try storage.cluster.getKeysInSlot(allocator, &storage.data, slot, count);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    // Build RESP array response
+    var array = try std.ArrayList(RespValue).initCapacity(allocator, keys.len);
+    errdefer {
+        for (array.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        array.deinit(allocator);
+    }
+
+    for (keys) |key| {
+        const key_copy = try allocator.dupe(u8, key);
+        errdefer allocator.free(key_copy);
+        try array.append(.{ .bulk_string = key_copy });
+    }
+
+    return w.writeArray(try array.toOwnedSlice(allocator));
+}
+
+/// CLUSTER KEYSLOT <key>
+/// Returns the hash slot for the specified key
+pub fn cmdClusterKeyslot(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Validate arity: CLUSTER KEYSLOT <key>
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster keyslot' command");
+    }
+
+    // Calculate the slot for the key
+    const slot = cluster_mod.keySlot(args[2]);
+
+    return w.writeInteger(slot);
+}
+
+// ============================================================================
+// Tests for CLUSTER COUNTKEYSINSLOT, GETKEYSINSLOT, KEYSLOT
+// ============================================================================
+
+test "cmdClusterCountkeysInSlot - count keys in slot" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Setup myself
+    const my_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Add keys with same hash tag (same slot)
+    const v = @import("../storage/memory.zig").Value{ .string = .{ .data = "val" } };
+    try storage.data.put("user:{abc}:name", v);
+    try storage.data.put("user:{abc}:email", v);
+    try storage.data.put("user:{abc}:age", v);
+
+    // Get the slot for these keys
+    const slot = cluster_mod.keySlot("user:{abc}:name");
+    var slot_buf: [10]u8 = undefined;
+    const slot_str = try std.fmt.bufPrint(&slot_buf, "{d}", .{slot});
+
+    // Count keys in the slot
+    const args = [_][]const u8{ "CLUSTER", "COUNTKEYSINSLOT", slot_str };
+    const result = try cmdClusterCountkeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return 3
+    try std.testing.expect(std.mem.indexOf(u8, result, ":3") != null);
+}
+
+test "cmdClusterCountkeysInSlot - empty slot returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const my_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Slot 0 (probably empty)
+    const args = [_][]const u8{ "CLUSTER", "COUNTKEYSINSLOT", "0" };
+    const result = try cmdClusterCountkeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return 0
+    try std.testing.expect(std.mem.indexOf(u8, result, ":0") != null);
+}
+
+test "cmdClusterCountkeysInSlot - invalid slot returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const args = [_][]const u8{ "CLUSTER", "COUNTKEYSINSLOT", "20000" };
+    const result = try cmdClusterCountkeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterCountkeysInSlot - cluster disabled returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = false;
+
+    const args = [_][]const u8{ "CLUSTER", "COUNTKEYSINSLOT", "100" };
+    const result = try cmdClusterCountkeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterGetKeysInSlot - returns keys in slot" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const my_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Add keys
+    const v = @import("../storage/memory.zig").Value{ .string = .{ .data = "val" } };
+    try storage.data.put("key:{tag}:1", v);
+    try storage.data.put("key:{tag}:2", v);
+    try storage.data.put("key:{tag}:3", v);
+
+    const slot = cluster_mod.keySlot("key:{tag}:1");
+    var slot_buf: [10]u8 = undefined;
+    const slot_str = try std.fmt.bufPrint(&slot_buf, "{d}", .{slot});
+
+    // Get 2 keys from the slot
+    const args = [_][]const u8{ "CLUSTER", "GETKEYSINSLOT", slot_str, "2" };
+    const result = try cmdClusterGetKeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return array with 2 keys
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2") != null);
+}
+
+test "cmdClusterGetKeysInSlot - respects count limit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const my_id = "cccccccccccccccccccccccccccccccccccccccc".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    // Add 5 keys
+    const v = @import("../storage/memory.zig").Value{ .string = .{ .data = "val" } };
+    var i: u8 = 1;
+    while (i <= 5) : (i += 1) {
+        const key = try std.fmt.allocPrint(allocator, "item:{{xyz}}:{d}", .{i});
+        defer allocator.free(key);
+        try storage.data.put(key, v);
+    }
+
+    const slot = cluster_mod.keySlot("item:{xyz}:1");
+    var slot_buf: [10]u8 = undefined;
+    const slot_str = try std.fmt.bufPrint(&slot_buf, "{d}", .{slot});
+
+    // Request only 3 keys
+    const args = [_][]const u8{ "CLUSTER", "GETKEYSINSLOT", slot_str, "3" };
+    const result = try cmdClusterGetKeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return array with 3 keys
+    try std.testing.expect(std.mem.indexOf(u8, result, "*3") != null);
+}
+
+test "cmdClusterGetKeysInSlot - invalid slot returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const args = [_][]const u8{ "CLUSTER", "GETKEYSINSLOT", "99999", "10" };
+    const result = try cmdClusterGetKeysInSlot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "cmdClusterKeyslot - returns slot for key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Calculate expected slot
+    const expected_slot = cluster_mod.keySlot("mykey");
+    var expected_buf: [10]u8 = undefined;
+    const expected_str = try std.fmt.bufPrint(&expected_buf, ":{d}", .{expected_slot});
+
+    const args = [_][]const u8{ "CLUSTER", "KEYSLOT", "mykey" };
+    const result = try cmdClusterKeyslot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return the slot number
+    try std.testing.expect(std.mem.indexOf(u8, result, expected_str) != null);
+}
+
+test "cmdClusterKeyslot - hash tag support" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Two keys with same hash tag should map to same slot
+    const args1 = [_][]const u8{ "CLUSTER", "KEYSLOT", "user:{123}:name" };
+    const result1 = try cmdClusterKeyslot(allocator, &args1, storage, null, 0);
+    defer allocator.free(result1);
+
+    const args2 = [_][]const u8{ "CLUSTER", "KEYSLOT", "user:{123}:email" };
+    const result2 = try cmdClusterKeyslot(allocator, &args2, storage, null, 0);
+    defer allocator.free(result2);
+
+    // Both should return the same slot
+    try std.testing.expectEqualStrings(result1, result2);
+}
+
+test "cmdClusterKeyslot - cluster disabled returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = false;
+
+    const args = [_][]const u8{ "CLUSTER", "KEYSLOT", "key" };
+    const result = try cmdClusterKeyslot(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
 }
