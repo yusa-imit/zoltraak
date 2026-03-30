@@ -161,6 +161,22 @@ pub const ClusterNode = struct {
         allocator.free(self.addr);
         self.slots.deinit(allocator);
     }
+
+    /// Returns health status of this node for CLUSTER SHARDS command.
+    ///
+    /// Possible return values:
+    ///   - "online": Node is healthy and reachable
+    ///   - "failed": Node has fail flag set
+    ///   - "loading": Node has noaddr flag set (still discovering address)
+    pub fn getHealth(self: *const ClusterNode) []const u8 {
+        if (self.flags.fail) {
+            return "failed";
+        }
+        if (self.flags.noaddr) {
+            return "loading";
+        }
+        return "online";
+    }
 };
 
 /// Error types for cluster slot operations
@@ -188,6 +204,22 @@ pub const SlotMigrationState = struct {
     migrating_to: ?[40]u8 = null,
     /// Slot is being imported from this node ID
     importing_from: ?[40]u8 = null,
+};
+
+/// Shard information for CLUSTER SHARDS response
+/// Groups nodes that share slot ownership
+pub const ShardInfo = struct {
+    /// Slot ranges for this shard [start, end, start, end, ...]
+    slots: std.ArrayListUnmanaged(u16),
+    /// Nodes in this shard (master + replicas)
+    nodes: std.ArrayListUnmanaged(*ClusterNode),
+
+    /// Frees all memory associated with this ShardInfo.
+    /// Must be called by the owner of the ShardInfo after use.
+    pub fn deinit(self: *ShardInfo, allocator: std.mem.Allocator) void {
+        self.slots.deinit(allocator);
+        self.nodes.deinit(allocator);
+    }
 };
 
 /// Gossip protocol message types
@@ -989,6 +1021,102 @@ pub const ClusterState = struct {
 
         // Increment config epoch to signal topology change
         self.current_epoch += 1;
+    }
+
+    /// Collect shards information for CLUSTER SHARDS command
+    /// Returns array of shards, each containing master and its replicas
+    /// Caller must call deinit() on each shard and free the returned array
+    pub fn collectShards(self: *const ClusterState, allocator: std.mem.Allocator) ![]ShardInfo {
+        var shards = std.ArrayList(ShardInfo).init(allocator);
+        errdefer {
+            for (shards.items) |*shard| {
+                shard.deinit(allocator);
+            }
+            shards.deinit(allocator);
+        }
+
+        // Group slot ranges by master node
+        var masters = std.ArrayList(*ClusterNode).init(allocator);
+        defer masters.deinit(allocator);
+
+        // First pass: collect all unique master nodes that own slots
+        for (self.slots) |maybe_node| {
+            if (maybe_node) |node| {
+                // Check if node is a master
+                if (node.flags.master and !node.flags.slave) {
+                    // Check if already in masters list
+                    var found = false;
+                    for (masters.items) |master| {
+                        if (master == node) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        try masters.append(node);
+                    }
+                }
+            }
+        }
+
+        // Second pass: for each master, create a shard
+        for (masters.items) |master| {
+            var shard = ShardInfo{
+                .slots = std.ArrayListUnmanaged(u16){},
+                .nodes = std.ArrayListUnmanaged(*ClusterNode){},
+            };
+            errdefer shard.deinit(allocator);
+
+            // Collect slot ranges for this master
+            var current_range_start: ?u16 = null;
+            var current_range_end: ?u16 = null;
+
+            for (0..CLUSTER_SLOTS) |slot_idx| {
+                const slot = @as(u16, @intCast(slot_idx));
+                const node_for_slot = self.slots[slot];
+
+                if (node_for_slot == master) {
+                    if (current_range_start == null) {
+                        current_range_start = slot;
+                        current_range_end = slot;
+                    } else {
+                        current_range_end = slot;
+                    }
+                } else {
+                    // End of range
+                    if (current_range_start != null) {
+                        try shard.slots.append(allocator, current_range_start.?);
+                        try shard.slots.append(allocator, current_range_end.?);
+                        current_range_start = null;
+                        current_range_end = null;
+                    }
+                }
+            }
+
+            // Add final range if any
+            if (current_range_start != null) {
+                try shard.slots.append(allocator, current_range_start.?);
+                try shard.slots.append(allocator, current_range_end.?);
+            }
+
+            // Add master node first
+            try shard.nodes.append(allocator, master);
+
+            // Add all replicas of this master (skip failed ones)
+            var replicas = try self.getReplicasOfMaster(allocator, master.id);
+            defer replicas.deinit();
+
+            for (replicas.items) |replica| {
+                // Skip failed replicas
+                if (!replica.flags.fail) {
+                    try shard.nodes.append(allocator, replica);
+                }
+            }
+
+            try shards.append(shard);
+        }
+
+        return shards.toOwnedSlice(allocator);
     }
 
     /// Request a vote from a master node
@@ -3465,4 +3593,288 @@ test "ClusterState: clearReadonly is idempotent" {
     cluster.clearReadonly(client_id);
     cluster.clearReadonly(client_id);
     try std.testing.expect(!cluster.hasReadonly(client_id));
+}
+
+test "ClusterNode: getHealth returns online for healthy node" {
+    const allocator = std.testing.allocator;
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    var node = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer node.deinit(allocator);
+
+    node.flags.fail = false;
+    node.flags.noaddr = false;
+
+    const health = node.getHealth();
+    try std.testing.expectEqualSlices(u8, "online", health);
+}
+
+test "ClusterNode: getHealth returns failed when fail flag set" {
+    const allocator = std.testing.allocator;
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    var node = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer node.deinit(allocator);
+
+    node.flags.fail = true;
+
+    const health = node.getHealth();
+    try std.testing.expectEqualSlices(u8, "failed", health);
+}
+
+test "ClusterNode: getHealth returns loading when noaddr flag set" {
+    const allocator = std.testing.allocator;
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    var node = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer node.deinit(allocator);
+
+    node.flags.noaddr = true;
+    node.flags.fail = false;
+
+    const health = node.getHealth();
+    try std.testing.expectEqualSlices(u8, "loading", health);
+}
+
+test "ClusterState: collectShards empty cluster" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // No nodes, no shards
+    const shards = try cluster.collectShards(allocator);
+    defer {
+        for (shards) |*shard| {
+            shard.deinit(allocator);
+        }
+        allocator.free(shards);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), shards.len);
+}
+
+test "ClusterState: collectShards single-node cluster" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+    node.flags.master = true;
+    node.flags.slave = false;
+
+    // Assign all slots to this node
+    const slots = [_]u16{ 0, 1, 2, 3, 16383 };
+    try cluster.addSlotsToNode(node, &slots);
+
+    const shards = try cluster.collectShards(allocator);
+    defer {
+        for (shards) |*shard| {
+            shard.deinit(allocator);
+        }
+        allocator.free(shards);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), shards.len);
+    try std.testing.expectEqual(@as(usize, 1), shards[0].nodes.items.len);
+    try std.testing.expectEqual(node, shards[0].nodes.items[0]);
+    // Should have 2 ranges: [0,3] and [16383,16383]
+    try std.testing.expectEqual(@as(usize, 4), shards[0].slots.items.len);
+}
+
+test "ClusterState: collectShards multi-shard with replicas" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create master 1
+    const master1_id = "1111111111111111111111111111111111111111".*;
+    const master1 = try allocator.create(ClusterNode);
+    master1.* = try ClusterNode.init(allocator, master1_id, "127.0.0.1", 7000);
+    defer {
+        master1.deinit(allocator);
+        allocator.destroy(master1);
+    }
+    master1.flags.master = true;
+    master1.flags.slave = false;
+
+    // Create replica of master1
+    const replica1_id = "2222222222222222222222222222222222222222".*;
+    const replica1 = try allocator.create(ClusterNode);
+    replica1.* = try ClusterNode.init(allocator, replica1_id, "127.0.0.1", 7001);
+    defer {
+        replica1.deinit(allocator);
+        allocator.destroy(replica1);
+    }
+    replica1.flags.master = false;
+    replica1.flags.slave = true;
+    replica1.master_id = master1_id;
+
+    // Create master 2
+    const master2_id = "3333333333333333333333333333333333333333".*;
+    const master2 = try allocator.create(ClusterNode);
+    master2.* = try ClusterNode.init(allocator, master2_id, "127.0.0.1", 7002);
+    defer {
+        master2.deinit(allocator);
+        allocator.destroy(master2);
+    }
+    master2.flags.master = true;
+    master2.flags.slave = false;
+
+    cluster.myself = master1;
+
+    // Add nodes to cluster
+    const m1_key = try allocator.dupe(u8, &master1_id);
+    try cluster.nodes.put(m1_key, master1);
+    const r1_key = try allocator.dupe(u8, &replica1_id);
+    try cluster.nodes.put(r1_key, replica1);
+    const m2_key = try allocator.dupe(u8, &master2_id);
+    try cluster.nodes.put(m2_key, master2);
+
+    // Assign slots: master1 gets 0-8191, master2 gets 8192-16383
+    var slots1 = std.ArrayListUnmanaged(u16){};
+    try slots1.appendSlice(allocator, &[_]u16{ 0, 1, 2, 3, 4, 5, 6, 7, 8191 });
+    try cluster.addSlotsToNode(master1, slots1.items);
+    slots1.deinit(allocator);
+
+    var slots2 = std.ArrayListUnmanaged(u16){};
+    try slots2.appendSlice(allocator, &[_]u16{ 8192, 8193, 16383 });
+    try cluster.addSlotsToNode(master2, slots2.items);
+    slots2.deinit(allocator);
+
+    const shards = try cluster.collectShards(allocator);
+    defer {
+        for (shards) |*shard| {
+            shard.deinit(allocator);
+        }
+        allocator.free(shards);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), shards.len);
+    // First shard should have master1 and replica1
+    try std.testing.expectEqual(@as(usize, 2), shards[0].nodes.items.len);
+    try std.testing.expectEqual(master1, shards[0].nodes.items[0]);
+    try std.testing.expectEqual(replica1, shards[0].nodes.items[1]);
+    // Second shard should have only master2
+    try std.testing.expectEqual(@as(usize, 1), shards[1].nodes.items.len);
+    try std.testing.expectEqual(master2, shards[1].nodes.items[0]);
+}
+
+test "ClusterState: collectShards excludes failed replicas" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create master
+    const master_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const master = try allocator.create(ClusterNode);
+    master.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    defer {
+        master.deinit(allocator);
+        allocator.destroy(master);
+    }
+    master.flags.master = true;
+    master.flags.slave = false;
+
+    // Create healthy replica
+    const healthy_replica_id = "1111111111111111111111111111111111111111".*;
+    const healthy_replica = try allocator.create(ClusterNode);
+    healthy_replica.* = try ClusterNode.init(allocator, healthy_replica_id, "127.0.0.1", 7001);
+    defer {
+        healthy_replica.deinit(allocator);
+        allocator.destroy(healthy_replica);
+    }
+    healthy_replica.flags.master = false;
+    healthy_replica.flags.slave = true;
+    healthy_replica.master_id = master_id;
+
+    // Create failed replica
+    const failed_replica_id = "2222222222222222222222222222222222222222".*;
+    const failed_replica = try allocator.create(ClusterNode);
+    failed_replica.* = try ClusterNode.init(allocator, failed_replica_id, "127.0.0.1", 7002);
+    defer {
+        failed_replica.deinit(allocator);
+        allocator.destroy(failed_replica);
+    }
+    failed_replica.flags.master = false;
+    failed_replica.flags.slave = true;
+    failed_replica.flags.fail = true;
+    failed_replica.master_id = master_id;
+
+    cluster.myself = master;
+
+    // Add to nodes
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master);
+    const healthy_key = try allocator.dupe(u8, &healthy_replica_id);
+    try cluster.nodes.put(healthy_key, healthy_replica);
+    const failed_key = try allocator.dupe(u8, &failed_replica_id);
+    try cluster.nodes.put(failed_key, failed_replica);
+
+    // Assign slots to master
+    const slots = [_]u16{ 0, 1, 2, 3 };
+    try cluster.addSlotsToNode(master, &slots);
+
+    const shards = try cluster.collectShards(allocator);
+    defer {
+        for (shards) |*shard| {
+            shard.deinit(allocator);
+        }
+        allocator.free(shards);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), shards.len);
+    // Should have master + healthy replica, NOT failed replica
+    try std.testing.expectEqual(@as(usize, 2), shards[0].nodes.items.len);
+    try std.testing.expectEqual(master, shards[0].nodes.items[0]);
+    try std.testing.expectEqual(healthy_replica, shards[0].nodes.items[1]);
+}
+
+test "ClusterState: collectShards slot ranges compression" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    cluster.myself = node;
+    node.flags.master = true;
+    node.flags.slave = false;
+
+    // Assign non-contiguous slots: [0-99] and [200-299]
+    var slots = std.ArrayListUnmanaged(u16){};
+    for (0..100) |i| {
+        try slots.append(allocator, @intCast(i));
+    }
+    for (200..300) |i| {
+        try slots.append(allocator, @intCast(i));
+    }
+    try cluster.addSlotsToNode(node, slots.items);
+    slots.deinit(allocator);
+
+    const shards = try cluster.collectShards(allocator);
+    defer {
+        for (shards) |*shard| {
+            shard.deinit(allocator);
+        }
+        allocator.free(shards);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), shards.len);
+    // Should have 2 ranges: [0, 99], [200, 299]
+    try std.testing.expectEqual(@as(usize, 4), shards[0].slots.items.len);
+    try std.testing.expectEqual(@as(u16, 0), shards[0].slots.items[0]);
+    try std.testing.expectEqual(@as(u16, 99), shards[0].slots.items[1]);
+    try std.testing.expectEqual(@as(u16, 200), shards[0].slots.items[2]);
+    try std.testing.expectEqual(@as(u16, 299), shards[0].slots.items[3]);
 }

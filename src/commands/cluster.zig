@@ -2622,6 +2622,136 @@ pub fn cmdReadwrite(
 
     return w.writeSimpleString("OK");
 }
+
+/// CLUSTER SHARDS - Return cluster shards (shard-centric topology for Redis 7.0+)
+/// Returns array of shards, where each shard contains:
+/// - slots: Array of inclusive slot range pairs [start, end, start, end, ...]
+/// - nodes: Array of node info maps (master + replicas)
+pub fn cmdClusterShards(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Validate arity: CLUSTER SHARDS (no extra arguments)
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|shards' command");
+    }
+
+    const cluster = &storage.cluster;
+
+    // Collect shards from cluster state
+    const shards = try cluster.collectShards(allocator);
+    defer {
+        for (shards) |*shard| {
+            shard.deinit(allocator);
+        }
+        allocator.free(shards);
+    }
+
+    // Build RESP response: array of shard arrays
+    var response = try std.ArrayList(RespValue).initCapacity(allocator, shards.len);
+    errdefer {
+        for (response.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        response.deinit(allocator);
+    }
+
+    for (shards) |shard| {
+        // Create shard array with slots + nodes
+        var shard_array = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+        errdefer {
+            for (shard_array.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            shard_array.deinit(allocator);
+        }
+
+        // 1. Add slots array: [start, end, start, end, ...]
+        var slots_array = try std.ArrayList(RespValue).initCapacity(allocator, shard.slots.items.len);
+        errdefer {
+            for (slots_array.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            slots_array.deinit(allocator);
+        }
+
+        for (shard.slots.items) |slot| {
+            try slots_array.append(allocator, RespValue{ .integer = slot });
+        }
+
+        try shard_array.append(allocator, RespValue{ .array = try slots_array.toOwnedSlice(allocator) });
+
+        // 2. Add nodes array: each node is a map with id, ip, port, endpoint, role, replication-offset, health
+        var nodes_array = try std.ArrayList(RespValue).initCapacity(allocator, shard.nodes.items.len);
+        errdefer {
+            for (nodes_array.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            nodes_array.deinit(allocator);
+        }
+
+        for (shard.nodes.items) |node| {
+            // Create node info map
+            var node_map = try std.ArrayList(RespValue).initCapacity(allocator, 14); // 7 key-value pairs
+            errdefer {
+                for (node_map.items) |item| {
+                    deinitRespValue(allocator, item);
+                }
+                node_map.deinit(allocator);
+            }
+
+            // Add key-value pairs
+            // id
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "id") });
+            const id_str = try allocator.dupe(u8, &node.id);
+            try node_map.append(allocator, RespValue{ .bulk_string = id_str });
+
+            // ip
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "ip") });
+            const ip_str = try allocator.dupe(u8, node.addr);
+            try node_map.append(allocator, RespValue{ .bulk_string = ip_str });
+
+            // port
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "port") });
+            try node_map.append(allocator, RespValue{ .integer = node.port });
+
+            // endpoint (same as ip:port for now)
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "endpoint") });
+            var endpoint_buf: [256]u8 = undefined;
+            const endpoint_str = try std.fmt.bufPrint(&endpoint_buf, "{s}:{d}", .{ node.addr, node.port });
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, endpoint_str) });
+
+            // role (master or replica)
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "role") });
+            const role_str = if (node.flags.master and !node.flags.slave) "master" else "replica";
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, role_str) });
+
+            // replication-offset (use config_epoch as simplified offset)
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "replication-offset") });
+            try node_map.append(allocator, RespValue{ .integer = @intCast(node.config_epoch) });
+
+            // health
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "health") });
+            const health_str = node.getHealth();
+            try node_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, health_str) });
+
+            try nodes_array.append(allocator, RespValue{ .array = try node_map.toOwnedSlice(allocator) });
+        }
+
+        try shard_array.append(allocator, RespValue{ .array = try nodes_array.toOwnedSlice(allocator) });
+
+        try response.append(allocator, RespValue{ .array = try shard_array.toOwnedSlice(allocator) });
+    }
+
+    return w.writeArray(try response.toOwnedSlice(allocator));
+}
+
 // ============================================================================
 // Tests for CLUSTER COUNTKEYSINSLOT, GETKEYSINSLOT, KEYSLOT
 // ============================================================================
@@ -2955,4 +3085,139 @@ test "cmdReadonly/cmdReadwrite - multiple clients independently" {
     // Only client2 should have readonly
     try std.testing.expect(!storage.cluster.hasReadonly(client1));
     try std.testing.expect(storage.cluster.hasReadonly(client2));
+}
+
+// ============================================================================
+// Tests for CLUSTER SHARDS
+// ============================================================================
+
+test "cmdClusterShards - empty cluster" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const args = [_][]const u8{ "CLUSTER", "SHARDS" };
+    const result = try cmdClusterShards(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return empty array
+    try std.testing.expect(std.mem.indexOf(u8, result, "*0") != null);
+}
+
+test "cmdClusterShards - single-node cluster" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Setup single master node
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(cluster_mod.ClusterNode);
+    my_node.* = try cluster_mod.ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    storage.cluster.myself = my_node;
+    try storage.cluster.nodes.put(&my_id, my_node);
+
+    my_node.flags.master = true;
+    my_node.flags.slave = false;
+
+    // Assign all slots
+    var all_slots = std.ArrayListUnmanaged(u16){};
+    defer all_slots.deinit(allocator);
+    for (0..cluster_mod.CLUSTER_SLOTS) |i| {
+        try all_slots.append(allocator, @intCast(i));
+    }
+    try storage.cluster.addSlotsToNode(my_node, all_slots.items);
+
+    const args = [_][]const u8{ "CLUSTER", "SHARDS" };
+    const result = try cmdClusterShards(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return array with 1 shard
+    try std.testing.expect(std.mem.indexOf(u8, result, "*1") != null);
+    // Should contain node id
+    try std.testing.expect(std.mem.indexOf(u8, result, "0123456789abcdef0123456789abcdef01234567") != null);
+    // Should contain node role
+    try std.testing.expect(std.mem.indexOf(u8, result, "role") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "master") != null);
+    // Should contain health
+    try std.testing.expect(std.mem.indexOf(u8, result, "health") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "online") != null);
+}
+
+test "cmdClusterShards - multi-shard with replicas" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Create master 1
+    const master1_id = "1111111111111111111111111111111111111111".*;
+    const master1 = try allocator.create(cluster_mod.ClusterNode);
+    master1.* = try cluster_mod.ClusterNode.init(allocator, master1_id, "127.0.0.1", 7000);
+    storage.cluster.myself = master1;
+    try storage.cluster.nodes.put(&master1_id, master1);
+    master1.flags.master = true;
+    master1.flags.slave = false;
+
+    // Create replica
+    const replica1_id = "2222222222222222222222222222222222222222".*;
+    const replica1 = try allocator.create(cluster_mod.ClusterNode);
+    replica1.* = try cluster_mod.ClusterNode.init(allocator, replica1_id, "127.0.0.1", 7001);
+    try storage.cluster.nodes.put(&replica1_id, replica1);
+    replica1.flags.master = false;
+    replica1.flags.slave = true;
+    replica1.master_id = master1_id;
+
+    // Create master 2
+    const master2_id = "3333333333333333333333333333333333333333".*;
+    const master2 = try allocator.create(cluster_mod.ClusterNode);
+    master2.* = try cluster_mod.ClusterNode.init(allocator, master2_id, "127.0.0.1", 7002);
+    try storage.cluster.nodes.put(&master2_id, master2);
+    master2.flags.master = true;
+    master2.flags.slave = false;
+
+    // Assign slots: master1 gets 0-8191, master2 gets 8192-16383
+    var slots1 = std.ArrayListUnmanaged(u16){};
+    defer slots1.deinit(allocator);
+    for (0..8192) |i| {
+        try slots1.append(allocator, @intCast(i));
+    }
+    try storage.cluster.addSlotsToNode(master1, slots1.items);
+
+    var slots2 = std.ArrayListUnmanaged(u16){};
+    defer slots2.deinit(allocator);
+    for (8192..cluster_mod.CLUSTER_SLOTS) |i| {
+        try slots2.append(allocator, @intCast(i));
+    }
+    try storage.cluster.addSlotsToNode(master2, slots2.items);
+
+    const args = [_][]const u8{ "CLUSTER", "SHARDS" };
+    const result = try cmdClusterShards(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return array with 2 shards
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2") != null);
+    // Should contain both master IDs
+    try std.testing.expect(std.mem.indexOf(u8, result, "1111111111111111111111111111111111111111") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "3333333333333333333333333333333333333333") != null);
+    // Should contain replica ID
+    try std.testing.expect(std.mem.indexOf(u8, result, "2222222222222222222222222222222222222222") != null);
+}
+
+test "cmdClusterShards - wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "SHARDS", "extra" };
+    const result = try cmdClusterShards(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
 }

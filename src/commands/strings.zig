@@ -1425,6 +1425,8 @@ pub fn executeCommand(
 
             if (std.mem.eql(u8, subcmd_upper, "SLOTS")) {
                 break :blk try cluster_cmds.cmdClusterSlots(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SHARDS")) {
+                break :blk try cluster_cmds.cmdClusterShards(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "NODES")) {
                 break :blk try cluster_cmds.cmdClusterNodes(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "INFO")) {
