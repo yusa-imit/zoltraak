@@ -1394,7 +1394,7 @@ pub fn cmdClusterSaveConfig(
     storage.cluster.saveConfig(storage.cluster_config_path) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = switch (err) {
-            error.OutOfSpace => "ERR Could not save config: No space left on device",
+            error.NoSpaceLeft => "ERR Could not save config: No space left on device",
             error.AccessDenied => "ERR Could not save config: Permission denied",
             error.InvalidPath => "ERR Invalid config file path",
             else => blk: {
@@ -1434,9 +1434,6 @@ pub fn cmdClusterBumpEpoch(
         switch (err) {
             error.ClusterNotInitialized => {
                 return w.writeError("ERR Cluster not initialized");
-            },
-            else => {
-                return w.writeError("ERR Failed to bump epoch");
             },
         }
     };
@@ -2545,7 +2542,7 @@ pub fn cmdClusterGetKeysInSlot(
     for (keys) |key| {
         const key_copy = try allocator.dupe(u8, key);
         errdefer allocator.free(key_copy);
-        try array.append(.{ .bulk_string = key_copy });
+        try array.append(allocator, .{ .bulk_string = key_copy });
     }
 
     return w.writeArray(try array.toOwnedSlice(allocator));

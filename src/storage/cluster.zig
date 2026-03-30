@@ -1027,7 +1027,7 @@ pub const ClusterState = struct {
     /// Returns array of shards, each containing master and its replicas
     /// Caller must call deinit() on each shard and free the returned array
     pub fn collectShards(self: *const ClusterState, allocator: std.mem.Allocator) ![]ShardInfo {
-        var shards = std.ArrayList(ShardInfo).init(allocator);
+        var shards = try std.ArrayList(ShardInfo).initCapacity(allocator, 0);
         errdefer {
             for (shards.items) |*shard| {
                 shard.deinit(allocator);
@@ -1036,7 +1036,7 @@ pub const ClusterState = struct {
         }
 
         // Group slot ranges by master node
-        var masters = std.ArrayList(*ClusterNode).init(allocator);
+        var masters = try std.ArrayList(*ClusterNode).initCapacity(allocator, 0);
         defer masters.deinit(allocator);
 
         // First pass: collect all unique master nodes that own slots
@@ -1053,7 +1053,7 @@ pub const ClusterState = struct {
                         }
                     }
                     if (!found) {
-                        try masters.append(node);
+                        try masters.append(allocator, node);
                     }
                 }
             }
@@ -1104,7 +1104,7 @@ pub const ClusterState = struct {
 
             // Add all replicas of this master (skip failed ones)
             var replicas = try self.getReplicasOfMaster(allocator, master.id);
-            defer replicas.deinit();
+            defer replicas.deinit(allocator);
 
             for (replicas.items) |replica| {
                 // Skip failed replicas
@@ -1113,7 +1113,7 @@ pub const ClusterState = struct {
                 }
             }
 
-            try shards.append(shard);
+            try shards.append(allocator, shard);
         }
 
         return shards.toOwnedSlice(allocator);
@@ -1308,28 +1308,36 @@ pub const ClusterState = struct {
             var flags_buf: [100]u8 = undefined;
             var flags_len: usize = 0;
             if (node.flags.myself) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}myself", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}myself", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.master) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}master", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}master", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.slave) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}slave", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}slave", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.fail) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}fail", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}fail", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.pfail) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}pfail", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}pfail", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.handshake) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}handshake", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}handshake", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.noaddr) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}noaddr", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}noaddr", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
             if (node.flags.nofailover) {
-                flags_len += try std.fmt.bufPrint(flags_buf[flags_len..], "{s}nofailover", .{if (flags_len > 0) "," else ""}).len;
+                const written = try std.fmt.bufPrint(flags_buf[flags_len..], "{s}nofailover", .{if (flags_len > 0) "," else ""});
+                flags_len += written.len;
             }
 
             // Link state
@@ -1349,9 +1357,11 @@ pub const ClusterState = struct {
                         slots_len += 1;
                     }
                     if (range.start == range.end) {
-                        slots_len += try std.fmt.bufPrint(slots_buf[slots_len..], "{d}", .{range.start}).len;
+                        const written = try std.fmt.bufPrint(slots_buf[slots_len..], "{d}", .{range.start});
+                        slots_len += written.len;
                     } else {
-                        slots_len += try std.fmt.bufPrint(slots_buf[slots_len..], "{d}-{d}", .{ range.start, range.end }).len;
+                        const written = try std.fmt.bufPrint(slots_buf[slots_len..], "{d}-{d}", .{ range.start, range.end });
+                        slots_len += written.len;
                     }
                 }
             }
@@ -1437,8 +1447,8 @@ pub const ClusterState = struct {
             return &[_][]const u8{};
         }
 
-        var keys = std.ArrayList([]const u8).init(allocator);
-        errdefer keys.deinit();
+        var keys = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        errdefer keys.deinit(allocator);
 
         var it = data.keyIterator();
         while (it.next()) |key| {
@@ -1446,7 +1456,7 @@ pub const ClusterState = struct {
                 // Duplicate key string for safety
                 const key_copy = try allocator.dupe(u8, key.*);
                 errdefer allocator.free(key_copy);
-                try keys.append(key_copy);
+                try keys.append(allocator, key_copy);
 
                 // Check max_count limit
                 if (max_count > 0 and keys.items.len >= max_count) {
@@ -1455,7 +1465,7 @@ pub const ClusterState = struct {
             }
         }
 
-        return keys.toOwnedSlice();
+        return keys.toOwnedSlice(allocator);
     }
 };
 

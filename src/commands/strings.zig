@@ -1433,12 +1433,6 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterInfo(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "MYID")) {
                 break :blk try cluster_cmds.cmdClusterMyId(allocator, args, storage, null, 0);
-            } else if (std.mem.eql(u8, subcmd_upper, "KEYSLOT")) {
-                break :blk try cluster_cmds.cmdClusterKeyslot(allocator, args, storage, null, 0);
-            } else if (std.mem.eql(u8, subcmd_upper, "COUNTKEYSINSLOT")) {
-                break :blk try cluster_cmds.cmdClusterCountKeysInSlot(allocator, args, storage, null, 0);
-            } else if (std.mem.eql(u8, subcmd_upper, "GETKEYSINSLOT")) {
-                break :blk try cluster_cmds.cmdClusterGetKeysInSlot(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "ADDSLOTS")) {
                 break :blk try cluster_cmds.cmdClusterAddSlots(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "ADDSLOTSRANGE")) {
