@@ -350,6 +350,21 @@ pub fn cmdClusterMyId(
     return w.writeBulkString(&node.id);
 }
 
+/// CLUSTER MYSHARDID - Return the shard ID of the current node
+/// Shard ID is a 40-char hex string unique to each shard (master + replicas)
+pub fn cmdClusterMyShardId(
+    allocator: std.mem.Allocator,
+    _: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const node = storage.cluster.myself orelse return w.writeError("ERR no cluster node");
+    return w.writeBulkString(&node.shard_id);
+}
 
 /// CLUSTER HELP - Return help information for CLUSTER command
 pub fn cmdClusterHelp(

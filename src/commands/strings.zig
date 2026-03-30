@@ -1433,6 +1433,8 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterInfo(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "MYID")) {
                 break :blk try cluster_cmds.cmdClusterMyId(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "MYSHARDID")) {
+                break :blk try cluster_cmds.cmdClusterMyShardId(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "ADDSLOTS")) {
                 break :blk try cluster_cmds.cmdClusterAddSlots(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "ADDSLOTSRANGE")) {

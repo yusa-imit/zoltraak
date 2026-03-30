@@ -96,8 +96,14 @@ pub fn keySlot(key: []const u8) u16 {
 
 /// Cluster node state
 pub const ClusterNode = struct {
-    /// Node ID (40-char hex string in Redis)
+    /// Node ID (40-char lowercase hex string)
+    /// Unique per node. Different for every node in the cluster.
     id: [40]u8,
+    /// Shard ID (40-char lowercase hex string)
+    /// Identifies a replication group (master + replicas).
+    /// All nodes serving the same data share the same shard_id.
+    /// Generated randomly on master creation, inherited by replicas via configureAsReplica().
+    shard_id: [40]u8,
     /// IP address
     addr: []const u8,
     /// Client port
@@ -142,8 +148,18 @@ pub const ClusterNode = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, id: [40]u8, addr: []const u8, port: u16) !ClusterNode {
+        // Generate a random 40-char hex shard_id
+        var shard_id: [40]u8 = undefined;
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        const random = prng.random();
+        const hex_chars = "0123456789abcdef";
+        for (&shard_id) |*c| {
+            c.* = hex_chars[random.intRangeLessThan(u8, 0, 16)];
+        }
+
         return ClusterNode{
             .id = id,
+            .shard_id = shard_id,
             .addr = try allocator.dupe(u8, addr),
             .port = port,
             .cluster_port = port + 10000,
@@ -1007,6 +1023,9 @@ pub const ClusterState = struct {
         myself.flags.slave = true;
         myself.master_id = master_id;
 
+        // Replica inherits master's shard_id (all nodes in replication group have same shard_id)
+        myself.shard_id = master_node.shard_id;
+
         // Clear all slot assignments when becoming a replica
         // Replicas don't own slots directly, they inherit from master
         for (&self.slots, 0..) |*slot, i| {
@@ -1366,8 +1385,8 @@ pub const ClusterState = struct {
                 }
             }
 
-            // Write node line
-            try w.print("{s} {s}:{d}@{d} {s} {s} {d} {d} {d} {s} {s}\n", .{
+            // Write node line (Redis 7.2 format with shard_id)
+            try w.print("{s} {s}:{d}@{d} {s} {s} {d} {d} {d} {s} {s} {s}\n", .{
                 &node.id,
                 node.addr,
                 node.port,
@@ -1379,6 +1398,7 @@ pub const ClusterState = struct {
                 node.config_epoch,
                 link_state_str,
                 slots_buf[0..slots_len],
+                &node.shard_id,
             });
         }
 
@@ -3887,4 +3907,206 @@ test "ClusterState: collectShards slot ranges compression" {
     try std.testing.expectEqual(@as(u16, 99), shards[0].slots.items[1]);
     try std.testing.expectEqual(@as(u16, 200), shards[0].slots.items[2]);
     try std.testing.expectEqual(@as(u16, 299), shards[0].slots.items[3]);
+}
+
+// =============================================================================
+// CLUSTER MYSHARDID tests (Iteration 149)
+// =============================================================================
+
+test "ClusterNode: shard_id generation on creation" {
+    const allocator = std.testing.allocator;
+
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Verify shard_id exists and is 40 characters
+    // This will fail because ClusterNode doesn't have shard_id field yet
+    try std.testing.expectEqual(@as(usize, 40), node.shard_id.len);
+
+    // Verify all characters are valid hex
+    for (node.shard_id) |char| {
+        const is_valid = (char >= '0' and char <= '9') or
+                        (char >= 'a' and char <= 'f') or
+                        (char >= 'A' and char <= 'F');
+        try std.testing.expect(is_valid);
+    }
+}
+
+test "ClusterNode: shard_id uniqueness across nodes" {
+    const allocator = std.testing.allocator;
+
+    // Create 3 independent nodes
+    const node1_id = "1111111111111111111111111111111111111111".*;
+    const node1 = try allocator.create(ClusterNode);
+    node1.* = try ClusterNode.init(allocator, node1_id, "127.0.0.1", 7000);
+    defer {
+        node1.deinit(allocator);
+        allocator.destroy(node1);
+    }
+
+    const node2_id = "2222222222222222222222222222222222222222".*;
+    const node2 = try allocator.create(ClusterNode);
+    node2.* = try ClusterNode.init(allocator, node2_id, "127.0.0.1", 7001);
+    defer {
+        node2.deinit(allocator);
+        allocator.destroy(node2);
+    }
+
+    const node3_id = "3333333333333333333333333333333333333333".*;
+    const node3 = try allocator.create(ClusterNode);
+    node3.* = try ClusterNode.init(allocator, node3_id, "127.0.0.1", 7002);
+    defer {
+        node3.deinit(allocator);
+        allocator.destroy(node3);
+    }
+
+    // Verify each node has a different shard_id
+    // This will fail because shard_id field doesn't exist yet
+    try std.testing.expect(!std.mem.eql(u8, &node1.shard_id, &node2.shard_id));
+    try std.testing.expect(!std.mem.eql(u8, &node1.shard_id, &node3.shard_id));
+    try std.testing.expect(!std.mem.eql(u8, &node2.shard_id, &node3.shard_id));
+}
+
+test "ClusterState: replica inherits master shard_id" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master = try allocator.create(ClusterNode);
+    master.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    defer {
+        master.deinit(allocator);
+        allocator.destroy(master);
+    }
+    master.flags.master = true;
+    master.flags.slave = false;
+
+    // Add master to cluster
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master);
+
+    // Create replica node
+    const replica_id = "2222222222222222222222222222222222222222".*;
+    const replica = try allocator.create(ClusterNode);
+    replica.* = try ClusterNode.init(allocator, replica_id, "127.0.0.1", 7001);
+    defer {
+        replica.deinit(allocator);
+        allocator.destroy(replica);
+    }
+
+    // Add replica to cluster
+    const replica_key = try allocator.dupe(u8, &replica_id);
+    try cluster.nodes.put(replica_key, replica);
+    cluster.myself = replica;
+
+    // Store master's original shard_id
+    // This will fail because shard_id field doesn't exist yet
+    const master_shard_id = master.shard_id;
+
+    // Configure as replica
+    try cluster.configureAsReplica(master_id);
+
+    // Verify replica inherited master's shard_id
+    // This will fail because configureAsReplica doesn't copy shard_id yet
+    try std.testing.expectEqualSlices(u8, &master_shard_id, &replica.shard_id);
+
+    // Verify replica didn't change master's shard_id
+    try std.testing.expectEqualSlices(u8, &master_shard_id, &master.shard_id);
+}
+
+test "ClusterNode: shard_id format validation" {
+    const allocator = std.testing.allocator;
+
+    const node_id = "abcdef0123456789abcdef0123456789abcdef01".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    // Verify shard_id is exactly 40 characters
+    // This will fail because shard_id field doesn't exist yet
+    try std.testing.expectEqual(@as(usize, 40), node.shard_id.len);
+
+    // Verify all characters are lowercase hex (Redis convention)
+    for (node.shard_id) |char| {
+        const is_valid_hex = (char >= '0' and char <= '9') or (char >= 'a' and char <= 'f');
+        try std.testing.expect(is_valid_hex);
+    }
+
+    // Verify shard_id is not all zeros (should be random)
+    var all_zeros = true;
+    for (node.shard_id) |char| {
+        if (char != '0') {
+            all_zeros = false;
+            break;
+        }
+    }
+    try std.testing.expect(!all_zeros);
+}
+
+test "ClusterState: multiple replicas inherit same shard_id" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Create master node
+    const master_id = "1111111111111111111111111111111111111111".*;
+    const master = try allocator.create(ClusterNode);
+    master.* = try ClusterNode.init(allocator, master_id, "127.0.0.1", 7000);
+    defer {
+        master.deinit(allocator);
+        allocator.destroy(master);
+    }
+    master.flags.master = true;
+    master.flags.slave = false;
+
+    const master_key = try allocator.dupe(u8, &master_id);
+    try cluster.nodes.put(master_key, master);
+
+    // Create first replica
+    const replica1_id = "2222222222222222222222222222222222222222".*;
+    const replica1 = try allocator.create(ClusterNode);
+    replica1.* = try ClusterNode.init(allocator, replica1_id, "127.0.0.1", 7001);
+    defer {
+        replica1.deinit(allocator);
+        allocator.destroy(replica1);
+    }
+
+    const replica1_key = try allocator.dupe(u8, &replica1_id);
+    try cluster.nodes.put(replica1_key, replica1);
+
+    // Create second replica
+    const replica2_id = "3333333333333333333333333333333333333333".*;
+    const replica2 = try allocator.create(ClusterNode);
+    replica2.* = try ClusterNode.init(allocator, replica2_id, "127.0.0.1", 7002);
+    defer {
+        replica2.deinit(allocator);
+        allocator.destroy(replica2);
+    }
+
+    const replica2_key = try allocator.dupe(u8, &replica2_id);
+    try cluster.nodes.put(replica2_key, replica2);
+
+    // Configure first replica
+    cluster.myself = replica1;
+    try cluster.configureAsReplica(master_id);
+
+    // Configure second replica
+    cluster.myself = replica2;
+    try cluster.configureAsReplica(master_id);
+
+    // Verify all three nodes in replication group have same shard_id
+    // This will fail because shard_id field doesn't exist yet
+    try std.testing.expectEqualSlices(u8, &master.shard_id, &replica1.shard_id);
+    try std.testing.expectEqualSlices(u8, &master.shard_id, &replica2.shard_id);
+    try std.testing.expectEqualSlices(u8, &replica1.shard_id, &replica2.shard_id);
 }
