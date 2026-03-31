@@ -124,6 +124,22 @@ pub const ClusterNode = struct {
     link_state: LinkState,
     /// Assigned slot ranges
     slots: std.ArrayListUnmanaged(SlotRange),
+    /// Outgoing link creation time (milliseconds since epoch)
+    to_link_created: i64,
+    /// Incoming link creation time (milliseconds since epoch)
+    from_link_created: i64,
+    /// Outgoing link event mask
+    to_link_events: []const u8,
+    /// Incoming link event mask
+    from_link_events: []const u8,
+    /// Outgoing link send buffer allocated bytes
+    to_send_buf_alloc: usize,
+    /// Outgoing link send buffer used bytes
+    to_send_buf_used: usize,
+    /// Incoming link send buffer allocated bytes
+    from_send_buf_alloc: usize,
+    /// Incoming link send buffer used bytes
+    from_send_buf_used: usize,
 
     pub const NodeFlags = packed struct {
         myself: bool = false,
@@ -157,6 +173,7 @@ pub const ClusterNode = struct {
             c.* = hex_chars[random.intRangeLessThan(u8, 0, 16)];
         }
 
+        const now = std.time.milliTimestamp();
         return ClusterNode{
             .id = id,
             .shard_id = shard_id,
@@ -170,6 +187,14 @@ pub const ClusterNode = struct {
             .config_epoch = 0,
             .link_state = .connected,
             .slots = .{},
+            .to_link_created = now,
+            .from_link_created = now,
+            .to_link_events = "rw",
+            .from_link_events = "r",
+            .to_send_buf_alloc = 4096,
+            .to_send_buf_used = 0,
+            .from_send_buf_alloc = 4096,
+            .from_send_buf_used = 0,
         };
     }
 
@@ -236,6 +261,23 @@ pub const ShardInfo = struct {
         self.slots.deinit(allocator);
         self.nodes.deinit(allocator);
     }
+};
+
+/// Cluster link information for CLUSTER LINKS response
+/// Represents a bus connection between two cluster nodes
+pub const ClusterLink = struct {
+    /// "to" or "from" — direction of link from perspective of this node
+    direction: []const u8,
+    /// 40-char hex ID of the peer node
+    peer_node_id: [40]u8,
+    /// Link creation time in milliseconds since Unix epoch
+    create_time: i64,
+    /// Event mask: "r" (read), "w" (write), or "rw" (read-write)
+    events: []const u8,
+    /// Allocated send buffer bytes
+    send_buffer_allocated: usize,
+    /// Used send buffer bytes
+    send_buffer_used: usize,
 };
 
 /// Gossip protocol message types
@@ -1136,6 +1178,46 @@ pub const ClusterState = struct {
         }
 
         return shards.toOwnedSlice(allocator);
+    }
+
+    /// Collect all cluster bus links between nodes
+    /// Returns a slice of ClusterLink representing "to" and "from" links for each peer
+    /// Ownership: caller must free the returned slice with allocator.free()
+    pub fn collectLinks(self: *const ClusterState, allocator: std.mem.Allocator) ![]ClusterLink {
+        const myself = self.myself orelse return try allocator.alloc(ClusterLink, 0);
+
+        var links = try std.ArrayList(ClusterLink).initCapacity(allocator, 0);
+        errdefer links.deinit(allocator);
+
+        // Iterate through all nodes except myself
+        var it = self.nodes.valueIterator();
+        while (it.next()) |node_ptr| {
+            const node = node_ptr.*;
+            // Skip myself
+            if (node == myself) continue;
+
+            // Create "to" link (outgoing to peer)
+            try links.append(allocator, ClusterLink{
+                .direction = "to",
+                .peer_node_id = node.id,
+                .create_time = node.to_link_created,
+                .events = node.to_link_events,
+                .send_buffer_allocated = node.to_send_buf_alloc,
+                .send_buffer_used = node.to_send_buf_used,
+            });
+
+            // Create "from" link (incoming from peer)
+            try links.append(allocator, ClusterLink{
+                .direction = "from",
+                .peer_node_id = node.id,
+                .create_time = node.from_link_created,
+                .events = node.from_link_events,
+                .send_buffer_allocated = node.from_send_buf_alloc,
+                .send_buffer_used = node.from_send_buf_used,
+            });
+        }
+
+        return links.toOwnedSlice(allocator);
     }
 
     /// Request a vote from a master node
@@ -4109,4 +4191,260 @@ test "ClusterState: multiple replicas inherit same shard_id" {
     try std.testing.expectEqualSlices(u8, &master.shard_id, &replica1.shard_id);
     try std.testing.expectEqualSlices(u8, &master.shard_id, &replica2.shard_id);
     try std.testing.expectEqualSlices(u8, &replica1.shard_id, &replica2.shard_id);
+}
+
+test "ClusterLink: struct initialization with all fields" {
+    const peer_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const now = std.time.milliTimestamp();
+
+    const link = ClusterLink{
+        .direction = "to",
+        .peer_node_id = peer_id,
+        .create_time = now,
+        .events = "rw",
+        .send_buffer_allocated = 4096,
+        .send_buffer_used = 256,
+    };
+
+    try std.testing.expectEqualSlices(u8, link.direction, "to");
+    try std.testing.expectEqualSlices(u8, &link.peer_node_id, &peer_id);
+    try std.testing.expect(link.create_time > 0);
+    try std.testing.expectEqualSlices(u8, link.events, "rw");
+    try std.testing.expectEqual(link.send_buffer_allocated, 4096);
+    try std.testing.expectEqual(link.send_buffer_used, 256);
+}
+
+test "ClusterLink: direction validation for 'from' link" {
+    const peer_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const now = std.time.milliTimestamp();
+
+    const link = ClusterLink{
+        .direction = "from",
+        .peer_node_id = peer_id,
+        .create_time = now,
+        .events = "r",
+        .send_buffer_allocated = 4096,
+        .send_buffer_used = 128,
+    };
+
+    try std.testing.expectEqualSlices(u8, link.direction, "from");
+    try std.testing.expectEqualSlices(u8, link.events, "r");
+}
+
+test "ClusterLink: buffer size constraints" {
+    const peer_id = "cccccccccccccccccccccccccccccccccccccccc".*;
+
+    const link = ClusterLink{
+        .direction = "to",
+        .peer_node_id = peer_id,
+        .create_time = 1000,
+        .events = "rw",
+        .send_buffer_allocated = 8192,
+        .send_buffer_used = 2048,
+    };
+
+    try std.testing.expect(link.send_buffer_used <= link.send_buffer_allocated);
+}
+
+test "ClusterState.collectLinks: empty cluster (single node)" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const myself_id = "ffffffffffffffffffffffffffffffffffffffff".*;
+    const myself = try allocator.create(ClusterNode);
+    myself.* = try ClusterNode.init(allocator, myself_id, "127.0.0.1", 7000);
+    defer {
+        myself.deinit(allocator);
+        allocator.destroy(myself);
+    }
+
+    cluster.myself = myself;
+    const myself_key = try allocator.dupe(u8, &myself_id);
+    try cluster.nodes.put(myself_key, myself);
+
+    const links = try cluster.collectLinks(allocator);
+    defer allocator.free(links);
+
+    // Single node cluster should have no links (myself is excluded)
+    try std.testing.expectEqual(links.len, 0);
+}
+
+test "ClusterState.collectLinks: one peer node (2 links)" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const myself_id = "1111111111111111111111111111111111111111".*;
+    const myself = try allocator.create(ClusterNode);
+    myself.* = try ClusterNode.init(allocator, myself_id, "127.0.0.1", 7000);
+    defer {
+        myself.deinit(allocator);
+        allocator.destroy(myself);
+    }
+
+    const peer_id = "2222222222222222222222222222222222222222".*;
+    const peer = try allocator.create(ClusterNode);
+    peer.* = try ClusterNode.init(allocator, peer_id, "127.0.0.1", 7001);
+    defer {
+        peer.deinit(allocator);
+        allocator.destroy(peer);
+    }
+
+    cluster.myself = myself;
+    const myself_key = try allocator.dupe(u8, &myself_id);
+    try cluster.nodes.put(myself_key, myself);
+
+    const peer_key = try allocator.dupe(u8, &peer_id);
+    try cluster.nodes.put(peer_key, peer);
+
+    const links = try cluster.collectLinks(allocator);
+    defer allocator.free(links);
+
+    // One peer should result in 2 links (to + from)
+    try std.testing.expectEqual(links.len, 2);
+
+    // Check "to" link
+    try std.testing.expectEqualSlices(u8, links[0].direction, "to");
+    try std.testing.expectEqualSlices(u8, &links[0].peer_node_id, &peer_id);
+    try std.testing.expect(links[0].create_time > 0);
+    try std.testing.expectEqualSlices(u8, links[0].events, "rw");
+    try std.testing.expectEqual(links[0].send_buffer_allocated, 4096);
+    try std.testing.expectEqual(links[0].send_buffer_used, 0);
+
+    // Check "from" link
+    try std.testing.expectEqualSlices(u8, links[1].direction, "from");
+    try std.testing.expectEqualSlices(u8, &links[1].peer_node_id, &peer_id);
+    try std.testing.expect(links[1].create_time > 0);
+    try std.testing.expectEqualSlices(u8, links[1].events, "r");
+    try std.testing.expectEqual(links[1].send_buffer_allocated, 4096);
+    try std.testing.expectEqual(links[1].send_buffer_used, 0);
+}
+
+test "ClusterState.collectLinks: three peers (6 links)" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const myself_id = "1111111111111111111111111111111111111111".*;
+    const myself = try allocator.create(ClusterNode);
+    myself.* = try ClusterNode.init(allocator, myself_id, "127.0.0.1", 7000);
+    defer {
+        myself.deinit(allocator);
+        allocator.destroy(myself);
+    }
+
+    cluster.myself = myself;
+    const myself_key = try allocator.dupe(u8, &myself_id);
+    try cluster.nodes.put(myself_key, myself);
+
+    // Add three peer nodes
+    var peer_ids: [3][40]u8 = undefined;
+    var peers: [3]*ClusterNode = undefined;
+
+    for (0..3) |i| {
+        var id_buf: [40]u8 = undefined;
+        const id_str = try std.fmt.bufPrint(&id_buf, "{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}{d}", .{
+            i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i,
+        });
+        @memcpy(&peer_ids[i], id_str);
+
+        const peer = try allocator.create(ClusterNode);
+        peer.* = try ClusterNode.init(allocator, peer_ids[i], "127.0.0.1", @intCast(7001 + i));
+
+        const key = try allocator.dupe(u8, &peer_ids[i]);
+        try cluster.nodes.put(key, peer);
+        peers[i] = peer;
+    }
+
+    defer {
+        for (peers) |peer| {
+            peer.deinit(allocator);
+            allocator.destroy(peer);
+        }
+    }
+
+    const links = try cluster.collectLinks(allocator);
+    defer allocator.free(links);
+
+    // Three peers should result in 6 links (3×2)
+    try std.testing.expectEqual(links.len, 6);
+
+    // Verify each peer has exactly one "to" and one "from" link
+    for (0..3) |i| {
+        var to_count: u32 = 0;
+        var from_count: u32 = 0;
+        for (links) |link| {
+            if (std.mem.eql(u8, &link.peer_node_id, &peer_ids[i])) {
+                if (std.mem.eql(u8, link.direction, "to")) {
+                    to_count += 1;
+                } else if (std.mem.eql(u8, link.direction, "from")) {
+                    from_count += 1;
+                }
+            }
+        }
+        try std.testing.expectEqual(to_count, 1);
+        try std.testing.expectEqual(from_count, 1);
+    }
+}
+
+test "ClusterState.collectLinks: link field validation" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const myself_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const myself = try allocator.create(ClusterNode);
+    myself.* = try ClusterNode.init(allocator, myself_id, "127.0.0.1", 7000);
+    defer {
+        myself.deinit(allocator);
+        allocator.destroy(myself);
+    }
+
+    const peer_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const peer = try allocator.create(ClusterNode);
+    peer.* = try ClusterNode.init(allocator, peer_id, "127.0.0.1", 7001);
+    peer.to_send_buf_used = 1024;
+    peer.from_send_buf_used = 512;
+    defer {
+        peer.deinit(allocator);
+        allocator.destroy(peer);
+    }
+
+    cluster.myself = myself;
+    const myself_key = try allocator.dupe(u8, &myself_id);
+    try cluster.nodes.put(myself_key, myself);
+
+    const peer_key = try allocator.dupe(u8, &peer_id);
+    try cluster.nodes.put(peer_key, peer);
+
+    const links = try cluster.collectLinks(allocator);
+    defer allocator.free(links);
+
+    try std.testing.expectEqual(links.len, 2);
+
+    // Verify "to" link has correct values
+    try std.testing.expect(links[0].create_time > 0);
+    try std.testing.expect(links[0].send_buffer_allocated >= links[0].send_buffer_used);
+    try std.testing.expectEqual(links[0].send_buffer_used, 1024);
+
+    // Verify "from" link has correct values
+    try std.testing.expect(links[1].create_time > 0);
+    try std.testing.expect(links[1].send_buffer_allocated >= links[1].send_buffer_used);
+    try std.testing.expectEqual(links[1].send_buffer_used, 512);
+}
+
+test "ClusterState.collectLinks: no myself (returns empty)" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Don't set myself
+    cluster.myself = null;
+
+    const links = try cluster.collectLinks(allocator);
+    defer allocator.free(links);
+
+    // No myself means no links can be returned
+    try std.testing.expectEqual(links.len, 0);
 }

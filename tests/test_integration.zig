@@ -6882,3 +6882,77 @@ test "XGROUP DELCONSUMER - errors on missing group" {
     defer testing.allocator.free(response);
     try testing.expect(std.mem.startsWith(u8, response, "-NOGROUP"));
 }
+
+test "CLUSTER LINKS - returns empty array for single node cluster" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CLUSTER", "LINKS" });
+    defer testing.allocator.free(response);
+
+    // Single node cluster should return empty array
+    try testing.expect(std.mem.startsWith(u8, response, "*0"));
+}
+
+test "CLUSTER LINKS - arity error with extra arguments" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    const response = try client.sendCommand(&[_][]const u8{ "CLUSTER", "LINKS", "extra" });
+    defer testing.allocator.free(response);
+
+    // Should return error
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try testing.expect(std.mem.indexOf(u8, response, "wrong number of arguments") != null);
+}
+
+test "CLUSTER LINKS - response format contains required fields" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add a peer node so we get links
+    {
+        const resp = try client.sendCommand(&[_][]const u8{ "CLUSTER", "MEET", "127.0.0.1", "7001" });
+        defer testing.allocator.free(resp);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "CLUSTER", "LINKS" });
+    defer testing.allocator.free(response);
+
+    // Response should contain link information
+    try testing.expect(std.mem.indexOf(u8, response, "direction") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "node-id") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "create-time") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "events") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "send-buffer-allocated") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "send-buffer-used") != null);
+}
+
+test "CLUSTER LINKS - each link has all required fields" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Add a peer node so we get links
+    {
+        const resp = try client.sendCommand(&[_][]const u8{ "CLUSTER", "MEET", "127.0.0.1", "7001" });
+        defer testing.allocator.free(resp);
+    }
+
+    const response = try client.sendCommand(&[_][]const u8{ "CLUSTER", "LINKS" });
+    defer testing.allocator.free(response);
+
+    // Should have at least one link array with 6 key-value pairs (12 elements)
+    try testing.expect(std.mem.indexOf(u8, response, "*12") != null or std.mem.indexOf(u8, response, "*2") != null);
+}

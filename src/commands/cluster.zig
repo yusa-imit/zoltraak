@@ -3233,3 +3233,150 @@ test "cmdClusterShards - wrong number of arguments" {
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
 }
+
+/// CLUSTER LINKS - Return cluster bus links information
+pub fn cmdClusterLinks(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Validate arity: CLUSTER LINKS (no extra arguments)
+    if (args.len != 2) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|links' command");
+    }
+
+    const cluster = &storage.cluster;
+
+    // Collect links from cluster state
+    const links = try cluster.collectLinks(allocator);
+    defer allocator.free(links);
+
+    // Build RESP response: array of link objects
+    var response = try std.ArrayList(RespValue).initCapacity(allocator, links.len);
+    errdefer {
+        for (response.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        response.deinit(allocator);
+    }
+
+    for (links) |link| {
+        // Create link array with 6 key-value pairs
+        var link_array = try std.ArrayList(RespValue).initCapacity(allocator, 12);
+        errdefer {
+            for (link_array.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            link_array.deinit(allocator);
+        }
+
+        // 1. direction
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "direction") });
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, link.direction) });
+
+        // 2. node-id (peer_node_id)
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "node-id") });
+        const node_id_str = try allocator.dupe(u8, &link.peer_node_id);
+        try link_array.append(allocator, RespValue{ .bulk_string = node_id_str });
+
+        // 3. create-time
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "create-time") });
+        try link_array.append(allocator, RespValue{ .integer = link.create_time });
+
+        // 4. events
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "events") });
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, link.events) });
+
+        // 5. send-buffer-allocated
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "send-buffer-allocated") });
+        try link_array.append(allocator, RespValue{ .integer = @intCast(link.send_buffer_allocated) });
+
+        // 6. send-buffer-used
+        try link_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "send-buffer-used") });
+        try link_array.append(allocator, RespValue{ .integer = @intCast(link.send_buffer_used) });
+
+        try response.append(allocator, RespValue{ .array = try link_array.toOwnedSlice(allocator) });
+    }
+
+    // Write the array response
+    return w.writeArray(try response.toOwnedSlice(allocator));
+}
+
+test "cmdClusterLinks - empty cluster (single node)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "LINKS" };
+    const result = try cmdClusterLinks(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return empty array
+    try std.testing.expect(std.mem.indexOf(u8, result, "*0") != null);
+}
+
+test "cmdClusterLinks - arity error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "CLUSTER", "LINKS", "extra" };
+    const result = try cmdClusterLinks(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "cmdClusterLinks - with one peer node" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const myself_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const myself = try allocator.create(cluster_mod.ClusterNode);
+    myself.* = try cluster_mod.ClusterNode.init(allocator, myself_id, "127.0.0.1", 7000);
+    defer {
+        myself.deinit(allocator);
+        allocator.destroy(myself);
+    }
+
+    const peer_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const peer = try allocator.create(cluster_mod.ClusterNode);
+    peer.* = try cluster_mod.ClusterNode.init(allocator, peer_id, "127.0.0.1", 7001);
+    defer {
+        peer.deinit(allocator);
+        allocator.destroy(peer);
+    }
+
+    storage.cluster.myself = myself;
+    const myself_key = try allocator.dupe(u8, &myself_id);
+    try storage.cluster.nodes.put(myself_key, myself);
+
+    const peer_key = try allocator.dupe(u8, &peer_id);
+    try storage.cluster.nodes.put(peer_key, peer);
+
+    const args = [_][]const u8{ "CLUSTER", "LINKS" };
+    const result = try cmdClusterLinks(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return array with 2 links
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2") != null);
+    // Should contain direction fields
+    try std.testing.expect(std.mem.indexOf(u8, result, "direction") != null);
+    // Should contain node-id field
+    try std.testing.expect(std.mem.indexOf(u8, result, "node-id") != null);
+    // Should contain create-time field
+    try std.testing.expect(std.mem.indexOf(u8, result, "create-time") != null);
+    // Should contain events field
+    try std.testing.expect(std.mem.indexOf(u8, result, "events") != null);
+    // Should contain send-buffer fields
+    try std.testing.expect(std.mem.indexOf(u8, result, "send-buffer-allocated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "send-buffer-used") != null);
+}
