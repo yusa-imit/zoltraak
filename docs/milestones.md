@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 149 (211 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 90% complete**, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 150 (212 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 92% complete**, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 8 Cluster Mode (90% complete — hash slot foundation + CLUSTER INFO/NODES/SLOTS/MYID + MEET/FORGET/ADDSLOTS/ADDSLOTSRANGE/DELSLOTS/DELSLOTSRANGE/FLUSHSLOTS + CLUSTER SETSLOT migration states + ASK/ASKING redirects + MIGRATE command (stub) + gossip protocol (MEET/PING/PONG) + background gossip task + failover + **CLUSTER REPLICAS/REPLICATE** ✅ + **CLUSTER SAVECONFIG/BUMPEPOCH** ✅ + **CLUSTER COUNTKEYSINSLOT/GETKEYSINSLOT/KEYSLOT** ✅ + **READONLY/READWRITE** ✅ + **CLUSTER SHARDS** ✅ + **CLUSTER MYSHARDID** ✅ done)
-- **Next milestone**: Phase 8.16 (CLUSTER LINKS — Redis 7.0 bus connections)
+- **Current phase**: Phase 8 Cluster Mode (92% complete — hash slot foundation + CLUSTER INFO/NODES/SLOTS/MYID + MEET/FORGET/ADDSLOTS/ADDSLOTSRANGE/DELSLOTS/DELSLOTSRANGE/FLUSHSLOTS + CLUSTER SETSLOT migration states + ASK/ASKING redirects + MIGRATE command (stub) + gossip protocol (MEET/PING/PONG) + background gossip task + failover + **CLUSTER REPLICAS/REPLICATE** ✅ + **CLUSTER SAVECONFIG/BUMPEPOCH** ✅ + **CLUSTER COUNTKEYSINSLOT/GETKEYSINSLOT/KEYSLOT** ✅ + **READONLY/READWRITE** ✅ + **CLUSTER SHARDS** ✅ + **CLUSTER MYSHARDID** ✅ + **CLUSTER LINKS** ✅ done)
+- **Next milestone**: Phase 8.17 (CLUSTER COUNT-FAILURE-REPORTS — failure report tracking)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
