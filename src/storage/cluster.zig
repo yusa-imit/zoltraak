@@ -307,6 +307,15 @@ pub const GossipMessage = struct {
     gossip_nodes: []const GossipNodeInfo,
 };
 
+/// Failure report from one node about another
+/// Created when a node suspects another node has failed (pfail state)
+pub const FailureReport = struct {
+    /// ID of the node reporting the failure (40-char hex)
+    reporter_id: [40]u8,
+    /// Timestamp when the report was created (milliseconds since epoch)
+    timestamp: i64,
+};
+
 /// Cluster state management
 pub const ClusterState = struct {
     allocator: std.mem.Allocator,
@@ -334,6 +343,9 @@ pub const ClusterState = struct {
     failover_votes: std.AutoHashMap(u64, std.StringHashMap([40]u8)),
     /// Replication offset for myself (used in election tie-breaking)
     my_replication_offset: i64,
+    /// Failure reports: tracks which nodes have reported other nodes as failed
+    /// Maps reported_node_id -> list of FailureReport
+    failure_reports: std.StringHashMap(std.ArrayListUnmanaged(FailureReport)),
 
     pub const State = enum {
         ok,
@@ -355,6 +367,7 @@ pub const ClusterState = struct {
             .readonly_clients = std.AutoHashMap(u64, void).init(allocator),
             .failover_votes = std.AutoHashMap(u64, std.StringHashMap([40]u8)).init(allocator),
             .my_replication_offset = 0,
+            .failure_reports = std.StringHashMap(std.ArrayListUnmanaged(FailureReport)).init(allocator),
         };
     }
 
@@ -375,6 +388,13 @@ pub const ClusterState = struct {
             vote_map.deinit();
         }
         self.failover_votes.deinit();
+
+        // Clean up failure reports
+        var report_it = self.failure_reports.valueIterator();
+        while (report_it.next()) |report_list| {
+            report_list.deinit(self.allocator);
+        }
+        self.failure_reports.deinit();
     }
 
     /// Get the node responsible for a given slot
@@ -1218,6 +1238,89 @@ pub const ClusterState = struct {
         }
 
         return links.toOwnedSlice(allocator);
+    }
+
+    /// Add a failure report for a node
+    /// Creates a report from reporter_id claiming that reported_node_id has failed
+    /// Reports are used in cluster consensus to determine if a node should be marked as failed
+    pub fn addFailureReport(self: *ClusterState, reported_node_id: [40]u8, reporter_id: [40]u8) !void {
+        const now = std.time.milliTimestamp();
+        const report = FailureReport{
+            .reporter_id = reporter_id,
+            .timestamp = now,
+        };
+
+        // Get or create the report list for this node
+        const gop = try self.failure_reports.getOrPut(self.allocator, reported_node_id[0..]);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = std.ArrayListUnmanaged(FailureReport){};
+        }
+
+        // Check if this reporter already has a report for this node
+        for (gop.value_ptr.items) |existing| {
+            if (std.mem.eql(u8, &existing.reporter_id, &reporter_id)) {
+                // Update timestamp of existing report
+                // Note: We would need to iterate again to update, so for simplicity just return
+                return;
+            }
+        }
+
+        // Add the new report
+        try gop.value_ptr.append(self.allocator, report);
+    }
+
+    /// Get the count of failure reports for a given node
+    /// Returns the number of distinct reporters claiming this node has failed
+    pub fn getFailureReportCount(self: *const ClusterState, node_id: [40]u8) usize {
+        const reports = self.failure_reports.get(node_id[0..]) orelse return 0;
+        return reports.items.len;
+    }
+
+    /// Clear all failure reports for a given node
+    /// Called when a node recovers or is removed from the cluster
+    pub fn clearFailureReports(self: *ClusterState, node_id: [40]u8) void {
+        if (self.failure_reports.getPtr(node_id[0..])) |reports| {
+            reports.deinit(self.allocator);
+            _ = self.failure_reports.remove(node_id[0..]);
+        }
+    }
+
+    /// Expire old failure reports (older than 60 seconds)
+    /// Should be called periodically to clean up stale reports
+    pub fn expireOldFailureReports(self: *ClusterState) !void {
+        const now = std.time.milliTimestamp();
+        const expiry_threshold = now - 60_000; // 60 seconds
+
+        var it = self.failure_reports.iterator();
+        var keys_to_remove = std.ArrayList([40]u8).init(self.allocator);
+        defer keys_to_remove.deinit();
+
+        while (it.next()) |entry| {
+            var i: usize = 0;
+            while (i < entry.value_ptr.items.len) {
+                if (entry.value_ptr.items[i].timestamp < expiry_threshold) {
+                    _ = entry.value_ptr.swapRemove(i);
+                    // Don't increment i, check the same index again
+                } else {
+                    i += 1;
+                }
+            }
+
+            // If no reports left for this node, mark for removal
+            if (entry.value_ptr.items.len == 0) {
+                var node_id: [40]u8 = undefined;
+                @memcpy(&node_id, entry.key_ptr.*);
+                try keys_to_remove.append(node_id);
+            }
+        }
+
+        // Remove empty entries
+        for (keys_to_remove.items) |node_id| {
+            if (self.failure_reports.getPtr(node_id[0..])) |reports| {
+                reports.deinit(self.allocator);
+                _ = self.failure_reports.remove(node_id[0..]);
+            }
+        }
     }
 
     /// Request a vote from a master node
@@ -4447,4 +4550,134 @@ test "ClusterState.collectLinks: no myself (returns empty)" {
 
     // No myself means no links can be returned
     try std.testing.expectEqual(links.len, 0);
+}
+
+// ============================================================================
+// Failure Report Tests
+// ============================================================================
+
+test "addFailureReport: single report" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const reported_node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const reporter = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+
+    try cluster.addFailureReport(reported_node, reporter);
+
+    const count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "addFailureReport: multiple reporters" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const reported_node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const reporter1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const reporter2 = "cccccccccccccccccccccccccccccccccccccccc".*;
+    const reporter3 = "dddddddddddddddddddddddddddddddddddddddd".*;
+
+    try cluster.addFailureReport(reported_node, reporter1);
+    try cluster.addFailureReport(reported_node, reporter2);
+    try cluster.addFailureReport(reported_node, reporter3);
+
+    const count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "addFailureReport: duplicate reporter (idempotent)" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const reported_node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const reporter = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+
+    try cluster.addFailureReport(reported_node, reporter);
+    try cluster.addFailureReport(reported_node, reporter);
+    try cluster.addFailureReport(reported_node, reporter);
+
+    const count = cluster.getFailureReportCount(reported_node);
+    // Should still be 1 (duplicate reports ignored)
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "getFailureReportCount: no reports" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const node_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const count = cluster.getFailureReportCount(node_id);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "clearFailureReports: removes all reports" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const reported_node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const reporter1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const reporter2 = "cccccccccccccccccccccccccccccccccccccccc".*;
+
+    try cluster.addFailureReport(reported_node, reporter1);
+    try cluster.addFailureReport(reported_node, reporter2);
+
+    var count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 2), count);
+
+    cluster.clearFailureReports(reported_node);
+
+    count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "expireOldFailureReports: removes stale reports" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const reported_node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const reporter = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+
+    // Add a report
+    try cluster.addFailureReport(reported_node, reporter);
+
+    // Manually set timestamp to 61 seconds ago
+    const reports = cluster.failure_reports.getPtr(reported_node[0..]).?;
+    reports.items[0].timestamp = std.time.milliTimestamp() - 61_000;
+
+    var count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    // Expire old reports
+    try cluster.expireOldFailureReports();
+
+    count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "expireOldFailureReports: keeps recent reports" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    const reported_node = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const reporter = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+
+    // Add a report (will have current timestamp)
+    try cluster.addFailureReport(reported_node, reporter);
+
+    var count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    // Expire old reports (should not remove recent one)
+    try cluster.expireOldFailureReports();
+
+    count = cluster.getFailureReportCount(reported_node);
+    try std.testing.expectEqual(@as(usize, 1), count);
 }

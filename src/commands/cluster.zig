@@ -3380,3 +3380,151 @@ test "cmdClusterLinks - with one peer node" {
     try std.testing.expect(std.mem.indexOf(u8, result, "send-buffer-allocated") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "send-buffer-used") != null);
 }
+
+// ============================================================================
+// CLUSTER COUNT-FAILURE-REPORTS
+// ============================================================================
+
+/// CLUSTER COUNT-FAILURE-REPORTS <node-id>
+/// Returns the number of active failure reports for the specified node
+/// Used in cluster consensus to determine if a node should be marked as failed
+pub fn cmdClusterCountFailureReports(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Validate arity: CLUSTER COUNT-FAILURE-REPORTS <node-id>
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|count-failure-reports' command");
+    }
+
+    const cluster = &storage.cluster;
+
+    // Check if cluster is enabled
+    if (!cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Parse node ID (must be 40-char hex string)
+    const node_id_str = args[2];
+    if (node_id_str.len != 40) {
+        return w.writeError("ERR Invalid node ID");
+    }
+
+    var node_id: [40]u8 = undefined;
+    @memcpy(&node_id, node_id_str);
+
+    // Verify node exists (optional - Redis doesn't strictly require this)
+    // But it's good practice to validate the node ID
+    if (cluster.nodes.get(node_id_str) == null) {
+        // Return 0 for unknown nodes (Redis behavior)
+        return w.writeInteger(0);
+    }
+
+    // Get failure report count
+    const count = cluster.getFailureReportCount(node_id);
+    return w.writeInteger(@intCast(count));
+}
+
+test "cmdClusterCountFailureReports - arity error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Too few arguments
+    const args1 = [_][]const u8{ "CLUSTER", "COUNT-FAILURE-REPORTS" };
+    const result1 = try cmdClusterCountFailureReports(allocator, &args1, storage, null, 0);
+    defer allocator.free(result1);
+    try std.testing.expect(std.mem.indexOf(u8, result1, "ERR") != null);
+
+    // Too many arguments
+    const args2 = [_][]const u8{ "CLUSTER", "COUNT-FAILURE-REPORTS", "node-id", "extra" };
+    const result2 = try cmdClusterCountFailureReports(allocator, &args2, storage, null, 0);
+    defer allocator.free(result2);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "ERR") != null);
+}
+
+test "cmdClusterCountFailureReports - cluster disabled" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const node_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const args = [_][]const u8{ "CLUSTER", "COUNT-FAILURE-REPORTS", node_id };
+    const result = try cmdClusterCountFailureReports(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster support disabled") != null);
+}
+
+test "cmdClusterCountFailureReports - invalid node ID length" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const args = [_][]const u8{ "CLUSTER", "COUNT-FAILURE-REPORTS", "invalid" };
+    const result = try cmdClusterCountFailureReports(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Invalid node ID") != null);
+}
+
+test "cmdClusterCountFailureReports - unknown node returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    const node_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const args = [_][]const u8{ "CLUSTER", "COUNT-FAILURE-REPORTS", node_id };
+    const result = try cmdClusterCountFailureReports(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return :0
+    try std.testing.expect(std.mem.indexOf(u8, result, ":0") != null);
+}
+
+test "cmdClusterCountFailureReports - with failure reports" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+
+    // Create a node
+    const node_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const node = try allocator.create(cluster_mod.ClusterNode);
+    node.* = try cluster_mod.ClusterNode.init(allocator, node_id, "127.0.0.1", 7000);
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try storage.cluster.nodes.put(node_key, node);
+
+    // Add some failure reports
+    const reporter1 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const reporter2 = "cccccccccccccccccccccccccccccccccccccccc".*;
+    try storage.cluster.addFailureReport(node_id, reporter1);
+    try storage.cluster.addFailureReport(node_id, reporter2);
+
+    const args = [_][]const u8{ "CLUSTER", "COUNT-FAILURE-REPORTS", &node_id };
+    const result = try cmdClusterCountFailureReports(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // Should return :2
+    try std.testing.expect(std.mem.indexOf(u8, result, ":2") != null);
+}
