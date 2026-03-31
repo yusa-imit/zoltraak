@@ -1469,6 +1469,66 @@ pub fn cmdClusterBumpEpoch(
     return w.writeBulkString(response);
 }
 
+/// CLUSTER SET-CONFIG-EPOCH - Manually set cluster configuration epoch
+/// Used during cluster initialization or recovery to force a specific epoch value
+///
+/// Syntax: CLUSTER SET-CONFIG-EPOCH <epoch>
+///
+/// Constraints:
+///   - The node must have no assigned slots (safety check)
+///   - Redis allows any epoch value >= 0
+///
+/// Returns +OK on success
+pub fn cmdClusterSetConfigEpoch(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // args[0] = "CLUSTER", args[1] = "SET-CONFIG-EPOCH", args[2] = epoch
+    if (args.len != 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|set-config-epoch' command");
+    }
+
+    // Check cluster enabled
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Parse epoch argument (unsigned 64-bit integer)
+    const epoch = std.fmt.parseUnsigned(u64, args[2], 10) catch {
+        return w.writeError("ERR Invalid epoch");
+    };
+
+    // Attempt to set config epoch
+    storage.cluster.setConfigEpoch(epoch) catch |err| {
+        switch (err) {
+            error.ClusterNotInitialized => {
+                return w.writeError("ERR Cluster not initialized");
+            },
+            error.SlotHasKeys => {
+                // Redis error message for this case
+                return w.writeError("ERR The user can assign a config epoch only when the node does not know any other node");
+            },
+            else => {
+                return w.writeError("ERR Failed to set config epoch");
+            },
+        }
+    };
+
+    // Auto-save config after setting epoch
+    storage.cluster.saveConfig(storage.cluster_config_path) catch |err| {
+        // Log error but don't fail the command - epoch was already set
+        std.log.warn("Failed to save config after SET-CONFIG-EPOCH: {}", .{err});
+    };
+
+    return w.writeSimpleString("OK");
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");

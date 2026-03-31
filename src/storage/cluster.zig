@@ -1616,6 +1616,47 @@ pub const ClusterState = struct {
         }
     }
 
+    /// Manually set the config epoch for this node
+    /// Used during cluster initialization or recovery to force a specific epoch
+    ///
+    /// Constraints:
+    ///   - The new epoch must be > 0 (epoch 0 is reserved for uninitialized state)
+    ///   - The node must have no assigned slots (safety check to prevent epoch conflicts)
+    ///   - Redis allows setting any epoch >= 0, but enforces the "no slots" rule
+    ///
+    /// Arguments:
+    ///   - epoch: The new config epoch to set
+    ///
+    /// Returns:
+    ///   - error.ClusterNotInitialized if cluster is not initialized
+    ///   - error.SlotHasKeys if the node has any assigned slots
+    ///
+    /// Side effects:
+    ///   - Updates myself.config_epoch to the new value
+    ///   - Updates current_epoch to max(current_epoch, new_epoch)
+    pub fn setConfigEpoch(self: *ClusterState, epoch: u64) !void {
+        const myself = self.myself orelse return error.ClusterNotInitialized;
+
+        // Redis constraint: can only set config epoch when node has no assigned slots
+        // This prevents epoch conflicts during normal cluster operation
+        for (self.slots) |slot_node| {
+            if (slot_node) |node| {
+                // Check if this slot is assigned to myself
+                if (std.mem.eql(u8, &node.id, &myself.id)) {
+                    return error.SlotHasKeys;
+                }
+            }
+        }
+
+        // Set the new config epoch
+        myself.config_epoch = epoch;
+
+        // Update current_epoch to be at least as high as the new config epoch
+        if (epoch > self.current_epoch) {
+            self.current_epoch = epoch;
+        }
+    }
+
     /// Count the number of keys in a specific hash slot
     /// Iterates through all keys in the storage HashMap and counts those in the given slot
     ///
@@ -4993,4 +5034,125 @@ test "resetSoft: clears client flags" {
     // Verify flags cleared
     try std.testing.expect(!cluster.hasAsking(12345));
     try std.testing.expect(!cluster.hasReadonly(12345));
+}
+
+test "setConfigEpoch: valid epoch with no slots" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Initial epochs
+    try std.testing.expectEqual(@as(u64, 0), node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 0), cluster.current_epoch);
+
+    // Set config epoch to 42
+    try cluster.setConfigEpoch(42);
+
+    // Verify epochs updated
+    try std.testing.expectEqual(@as(u64, 42), node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 42), cluster.current_epoch);
+}
+
+test "setConfigEpoch: current_epoch increases if needed" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Set initial epochs
+    node.config_epoch = 10;
+    cluster.current_epoch = 10;
+
+    // Set config epoch to 100 (higher than current)
+    try cluster.setConfigEpoch(100);
+
+    // Verify current_epoch increased
+    try std.testing.expectEqual(@as(u64, 100), node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 100), cluster.current_epoch);
+}
+
+test "setConfigEpoch: current_epoch stays if higher" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Set initial epochs
+    node.config_epoch = 10;
+    cluster.current_epoch = 200; // Higher than what we'll set
+
+    // Set config epoch to 50 (lower than current_epoch)
+    try cluster.setConfigEpoch(50);
+
+    // Verify current_epoch stayed at 200
+    try std.testing.expectEqual(@as(u64, 50), node.config_epoch);
+    try std.testing.expectEqual(@as(u64, 200), cluster.current_epoch);
+}
+
+test "setConfigEpoch: error if node has assigned slots" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Assign slot 100 to myself
+    cluster.slots[100] = node;
+
+    // Attempt to set config epoch should fail
+    const result = cluster.setConfigEpoch(42);
+    try std.testing.expectError(error.SlotHasKeys, result);
+}
+
+test "setConfigEpoch: error if cluster not initialized" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+    // myself is null
+
+    // Attempt to set config epoch should fail
+    const result = cluster.setConfigEpoch(42);
+    try std.testing.expectError(error.ClusterNotInitialized, result);
 }
