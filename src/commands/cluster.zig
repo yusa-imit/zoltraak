@@ -3431,6 +3431,77 @@ pub fn cmdClusterCountFailureReports(
     return w.writeInteger(@intCast(count));
 }
 
+/// CLUSTER RESET [HARD | SOFT] - Reset cluster state
+///
+/// Soft reset (default):
+/// - Forgets all other nodes
+/// - Clears all slot assignments
+/// - If replica, turns into master
+/// - Preserves node ID, currentEpoch, configEpoch
+///
+/// Hard reset:
+/// - All soft reset effects
+/// - Generates new node ID
+/// - Resets currentEpoch and configEpoch to 0
+///
+/// Returns error if this is a master node with keys.
+pub fn cmdClusterReset(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Validate arity: CLUSTER RESET [HARD | SOFT]
+    if (args.len > 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|reset' command");
+    }
+
+    const cluster = &storage.cluster;
+
+    // Check if cluster is enabled
+    if (!cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // Parse reset mode (default: SOFT)
+    const mode = if (args.len == 3) blk: {
+        const mode_str = args[2];
+        if (std.ascii.eqlIgnoreCase(mode_str, "hard")) {
+            break :blk "HARD";
+        } else if (std.ascii.eqlIgnoreCase(mode_str, "soft")) {
+            break :blk "SOFT";
+        } else {
+            return w.writeError("ERR CLUSTER RESET only supports HARD or SOFT mode");
+        }
+    } else "SOFT";
+
+    // Check if the node has keys
+    const has_keys = storage.data.count() > 0;
+
+    // Perform reset based on mode
+    if (std.mem.eql(u8, mode, "HARD")) {
+        cluster.resetHard(has_keys) catch |err| {
+            return switch (err) {
+                ClusterError.SlotHasKeys => w.writeError("ERR CLUSTER RESET can't be called with master nodes containing keys"),
+                else => w.writeError("ERR failed to reset cluster"),
+            };
+        };
+    } else {
+        cluster.resetSoft(has_keys) catch |err| {
+            return switch (err) {
+                ClusterError.SlotHasKeys => w.writeError("ERR CLUSTER RESET can't be called with master nodes containing keys"),
+                else => w.writeError("ERR failed to reset cluster"),
+            };
+        };
+    }
+
+    return w.writeSimpleString("OK");
+}
+
 test "cmdClusterCountFailureReports - arity error" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");

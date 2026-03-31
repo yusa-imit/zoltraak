@@ -356,6 +356,17 @@ pub fn build(b: *std.Build) void {
     const run_cluster_count_failure_reports_tests = b.addRunArtifact(cluster_count_failure_reports_tests);
     integration_test_step.dependOn(&run_cluster_count_failure_reports_tests.step);
 
+    const cluster_reset_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_cluster_reset.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_cluster_reset_tests = b.addRunArtifact(cluster_reset_tests);
+    integration_test_step.dependOn(&run_cluster_reset_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

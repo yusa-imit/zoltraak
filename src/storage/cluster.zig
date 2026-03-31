@@ -1672,6 +1672,130 @@ pub const ClusterState = struct {
 
         return keys.toOwnedSlice(allocator);
     }
+
+    /// Perform a soft reset of the cluster state.
+    ///
+    /// Soft reset effects:
+    /// - Forgets all other nodes in the cluster
+    /// - Clears all slot assignments
+    /// - If this node is a replica, turns it into a master and flushes data
+    /// - Preserves the current node ID
+    /// - Preserves currentEpoch and configEpoch
+    ///
+    /// Returns an error if the node is a master with keys in any slot.
+    pub fn resetSoft(self: *ClusterState, has_keys: bool) ClusterError!void {
+        // Check if this node is a master with keys
+        if (self.myself) |myself| {
+            if (myself.flags.master and has_keys) {
+                std.log.warn("CLUSTER RESET soft failed: master node has keys (node_id={s})", .{myself.id});
+                return ClusterError.SlotHasKeys;
+            }
+        }
+
+        // Clear all slot assignments
+        for (&self.slots) |*slot_ptr| {
+            slot_ptr.* = null;
+        }
+        for (&self.slot_migration_states) |*migration_state| {
+            migration_state.* = .{};
+        }
+
+        // Clear myself's slots
+        if (self.myself) |myself| {
+            myself.slots.clearRetainingCapacity();
+
+            // If replica, turn into master
+            if (myself.flags.slave) {
+                myself.flags.slave = false;
+                myself.flags.master = true;
+                myself.master_id = null;
+            }
+        }
+
+        // Forget all other nodes
+        var it = self.nodes.iterator();
+        while (it.next()) |entry| {
+            const node = entry.value_ptr.*;
+            if (self.myself == null or !std.mem.eql(u8, &node.id, &self.myself.?.id)) {
+                node.deinit(self.allocator);
+                self.allocator.destroy(node);
+            }
+        }
+        self.nodes.clearRetainingCapacity();
+
+        // Re-add myself to nodes map if it exists
+        if (self.myself) |myself| {
+            const id_str = try self.allocator.dupe(u8, &myself.id);
+            errdefer self.allocator.free(id_str);
+            try self.nodes.put(id_str, myself);
+        }
+
+        // Clear all other state
+        self.banned_nodes.clearRetainingCapacity();
+        self.asking_clients.clearRetainingCapacity();
+        self.readonly_clients.clearRetainingCapacity();
+
+        // Clear failover votes
+        var vote_it = self.failover_votes.valueIterator();
+        while (vote_it.next()) |vote_map| {
+            vote_map.deinit();
+        }
+        self.failover_votes.clearRetainingCapacity();
+
+        // Clear failure reports
+        var report_it = self.failure_reports.valueIterator();
+        while (report_it.next()) |report_list| {
+            report_list.deinit(self.allocator);
+        }
+        self.failure_reports.clearRetainingCapacity();
+
+        // Update cluster state
+        self.state = .fail; // No slots assigned
+    }
+
+    /// Perform a hard reset of the cluster state.
+    ///
+    /// Hard reset effects (in addition to soft reset):
+    /// - Generates a new random node ID
+    /// - Resets currentEpoch to 0
+    /// - Resets configEpoch to 0
+    ///
+    /// Returns an error if the node is a master with keys in any slot.
+    pub fn resetHard(self: *ClusterState, has_keys: bool) ClusterError!void {
+        // Perform soft reset first
+        try self.resetSoft(has_keys);
+
+        // Generate new node ID
+        if (self.myself) |myself| {
+            std.log.info("CLUSTER RESET hard: generating new node ID", .{});
+
+            var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+            const random = prng.random();
+            const hex_chars = "0123456789abcdef";
+            for (&myself.id) |*c| {
+                c.* = hex_chars[random.intRangeLessThan(u8, 0, 16)];
+            }
+
+            // Update nodes map with new ID
+            // After resetSoft, nodes contains only myself with an old ID key
+            // Clear the entire nodes map (frees the old ID key)
+            var old_it = self.nodes.iterator();
+            while (old_it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+            }
+            self.nodes.clearRetainingCapacity();
+
+            // Re-add myself with new ID
+            const id_str = try self.allocator.dupe(u8, &myself.id);
+            errdefer self.allocator.free(id_str);
+            try self.nodes.put(id_str, myself);
+
+            // Reset epochs
+            myself.config_epoch = 0;
+        }
+
+        self.current_epoch = 0;
+    }
 };
 
 // Tests
@@ -4680,4 +4804,193 @@ test "expireOldFailureReports: keeps recent reports" {
 
     count = cluster.getFailureReportCount(reported_node);
     try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "resetSoft: clears slots and preserves node ID" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Save original node ID
+    const original_id = node.id;
+
+    // Add some slots
+    const slots = [_]u16{ 0, 1, 2, 100, 200 };
+    try cluster.addSlotsToNode(node, &slots);
+
+    // Perform soft reset
+    try cluster.resetSoft(false);
+
+    // Verify slots cleared
+    for (cluster.slots) |slot| {
+        try std.testing.expectEqual(@as(?*ClusterNode, null), slot);
+    }
+
+    // Verify ID preserved
+    if (cluster.myself) |n| {
+        try std.testing.expect(std.mem.eql(u8, &n.id, &original_id));
+    }
+}
+
+test "resetHard: generates new node ID and resets epochs" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Save original node ID
+    const original_id = node.id;
+
+    // Set epochs
+    cluster.current_epoch = 100;
+    node.config_epoch = 50;
+
+    // Perform hard reset
+    try cluster.resetHard(false);
+
+    // Verify new ID generated
+    if (cluster.myself) |n| {
+        try std.testing.expect(!std.mem.eql(u8, &n.id, &original_id));
+    }
+
+    // Verify epochs reset
+    try std.testing.expectEqual(@as(u64, 0), cluster.current_epoch);
+    if (cluster.myself) |n| {
+        try std.testing.expectEqual(@as(u64, 0), n.config_epoch);
+    }
+}
+
+test "resetSoft: converts replica to master" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node as replica
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Configure as replica
+    node.flags.master = false;
+    node.flags.slave = true;
+    const master_id = "fedcba9876543210fedcba9876543210fedcba98".*;
+    node.master_id = master_id;
+
+    // Perform soft reset
+    try cluster.resetSoft(false);
+
+    // Verify converted to master
+    if (cluster.myself) |n| {
+        try std.testing.expect(n.flags.master);
+        try std.testing.expect(!n.flags.slave);
+        try std.testing.expectEqual(@as(?[40]u8, null), n.master_id);
+    }
+}
+
+test "resetSoft: rejects master with keys" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node (master by default)
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Node is master by default
+    const result = cluster.resetSoft(true); // has_keys = true
+    try std.testing.expectError(ClusterError.SlotHasKeys, result);
+}
+
+test "resetSoft: clears migration states" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Set migration states
+    const remote_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0".*;
+    cluster.slot_migration_states[0].migrating_to = remote_id;
+    cluster.slot_migration_states[1].importing_from = remote_id;
+
+    // Perform soft reset
+    try cluster.resetSoft(false);
+
+    // Verify migration states cleared
+    try std.testing.expectEqual(@as(?[40]u8, null), cluster.slot_migration_states[0].migrating_to);
+    try std.testing.expectEqual(@as(?[40]u8, null), cluster.slot_migration_states[1].importing_from);
+}
+
+test "resetSoft: clears client flags" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    cluster.enabled = true;
+
+    // Initialize myself node
+    const node_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const node = try allocator.create(ClusterNode);
+    node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 6379);
+    cluster.myself = node;
+
+    const node_key = try allocator.dupe(u8, &node_id);
+    try cluster.nodes.put(node_key, node);
+
+    // Set client flags
+    try cluster.setAsking(12345);
+    try cluster.setReadonly(12345);
+
+    try std.testing.expect(cluster.hasAsking(12345));
+    try std.testing.expect(cluster.hasReadonly(12345));
+
+    // Perform soft reset
+    try cluster.resetSoft(false);
+
+    // Verify flags cleared
+    try std.testing.expect(!cluster.hasAsking(12345));
+    try std.testing.expect(!cluster.hasReadonly(12345));
 }
