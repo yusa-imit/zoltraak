@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 155 (216 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel started** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 156 (219 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel started** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 9 Redis Sentinel (5% complete — Sentinel mode foundation + SENTINEL PING ✅)
-- **Next milestone**: Phase 9 (Redis Sentinel — MASTERS/MONITOR/SLAVES commands)
+- **Current phase**: Phase 9 Redis Sentinel (15% complete — Foundation, PING, MASTERS, MONITOR, REMOVE ✅)
+- **Next milestone**: Phase 9 (Redis Sentinel — MASTER/REPLICAS/GET-MASTER-ADDR-BY-NAME commands)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -19,11 +19,12 @@
 
 ## Active Milestones
 
-### Phase 9 — Redis Sentinel (5% complete) 🚧
+### Phase 9 — Redis Sentinel (15% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
 | 155 | Sentinel Foundation (mode detection + SENTINEL PING) | Done ✅ |
+| 156 | SENTINEL MASTERS/MONITOR/REMOVE | Done ✅ |
 
 ### Phase 6 — Server Management (100% complete) ✅
 

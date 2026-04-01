@@ -73,6 +73,72 @@ pub const SentinelState = struct {
         }
         return node_id;
     }
+
+    /// Add a master to the monitoring list
+    /// Returns error if master with same name already exists
+    pub fn monitorMaster(
+        self: *SentinelState,
+        name: []const u8,
+        ip: []const u8,
+        port: u16,
+        quorum: u8,
+    ) !void {
+        // Check if master already exists
+        if (self.monitored_masters.contains(name)) {
+            return error.MasterAlreadyExists;
+        }
+
+        // Duplicate strings for ownership
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+        const ip_copy = try self.allocator.dupe(u8, ip);
+        errdefer self.allocator.free(ip_copy);
+
+        const now = std.time.milliTimestamp();
+        const master = MasterInfo{
+            .name = name_copy,
+            .ip = ip_copy,
+            .port = port,
+            .quorum = quorum,
+            .down_after_milliseconds = 30000, // Default 30 seconds
+            .last_ping_time = now,
+            .last_pong_time = now,
+            .is_down = false,
+        };
+
+        try self.monitored_masters.put(name_copy, master);
+    }
+
+    /// Remove a master from the monitoring list
+    /// Returns error if master doesn't exist
+    pub fn removeMaster(self: *SentinelState, name: []const u8) !void {
+        // Get the master entry
+        const kv = self.monitored_masters.fetchRemove(name) orelse return error.MasterNotFound;
+
+        // Free the master's resources
+        var master = kv.value;
+        master.deinit(self.allocator);
+    }
+
+    /// Get all monitored masters as a slice
+    /// Caller is responsible for freeing the returned slice (not the MasterInfo contents)
+    pub fn getMasters(self: *SentinelState) ![]const MasterInfo {
+        var list = try std.ArrayList(MasterInfo).initCapacity(self.allocator, self.monitored_masters.count());
+        errdefer list.deinit(self.allocator);
+
+        var it = self.monitored_masters.valueIterator();
+        while (it.next()) |master| {
+            try list.append(self.allocator, master.*);
+        }
+
+        return try list.toOwnedSlice(self.allocator);
+    }
+
+    /// Get a specific master by name
+    /// Returns null if master doesn't exist
+    pub fn getMaster(self: *SentinelState, name: []const u8) ?*MasterInfo {
+        return self.monitored_masters.getPtr(name);
+    }
 };
 
 // ============================================================================
@@ -133,6 +199,88 @@ test "SentinelState.init: initializes current_epoch to 0" {
 
     // current_epoch should start at 0
     try std.testing.expectEqual(@as(u64, 0), sentinel.current_epoch);
+}
+
+test "SentinelState.monitorMaster: adds a new master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    // Verify master was added
+    try std.testing.expectEqual(@as(usize, 1), sentinel.monitored_masters.count());
+
+    // Verify master details
+    const master = sentinel.getMaster("mymaster").?;
+    try std.testing.expectEqualStrings("mymaster", master.name);
+    try std.testing.expectEqualStrings("127.0.0.1", master.ip);
+    try std.testing.expectEqual(@as(u16, 6379), master.port);
+    try std.testing.expectEqual(@as(u8, 2), master.quorum);
+    try std.testing.expectEqual(@as(u64, 30000), master.down_after_milliseconds);
+    try std.testing.expectEqual(false, master.is_down);
+}
+
+test "SentinelState.monitorMaster: rejects duplicate master name" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    // Attempt to add duplicate
+    const result = sentinel.monitorMaster("mymaster", "127.0.0.2", 6380, 3);
+    try std.testing.expectError(error.MasterAlreadyExists, result);
+
+    // Only one master should exist
+    try std.testing.expectEqual(@as(usize, 1), sentinel.monitored_masters.count());
+}
+
+test "SentinelState.removeMaster: removes existing master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try std.testing.expectEqual(@as(usize, 1), sentinel.monitored_masters.count());
+
+    try sentinel.removeMaster("mymaster");
+
+    // Master should be removed
+    try std.testing.expectEqual(@as(usize, 0), sentinel.monitored_masters.count());
+    try std.testing.expect(sentinel.getMaster("mymaster") == null);
+}
+
+test "SentinelState.removeMaster: rejects non-existent master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const result = sentinel.removeMaster("nonexistent");
+    try std.testing.expectError(error.MasterNotFound, result);
+}
+
+test "SentinelState.getMasters: returns all monitored masters" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("master1", "127.0.0.1", 6379, 2);
+    try sentinel.monitorMaster("master2", "127.0.0.2", 6380, 3);
+
+    const masters = try sentinel.getMasters();
+    defer allocator.free(masters);
+
+    try std.testing.expectEqual(@as(usize, 2), masters.len);
+}
+
+test "SentinelState.getMaster: returns null for non-existent master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const master = sentinel.getMaster("nonexistent");
+    try std.testing.expect(master == null);
 }
 
 test "SentinelState.deinit: frees all resources" {
