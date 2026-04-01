@@ -6,6 +6,7 @@ const latency_mod = @import("latency.zig");
 const memory_tracker_mod = @import("memory_tracker.zig");
 const acl_mod = @import("acl.zig");
 const cluster_mod = @import("cluster.zig");
+const sentinel_mod = @import("sentinel.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -16,6 +17,7 @@ pub const SlowLog = slowlog_mod.SlowLog;
 pub const LatencyMonitor = latency_mod.LatencyMonitor;
 pub const MemoryTracker = memory_tracker_mod.MemoryTracker;
 pub const ClusterState = cluster_mod.ClusterState;
+pub const SentinelState = sentinel_mod.SentinelState;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -457,6 +459,7 @@ pub const Storage = struct {
     acl: ?*ACLStore, // ACL user management
     cluster: ClusterState, // Cluster state management
     cluster_config_path: []const u8, // Path to nodes.conf cluster config file
+    sentinel: SentinelState, // Sentinel state management
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -526,6 +529,9 @@ pub const Storage = struct {
         // Assign all slots to this node
         try cluster_state.assignSlots(node, 0, cluster_mod.CLUSTER_SLOTS - 1);
 
+        // Initialize sentinel state (disabled by default)
+        const sentinel_state = sentinel_mod.SentinelState.init(allocator);
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
@@ -533,6 +539,7 @@ pub const Storage = struct {
             .acl = acl_store,
             .cluster = cluster_state,
             .cluster_config_path = "nodes.conf", // Default cluster config file
+            .sentinel = sentinel_state,
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
@@ -557,6 +564,9 @@ pub const Storage = struct {
 
         // Free cluster state
         self.cluster.deinit();
+
+        // Free sentinel state
+        self.sentinel.deinit();
 
         // Free all keys and values
         var it = self.data.iterator();

@@ -14,6 +14,7 @@ pub const pubsub = @import("storage/pubsub.zig");
 pub const pubsub_commands = @import("commands/pubsub.zig");
 pub const replication = @import("storage/replication.zig");
 pub const replication_commands = @import("commands/replication.zig");
+pub const sentinel = @import("storage/sentinel.zig");
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;
