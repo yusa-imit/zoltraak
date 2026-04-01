@@ -1463,6 +1463,8 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterBumpEpoch(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "SET-CONFIG-EPOCH")) {
                 break :blk try cluster_cmds.cmdClusterSetConfigEpoch(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SLOT-STATS")) {
+                break :blk try cluster_cmds.cmdClusterSlotStats(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "COUNTKEYSINSLOT")) {
                 break :blk try cluster_cmds.cmdClusterCountkeysInSlot(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "GETKEYSINSLOT")) {

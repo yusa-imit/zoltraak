@@ -1714,6 +1714,156 @@ pub const ClusterState = struct {
         return keys.toOwnedSlice(allocator);
     }
 
+    /// Slot statistics for CLUSTER SLOT-STATS command
+    pub const SlotStats = struct {
+        slot: u16,
+        key_count: usize,
+        cpu_usec: u64,
+        memory_bytes: u64,
+        network_bytes_in: u64,
+        network_bytes_out: u64,
+    };
+
+    /// Sort comparison function for SlotStats
+    /// Used with ORDERBY to sort slots by a specific metric
+    pub const SlotStatsContext = struct {
+        metric: []const u8,
+        ascending: bool,
+
+        pub fn lessThan(ctx: SlotStatsContext, a: SlotStats, b: SlotStats) bool {
+            const a_val = ctx.getMetricValue(a);
+            const b_val = ctx.getMetricValue(b);
+
+            // Primary sort by metric value
+            if (a_val != b_val) {
+                return if (ctx.ascending) a_val < b_val else a_val > b_val;
+            }
+
+            // Tiebreaker: slot number (always ascending per Redis spec)
+            return a.slot < b.slot;
+        }
+
+        fn getMetricValue(ctx: SlotStatsContext, stats: SlotStats) u64 {
+            if (std.mem.eql(u8, ctx.metric, "key-count")) {
+                return @intCast(stats.key_count);
+            } else if (std.mem.eql(u8, ctx.metric, "cpu-usec")) {
+                return stats.cpu_usec;
+            } else if (std.mem.eql(u8, ctx.metric, "memory-bytes")) {
+                return stats.memory_bytes;
+            } else if (std.mem.eql(u8, ctx.metric, "network-bytes-in")) {
+                return stats.network_bytes_in;
+            } else if (std.mem.eql(u8, ctx.metric, "network-bytes-out")) {
+                return stats.network_bytes_out;
+            }
+            return 0; // Unknown metric
+        }
+    };
+
+    /// Get statistics for a specific slot
+    /// Returns SlotStats with key count (real) and other metrics (stub = 0)
+    ///
+    /// Arguments:
+    ///   - data: The storage HashMap containing all keys
+    ///   - slot: The slot number (0-16383)
+    ///
+    /// Returns SlotStats structure with metrics
+    pub fn getSlotStats(self: *const ClusterState, data: anytype, slot: u16) SlotStats {
+        return SlotStats{
+            .slot = slot,
+            .key_count = self.countKeysInSlot(data, slot),
+            .cpu_usec = 0, // Stub: real CPU tracking not implemented
+            .memory_bytes = 0, // Stub: real memory tracking not implemented
+            .network_bytes_in = 0, // Stub: real network tracking not implemented
+            .network_bytes_out = 0, // Stub: real network tracking not implemented
+        };
+    }
+
+    /// Get statistics for slots in a range [start, end]
+    /// Returns allocated array sorted by slot number (ascending)
+    ///
+    /// Arguments:
+    ///   - allocator: Allocator for the returned array
+    ///   - data: The storage HashMap containing all keys
+    ///   - start_slot: Starting slot number (inclusive)
+    ///   - end_slot: Ending slot number (inclusive)
+    ///
+    /// Returns allocated slice of SlotStats (caller must free)
+    pub fn getSlotStatsRange(
+        self: *const ClusterState,
+        allocator: std.mem.Allocator,
+        data: anytype,
+        start_slot: u16,
+        end_slot: u16,
+    ) ![]SlotStats {
+        if (start_slot > end_slot or end_slot >= CLUSTER_SLOTS) {
+            return error.InvalidSlotRange;
+        }
+
+        const count = end_slot - start_slot + 1;
+        var stats = try allocator.alloc(SlotStats, count);
+        errdefer allocator.free(stats);
+
+        // Collect stats for each slot in range (already sorted by slot number)
+        for (start_slot..end_slot + 1, 0..) |slot_idx, i| {
+            const slot = @as(u16, @intCast(slot_idx));
+            stats[i] = self.getSlotStats(data, slot);
+        }
+
+        return stats;
+    }
+
+    /// Get statistics for all slots owned by this node, sorted by metric
+    /// Filters to only include slots assigned to myself
+    ///
+    /// Arguments:
+    ///   - allocator: Allocator for the returned array
+    ///   - data: The storage HashMap containing all keys
+    ///   - metric: Metric name to sort by ("key-count", "cpu-usec", etc.)
+    ///   - ascending: Sort direction (true = ASC, false = DESC)
+    ///   - limit: Maximum number of results (0 = unlimited)
+    ///
+    /// Returns allocated slice of SlotStats sorted by metric (caller must free)
+    pub fn getSlotStatsSorted(
+        self: *const ClusterState,
+        allocator: std.mem.Allocator,
+        data: anytype,
+        metric: []const u8,
+        ascending: bool,
+        limit: usize,
+    ) ![]SlotStats {
+        // Collect stats for all slots assigned to myself
+        var stats_list = try std.ArrayList(SlotStats).initCapacity(allocator, 0);
+        errdefer stats_list.deinit(allocator);
+
+        if (self.myself) |myself| {
+            // Iterate through all slot ranges owned by this node
+            for (myself.slots.items) |slot_range| {
+                for (slot_range.start..slot_range.end + 1) |slot_idx| {
+                    const slot = @as(u16, @intCast(slot_idx));
+                    const stats = self.getSlotStats(data, slot);
+                    try stats_list.append(allocator, stats);
+                }
+            }
+        }
+
+        // Sort by metric with slot number tiebreaker
+        const context = SlotStatsContext{ .metric = metric, .ascending = ascending };
+        std.mem.sort(SlotStats, stats_list.items, context, SlotStatsContext.lessThan);
+
+        // Apply limit if specified
+        const result_count = if (limit > 0 and limit < stats_list.items.len)
+            limit
+        else
+            stats_list.items.len;
+
+        // Return only the limited subset
+        const result = try allocator.alloc(SlotStats, result_count);
+        errdefer allocator.free(result);
+        @memcpy(result, stats_list.items[0..result_count]);
+
+        return result;
+    }
+
     /// Perform a soft reset of the cluster state.
     ///
     /// Soft reset effects:

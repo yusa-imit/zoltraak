@@ -1514,9 +1514,6 @@ pub fn cmdClusterSetConfigEpoch(
                 // Redis error message for this case
                 return w.writeError("ERR The user can assign a config epoch only when the node does not know any other node");
             },
-            else => {
-                return w.writeError("ERR Failed to set config epoch");
-            },
         }
     };
 
@@ -1527,6 +1524,165 @@ pub fn cmdClusterSetConfigEpoch(
     };
 
     return w.writeSimpleString("OK");
+}
+
+/// CLUSTER SLOT-STATS - Return per-slot usage statistics
+/// Introduced in Redis 8.2 for slot performance monitoring
+///
+/// Syntax:
+///   CLUSTER SLOT-STATS SLOTSRANGE <start-slot> <end-slot>
+///   CLUSTER SLOT-STATS ORDERBY <metric> [LIMIT <count>] [ASC | DESC]
+///
+/// Metrics: key-count, cpu-usec, memory-bytes, network-bytes-in, network-bytes-out
+/// SLOTSRANGE: Returns stats for slots in range [start, end], sorted by slot number
+/// ORDERBY: Returns stats for all slots owned by this node, sorted by metric
+///
+/// Returns array of arrays: [[slot, key-count, cpu-usec, memory-bytes, net-in, net-out], ...]
+pub fn cmdClusterSlotStats(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Check cluster enabled
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // args[0] = "CLUSTER", args[1] = "SLOT-STATS", args[2..] = subcommand args
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster|slot-stats' command");
+    }
+
+    var subcommand_upper_buf: [32]u8 = undefined;
+    const subcommand_upper = std.ascii.upperString(&subcommand_upper_buf, args[2]);
+
+    var stats: []cluster_mod.ClusterState.SlotStats = undefined;
+    defer allocator.free(stats);
+
+    if (std.mem.eql(u8, subcommand_upper, "SLOTSRANGE")) {
+        // CLUSTER SLOT-STATS SLOTSRANGE <start> <end>
+        if (args.len != 5) {
+            return w.writeError("ERR wrong number of arguments for 'cluster|slot-stats|slotsrange' command");
+        }
+
+        const start_slot = std.fmt.parseUnsigned(u16, args[3], 10) catch {
+            return w.writeError("ERR invalid start slot");
+        };
+
+        const end_slot = std.fmt.parseUnsigned(u16, args[4], 10) catch {
+            return w.writeError("ERR invalid end slot");
+        };
+
+        if (start_slot >= cluster_mod.CLUSTER_SLOTS) {
+            var buf: [128]u8 = undefined;
+            const err_msg = try std.fmt.bufPrint(&buf, "ERR Slot {d} is out of range", .{start_slot});
+            return w.writeError(err_msg);
+        }
+
+        if (end_slot >= cluster_mod.CLUSTER_SLOTS) {
+            var buf: [128]u8 = undefined;
+            const err_msg = try std.fmt.bufPrint(&buf, "ERR Slot {d} is out of range", .{end_slot});
+            return w.writeError(err_msg);
+        }
+
+        if (start_slot > end_slot) {
+            var buf: [128]u8 = undefined;
+            const err_msg = try std.fmt.bufPrint(&buf, "ERR start slot number {d} is greater than end slot number {d}", .{ start_slot, end_slot });
+            return w.writeError(err_msg);
+        }
+
+        stats = try storage.cluster.getSlotStatsRange(allocator, &storage.data, start_slot, end_slot);
+    } else if (std.mem.eql(u8, subcommand_upper, "ORDERBY")) {
+        // CLUSTER SLOT-STATS ORDERBY <metric> [LIMIT <count>] [ASC | DESC]
+        if (args.len < 4) {
+            return w.writeError("ERR wrong number of arguments for 'cluster|slot-stats|orderby' command");
+        }
+
+        var metric_upper_buf: [32]u8 = undefined;
+        const metric_upper = std.ascii.upperString(&metric_upper_buf, args[3]);
+
+        // Validate metric name
+        const valid_metrics = [_][]const u8{ "KEY-COUNT", "CPU-USEC", "MEMORY-BYTES", "NETWORK-BYTES-IN", "NETWORK-BYTES-OUT" };
+        var valid = false;
+        for (valid_metrics) |valid_metric| {
+            if (std.mem.eql(u8, metric_upper, valid_metric)) {
+                valid = true;
+                break;
+            }
+        }
+        if (!valid) {
+            return w.writeError("ERR unknown metric");
+        }
+
+        var limit: usize = 0; // 0 = unlimited
+        var ascending = true; // default ASC
+
+        // Parse optional LIMIT and ASC/DESC
+        var arg_idx: usize = 4;
+        while (arg_idx < args.len) {
+            var option_upper_buf: [16]u8 = undefined;
+            const option_upper = std.ascii.upperString(&option_upper_buf, args[arg_idx]);
+
+            if (std.mem.eql(u8, option_upper, "LIMIT")) {
+                if (arg_idx + 1 >= args.len) {
+                    return w.writeError("ERR syntax error");
+                }
+                arg_idx += 1;
+                limit = std.fmt.parseUnsigned(usize, args[arg_idx], 10) catch {
+                    return w.writeError("ERR invalid limit value");
+                };
+                arg_idx += 1;
+            } else if (std.mem.eql(u8, option_upper, "ASC")) {
+                ascending = true;
+                arg_idx += 1;
+            } else if (std.mem.eql(u8, option_upper, "DESC")) {
+                ascending = false;
+                arg_idx += 1;
+            } else {
+                return w.writeError("ERR Unknown subcommand or wrong number of arguments");
+            }
+        }
+
+        stats = try storage.cluster.getSlotStatsSorted(allocator, &storage.data, metric_upper, ascending, limit);
+    } else {
+        return w.writeError("ERR Unknown subcommand or wrong number of arguments");
+    }
+
+    // Format RESP response: array of arrays
+    // Each inner array: [slot, key-count, cpu-usec, memory-bytes, network-bytes-in, network-bytes-out]
+    var response = try std.ArrayList(RespValue).initCapacity(allocator, stats.len);
+    errdefer {
+        for (response.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        response.deinit(allocator);
+    }
+
+    for (stats) |stat| {
+        var slot_stats_array = try std.ArrayList(RespValue).initCapacity(allocator, 6);
+        errdefer {
+            for (slot_stats_array.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            slot_stats_array.deinit(allocator);
+        }
+
+        try slot_stats_array.append(allocator, RespValue{ .integer = @intCast(stat.slot) });
+        try slot_stats_array.append(allocator, RespValue{ .integer = @intCast(stat.key_count) });
+        try slot_stats_array.append(allocator, RespValue{ .integer = @intCast(stat.cpu_usec) });
+        try slot_stats_array.append(allocator, RespValue{ .integer = @intCast(stat.memory_bytes) });
+        try slot_stats_array.append(allocator, RespValue{ .integer = @intCast(stat.network_bytes_in) });
+        try slot_stats_array.append(allocator, RespValue{ .integer = @intCast(stat.network_bytes_out) });
+
+        try response.append(allocator, RespValue{ .array = try slot_stats_array.toOwnedSlice(allocator) });
+    }
+
+    return w.writeArray(try response.toOwnedSlice(allocator));
 }
 
 test "cmdClusterAddSlots - single slot" {
