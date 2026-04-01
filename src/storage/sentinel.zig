@@ -316,3 +316,48 @@ test "SentinelState: allocator stored correctly" {
     // Verify allocator is stored
     try std.testing.expectEqual(allocator, sentinel.allocator);
 }
+
+test "SentinelState.getMaster: returns null for nonexistent master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    // Attempt to get nonexistent master
+    const master = sentinel.getMaster("nonexistent");
+    try std.testing.expect(master == null);
+}
+
+test "SentinelState.getMaster: returns existing master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    // Get the master
+    const master = sentinel.getMaster("mymaster").?;
+    try std.testing.expectEqualStrings("mymaster", master.name);
+    try std.testing.expectEqualStrings("127.0.0.1", master.ip);
+    try std.testing.expectEqual(@as(u16, 6379), master.port);
+    try std.testing.expectEqual(@as(u8, 2), master.quorum);
+}
+
+test "SentinelState.getMaster: allows modification of returned master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    // Get mutable pointer to master
+    const master = sentinel.getMaster("mymaster").?;
+
+    // Modify master state
+    master.is_down = true;
+    master.last_pong_time = 123456789;
+
+    // Verify modifications persist
+    const master2 = sentinel.getMaster("mymaster").?;
+    try std.testing.expectEqual(true, master2.is_down);
+    try std.testing.expectEqual(@as(i64, 123456789), master2.last_pong_time);
+}

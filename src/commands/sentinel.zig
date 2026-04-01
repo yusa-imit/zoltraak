@@ -263,3 +263,201 @@ pub fn cmdSentinelRemove(
     defer w.deinit();
     return try w.writeSimpleString("OK");
 }
+
+/// Handle SENTINEL MASTER command
+/// Returns info for a specific monitored master
+pub fn cmdSentinelMaster(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL MASTER <name>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|master' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const name = args[2];
+
+    // Get master by name
+    const master = storage.sentinel.getMaster(name) orelse {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR No such master with that name");
+    };
+
+    // Build array of key-value pairs (same format as SENTINEL MASTERS but single item)
+    var fields = try std.ArrayList(RespValue).initCapacity(allocator, 22);
+    defer {
+        for (fields.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        fields.deinit(allocator);
+    }
+
+    // name
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, master.name) });
+
+    // ip
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "ip") });
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, master.ip) });
+
+    // port
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "port") });
+    const port_str = try std.fmt.allocPrint(allocator, "{d}", .{master.port});
+    try fields.append(allocator, RespValue{ .bulk_string = port_str });
+
+    // quorum
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "quorum") });
+    const quorum_str = try std.fmt.allocPrint(allocator, "{d}", .{master.quorum});
+    try fields.append(allocator, RespValue{ .bulk_string = quorum_str });
+
+    // down-after-milliseconds
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "down-after-milliseconds") });
+    const down_after_str = try std.fmt.allocPrint(allocator, "{d}", .{master.down_after_milliseconds});
+    try fields.append(allocator, RespValue{ .bulk_string = down_after_str });
+
+    // last-ping-sent
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "last-ping-sent") });
+    const last_ping_str = try std.fmt.allocPrint(allocator, "{d}", .{master.last_ping_time});
+    try fields.append(allocator, RespValue{ .bulk_string = last_ping_str });
+
+    // last-ok-ping-reply
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "last-ok-ping-reply") });
+    const last_pong_str = try std.fmt.allocPrint(allocator, "{d}", .{master.last_pong_time});
+    try fields.append(allocator, RespValue{ .bulk_string = last_pong_str });
+
+    // flags
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "flags") });
+    if (master.is_down) {
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "master,s_down") });
+    } else {
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "master") });
+    }
+
+    // num-slaves
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "num-slaves") });
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0") });
+
+    // num-other-sentinels
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "num-other-sentinels") });
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0") });
+
+    // parallel-syncs
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "parallel-syncs") });
+    try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "1") });
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const fields_array = try fields.toOwnedSlice(allocator);
+    defer {
+        for (fields_array) |item| {
+            deinitRespValue(allocator, item);
+        }
+        allocator.free(fields_array);
+    }
+
+    return try w.writeArray(fields_array);
+}
+
+/// Handle SENTINEL REPLICAS command
+/// Returns array of all replicas for a specific master
+/// NOTE: Replica tracking not yet implemented, returns empty array
+pub fn cmdSentinelReplicas(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL REPLICAS <name>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|replicas' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const name = args[2];
+
+    // Verify master exists
+    _ = storage.sentinel.getMaster(name) orelse {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR No such master with that name");
+    };
+
+    // TODO: Implement replica tracking in future iterations
+    // For now, return empty array (no replicas tracked)
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    const empty_array: []const RespValue = &[_]RespValue{};
+    return try w.writeArray(empty_array);
+}
+
+/// Handle SENTINEL GET-MASTER-ADDR-BY-NAME command
+/// Returns [ip, port] for a specific master
+pub fn cmdSentinelGetMasterAddrByName(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL GET-MASTER-ADDR-BY-NAME <name>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|get-master-addr-by-name' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const name = args[2];
+
+    // Get master by name
+    const master = storage.sentinel.getMaster(name) orelse {
+        // Return nil when master doesn't exist (Redis behavior)
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeNull();
+    };
+
+    // Build [ip, port] array
+    var addr_array = [_]RespValue{
+        RespValue{ .bulk_string = try allocator.dupe(u8, master.ip) },
+        RespValue{ .bulk_string = try std.fmt.allocPrint(allocator, "{d}", .{master.port}) },
+    };
+    defer {
+        for (addr_array) |item| {
+            deinitRespValue(allocator, item);
+        }
+    }
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeArray(&addr_array);
+}

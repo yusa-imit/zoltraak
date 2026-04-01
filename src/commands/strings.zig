@@ -1521,6 +1521,12 @@ pub fn executeCommand(
                 break :blk try sentinel_cmds.cmdSentinelPing(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "MASTERS")) {
                 break :blk try sentinel_cmds.cmdSentinelMasters(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "MASTER")) {
+                break :blk try sentinel_cmds.cmdSentinelMaster(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "REPLICAS")) {
+                break :blk try sentinel_cmds.cmdSentinelReplicas(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "GET-MASTER-ADDR-BY-NAME")) {
+                break :blk try sentinel_cmds.cmdSentinelGetMasterAddrByName(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "MONITOR")) {
                 break :blk try sentinel_cmds.cmdSentinelMonitor(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "REMOVE")) {
