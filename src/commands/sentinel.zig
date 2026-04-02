@@ -461,3 +461,172 @@ pub fn cmdSentinelGetMasterAddrByName(
     defer w.deinit();
     return try w.writeArray(&addr_array);
 }
+
+/// Handle SENTINEL SENTINELS command
+/// Returns array of all other Sentinels monitoring a specific master
+pub fn cmdSentinelSentinels(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL SENTINELS <name>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|sentinels' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const name = args[2];
+
+    // Get sentinels for this master
+    const sentinels_opt = try storage.sentinel.getSentinels(name);
+    if (sentinels_opt == null) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR No such master with that name");
+    }
+
+    const sentinels = sentinels_opt.?;
+    defer allocator.free(sentinels);
+
+    // Build array of sentinel info arrays
+    var sentinel_arrays = try std.ArrayList(RespValue).initCapacity(allocator, sentinels.len);
+    defer {
+        for (sentinel_arrays.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        sentinel_arrays.deinit(allocator);
+    }
+
+    for (sentinels) |sentinel| {
+        // Build array of key-value pairs for this sentinel
+        var fields = try std.ArrayList(RespValue).initCapacity(allocator, 14);
+        errdefer {
+            for (fields.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            fields.deinit(allocator);
+        }
+
+        // id
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "id") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, sentinel.id) });
+
+        // ip
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "ip") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, sentinel.ip) });
+
+        // port
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "port") });
+        const port_str = try std.fmt.allocPrint(allocator, "{d}", .{sentinel.port});
+        try fields.append(allocator, RespValue{ .bulk_string = port_str });
+
+        // last-hello-time
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "last-hello-time") });
+        const last_hello_str = try std.fmt.allocPrint(allocator, "{d}", .{sentinel.last_hello_time});
+        try fields.append(allocator, RespValue{ .bulk_string = last_hello_str });
+
+        // flags
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "flags") });
+        if (sentinel.is_master_down) {
+            try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "sentinel,s_down") });
+        } else {
+            try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "sentinel") });
+        }
+
+        // link-pending-commands
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "link-pending-commands") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0") });
+
+        // link-refcount
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "link-refcount") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "1") });
+
+        const fields_array = try fields.toOwnedSlice(allocator);
+        try sentinel_arrays.append(allocator, RespValue{ .array = fields_array });
+    }
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const sentinel_arrays_slice = try sentinel_arrays.toOwnedSlice(allocator);
+    defer {
+        for (sentinel_arrays_slice) |item| {
+            deinitRespValue(allocator, item);
+        }
+        allocator.free(sentinel_arrays_slice);
+    }
+
+    return try w.writeArray(sentinel_arrays_slice);
+}
+
+/// Handle SENTINEL IS-MASTER-DOWN-BY-ADDR command
+/// Returns [is_down, leader_runid] for a master at specific IP:port
+pub fn cmdSentinelIsMasterDownByAddr(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL IS-MASTER-DOWN-BY-ADDR <ip> <port> <current-epoch> <runid>
+    if (args.len != 6) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|is-master-down-by-addr' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const ip = args[2];
+    const port_str = args[3];
+    // args[4] is current-epoch (not used in this implementation)
+    // args[5] is runid (not used in this implementation)
+
+    // Parse port
+    const port = std.fmt.parseInt(u16, port_str, 10) catch {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR Invalid port number");
+    };
+
+    // Check if master is down
+    const result = storage.sentinel.isMasterDownByAddr(ip, port);
+
+    // Build response: [is_down_integer, leader_runid or nil]
+    // is_down_integer: 1 if master is known and down, 0 otherwise
+    const is_down_int = if (result.is_known and result.is_down) @as(i64, 1) else @as(i64, 0);
+
+    var response_array: [2]RespValue = undefined;
+    response_array[0] = RespValue{ .integer = is_down_int };
+
+    if (result.leader_runid) |runid| {
+        response_array[1] = RespValue{ .bulk_string = try allocator.dupe(u8, runid) };
+    } else {
+        response_array[1] = RespValue{ .null_bulk_string = {} };
+    }
+
+    defer {
+        if (result.leader_runid != null) {
+            deinitRespValue(allocator, response_array[1]);
+        }
+    }
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeArray(&response_array);
+}

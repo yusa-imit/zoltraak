@@ -1531,6 +1531,10 @@ pub fn executeCommand(
                 break :blk try sentinel_cmds.cmdSentinelMonitor(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "REMOVE")) {
                 break :blk try sentinel_cmds.cmdSentinelRemove(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SENTINELS")) {
+                break :blk try sentinel_cmds.cmdSentinelSentinels(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "IS-MASTER-DOWN-BY-ADDR")) {
+                break :blk try sentinel_cmds.cmdSentinelIsMasterDownByAddr(allocator, args, storage, null, 0);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();

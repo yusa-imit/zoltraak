@@ -1,5 +1,24 @@
 const std = @import("std");
 
+/// Information about another Sentinel instance
+pub const SentinelInfo = struct {
+    /// Sentinel's unique ID (40-char hex)
+    id: []const u8,
+    /// IP address of Sentinel
+    ip: []const u8,
+    /// Port of Sentinel
+    port: u16,
+    /// Last time we heard from this Sentinel (Unix timestamp ms)
+    last_hello_time: i64,
+    /// Whether this Sentinel considers the master down
+    is_master_down: bool,
+
+    pub fn deinit(self: *SentinelInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.ip);
+    }
+};
+
 /// Information about a monitored master instance
 pub const MasterInfo = struct {
     /// Master name (unique identifier)
@@ -18,10 +37,19 @@ pub const MasterInfo = struct {
     last_pong_time: i64,
     /// Whether master is currently considered down
     is_down: bool,
+    /// Other Sentinels monitoring this master: sentinel_id → SentinelInfo
+    sentinels: std.StringHashMap(SentinelInfo),
 
     pub fn deinit(self: *MasterInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.ip);
+        // Free all SentinelInfo resources
+        var it = self.sentinels.iterator();
+        while (it.next()) |entry| {
+            var sentinel = entry.value_ptr;
+            sentinel.deinit(allocator);
+        }
+        self.sentinels.deinit();
     }
 };
 
@@ -104,6 +132,7 @@ pub const SentinelState = struct {
             .last_ping_time = now,
             .last_pong_time = now,
             .is_down = false,
+            .sentinels = std.StringHashMap(SentinelInfo).init(self.allocator),
         };
 
         try self.monitored_masters.put(name_copy, master);
@@ -138,6 +167,87 @@ pub const SentinelState = struct {
     /// Returns null if master doesn't exist
     pub fn getMaster(self: *SentinelState, name: []const u8) ?*MasterInfo {
         return self.monitored_masters.getPtr(name);
+    }
+
+    /// Register or update a Sentinel for a master
+    /// Used when receiving HELLO messages from other Sentinels
+    pub fn registerSentinel(
+        self: *SentinelState,
+        master_name: []const u8,
+        sentinel_id: []const u8,
+        ip: []const u8,
+        port: u16,
+    ) !void {
+        const master = self.monitored_masters.getPtr(master_name) orelse return error.MasterNotFound;
+
+        // Check if Sentinel already exists
+        if (master.sentinels.getPtr(sentinel_id)) |existing| {
+            // Update existing Sentinel
+            existing.last_hello_time = std.time.milliTimestamp();
+            return;
+        }
+
+        // Add new Sentinel
+        const id_copy = try self.allocator.dupe(u8, sentinel_id);
+        errdefer self.allocator.free(id_copy);
+        const ip_copy = try self.allocator.dupe(u8, ip);
+        errdefer self.allocator.free(ip_copy);
+
+        const sentinel = SentinelInfo{
+            .id = id_copy,
+            .ip = ip_copy,
+            .port = port,
+            .last_hello_time = std.time.milliTimestamp(),
+            .is_master_down = false,
+        };
+
+        try master.sentinels.put(id_copy, sentinel);
+    }
+
+    /// Get all Sentinels monitoring a specific master
+    /// Returns null if master doesn't exist
+    /// Caller is responsible for freeing the returned slice
+    pub fn getSentinels(self: *SentinelState, master_name: []const u8) !?[]const SentinelInfo {
+        const master = self.monitored_masters.getPtr(master_name) orelse return null;
+
+        var list = try std.ArrayList(SentinelInfo).initCapacity(self.allocator, master.sentinels.count());
+        errdefer list.deinit(self.allocator);
+
+        var it = master.sentinels.valueIterator();
+        while (it.next()) |sentinel| {
+            try list.append(self.allocator, sentinel.*);
+        }
+
+        return try list.toOwnedSlice(self.allocator);
+    }
+
+    /// Check if a master at the given IP:port is down according to this Sentinel
+    /// Returns a tuple: (is_known: bool, is_down: bool, leader_runid: ?[]const u8)
+    /// leader_runid is null if not in failover, otherwise the Sentinel's ID leading the failover
+    pub fn isMasterDownByAddr(
+        self: *SentinelState,
+        ip: []const u8,
+        port: u16,
+    ) struct { is_known: bool, is_down: bool, leader_runid: ?[]const u8 } {
+        // Search for a master with matching IP and port
+        var it = self.monitored_masters.valueIterator();
+        while (it.next()) |master| {
+            if (std.mem.eql(u8, master.ip, ip) and master.port == port) {
+                // Found the master
+                return .{
+                    .is_known = true,
+                    .is_down = master.is_down,
+                    .leader_runid = null, // TODO: implement failover leader election
+                };
+            }
+        }
+
+        // Master not known
+        return .{
+            .is_known = false,
+            .is_down = false,
+            .leader_runid = null,
+        };
     }
 };
 
@@ -360,4 +470,140 @@ test "SentinelState.getMaster: allows modification of returned master" {
     const master2 = sentinel.getMaster("mymaster").?;
     try std.testing.expectEqual(true, master2.is_down);
     try std.testing.expectEqual(@as(i64, 123456789), master2.last_pong_time);
+}
+
+test "SentinelState.registerSentinel: adds new sentinel to master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerSentinel("mymaster", "abc123", "127.0.0.2", 26379);
+
+    const master = sentinel.getMaster("mymaster").?;
+    try std.testing.expectEqual(@as(usize, 1), master.sentinels.count());
+
+    const other_sentinel = master.sentinels.get("abc123").?;
+    try std.testing.expectEqualStrings("abc123", other_sentinel.id);
+    try std.testing.expectEqualStrings("127.0.0.2", other_sentinel.ip);
+    try std.testing.expectEqual(@as(u16, 26379), other_sentinel.port);
+}
+
+test "SentinelState.registerSentinel: updates existing sentinel" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerSentinel("mymaster", "abc123", "127.0.0.2", 26379);
+
+    const master = sentinel.getMaster("mymaster").?;
+    const old_time = master.sentinels.get("abc123").?.last_hello_time;
+
+    // Wait a tiny bit to ensure timestamp difference
+    std.time.sleep(1_000_000); // 1ms
+
+    // Register again (update)
+    try sentinel.registerSentinel("mymaster", "abc123", "127.0.0.2", 26379);
+
+    // Should still have 1 sentinel
+    try std.testing.expectEqual(@as(usize, 1), master.sentinels.count());
+
+    // Timestamp should be updated
+    const new_time = master.sentinels.get("abc123").?.last_hello_time;
+    try std.testing.expect(new_time >= old_time);
+}
+
+test "SentinelState.registerSentinel: rejects unknown master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const result = sentinel.registerSentinel("nonexistent", "abc123", "127.0.0.2", 26379);
+    try std.testing.expectError(error.MasterNotFound, result);
+}
+
+test "SentinelState.getSentinels: returns all sentinels for master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerSentinel("mymaster", "abc123", "127.0.0.2", 26379);
+    try sentinel.registerSentinel("mymaster", "def456", "127.0.0.3", 26380);
+
+    const sentinels = (try sentinel.getSentinels("mymaster")).?;
+    defer allocator.free(sentinels);
+
+    try std.testing.expectEqual(@as(usize, 2), sentinels.len);
+}
+
+test "SentinelState.getSentinels: returns null for unknown master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const sentinels = try sentinel.getSentinels("nonexistent");
+    try std.testing.expect(sentinels == null);
+}
+
+test "SentinelState.isMasterDownByAddr: returns is_known=false for unknown master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const result = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    try std.testing.expectEqual(false, result.is_known);
+    try std.testing.expectEqual(false, result.is_down);
+    try std.testing.expect(result.leader_runid == null);
+}
+
+test "SentinelState.isMasterDownByAddr: returns is_down=false for healthy master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    const result = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    try std.testing.expectEqual(true, result.is_known);
+    try std.testing.expectEqual(false, result.is_down);
+    try std.testing.expect(result.leader_runid == null);
+}
+
+test "SentinelState.isMasterDownByAddr: returns is_down=true for down master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    // Mark master as down
+    const master = sentinel.getMaster("mymaster").?;
+    master.is_down = true;
+
+    const result = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    try std.testing.expectEqual(true, result.is_known);
+    try std.testing.expectEqual(true, result.is_down);
+}
+
+test "SentinelState.isMasterDownByAddr: matches by IP and port" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("master1", "127.0.0.1", 6379, 2);
+    try sentinel.monitorMaster("master2", "127.0.0.2", 6380, 2);
+
+    // Check first master
+    const result1 = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    try std.testing.expectEqual(true, result1.is_known);
+
+    // Check second master
+    const result2 = sentinel.isMasterDownByAddr("127.0.0.2", 6380);
+    try std.testing.expectEqual(true, result2.is_known);
+
+    // Wrong port
+    const result3 = sentinel.isMasterDownByAddr("127.0.0.1", 9999);
+    try std.testing.expectEqual(false, result3.is_known);
 }
