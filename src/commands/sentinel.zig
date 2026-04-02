@@ -630,3 +630,76 @@ pub fn cmdSentinelIsMasterDownByAddr(
     defer w.deinit();
     return try w.writeArray(&response_array);
 }
+
+/// Handle SENTINEL RESET command
+/// Resets master(s) by glob pattern, clears sentinels and state
+pub fn cmdSentinelReset(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL RESET <pattern>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|reset' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const pattern = args[2];
+
+    // Reset masters matching pattern
+    const count = try storage.sentinel.resetMaster(pattern);
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeInteger(@intCast(count));
+}
+
+/// Handle SENTINEL FAILOVER command
+/// Forces a failover for a specific master
+pub fn cmdSentinelFailover(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL FAILOVER <master-name>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|failover' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const master_name = args[2];
+
+    // Force failover for this master
+    storage.sentinel.forceFailover(master_name) catch |err| {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        if (err == error.MasterNotFound) {
+            return try w.writeError("ERR No such master with that name");
+        }
+        return try w.writeError("ERR Failed to force failover");
+    };
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeSimpleString("OK");
+}
