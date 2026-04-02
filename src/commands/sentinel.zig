@@ -703,3 +703,151 @@ pub fn cmdSentinelFailover(
     defer w.deinit();
     return try w.writeSimpleString("OK");
 }
+
+/// Handle SENTINEL CKQUORUM command
+/// Check if the current Sentinel configuration can reach quorum for a master
+pub fn cmdSentinelCkquorum(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL CKQUORUM <master-name>
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|ckquorum' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const master_name = args[2];
+
+    // Check quorum
+    const result = storage.sentinel.checkQuorum(master_name) catch |err| {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        if (err == error.MasterNotFound) {
+            return try w.writeError("ERR No such master with that name");
+        }
+        return try w.writeError("ERR Failed to check quorum");
+    };
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (result.can_reach) {
+        // Success case: can reach quorum
+        // Format: "OK <known_sentinels> usable Sentinels. Quorum and failover authorization can be reached"
+        const msg = try std.fmt.allocPrint(
+            allocator,
+            "OK {d} usable Sentinels. Quorum and failover authorization can be reached",
+            .{result.known_sentinels + 1}, // Include this Sentinel
+        );
+        defer allocator.free(msg);
+        return try w.writeSimpleString(msg);
+    } else {
+        // Failure case: cannot reach quorum
+        // Format: "NOQUORUM <known_sentinels> usable Sentinels. Not enough available Sentinels to reach the specified quorum for this master"
+        const msg = try std.fmt.allocPrint(
+            allocator,
+            "NOQUORUM {d} usable Sentinels. Not enough available Sentinels to reach the specified quorum for this master",
+            .{result.known_sentinels + 1}, // Include this Sentinel
+        );
+        defer allocator.free(msg);
+        return try w.writeSimpleString(msg);
+    }
+}
+
+/// Handle SENTINEL FLUSHCONFIG command
+/// Force Sentinel to rewrite its configuration file
+pub fn cmdSentinelFlushconfig(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL FLUSHCONFIG takes no additional arguments
+    if (args.len != 2) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|flushconfig' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    // Use sentinel_config_path from storage (default: "sentinel.conf")
+    const config_path = storage.sentinel_config_path;
+
+    // Flush config to disk
+    storage.sentinel.flushConfig(config_path) catch |err| {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        if (err == error.InvalidPath) {
+            return try w.writeError("ERR Invalid configuration path");
+        }
+        return try w.writeError("ERR Failed to flush configuration");
+    };
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeSimpleString("OK");
+}
+
+/// Handle SENTINEL SET command
+/// Set configuration parameters for a master at runtime
+pub fn cmdSentinelSet(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL SET <master-name> <option> <value>
+    if (args.len != 5) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|set' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const master_name = args[2];
+    const option = args[3];
+    const value = args[4];
+
+    // Set master option
+    storage.sentinel.setMasterOption(master_name, option, value) catch |err| {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        if (err == error.MasterNotFound) {
+            return try w.writeError("ERR No such master with that name");
+        } else if (err == error.InvalidValue) {
+            return try w.writeError("ERR Invalid argument");
+        } else if (err == error.UnsupportedOption) {
+            return try w.writeError("ERR Unsupported option");
+        }
+        return try w.writeError("ERR Failed to set option");
+    };
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeSimpleString("OK");
+}

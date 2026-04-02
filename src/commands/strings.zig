@@ -1539,6 +1539,12 @@ pub fn executeCommand(
                 break :blk try sentinel_cmds.cmdSentinelReset(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "FAILOVER")) {
                 break :blk try sentinel_cmds.cmdSentinelFailover(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "CKQUORUM")) {
+                break :blk try sentinel_cmds.cmdSentinelCkquorum(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "FLUSHCONFIG")) {
+                break :blk try sentinel_cmds.cmdSentinelFlushconfig(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SET")) {
+                break :blk try sentinel_cmds.cmdSentinelSet(allocator, args, storage, null, 0);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
