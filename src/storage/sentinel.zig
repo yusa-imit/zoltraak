@@ -342,7 +342,8 @@ pub const SentinelState = struct {
         const file = try std.fs.cwd().createFile(config_path, .{ .truncate = true });
         defer file.close();
 
-        const writer = file.writer();
+        var buffer: [4096]u8 = undefined;
+        const writer = file.writer(&buffer);
 
         // Write Sentinel ID
         try writer.print("# Sentinel ID: {s}\n", .{self.myid});

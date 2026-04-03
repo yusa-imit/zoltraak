@@ -32,6 +32,7 @@ const acl_cmds = @import("acl.zig");
 const auth_cmds = @import("auth.zig");
 const cluster_cmds = @import("cluster.zig");
 const sentinel_cmds = @import("sentinel.zig");
+const function_cmds = @import("functions.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -1396,6 +1397,51 @@ pub fn executeCommand(
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SCRIPT subcommand '{s}'", .{subcmd});
                 break :blk try w.writeError(err_msg);
             }
+        }
+        // Redis Functions commands
+        else if (std.mem.eql(u8, cmd_upper, "FUNCTION")) {
+            if (array.len < 2) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR wrong number of arguments for 'function' command");
+            }
+            const subcmd = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR invalid subcommand format");
+                },
+            };
+            const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+            defer allocator.free(subcmd_upper);
+
+            // Convert RespValue array to string args
+            var args_func = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args_func);
+            for (array, 0..) |val, i| {
+                args_func[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+
+            if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
+                break :blk function_cmds.cmdFunctionLoad(allocator, storage, args_func);
+            } else if (std.mem.eql(u8, subcmd_upper, "FLUSH")) {
+                break :blk function_cmds.cmdFunctionFlush(allocator, storage, args_func);
+            } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
+                break :blk function_cmds.cmdFunctionList(allocator, storage, args_func);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR unknown FUNCTION subcommand");
+            }
+        }
+        else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
+            const args_fcall = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args_fcall);
+            break :blk function_cmds.cmdFcall(allocator, storage, args_fcall);
         }
         // CLUSTER commands
         else if (std.mem.eql(u8, cmd_upper, "CLUSTER")) {
