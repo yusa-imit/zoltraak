@@ -68,6 +68,9 @@ pub const SentinelState = struct {
     /// Allocator for dynamic memory
     allocator: std.mem.Allocator,
 
+    /// Simulate failure flags for testing (0=none, 1=crash-after-election, 2=crash-after-promotion)
+    simulate_failure_flags: u8,
+
     /// Initialize a new Sentinel state
     pub fn init(allocator: std.mem.Allocator) SentinelState {
         return SentinelState{
@@ -76,6 +79,7 @@ pub const SentinelState = struct {
             .monitored_masters = std.StringHashMap(MasterInfo).init(allocator),
             .current_epoch = 0,
             .allocator = allocator,
+            .simulate_failure_flags = 0,
         };
     }
 

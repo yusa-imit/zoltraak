@@ -973,3 +973,129 @@ pub fn cmdSentinelConfigSet(
     defer w.deinit();
     return try w.writeError("ERR Unsupported CONFIG parameter");
 }
+/// Handle SENTINEL SIMULATE-FAILURE command
+/// Simulates Sentinel crashes at failover checkpoints for testing
+pub fn cmdSentinelSimulateFailure(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // Requires exactly 1 argument (mode)
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|simulate-failure' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const mode = args[2];
+
+    // Help mode - return available modes
+    if (std.ascii.eqlIgnoreCase(mode, "help")) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        try w.writeArrayStart(2);
+        try w.writeBulkString("crash-after-election");
+        try w.writeBulkString("crash-after-promotion");
+        return try w.toOwnedSlice(allocator);
+    }
+
+    // crash-after-election mode (flag = 1)
+    if (std.ascii.eqlIgnoreCase(mode, "crash-after-election")) {
+        storage.sentinel.simulate_failure_flags = 1;
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeSimpleString("OK");
+    }
+
+    // crash-after-promotion mode (flag = 2)
+    if (std.ascii.eqlIgnoreCase(mode, "crash-after-promotion")) {
+        storage.sentinel.simulate_failure_flags = 2;
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeSimpleString("OK");
+    }
+
+    // Unknown mode
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeError("ERR Unknown mode. Use SENTINEL SIMULATE-FAILURE HELP to see available modes");
+}
+
+/// Handle SENTINEL PENDING-SCRIPTS command
+/// Returns queued notification scripts (stub implementation)
+pub fn cmdSentinelPendingScripts(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // No arguments
+    if (args.len != 2) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|pending-scripts' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    // Stub: return empty array (no script execution yet)
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    try w.writeArrayStart(0);
+    return try w.toOwnedSlice(allocator);
+}
+
+/// Handle SENTINEL INFO-CACHE command
+/// Returns cached INFO output from monitored instances (stub implementation)
+pub fn cmdSentinelInfoCache(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // Requires exactly 1 argument (master-name)
+    if (args.len != 3) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|info-cache' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const master_name = args[2];
+
+    // Check if master exists
+    const master = storage.sentinel.getMaster(master_name);
+    if (master == null) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR No such master with that name");
+    }
+
+    // Stub: return empty array (no INFO polling yet)
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    try w.writeArrayStart(0);
+    return try w.toOwnedSlice(allocator);
+}

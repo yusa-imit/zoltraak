@@ -1547,6 +1547,12 @@ pub fn executeCommand(
                 break :blk try sentinel_cmds.cmdSentinelSet(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "MYID")) {
                 break :blk try sentinel_cmds.cmdSentinelMyid(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "SIMULATE-FAILURE")) {
+                break :blk try sentinel_cmds.cmdSentinelSimulateFailure(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "PENDING-SCRIPTS")) {
+                break :blk try sentinel_cmds.cmdSentinelPendingScripts(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "INFO-CACHE")) {
+                break :blk try sentinel_cmds.cmdSentinelInfoCache(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "CONFIG")) {
                 // SENTINEL CONFIG GET/SET subcommands
                 if (array.len < 3) {
