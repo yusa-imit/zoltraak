@@ -851,3 +851,125 @@ pub fn cmdSentinelSet(
     defer w.deinit();
     return try w.writeSimpleString("OK");
 }
+
+/// Handle SENTINEL MYID command
+/// Returns the Sentinel's unique 40-character ID
+pub fn cmdSentinelMyid(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL MYID (no additional arguments)
+    if (args.len != 2) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|myid' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    // Return the Sentinel ID as a bulk string
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeBulkString(&storage.sentinel.myid);
+}
+
+/// Handle SENTINEL CONFIG GET command
+/// Returns configuration parameter value
+pub fn cmdSentinelConfigGet(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL CONFIG GET <param>
+    if (args.len != 4) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|config|get' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const param = args[3];
+
+    // Supported parameters (for now, just return sentinel.conf path)
+    // Redis Sentinel CONFIG GET is used for internal parameters
+    // We'll implement a minimal subset for compatibility
+    if (std.mem.eql(u8, param, "sentinel-config-file")) {
+        // Return the sentinel config file path
+        var result = [_]RespValue{
+            RespValue{ .bulk_string = try allocator.dupe(u8, "sentinel-config-file") },
+            RespValue{ .bulk_string = try allocator.dupe(u8, storage.sentinel_config_path) },
+        };
+        defer {
+            for (result) |item| {
+                deinitRespValue(allocator, item);
+            }
+        }
+
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeArray(&result);
+    }
+
+    // Unknown parameter - return empty array (Redis behavior)
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeArray(&[_]RespValue{});
+}
+
+/// Handle SENTINEL CONFIG SET command
+/// Sets configuration parameter value
+pub fn cmdSentinelConfigSet(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    storage: *Storage,
+    _: ?*anyopaque,
+    _: u64,
+) ![]const u8 {
+    // SENTINEL CONFIG SET <param> <value>
+    if (args.len != 5) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR wrong number of arguments for 'sentinel|config|set' command");
+    }
+
+    // Check if Sentinel mode is enabled
+    if (!storage.sentinel.enabled) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR This instance has sentinel mode disabled");
+    }
+
+    const param = args[3];
+    const value = args[4];
+
+    // Supported parameters (minimal subset for compatibility)
+    if (std.mem.eql(u8, param, "sentinel-config-file")) {
+        // This would normally update the config file path
+        // For now, we don't support runtime config file path changes
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR Cannot change sentinel-config-file at runtime");
+    }
+
+    // Unknown parameter
+    _ = value; // suppress unused warning
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return try w.writeError("ERR Unsupported CONFIG parameter");
+}

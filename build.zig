@@ -449,6 +449,16 @@ pub fn build(b: *std.Build) void {
     const run_sentinel_iteration_160_tests = b.addRunArtifact(sentinel_iteration_160_tests);
     integration_test_step.dependOn(&run_sentinel_iteration_160_tests.step);
 
+    const sentinel_config_myid_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_sentinel_config_myid.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_sentinel_config_myid_tests = b.addRunArtifact(sentinel_config_myid_tests);
+    integration_test_step.dependOn(&run_sentinel_config_myid_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

@@ -1545,6 +1545,37 @@ pub fn executeCommand(
                 break :blk try sentinel_cmds.cmdSentinelFlushconfig(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "SET")) {
                 break :blk try sentinel_cmds.cmdSentinelSet(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "MYID")) {
+                break :blk try sentinel_cmds.cmdSentinelMyid(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "CONFIG")) {
+                // SENTINEL CONFIG GET/SET subcommands
+                if (array.len < 3) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'sentinel|config' command");
+                }
+                const config_subcmd = switch (array[2]) {
+                    .bulk_string => |s| s,
+                    else => {
+                        var w = Writer.init(allocator);
+                        defer w.deinit();
+                        break :blk try w.writeError("ERR invalid SENTINEL CONFIG subcommand");
+                    },
+                };
+                var config_subcmd_upper_buf: [64]u8 = undefined;
+                const config_subcmd_upper = std.ascii.upperString(&config_subcmd_upper_buf, config_subcmd);
+
+                if (std.mem.eql(u8, config_subcmd_upper, "GET")) {
+                    break :blk try sentinel_cmds.cmdSentinelConfigGet(allocator, args, storage, null, 0);
+                } else if (std.mem.eql(u8, config_subcmd_upper, "SET")) {
+                    break :blk try sentinel_cmds.cmdSentinelConfigSet(allocator, args, storage, null, 0);
+                } else {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    var buf: [256]u8 = undefined;
+                    const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SENTINEL CONFIG subcommand '{s}'", .{config_subcmd});
+                    break :blk try w.writeError(err_msg);
+                }
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
