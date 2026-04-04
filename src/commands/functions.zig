@@ -478,3 +478,65 @@ fn deinitRespValue(allocator: std.mem.Allocator, value: RespValue) void {
         else => {},
     }
 }
+
+/// FUNCTION DUMP
+/// Serialize all libraries to a binary payload
+pub fn cmdFunctionDump(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    args: [][]const u8,
+) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function dump' command") };
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const payload = try storage.functions.dump(allocator);
+    return RespValue{ .bulk_string = payload };
+}
+
+/// FUNCTION RESTORE <payload> [FLUSH | APPEND | REPLACE]
+/// Restore libraries from a binary payload
+pub fn cmdFunctionRestore(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    args: [][]const u8,
+) !RespValue {
+    if (args.len < 3) {
+        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function restore' command") };
+    }
+
+    const payload = args[2];
+
+    // Parse mode (default: APPEND)
+    var mode = functions_mod.FunctionStore.RestoreMode.Append;
+    if (args.len >= 4) {
+        const mode_str = args[3];
+        if (std.ascii.eqlIgnoreCase(mode_str, "FLUSH")) {
+            mode = .Flush;
+        } else if (std.ascii.eqlIgnoreCase(mode_str, "APPEND")) {
+            mode = .Append;
+        } else if (std.ascii.eqlIgnoreCase(mode_str, "REPLACE")) {
+            mode = .Replace;
+        } else {
+            return RespValue{ .error_string = try allocator.dupe(u8, "ERR invalid FUNCTION RESTORE mode (expected FLUSH, APPEND, or REPLACE)") };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    storage.functions.restore(payload, mode) catch |err| {
+        const err_msg = switch (err) {
+            error.InvalidPayload => "ERR invalid payload format",
+            error.LibraryExists => "ERR library already exists (use REPLACE mode to overwrite)",
+            error.FunctionExists => "ERR function name already exists in another library",
+            else => "ERR failed to restore functions",
+        };
+        return RespValue{ .error_string = try allocator.dupe(u8, err_msg) };
+    };
+
+    return RespValue{ .simple_string = try allocator.dupe(u8, "OK") };
+}

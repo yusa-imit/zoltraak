@@ -399,6 +399,17 @@ pub fn build(b: *std.Build) void {
     const run_functions_tests = b.addRunArtifact(functions_tests);
     integration_test_step.dependOn(&run_functions_tests.step);
 
+    // Function DUMP/RESTORE integration tests
+    const function_dump_restore_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_function_dump_restore.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_function_dump_restore_tests = b.addRunArtifact(function_dump_restore_tests);
+    integration_test_step.dependOn(&run_function_dump_restore_tests.step);
+
     // Sentinel integration tests
     const sentinel_ping_tests = b.addTest(.{
         .root_module = b.createModule(.{
