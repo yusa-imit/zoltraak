@@ -1441,7 +1441,25 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
-            break :blk function_cmds.cmdFcall(allocator, storage, args_fcall);
+            break :blk function_cmds.cmdFcall(
+                allocator,
+                storage,
+                script_store,
+                args_fcall,
+                aof,
+                ps,
+                subscriber_id,
+                tx,
+                repl,
+                my_port,
+                replica_stream,
+                replica_idx,
+                client_registry,
+                client_id,
+                shutdown_state,
+                databases,
+                num_databases,
+            );
         }
         // CLUSTER commands
         else if (std.mem.eql(u8, cmd_upper, "CLUSTER")) {

@@ -265,6 +265,131 @@ pub const LuaEngine = struct {
             },
         }
     }
+
+    /// Load a function library and collect registered functions
+    /// Returns error if library fails to compile or execute
+    /// reg_context must be allocated by caller and will be populated with registered functions
+    pub fn loadLibrary(self: *LuaEngine, library_code: []const u8, reg_context: *@import("../storage/functions.zig").FunctionRegistrationContext) !void {
+        // Store registration context in Lua registry
+        lua.lua_pushstring(self.L, "FUNCTION_REG_CONTEXT");
+        lua.lua_pushlightuserdata(self.L, @ptrCast(reg_context));
+        lua.lua_settable(self.L, lua.LUA_REGISTRYINDEX);
+
+        // Register redis.register_function() API
+        redis_api.registerFunctionsApi(self.L);
+
+        // Load and execute the library code
+        const code_z = try self.allocator.dupeZ(u8, library_code);
+        defer self.allocator.free(code_z);
+
+        const load_result = lua.luaL_loadstring(self.L, code_z.ptr);
+        if (load_result != lua.LUA_OK) {
+            _ = lua.lua_tostring(self.L, -1) orelse "unknown error";
+            lua.lua_pop(self.L, 1);
+            return error.LuaCompileError;
+        }
+
+        // Execute library code (calls redis.register_function())
+        const call_result = lua.lua_pcall(self.L, 0, 0, 0);
+        if (call_result != lua.LUA_OK) {
+            _ = lua.lua_tostring(self.L, -1) orelse "unknown error";
+            lua.lua_pop(self.L, 1);
+            return error.LuaExecutionError;
+        }
+
+        // Clean up registry
+        lua.lua_pushstring(self.L, "FUNCTION_REG_CONTEXT");
+        lua.lua_pushnil(self.L);
+        lua.lua_settable(self.L, lua.LUA_REGISTRYINDEX);
+    }
+
+    /// Call a registered function by name
+    /// Returns the result as a string (caller must free)
+    pub fn callFunction(self: *LuaEngine, library_code: []const u8, function_name: []const u8, numkeys: usize, keys: []const []const u8, argv: []const []const u8) ![]const u8 {
+        // Set up timeout if enabled
+        if (self.timeout_ms > 0) {
+            const now_ns: i64 = @intCast(std.time.nanoTimestamp());
+            const timeout_ns: i64 = @intCast(self.timeout_ms * 1_000_000);
+            self.deadline_ns = now_ns + timeout_ns;
+
+            lua.lua_pushstring(self.L, "LUA_ENGINE");
+            lua.lua_pushlightuserdata(self.L, @ptrCast(self));
+            lua.lua_settable(self.L, lua.LUA_REGISTRYINDEX);
+
+            _ = lua.lua_sethook(self.L, timeoutHook, lua.LUA_MASKCOUNT, 1000);
+        }
+        defer {
+            if (self.timeout_ms > 0) {
+                _ = lua.lua_sethook(self.L, null, 0, 0);
+                self.deadline_ns = 0;
+            }
+        }
+
+        // Load library code
+        const code_z = try self.allocator.dupeZ(u8, library_code);
+        defer self.allocator.free(code_z);
+
+        const load_result = lua.luaL_loadstring(self.L, code_z.ptr);
+        if (load_result != lua.LUA_OK) {
+            const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
+            const err_str = std.mem.span(err_msg);
+            const result = try std.fmt.allocPrint(self.allocator, "ERR Error compiling library: {s}", .{err_str});
+            lua.lua_pop(self.L, 1);
+            return result;
+        }
+
+        // Execute library to define functions
+        const exec_result = lua.lua_pcall(self.L, 0, 0, 0);
+        if (exec_result != lua.LUA_OK) {
+            const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
+            const err_str = std.mem.span(err_msg);
+            const result = try std.fmt.allocPrint(self.allocator, "ERR Error loading library: {s}", .{err_str});
+            lua.lua_pop(self.L, 1);
+            return result;
+        }
+
+        // Create KEYS and ARGV globals
+        lua.lua_createtable(self.L, @intCast(keys.len), 0);
+        for (keys, 0..) |key, i| {
+            lua.lua_pushlstring(self.L, key.ptr, key.len);
+            lua.lua_rawseti(self.L, -2, @intCast(i + 1));
+        }
+        lua.lua_setfield(self.L, lua.LUA_GLOBALSINDEX, "KEYS");
+
+        lua.lua_createtable(self.L, @intCast(argv.len), 0);
+        for (argv, 0..) |arg, i| {
+            lua.lua_pushlstring(self.L, arg.ptr, arg.len);
+            lua.lua_rawseti(self.L, -2, @intCast(i + 1));
+        }
+        lua.lua_setfield(self.L, lua.LUA_GLOBALSINDEX, "ARGV");
+
+        // Get the function from global table
+        const func_z = try self.allocator.dupeZ(u8, function_name);
+        defer self.allocator.free(func_z);
+
+        lua.lua_getfield(self.L, lua.LUA_GLOBALSINDEX, func_z.ptr);
+        if (lua.lua_type(self.L, -1) != lua.LUA_TFUNCTION) {
+            lua.lua_pop(self.L, 1);
+            return try std.fmt.allocPrint(self.allocator, "ERR Function '{s}' not found", .{function_name});
+        }
+
+        // Call the function
+        const call_result = lua.lua_pcall(self.L, 0, 1, 0);
+        if (call_result != lua.LUA_OK) {
+            const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
+            const err_str = std.mem.span(err_msg);
+            const result = try std.fmt.allocPrint(self.allocator, "ERR Error calling function: {s}", .{err_str});
+            lua.lua_pop(self.L, 1);
+            return result;
+        }
+
+        // Get the return value
+        const result = try self.luaValueToString(-1);
+        lua.lua_pop(self.L, 1);
+
+        _ = numkeys;
+        return result;
+    }
 };
 
 // Unit tests

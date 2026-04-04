@@ -446,3 +446,125 @@ test "parseShebang no newline" {
     try std.testing.expectEqualStrings("lua", info.engine);
     try std.testing.expectEqualStrings("mylib", info.library_name);
 }
+
+/// Context for tracking functions being registered during FUNCTION LOAD
+/// Used by redis.register_function() Lua C callback to collect function metadata
+pub const FunctionRegistrationContext = struct {
+    library_name: []const u8, // Library name being loaded
+    functions: std.StringHashMap(FunctionMetadata), // function_name → metadata
+    allocator: Allocator,
+
+    pub const FunctionMetadata = struct {
+        name: []const u8,
+        description: []const u8,
+        flags: u8, // Reserved for future: no-writes, allow-oom, etc.
+    };
+
+    pub fn init(allocator: Allocator, library_name: []const u8) FunctionRegistrationContext {
+        return FunctionRegistrationContext{
+            .library_name = library_name,
+            .functions = std.StringHashMap(FunctionMetadata).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *FunctionRegistrationContext) void {
+        var iter = self.functions.iterator();
+        while (iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.name);
+            self.allocator.free(entry.value_ptr.description);
+        }
+        self.functions.deinit();
+    }
+
+    /// Register a function (called from redis.register_function() Lua callback)
+    /// Returns error.FunctionExists if function already registered in this context
+    pub fn registerFunction(self: *FunctionRegistrationContext, name: []const u8, description: []const u8, flags: u8) !void {
+        if (self.functions.contains(name)) {
+            return error.FunctionExists;
+        }
+
+        const metadata = FunctionMetadata{
+            .name = try self.allocator.dupe(u8, name),
+            .description = try self.allocator.dupe(u8, description),
+            .flags = flags,
+        };
+
+        try self.functions.put(metadata.name, metadata);
+    }
+
+    /// Transfer all registered functions to a Library
+    /// Caller owns the Library and must deinit it
+    pub fn transferToLibrary(self: *FunctionRegistrationContext, library: *Library) !void {
+        var iter = self.functions.iterator();
+        while (iter.next()) |entry| {
+            const metadata = entry.value_ptr;
+            const func_info = try FunctionInfo.init(
+                self.allocator,
+                metadata.name,
+                self.library_name,
+                metadata.description,
+            );
+            try library.addFunction(func_info);
+        }
+    }
+};
+
+// ============================================================================
+// FunctionRegistrationContext Tests
+// ============================================================================
+
+test "FunctionRegistrationContext init and deinit" {
+    const allocator = std.testing.allocator;
+
+    var ctx = FunctionRegistrationContext.init(allocator, "mylib");
+    defer ctx.deinit();
+
+    try std.testing.expectEqualStrings("mylib", ctx.library_name);
+    try std.testing.expectEqual(@as(usize, 0), ctx.functions.count());
+}
+
+test "FunctionRegistrationContext registerFunction" {
+    const allocator = std.testing.allocator;
+
+    var ctx = FunctionRegistrationContext.init(allocator, "mylib");
+    defer ctx.deinit();
+
+    try ctx.registerFunction("func1", "Description 1", 0);
+    try ctx.registerFunction("func2", "Description 2", 0);
+
+    try std.testing.expectEqual(@as(usize, 2), ctx.functions.count());
+    try std.testing.expect(ctx.functions.contains("func1"));
+    try std.testing.expect(ctx.functions.contains("func2"));
+}
+
+test "FunctionRegistrationContext registerFunction duplicate error" {
+    const allocator = std.testing.allocator;
+
+    var ctx = FunctionRegistrationContext.init(allocator, "mylib");
+    defer ctx.deinit();
+
+    try ctx.registerFunction("func1", "Description 1", 0);
+
+    const result = ctx.registerFunction("func1", "Different description", 0);
+    try std.testing.expectError(error.FunctionExists, result);
+}
+
+test "FunctionRegistrationContext transferToLibrary" {
+    const allocator = std.testing.allocator;
+
+    var ctx = FunctionRegistrationContext.init(allocator, "mylib");
+    defer ctx.deinit();
+
+    try ctx.registerFunction("func1", "Desc 1", 0);
+    try ctx.registerFunction("func2", "Desc 2", 0);
+
+    var lib = try Library.init(allocator, "mylib", "lua", "-- code --");
+    defer lib.deinit();
+
+    try ctx.transferToLibrary(&lib);
+
+    try std.testing.expectEqual(@as(usize, 2), lib.functions.count());
+    try std.testing.expect(lib.functions.contains("func1"));
+    try std.testing.expect(lib.functions.contains("func2"));
+}

@@ -1002,10 +1002,8 @@ pub fn cmdSentinelSimulateFailure(
     if (std.ascii.eqlIgnoreCase(mode, "help")) {
         var w = Writer.init(allocator);
         defer w.deinit();
-        try w.writeArrayStart(2);
-        try w.writeBulkString("crash-after-election");
-        try w.writeBulkString("crash-after-promotion");
-        return try w.toOwnedSlice(allocator);
+        const help_strs = [_][]const u8{ "crash-after-election", "crash-after-promotion" };
+        return try w.writeArrayOfBulkStrings(&help_strs);
     }
 
     // crash-after-election mode (flag = 1)
@@ -1056,8 +1054,8 @@ pub fn cmdSentinelPendingScripts(
     // Stub: return empty array (no script execution yet)
     var w = Writer.init(allocator);
     defer w.deinit();
-    try w.writeArrayStart(0);
-    return try w.toOwnedSlice(allocator);
+    const empty: []const []const u8 = &.{};
+    return try w.writeArrayOfBulkStrings(empty);
 }
 
 /// Handle SENTINEL INFO-CACHE command
@@ -1096,6 +1094,6 @@ pub fn cmdSentinelInfoCache(
     // Stub: return empty array (no INFO polling yet)
     var w = Writer.init(allocator);
     defer w.deinit();
-    try w.writeArrayStart(0);
-    return try w.toOwnedSlice(allocator);
+    const empty: []const []const u8 = &.{};
+    return try w.writeArrayOfBulkStrings(empty);
 }

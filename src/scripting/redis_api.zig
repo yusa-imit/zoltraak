@@ -291,3 +291,107 @@ pub fn registerRedisApi(L: *lua.lua_State, ctx: *RedisContext) !void {
     // Set redis as global
     lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "redis");
 }
+
+/// Register redis.register_function() for Functions API
+/// Must be called with a FunctionRegistrationContext stored in Lua registry
+pub fn registerFunctionsApi(L: *lua.lua_State) void {
+    // Get existing redis table or create it
+    lua.lua_getfield(L, lua.LUA_GLOBALSINDEX, "redis");
+    if (lua.lua_isnil(L, -1)) {
+        lua.lua_pop(L, 1);
+        lua.lua_createtable(L, 0, 1);
+    }
+
+    // Add redis.register_function
+    lua.lua_pushcfunction(L, redis_register_function_impl);
+    lua.lua_setfield(L, -2, "register_function");
+
+    // Set redis as global (if it wasn't already)
+    lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "redis");
+}
+
+/// C callback for redis.register_function()
+/// Expected Lua API: redis.register_function(function_table)
+/// function_table = { function_name = "...", description = "...", callback = function() ... end, flags = {...} }
+export fn redis_register_function_impl(L: *lua.lua_State) callconv(.c) c_int {
+    return redis_register_function_internal(L) catch {
+        lua.lua_pushstring(L, "ERR Internal error in redis.register_function");
+        _ = lua.lua_error(L);
+        return 0; // unreachable
+    };
+}
+
+fn redis_register_function_internal(L: *lua.lua_State) !c_int {
+    // Get FunctionRegistrationContext from Lua registry
+    lua.lua_pushstring(L, "FUNCTION_REG_CONTEXT");
+    lua.lua_gettable(L, lua.LUA_REGISTRYINDEX);
+
+    if (lua.lua_type(L, -1) != lua.LUA_TLIGHTUSERDATA) {
+        lua.lua_pushstring(L, "ERR redis.register_function can only be called during FUNCTION LOAD");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+
+    const ctx_ptr = lua.lua_touserdata(L, -1);
+    const FunctionRegistrationContext = @import("../storage/functions.zig").FunctionRegistrationContext;
+    const ctx: *FunctionRegistrationContext = @ptrCast(@alignCast(ctx_ptr));
+    lua.lua_pop(L, 1); // pop context
+
+    // Expect one table argument
+    if (lua.lua_gettop(L) != 1 or lua.lua_type(L, 1) != lua.LUA_TTABLE) {
+        lua.lua_pushstring(L, "ERR redis.register_function expects exactly one table argument");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+
+    // Extract function_name (required)
+    lua.lua_getfield(L, 1, "function_name");
+    if (lua.lua_isnil(L, -1)) {
+        lua.lua_pushstring(L, "ERR function_name is required");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+    var function_name_len: usize = 0;
+    const function_name_ptr = lua.lua_tolstring(L, -1, &function_name_len);
+    const function_name = if (function_name_len > 0 and function_name_ptr != null)
+        function_name_ptr.?[0..function_name_len]
+    else
+        "";
+    lua.lua_pop(L, 1);
+
+    // Extract description (optional, default to empty string)
+    lua.lua_getfield(L, 1, "description");
+    var description_len: usize = 0;
+    const description: []const u8 = if (!lua.lua_isnil(L, -1)) blk: {
+        const desc_ptr = lua.lua_tolstring(L, -1, &description_len);
+        break :blk if (description_len > 0 and desc_ptr != null) desc_ptr.?[0..description_len] else "";
+    } else "";
+    lua.lua_pop(L, 1);
+
+    // Extract callback (required)
+    lua.lua_getfield(L, 1, "callback");
+    if (lua.lua_type(L, -1) != lua.LUA_TFUNCTION) {
+        lua.lua_pushstring(L, "ERR callback must be a function");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+    lua.lua_pop(L, 1);
+
+    // Extract flags (optional, default to 0)
+    // TODO: Parse flags table in future iterations (no-writes, allow-oom, etc.)
+    const flags: u8 = 0;
+
+    // Register function in context
+    ctx.registerFunction(function_name, description, flags) catch |err| {
+        if (err == error.FunctionExists) {
+            lua.lua_pushstring(L, "ERR function already registered in this library");
+            _ = lua.lua_error(L);
+        } else {
+            return err;
+        }
+        return 0;
+    };
+
+    // Return nothing on success
+    return 0;
+}
