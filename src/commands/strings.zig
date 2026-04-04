@@ -1432,6 +1432,8 @@ pub fn executeCommand(
                 break :blk function_cmds.cmdFunctionFlush(allocator, storage, args_func);
             } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
                 break :blk function_cmds.cmdFunctionList(allocator, storage, args_func);
+            } else if (std.mem.eql(u8, subcmd_upper, "DELETE")) {
+                break :blk function_cmds.cmdFunctionDelete(allocator, storage, args_func);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();

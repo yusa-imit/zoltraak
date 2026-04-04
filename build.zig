@@ -388,6 +388,17 @@ pub fn build(b: *std.Build) void {
     const run_cluster_slot_stats_tests = b.addRunArtifact(cluster_slot_stats_tests);
     integration_test_step.dependOn(&run_cluster_slot_stats_tests.step);
 
+    // Redis Functions integration tests
+    const functions_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_functions.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_functions_tests = b.addRunArtifact(functions_tests);
+    integration_test_step.dependOn(&run_functions_tests.step);
+
     // Sentinel integration tests
     const sentinel_ping_tests = b.addTest(.{
         .root_module = b.createModule(.{
