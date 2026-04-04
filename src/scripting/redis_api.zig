@@ -38,6 +38,7 @@ pub const RedisContext = struct {
     shutdown_state: ?*@import("../server.zig").ShutdownState,
     databases: []Storage,
     num_databases: u16,
+    read_only: bool = false, // If true, only allow read-only commands (for FCALL_RO/EVAL_RO)
 };
 
 /// C callback for redis.call()
@@ -156,6 +157,35 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
         ctx.allocator.free(cmd_array);
     }
     const cmd = RespValue{ .array = cmd_array };
+
+    // Check if read-only mode is enforced (FCALL_RO/EVAL_RO)
+    if (ctx.read_only and cmd_array.len > 0) {
+        if (cmd_array[0] == .bulk_string) {
+            const cmd_name = cmd_array[0].bulk_string;
+            // Import classifyCommand to check if command is write
+            const classifyCommand = @import("../commands/strings.zig").classifyCommand;
+            const cmd_type = classifyCommand(cmd_name);
+            if (cmd_type == .write) {
+                const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR Write commands are not allowed from scripts in read-only mode (command: {s})", .{cmd_name});
+                defer ctx.allocator.free(err_msg);
+
+                if (propagate_errors) {
+                    const err_z = try ctx.allocator.dupeZ(u8, err_msg);
+                    defer ctx.allocator.free(err_z);
+                    lua.lua_pushstring(L, err_z.ptr);
+                    _ = lua.lua_error(L);
+                    return 0;
+                } else {
+                    lua.lua_createtable(L, 0, 1);
+                    const err_z = try ctx.allocator.dupeZ(u8, err_msg);
+                    defer ctx.allocator.free(err_z);
+                    lua.lua_pushstring(L, err_z.ptr);
+                    lua.lua_setfield(L, -2, "err");
+                    return 1;
+                }
+            }
+        }
+    }
 
     // Import executeCommand at compile time
     const executeCommand = @import("../commands/strings.zig").executeCommand;

@@ -276,3 +276,122 @@ test "FUNCTION LIST empty when no libraries" {
     defer allocator.free(resp);
     try std.testing.expectEqualStrings("*0\r\n", resp); // Empty array
 }
+
+test "FCALL_RO executes read-only function successfully" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16387, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16387);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Load a library with a read-only function
+    const code = "#!lua name=readonly_lib\nredis.register_function('get_value', function(keys, args) return redis.call('GET', keys[1]) end)";
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "LOAD", code });
+    _ = try readResponse(stream, allocator);
+
+    // Set a key to read
+    try sendCommand(stream, allocator, &[_][]const u8{ "SET", "mykey", "myvalue" });
+    const set_resp = try readResponse(stream, allocator);
+    allocator.free(set_resp);
+
+    // Call function with FCALL_RO
+    try sendCommand(stream, allocator, &[_][]const u8{ "FCALL_RO", "get_value", "1", "mykey" });
+    const fcall_ro_resp = try readResponse(stream, allocator);
+    defer allocator.free(fcall_ro_resp);
+
+    // Should return the value
+    try std.testing.expect(std.mem.indexOf(u8, fcall_ro_resp, "myvalue") != null);
+}
+
+test "FCALL_RO rejects write commands" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16388, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16388);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Load a library with a write function
+    const code = "#!lua name=write_lib\nredis.register_function('set_value', function(keys, args) return redis.call('SET', keys[1], args[1]) end)";
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "LOAD", code });
+    _ = try readResponse(stream, allocator);
+
+    // Try to call write function with FCALL_RO
+    try sendCommand(stream, allocator, &[_][]const u8{ "FCALL_RO", "set_value", "1", "testkey", "testvalue" });
+    const fcall_ro_resp = try readResponse(stream, allocator);
+    defer allocator.free(fcall_ro_resp);
+
+    // Should reject with error
+    try std.testing.expect(std.mem.indexOf(u8, fcall_ro_resp, "-ERR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fcall_ro_resp, "read-only") != null);
+}
+
+test "FCALL_RO wrong argument count" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16389, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16389);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Missing arguments
+    try sendCommand(stream, allocator, &[_][]const u8{ "FCALL_RO", "myfunc" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR wrong number of arguments") != null);
+}
+
+test "FCALL_RO nonexistent function" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16390, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16390);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FCALL_RO", "nonexistent", "0" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR Function not found") != null);
+}

@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 165 (241 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 40% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 166 (242 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 45% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 11 Redis Functions (40% complete — Foundation, FUNCTION LOAD/DELETE/FLUSH/LIST + FCALL real execution done)
-- **Next milestone**: Phase 11.4 (FCALL_RO, FUNCTION DUMP/RESTORE/STATS/KILL/HELP)
+- **Current phase**: Phase 11 Redis Functions (45% complete — Foundation, FUNCTION LOAD/DELETE/FLUSH/LIST, FCALL, FCALL_RO done)
+- **Next milestone**: Phase 11.5 (FUNCTION DUMP/RESTORE/STATS/KILL/HELP)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -19,13 +19,14 @@
 
 ## Active Milestones
 
-### Phase 11 — Redis Functions (40% complete) 🚧
+### Phase 11 — Redis Functions (45% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
 | 163 | Foundation (FunctionStore, Library, FunctionInfo, parseShebang, FUNCTION LOAD/FLUSH/LIST stub) | Done ✅ |
 | 164 | Lua bridge (redis.register_function(), FCALL real execution with RedisContext) | Done ✅ |
 | 165 | FUNCTION DELETE + enhanced FUNCTION LIST (LIBRARYNAME filter, WITHCODE) | Done ✅ |
+| 166 | FCALL_RO (read-only function execution with write command rejection) | Done ✅ |
 
 ### Phase 9 — Redis Sentinel (100% complete) ✅
 
