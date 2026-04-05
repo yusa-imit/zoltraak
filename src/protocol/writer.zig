@@ -267,8 +267,16 @@ pub const Writer = struct {
         return buffer.toOwnedSlice(self.allocator);
     }
 
-    // Private helper to write a value to a buffer
-    fn writeValue(self: *Writer, buffer: *std.ArrayList(u8), value: RespValue) !void {
+    /// Write any RespValue to a RESP-encoded response
+    pub fn writeRespValue(self: *Writer, value: RespValue) ![]const u8 {
+        var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 512);
+        errdefer buffer.deinit(self.allocator);
+        try self.writeValue(&buffer, value);
+        return buffer.toOwnedSlice(self.allocator);
+    }
+
+    // Helper to write a value to a buffer
+    pub fn writeValue(self: *Writer, buffer: *std.ArrayList(u8), value: RespValue) !void {
         switch (value) {
             // RESP2 types
             .simple_string => |s| {

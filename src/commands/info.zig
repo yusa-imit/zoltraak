@@ -347,6 +347,10 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
         .sorted_set => |zset| zset.members.count() * 24,
         .stream => |stream| stream.entries.items.len * 64,
         .hyperloglog => 12288, // 16384 registers * 6 bits = 12288 bytes
+        .json => |j| blk: {
+            _ = j;
+            break :blk 256; // Rough JSON tree estimate
+        },
     };
 }
 

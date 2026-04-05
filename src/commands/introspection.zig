@@ -90,7 +90,8 @@ pub fn cmdMemoryUsage(
             .hash => |h| h.data.count() * 128 + 128, // FieldValue entries
             .sorted_set => |zs| zs.members.count() * 160 + 256, // Member + score + indices
             .stream => |s| s.entries.items.len * 256 + 512, // Entry struct + metadata
-            .hyperloglog => 12304, // 16384 registers * 6 bits
+            .hyperloglog => 12304, // 16384 registers
+            .json => |j| blk2: { _ = j; break :blk2 512; }, // JSON tree * 6 bits
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };

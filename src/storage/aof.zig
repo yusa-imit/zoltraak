@@ -262,8 +262,10 @@ pub const Aof = struct {
                     // Streams not yet implemented in AOF - skip for now
                 },
                 .hyperloglog => {
-                    // HyperLogLog not yet implemented in AOF - skip for now
-                    // (Would require serializing 16384 bytes as args, not practical)
+                },
+                .json => {
+                    // JSON values handled by JSON.SET command in AOF replay
+                    // The command will be replayed from AOF log
                 },
             }
         }

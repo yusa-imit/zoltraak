@@ -98,6 +98,7 @@ pub const Persistence = struct {
                     .sorted_set => RDB_TYPE_SORTED_SET,
                     .stream => 0xFF, // Placeholder - streams not yet serialized
                     .hyperloglog => 0xFE, // HyperLogLog type
+                    .json => 0x0F, // JSON type
                 };
                 try w.writeByte(type_byte);
 
@@ -152,6 +153,12 @@ pub const Persistence = struct {
                     },
                     .hyperloglog => |hll| {
                         try writeBlob(w, &hll.registers);
+                    },
+                    .json => |j| {
+                        // Serialize JSON to string
+                        const json_str = try j.root.stringify(j.allocator);
+                        defer j.allocator.free(json_str);
+                        try writeBlob(w, json_str);
                     },
                 }
             }
@@ -345,6 +352,31 @@ pub const Persistence = struct {
                     errdefer storage.allocator.free(key_copy);
 
                     try storage.data.put(key_copy, Value{ .hyperloglog = hll });
+                },
+                0x0F => { // JSON
+                    const json_str = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(json_str);
+
+                    // Parse JSON
+                    const json_node_mod = @import("json_value.zig");
+                    const json_root = try json_node_mod.JsonNode.parse(storage.allocator, json_str);
+
+                    // Create JSON value
+                    const json_val = Value{
+                        .json = .{
+                            .root = json_root,
+                            .expires_at = expires_at,
+                            .allocator = storage.allocator,
+                        },
+                    };
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const owned_key = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(owned_key);
+
+                    try storage.data.put(owned_key, json_val);
                 },
                 else => return error.InvalidRdbFile,
             }
@@ -550,6 +582,7 @@ pub const Persistence = struct {
                     .sorted_set => RDB_TYPE_SORTED_SET,
                     .stream => 0xFF, // Streams not yet serialized
                     .hyperloglog => 0xFE, // HyperLogLog
+                    .json => 0x0F, // JSON type
                 };
                 try w.writeByte(type_byte);
 
@@ -596,6 +629,12 @@ pub const Persistence = struct {
                     },
                     .hyperloglog => |hll| {
                         try writeBlob(w, &hll.registers);
+                    },
+                    .json => |j| {
+                        // Serialize JSON to string
+                        const json_str = try j.root.stringify(j.allocator);
+                        defer j.allocator.free(json_str);
+                        try writeBlob(w, json_str);
                     },
                 }
             }

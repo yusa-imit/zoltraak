@@ -33,6 +33,7 @@ const auth_cmds = @import("auth.zig");
 const cluster_cmds = @import("cluster.zig");
 const sentinel_cmds = @import("sentinel.zig");
 const function_cmds = @import("functions.zig");
+const json_cmds = @import("json.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -1435,23 +1436,50 @@ pub fn executeCommand(
             }
 
             if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
-                break :blk try function_cmds.cmdFunctionLoad(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionLoad(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "FLUSH")) {
-                break :blk try function_cmds.cmdFunctionFlush(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionFlush(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
-                break :blk try function_cmds.cmdFunctionList(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionList(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "DELETE")) {
-                break :blk try function_cmds.cmdFunctionDelete(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionDelete(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "DUMP")) {
-                break :blk try function_cmds.cmdFunctionDump(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionDump(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "RESTORE")) {
-                break :blk try function_cmds.cmdFunctionRestore(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionRestore(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "STATS")) {
-                break :blk try function_cmds.cmdFunctionStats(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionStats(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "KILL")) {
-                break :blk try function_cmds.cmdFunctionKill(allocator, storage, args_func);
+                const result = try function_cmds.cmdFunctionKill(allocator, storage, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
-                break :blk try function_cmds.cmdFunctionHelp(allocator, args_func);
+                const result = try function_cmds.cmdFunctionHelp(allocator, args_func);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
@@ -1461,7 +1489,7 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
-            break :blk try function_cmds.cmdFcall(
+            const result = try function_cmds.cmdFcall(
                 allocator,
                 storage,
                 script_store,
@@ -1480,11 +1508,14 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
         }
         else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
             const args_fcall_ro = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall_ro);
-            break :blk try function_cmds.cmdFcallRo(
+            const result = try function_cmds.cmdFcallRo(
                 allocator,
                 storage,
                 script_store,
@@ -1503,6 +1534,9 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
         }
         // CLUSTER commands
         else if (std.mem.eql(u8, cmd_upper, "CLUSTER")) {
@@ -1696,6 +1730,28 @@ pub fn executeCommand(
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SENTINEL subcommand '{s}'", .{subcmd});
                 break :blk try w.writeError(err_msg);
             }
+        }
+        // JSON commands
+        else if (std.mem.eql(u8, cmd_upper, "JSON.SET")) {
+            const result = try json_cmds.cmdJsonSet(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.GET")) {
+            const result = try json_cmds.cmdJsonGet(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.DEL")) {
+            const result = try json_cmds.cmdJsonDel(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.TYPE")) {
+            const result = try json_cmds.cmdJsonType(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
         }
         // ACL commands
         else if (std.mem.eql(u8, cmd_upper, "ACL")) {

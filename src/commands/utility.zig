@@ -363,6 +363,7 @@ pub fn cmdDebug(
                 .sorted_set => "zset",
                 .stream => "stream",
                 .hyperloglog => "hyperloglog",
+                .json => "ReJSON-RL",
             };
 
             try buf_writer.print("Value at:{s} refcount:1 encoding:raw serializedlength:0 lru:0 lru_seconds_idle:0", .{type_str});

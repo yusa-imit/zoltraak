@@ -8,6 +8,7 @@ const acl_mod = @import("acl.zig");
 const cluster_mod = @import("cluster.zig");
 const sentinel_mod = @import("sentinel.zig");
 const functions_mod = @import("functions.zig");
+const json_value_mod = @import("json_value.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -37,6 +38,7 @@ pub const ValueType = enum {
     sorted_set,
     stream,
     hyperloglog,
+    json,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -49,6 +51,7 @@ pub const Value = union(ValueType) {
     sorted_set: SortedSetValue,
     stream: StreamValue,
     hyperloglog: HyperLogLogValue,
+    json: JsonValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -360,6 +363,18 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// JSON value with optional expiration
+    pub const JsonValue = struct {
+        root: *json_value_mod.JsonNode,
+        expires_at: ?i64,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *JsonValue, _: std.mem.Allocator) void {
+            self.root.deinit(self.allocator);
+            self.allocator.destroy(self.root);
+        }
+    };
+
     /// Deinitialize value and free all associated memory
     pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -370,6 +385,7 @@ pub const Value = union(ValueType) {
             .sorted_set => |*z| z.deinit(allocator),
             .stream => |*st| st.deinit(allocator),
             .hyperloglog => |*hll| hll.deinit(allocator),
+            .json => |*j| j.deinit(allocator),
         }
     }
 
@@ -383,6 +399,7 @@ pub const Value = union(ValueType) {
             .sorted_set => |z| z.expires_at,
             .stream => |st| st.expires_at,
             .hyperloglog => |hll| hll.expires_at,
+            .json => |j| j.expires_at,
         };
     }
 
@@ -719,6 +736,7 @@ pub const Storage = struct {
                             .sorted_set => |z| z.expires_at,
                             .stream => |st| st.expires_at,
                             .hyperloglog => |hll| hll.expires_at,
+                            .json => |j| j.expires_at,
                         };
                     }
                 }
@@ -4051,6 +4069,7 @@ pub const Storage = struct {
             .sorted_set => |*v| v.expires_at = expires_at,
             .stream => |*v| v.expires_at = expires_at,
             .hyperloglog => |*v| v.expires_at = expires_at,
+            .json => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -4400,6 +4419,7 @@ pub const Storage = struct {
             .sorted_set => 0x03, // RDB_TYPE_SORTED_SET
             .stream => 0xFE, // Stream type
             .hyperloglog => 0xFD, // HyperLogLog type
+            .json => 0x0F, // JSON type
         };
         try w.writeByte(type_byte);
 
@@ -4457,6 +4477,12 @@ pub const Storage = struct {
             .hyperloglog => |hll| {
                 // Serialize HyperLogLog as raw bytes (16384 bytes for 16384 6-bit registers)
                 try writeBlob(w, &hll.registers);
+            },
+            .json => |j| {
+                // Serialize JSON to string
+                const json_str = try j.root.stringify(j.allocator);
+                defer j.allocator.free(json_str);
+                try writeBlob(w, json_str);
             },
         }
 
@@ -4855,6 +4881,16 @@ pub const Storage = struct {
                 hll_copy.registers = hll.registers;
                 hll_copy.expires_at = hll.expires_at;
                 break :blk Value{ .hyperloglog = hll_copy };
+            },
+            .json => |j| blk: {
+                // Deep clone JSON tree
+                
+                const cloned_root = try j.root.clone(self.allocator);
+                break :blk Value{ .json = .{
+                    .root = cloned_root,
+                    .expires_at = j.expires_at,
+                    .allocator = self.allocator,
+                } };
             },
         };
     }
