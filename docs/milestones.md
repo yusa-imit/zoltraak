@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 167 (244 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 55% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 168 (244 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 73% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 11 Redis Functions (55% complete — Foundation, FUNCTION LOAD/DELETE/FLUSH/LIST/DUMP/RESTORE, FCALL, FCALL_RO done)
-- **Next milestone**: Phase 11.6 (FUNCTION STATS/KILL/HELP)
+- **Current phase**: Phase 11 Redis Functions (73% complete — Foundation, FUNCTION LOAD/DELETE/FLUSH/LIST/DUMP/RESTORE/STATS/KILL/HELP, FCALL, FCALL_RO done)
+- **Next milestone**: Phase 12 (JSON Data Type) or remaining PRD phases
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -19,7 +19,7 @@
 
 ## Active Milestones
 
-### Phase 11 — Redis Functions (55% complete) 🚧
+### Phase 11 — Redis Functions (73% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -28,6 +28,7 @@
 | 165 | FUNCTION DELETE + enhanced FUNCTION LIST (LIBRARYNAME filter, WITHCODE) | Done ✅ |
 | 166 | FCALL_RO (read-only function execution with write command rejection) | Done ✅ |
 | 167 | FUNCTION DUMP & RESTORE (binary serialization with FLUSH/APPEND/REPLACE modes) | Done ✅ |
+| 168 | FUNCTION STATS/KILL/HELP (execution tracking, kill mechanism, enhanced FLUSH validation) | Done ✅ |
 
 ### Phase 9 — Redis Sentinel (100% complete) ✅
 

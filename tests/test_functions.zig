@@ -395,3 +395,221 @@ test "FCALL_RO nonexistent function" {
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR Function not found") != null);
 }
+
+test "FUNCTION STATS when no function running" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16391, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16391);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "STATS" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+
+    // Should return array with running_script=null and engines
+    try std.testing.expect(std.mem.indexOf(u8, resp, "running_script") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "engines") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "LUA") != null);
+}
+
+test "FUNCTION STATS with wrong argument count" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16392, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16392);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "STATS", "extra_arg" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR wrong number of arguments") != null);
+}
+
+test "FUNCTION KILL when no function running" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16393, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16393);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "KILL" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-NOTBUSY") != null);
+}
+
+test "FUNCTION KILL with wrong argument count" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16394, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16394);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "KILL", "extra_arg" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR wrong number of arguments") != null);
+}
+
+test "FUNCTION HELP returns help text" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16395, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16395);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "HELP" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+
+    // Should return array of help strings
+    try std.testing.expect(std.mem.startsWith(u8, resp, "*"));
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION DELETE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION DUMP") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION FLUSH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION KILL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION LIST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION LOAD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION RESTORE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "FUNCTION STATS") != null);
+}
+
+test "FUNCTION HELP with wrong argument count" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16396, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16396);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "HELP", "extra_arg" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR wrong number of arguments") != null);
+}
+
+test "FUNCTION FLUSH with ASYNC mode" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16397, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16397);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    // Load a library
+    const code = "#!lua name=testlib\nredis.register_function('testfunc', function(keys, args) return 'ok' end)";
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "LOAD", code });
+    _ = try readResponse(stream, allocator);
+
+    // Flush with ASYNC
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "FLUSH", "ASYNC" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expectEqualStrings("+OK\r\n", resp);
+
+    // Verify functions were deleted
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "LIST" });
+    const list_resp = try readResponse(stream, allocator);
+    defer allocator.free(list_resp);
+    try std.testing.expectEqualStrings("*0\r\n", list_resp);
+}
+
+test "FUNCTION FLUSH with invalid mode" {
+    const allocator = std.testing.allocator;
+
+    var server = Server.init(allocator, "127.0.0.1", 16398, null, null, null);
+    defer server.deinit();
+
+    const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
+    std.time.sleep(100 * std.time.ns_per_ms);
+
+    defer {
+        server.stop();
+        server_thread.join();
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 16398);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    try sendCommand(stream, allocator, &[_][]const u8{ "FUNCTION", "FLUSH", "INVALID" });
+    const resp = try readResponse(stream, allocator);
+    defer allocator.free(resp);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-ERR invalid FUNCTION FLUSH mode") != null);
+}

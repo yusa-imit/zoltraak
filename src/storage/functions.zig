@@ -62,21 +62,62 @@ pub const Library = struct {
     }
 };
 
+/// Execution tracking for FUNCTION STATS/KILL
+pub const ExecutionInfo = struct {
+    function_name: []const u8, // Name of executing function
+    command_args: [][]const u8, // Full command that invoked it: ["FCALL", name, numkeys, ...]
+    start_time: i64, // Timestamp in milliseconds
+    has_written: bool, // Whether function has performed write operations
+    kill_requested: std.atomic.Value(bool), // Atomic flag for FUNCTION KILL
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, function_name: []const u8, command_args: [][]const u8, start_time: i64) !ExecutionInfo {
+        var owned_args = try allocator.alloc([]const u8, command_args.len);
+        errdefer allocator.free(owned_args);
+
+        for (command_args, 0..) |arg, i| {
+            owned_args[i] = try allocator.dupe(u8, arg);
+        }
+
+        return ExecutionInfo{
+            .function_name = try allocator.dupe(u8, function_name),
+            .command_args = owned_args,
+            .start_time = start_time,
+            .has_written = false,
+            .kill_requested = std.atomic.Value(bool).init(false),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ExecutionInfo) void {
+        self.allocator.free(self.function_name);
+        for (self.command_args) |arg| {
+            self.allocator.free(arg);
+        }
+        self.allocator.free(self.command_args);
+    }
+};
+
 /// Storage for all Redis Function libraries
 pub const FunctionStore = struct {
     libraries: std.StringHashMap(Library), // library_name → Library
     function_index: std.StringHashMap(*FunctionInfo), // function_name → *FunctionInfo (fast lookup)
+    running_execution: ?ExecutionInfo, // Currently executing function (if any)
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) FunctionStore {
         return FunctionStore{
             .libraries = std.StringHashMap(Library).init(allocator),
             .function_index = std.StringHashMap(*FunctionInfo).init(allocator),
+            .running_execution = null,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *FunctionStore) void {
+        if (self.running_execution) |*exec| {
+            exec.deinit();
+        }
         var iter = self.libraries.iterator();
         while (iter.next()) |entry| {
             var lib = entry.value_ptr;
@@ -180,15 +221,15 @@ pub const FunctionStore = struct {
     ///     - N bytes: Description
     ///     - 1 byte: Flags
     pub fn dump(self: *FunctionStore, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8){ .items = &[_]u8{}, .capacity = 0 };
+        errdefer buffer.deinit(allocator);
 
         // Write magic header
-        try buffer.appendSlice("ZOLFUNC\x01");
+        try buffer.appendSlice(allocator,"ZOLFUNC\x01");
 
         // Write number of libraries
         const lib_count = @as(u32, @intCast(self.libraries.count()));
-        try buffer.appendSlice(std.mem.asBytes(&lib_count));
+        try buffer.appendSlice(allocator,std.mem.asBytes(&lib_count));
 
         // Iterate over libraries
         var lib_iter = self.libraries.iterator();
@@ -197,22 +238,22 @@ pub const FunctionStore = struct {
 
             // Write library name
             const name_len = @as(u32, @intCast(lib.name.len));
-            try buffer.appendSlice(std.mem.asBytes(&name_len));
-            try buffer.appendSlice(lib.name);
+            try buffer.appendSlice(allocator,std.mem.asBytes(&name_len));
+            try buffer.appendSlice(allocator,lib.name);
 
             // Write engine
             const engine_len = @as(u32, @intCast(lib.engine.len));
-            try buffer.appendSlice(std.mem.asBytes(&engine_len));
-            try buffer.appendSlice(lib.engine);
+            try buffer.appendSlice(allocator,std.mem.asBytes(&engine_len));
+            try buffer.appendSlice(allocator,lib.engine);
 
             // Write code
             const code_len = @as(u32, @intCast(lib.code.len));
-            try buffer.appendSlice(std.mem.asBytes(&code_len));
-            try buffer.appendSlice(lib.code);
+            try buffer.appendSlice(allocator,std.mem.asBytes(&code_len));
+            try buffer.appendSlice(allocator,lib.code);
 
             // Write number of functions
             const func_count = @as(u32, @intCast(lib.functions.count()));
-            try buffer.appendSlice(std.mem.asBytes(&func_count));
+            try buffer.appendSlice(allocator,std.mem.asBytes(&func_count));
 
             // Iterate over functions
             var func_iter = lib.functions.iterator();
@@ -221,16 +262,16 @@ pub const FunctionStore = struct {
 
                 // Write function name
                 const func_name_len = @as(u32, @intCast(func.name.len));
-                try buffer.appendSlice(std.mem.asBytes(&func_name_len));
-                try buffer.appendSlice(func.name);
+                try buffer.appendSlice(allocator,std.mem.asBytes(&func_name_len));
+                try buffer.appendSlice(allocator,func.name);
 
                 // Write description
                 const desc_len = @as(u32, @intCast(func.description.len));
-                try buffer.appendSlice(std.mem.asBytes(&desc_len));
-                try buffer.appendSlice(func.description);
+                try buffer.appendSlice(allocator,std.mem.asBytes(&desc_len));
+                try buffer.appendSlice(allocator,func.description);
 
                 // Write flags
-                try buffer.append(func.flags);
+                try buffer.append(allocator,func.flags);
             }
         }
 
@@ -350,6 +391,76 @@ pub const FunctionStore = struct {
         Append, // Add libraries, fail if any already exist
         Replace, // Replace existing libraries with same name
     };
+
+    /// Start tracking function execution (called by FCALL/FCALL_RO)
+    /// Returns error.AlreadyExecuting if a function is already running
+    pub fn startExecution(self: *FunctionStore, function_name: []const u8, command_args: [][]const u8) !void {
+        if (self.running_execution != null) {
+            return error.AlreadyExecuting;
+        }
+
+        const now_ms = @as(i64, @intCast(@divTrunc(std.time.milliTimestamp(), 1)));
+        self.running_execution = try ExecutionInfo.init(self.allocator, function_name, command_args, now_ms);
+    }
+
+    /// Mark that the currently executing function has performed a write operation
+    pub fn markWritePerformed(self: *FunctionStore) void {
+        if (self.running_execution) |*exec| {
+            exec.has_written = true;
+        }
+    }
+
+    /// Check if kill has been requested for the currently executing function
+    pub fn isKillRequested(self: *FunctionStore) bool {
+        if (self.running_execution) |*exec| {
+            return exec.kill_requested.load(.acquire);
+        }
+        return false;
+    }
+
+    /// Request termination of the currently executing function (FUNCTION KILL)
+    /// Returns error.NotBusy if no function is running
+    /// Returns error.Unkillable if function has performed writes
+    pub fn requestKill(self: *FunctionStore) !void {
+        const exec = &(self.running_execution orelse return error.NotBusy);
+
+        if (exec.has_written) {
+            return error.Unkillable;
+        }
+
+        exec.kill_requested.store(true, .release);
+    }
+
+    /// Stop tracking function execution (called when function completes/terminates)
+    pub fn stopExecution(self: *FunctionStore) void {
+        if (self.running_execution) |*exec| {
+            exec.deinit();
+            self.running_execution = null;
+        }
+    }
+
+    /// Get statistics about currently executing function
+    /// Returns null if no function is running
+    pub fn getExecutionStats(self: *FunctionStore) ?struct {
+        function_name: []const u8,
+        command_args: [][]const u8,
+        duration_ms: i64,
+    } {
+        const exec = &(self.running_execution orelse return null);
+        const now_ms = @as(i64, @intCast(@divTrunc(std.time.milliTimestamp(), 1)));
+        const duration = now_ms - exec.start_time;
+
+        return .{
+            .function_name = exec.function_name,
+            .command_args = exec.command_args,
+            .duration_ms = duration,
+        };
+    }
+
+    /// Count total number of functions across all libraries
+    pub fn getTotalFunctionCount(self: *FunctionStore) usize {
+        return self.function_index.count();
+    }
 };
 
 /// Parse Shebang line from Lua code

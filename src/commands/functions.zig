@@ -159,6 +159,10 @@ pub fn cmdFcall(
         return RespValue{ .error_string = try allocator.dupe(u8, "ERR Library not found (internal error)") };
     };
 
+    // Start execution tracking
+    try storage.functions.startExecution(function_name, args[1..]);
+    defer storage.functions.stopExecution();
+
     // Create RedisContext for redis.call/pcall
     const redis_ctx = try allocator.create(RedisContext);
     redis_ctx.* = RedisContext{
@@ -253,6 +257,10 @@ pub fn cmdFcallRo(
         return RespValue{ .error_string = try allocator.dupe(u8, "ERR Library not found (internal error)") };
     };
 
+    // Start execution tracking
+    try storage.functions.startExecution(function_name, args[1..]);
+    defer storage.functions.stopExecution();
+
     // Create RedisContext for redis.call/pcall with read_only=true
     const redis_ctx = try allocator.create(RedisContext);
     redis_ctx.* = RedisContext{
@@ -300,8 +308,17 @@ pub fn cmdFunctionFlush(
     storage: *Storage,
     args: [][]const u8,
 ) !RespValue {
-    // Optional ASYNC/SYNC argument (ignored for now)
-    _ = args;
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function flush' command") };
+    }
+
+    // Note: ASYNC/SYNC modes are accepted but ignored (we have no background threads)
+    if (args.len == 3) {
+        const mode = args[2];
+        if (!std.ascii.eqlIgnoreCase(mode, "ASYNC") and !std.ascii.eqlIgnoreCase(mode, "SYNC")) {
+            return RespValue{ .error_string = try allocator.dupe(u8, "ERR invalid FUNCTION FLUSH mode (expected ASYNC or SYNC)") };
+        }
+    }
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
@@ -311,14 +328,14 @@ pub fn cmdFunctionFlush(
     return RespValue{ .simple_string = try allocator.dupe(u8, "OK") };
 }
 
-/// FUNCTION DELETE <library>
+/// FUNCTION DELETE <library_name>
 /// Delete a function library
 pub fn cmdFunctionDelete(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: [][]const u8,
 ) !RespValue {
-    if (args.len < 3) {
+    if (args.len != 3) {
         return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function delete' command") };
     }
 
@@ -337,6 +354,23 @@ pub fn cmdFunctionDelete(
     return RespValue{ .simple_string = try allocator.dupe(u8, "OK") };
 }
 
+/// Recursively deinit a RespValue (for nested arrays/maps)
+fn deinitRespValue(value: *const RespValue, allocator: std.mem.Allocator) void {
+    switch (value.*) {
+        .array => |arr| {
+            for (arr) |*item| {
+                deinitRespValue(item, allocator);
+            }
+            // Cast away const for free
+            allocator.free(@constCast(arr));
+        },
+        .bulk_string => |s| allocator.free(@constCast(s)),
+        .simple_string => |s| allocator.free(@constCast(s)),
+        .error_string => |s| allocator.free(@constCast(s)),
+        else => {},
+    }
+}
+
 /// FUNCTION LIST [LIBRARYNAME <pattern>] [WITHCODE]
 /// List all function libraries
 pub fn cmdFunctionList(
@@ -349,138 +383,115 @@ pub fn cmdFunctionList(
 
     // Parse optional arguments
     var i: usize = 2;
-    while (i < args.len) : (i += 1) {
+    while (i < args.len) {
         if (std.ascii.eqlIgnoreCase(args[i], "LIBRARYNAME")) {
             if (i + 1 >= args.len) {
-                return RespValue{ .error_string = try allocator.dupe(u8, "ERR syntax error") };
+                return RespValue{ .error_string = try allocator.dupe(u8, "ERR LIBRARYNAME requires a pattern argument") };
             }
             library_pattern = args[i + 1];
-            i += 1;
+            i += 2;
         } else if (std.ascii.eqlIgnoreCase(args[i], "WITHCODE")) {
             with_code = true;
+            i += 1;
         } else {
-            return RespValue{ .error_string = try allocator.dupe(u8, "ERR syntax error") };
+            const err_msg = try std.fmt.allocPrint(allocator, "ERR unknown FUNCTION LIST option: {s}", .{args[i]});
+            return RespValue{ .error_string = err_msg };
         }
     }
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
-    // Collect matching libraries
-    var matching_libs = std.ArrayList(*functions_mod.Library).init(allocator);
-    defer matching_libs.deinit();
+    // Build response array (one entry per library)
+    var libraries_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+    errdefer {
+        for (libraries_array.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        libraries_array.deinit(allocator);
+    }
 
     var lib_iter = storage.functions.libraries.iterator();
-    while (lib_iter.next()) |entry| {
-        const lib = entry.value_ptr;
+    while (lib_iter.next()) |lib_entry| {
+        const lib = lib_entry.value_ptr;
 
-        // Filter by pattern if specified
+        // Filter by library name pattern if specified
         if (library_pattern) |pattern| {
-            if (!std.mem.eql(u8, lib.name, pattern)) {
+            // Simple glob matching (exact or wildcard)
+            if (!std.mem.eql(u8, pattern, lib.name) and !std.mem.eql(u8, pattern, "*")) {
                 continue;
             }
         }
 
-        try matching_libs.append(lib);
-    }
-
-    // Build response array: array of library info arrays
-    var result = std.ArrayList(RespValue).init(allocator);
-    errdefer {
-        for (result.items) |item| {
-            deinitRespValue(allocator, item);
-        }
-        result.deinit();
-    }
-
-    for (matching_libs.items) |lib| {
-        // Each library is represented as array of key-value pairs
-        var lib_info = std.ArrayList(RespValue).init(allocator);
+        // Build library entry (flat array of key-value pairs)
+        var lib_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
         errdefer {
-            for (lib_info.items) |item| {
-                deinitRespValue(allocator, item);
+            for (lib_array.items) |*item| {
+                deinitRespValue(item, allocator);
             }
-            lib_info.deinit();
+            lib_array.deinit(allocator);
         }
 
-        // library_name
-        try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "library_name") });
-        try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, lib.name) });
+        // library_name field
+        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "library_name") });
+        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, lib.name) });
 
-        // engine
-        try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "engine") });
-        try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, lib.engine) });
+        // engine field
+        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "engine") });
+        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, lib.engine) });
 
-        // functions (array of function info arrays)
-        try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "functions") });
-        var functions_array = std.ArrayList(RespValue).init(allocator);
+        // functions field (nested array of function metadata)
+        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "functions") });
+        var funcs_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
         errdefer {
-            for (functions_array.items) |item| {
-                deinitRespValue(allocator, item);
+            for (funcs_array.items) |*item| {
+                deinitRespValue(item, allocator);
             }
-            functions_array.deinit();
+            funcs_array.deinit(allocator);
         }
 
         var func_iter = lib.functions.iterator();
         while (func_iter.next()) |func_entry| {
             const func = func_entry.value_ptr;
 
-            var func_info = std.ArrayList(RespValue).init(allocator);
+            // Build function metadata (flat array)
+            var func_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
             errdefer {
-                for (func_info.items) |item| {
-                    deinitRespValue(allocator, item);
+                for (func_array.items) |*item| {
+                    deinitRespValue(item, allocator);
                 }
-                func_info.deinit();
+                func_array.deinit(allocator);
             }
 
-            // name
-            try func_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
-            try func_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, func.name) });
+            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
+            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, func.name) });
 
-            // description
-            try func_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "description") });
-            try func_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, func.description) });
+            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "description") });
+            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, func.description) });
 
-            // flags (array of flag strings)
-            try func_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "flags") });
-            const flags_array = try allocator.alloc(RespValue, 0); // Empty for now
-            try func_info.append(RespValue{ .array = flags_array });
+            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "flags") });
+            var flags_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+            // No flags yet, return empty array
+            try func_array.append(allocator, RespValue{ .array = try flags_array.toOwnedSlice(allocator) });
 
-            try functions_array.append(RespValue{ .array = try func_info.toOwnedSlice() });
+            try funcs_array.append(allocator, RespValue{ .array = try func_array.toOwnedSlice(allocator) });
         }
+        try lib_array.append(allocator,RespValue{ .array = try funcs_array.toOwnedSlice(allocator) });
 
-        try lib_info.append(RespValue{ .array = try functions_array.toOwnedSlice() });
-
-        // library_code (optional, only if WITHCODE)
+        // library_code field (optional, only if WITHCODE)
         if (with_code) {
-            try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, "library_code") });
-            try lib_info.append(RespValue{ .bulk_string = try allocator.dupe(u8, lib.code) });
+            try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "library_code") });
+            try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, lib.code) });
         }
 
-        try result.append(RespValue{ .array = try lib_info.toOwnedSlice() });
+        try libraries_array.append(allocator, RespValue{ .array = try lib_array.toOwnedSlice(allocator) });
     }
 
-    return RespValue{ .array = try result.toOwnedSlice() };
-}
-
-/// Helper to recursively deinit RespValue arrays
-fn deinitRespValue(allocator: std.mem.Allocator, value: RespValue) void {
-    switch (value) {
-        .array => |arr| {
-            for (arr) |item| {
-                deinitRespValue(allocator, item);
-            }
-            allocator.free(arr);
-        },
-        .bulk_string => |s| allocator.free(s),
-        .simple_string => |s| allocator.free(s),
-        .error_string => |s| allocator.free(s),
-        else => {},
-    }
+    return RespValue{ .array = try libraries_array.toOwnedSlice(allocator) };
 }
 
 /// FUNCTION DUMP
-/// Serialize all libraries to a binary payload
+/// Return the serialized payload of all loaded libraries
 pub fn cmdFunctionDump(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -494,6 +505,7 @@ pub fn cmdFunctionDump(
     defer storage.mutex.unlock();
 
     const payload = try storage.functions.dump(allocator);
+
     return RespValue{ .bulk_string = payload };
 }
 
@@ -539,4 +551,152 @@ pub fn cmdFunctionRestore(
     };
 
     return RespValue{ .simple_string = try allocator.dupe(u8, "OK") };
+}
+
+/// FUNCTION STATS
+/// Return execution statistics for functions
+pub fn cmdFunctionStats(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    args: [][]const u8,
+) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function stats' command") };
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Build RESP map/array
+    var top_level = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+    errdefer {
+        for (top_level.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        top_level.deinit(allocator);
+    }
+
+    // Add "running_script" key
+    try top_level.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "running_script") });
+
+    // Add running_script value (null or map)
+    if (storage.functions.getExecutionStats()) |stats| {
+        // Build running_script map
+        var running_map = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+        errdefer {
+            for (running_map.items) |*item| {
+                deinitRespValue(item, allocator);
+            }
+            running_map.deinit(allocator);
+        }
+
+        // name field
+        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
+        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, stats.function_name) });
+
+        // command field (array)
+        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "command") });
+        var cmd_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+        for (stats.command_args) |arg| {
+            try cmd_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, arg) });
+        }
+        try running_map.append(allocator, RespValue{ .array = try cmd_array.toOwnedSlice(allocator) });
+
+        // duration_ms field
+        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "duration_ms") });
+        try running_map.append(allocator, RespValue{ .integer = stats.duration_ms });
+
+        try top_level.append(allocator,RespValue{ .array = try running_map.toOwnedSlice(allocator) });
+    } else {
+        // No function running
+        try top_level.append(allocator,RespValue{ .null_bulk_string = {} });
+    }
+
+    // Add "engines" key
+    try top_level.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "engines") });
+
+    // Add engines value (map)
+    var engines_map = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+    errdefer {
+        for (engines_map.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        engines_map.deinit(allocator);
+    }
+
+    // LUA engine entry
+    try engines_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "LUA") });
+    var lua_stats = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
+    errdefer {
+        for (lua_stats.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        lua_stats.deinit(allocator);
+    }
+
+    try lua_stats.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "libraries_count") });
+    try lua_stats.append(allocator, RespValue{ .integer = @as(i64, @intCast(storage.functions.libraries.count())) });
+
+    try lua_stats.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "functions_count") });
+    try lua_stats.append(allocator, RespValue{ .integer = @as(i64, @intCast(storage.functions.getTotalFunctionCount())) });
+
+    try engines_map.append(allocator, RespValue{ .array = try lua_stats.toOwnedSlice(allocator) });
+    try top_level.append(allocator,RespValue{ .array = try engines_map.toOwnedSlice(allocator) });
+
+    return RespValue{ .array = try top_level.toOwnedSlice(allocator) };
+}
+
+/// FUNCTION KILL
+/// Terminate a long-running function
+pub fn cmdFunctionKill(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    args: [][]const u8,
+) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function kill' command") };
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    storage.functions.requestKill() catch |err| {
+        const err_msg = switch (err) {
+            error.NotBusy => "NOTBUSY No scripts in execution right now.",
+            error.Unkillable => "UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.",
+        };
+        return RespValue{ .error_string = try allocator.dupe(u8, err_msg) };
+    };
+
+    return RespValue{ .simple_string = try allocator.dupe(u8, "OK") };
+}
+
+/// FUNCTION HELP
+/// Return help text for FUNCTION subcommands
+pub fn cmdFunctionHelp(
+    allocator: std.mem.Allocator,
+    args: [][]const u8,
+) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function help' command") };
+    }
+
+    const help_lines = [_][]const u8{
+        "FUNCTION DELETE <library-name> -- Delete a library and all its functions.",
+        "FUNCTION DUMP -- Return the serialized payload of loaded libraries.",
+        "FUNCTION FLUSH [ASYNC|SYNC] -- Delete all libraries and functions.",
+        "FUNCTION HELP -- Return helpful text about FUNCTION subcommands.",
+        "FUNCTION KILL -- Kill the function currently in execution.",
+        "FUNCTION LIST [LIBRARYNAME <pattern>] [WITHCODE] -- Return information about all loaded libraries.",
+        "FUNCTION LOAD [REPLACE] <engine-name> <library-name> <code> -- Create a new library.",
+        "FUNCTION RESTORE <serialized-value> [FLUSH|APPEND|REPLACE] -- Restore libraries from a payload.",
+        "FUNCTION STATS -- Return information about the function currently running and available engines.",
+    };
+
+    var array = try allocator.alloc(RespValue, help_lines.len);
+    for (help_lines, 0..) |line, i| {
+        array[i] = RespValue{ .bulk_string = try allocator.dupe(u8, line) };
+    }
+
+    return RespValue{ .array = array };
 }

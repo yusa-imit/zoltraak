@@ -173,6 +173,14 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
     return null;
 }
 
+/// Public wrapper for getCommandAccessMode (for use by scripting layer)
+/// Returns AccessMode enum (.read or .write) or null for non-key commands
+pub fn classifyCommand(cmd_name: []const u8) ?AccessMode {
+    const cmd_upper = std.ascii.allocUpperString(std.heap.page_allocator, cmd_name) catch return null;
+    defer std.heap.page_allocator.free(cmd_upper);
+    return getCommandAccessMode(cmd_upper);
+}
+
 /// Get the argument positions containing keys for a command.
 /// Returns a slice of indexes (0-based) into the args array.
 /// This is a simplified version — production Redis uses command metadata.
@@ -1427,17 +1435,23 @@ pub fn executeCommand(
             }
 
             if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
-                break :blk function_cmds.cmdFunctionLoad(allocator, storage, args_func);
+                break :blk try function_cmds.cmdFunctionLoad(allocator, storage, args_func);
             } else if (std.mem.eql(u8, subcmd_upper, "FLUSH")) {
-                break :blk function_cmds.cmdFunctionFlush(allocator, storage, args_func);
+                break :blk try function_cmds.cmdFunctionFlush(allocator, storage, args_func);
             } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
-                break :blk function_cmds.cmdFunctionList(allocator, storage, args_func);
+                break :blk try function_cmds.cmdFunctionList(allocator, storage, args_func);
             } else if (std.mem.eql(u8, subcmd_upper, "DELETE")) {
-                break :blk function_cmds.cmdFunctionDelete(allocator, storage, args_func);
+                break :blk try function_cmds.cmdFunctionDelete(allocator, storage, args_func);
             } else if (std.mem.eql(u8, subcmd_upper, "DUMP")) {
-                break :blk function_cmds.cmdFunctionDump(allocator, storage, args_func);
+                break :blk try function_cmds.cmdFunctionDump(allocator, storage, args_func);
             } else if (std.mem.eql(u8, subcmd_upper, "RESTORE")) {
-                break :blk function_cmds.cmdFunctionRestore(allocator, storage, args_func);
+                break :blk try function_cmds.cmdFunctionRestore(allocator, storage, args_func);
+            } else if (std.mem.eql(u8, subcmd_upper, "STATS")) {
+                break :blk try function_cmds.cmdFunctionStats(allocator, storage, args_func);
+            } else if (std.mem.eql(u8, subcmd_upper, "KILL")) {
+                break :blk try function_cmds.cmdFunctionKill(allocator, storage, args_func);
+            } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                break :blk try function_cmds.cmdFunctionHelp(allocator, args_func);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
@@ -1447,7 +1461,7 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
-            break :blk function_cmds.cmdFcall(
+            break :blk try function_cmds.cmdFcall(
                 allocator,
                 storage,
                 script_store,
@@ -1470,7 +1484,7 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
             const args_fcall_ro = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall_ro);
-            break :blk function_cmds.cmdFcallRo(
+            break :blk try function_cmds.cmdFcallRo(
                 allocator,
                 storage,
                 script_store,
