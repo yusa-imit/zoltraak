@@ -1315,3 +1315,277 @@ test "JSON.FORGET deletes key like JSON.DEL" {
     try std.testing.expectEqual(@as(usize, 1), result.integer);
     try std.testing.expect(storage.data.get("doc1") == null);
 }
+
+/// JSON.STRAPPEND key [path] value
+/// Appends a string to the JSON string at path
+pub fn cmdJsonStrappend(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 3 or args.len > 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.strappend' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // If 3 args: key value (implicit root path "$")
+    // If 4 args: key path value
+    const path_str = if (args.len == 3) "$" else switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    const append_str = switch (args[if (args.len == 3) @as(usize, 2) else @as(usize, 3)]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid string value" },
+    };
+
+    // Check if key exists
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    };
+
+    // Check if value is JSON
+    if (entry.* != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target node
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        return RespValue{ .error_string = "ERR path does not exist" };
+    }
+
+    // For now, only support appending to a single value (first result)
+    const target_node = results.items[0];
+    if (target_node.* != .string) {
+        return RespValue{ .error_string = "ERR path value is not a string" };
+    }
+
+    // Append the string
+    const old_str = target_node.string;
+    const new_str = try std.mem.concat(storage.allocator, u8, &[_][]const u8{ old_str, append_str });
+    storage.allocator.free(old_str);
+    target_node.string = new_str;
+
+    // Return the new string length as an integer
+    return RespValue{ .integer = @intCast(new_str.len) };
+}
+
+/// JSON.STRLEN key [path]
+/// Returns the length of the JSON string at path
+pub fn cmdJsonStrlen(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.strlen' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // If 2 args: key (implicit root path "$")
+    // If 3 args: key path
+    const path_str = if (args.len == 2) "$" else switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    // Check if key exists
+    const entry = storage.data.get(key) orelse {
+        return RespValue{ .null_bulk_string = {} };
+    };
+
+    // Check if value is JSON
+    if (entry != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target node
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Return array if multiple results, otherwise single integer
+    if (results.items.len > 1) {
+        var arr: std.ArrayList(RespValue) = .{};
+        errdefer arr.deinit(allocator);
+
+        for (results.items) |node| {
+            if (node.* == .string) {
+                try arr.append(allocator, RespValue{ .integer = @intCast(node.string.len) });
+            } else {
+                try arr.append(allocator, RespValue{ .null_bulk_string = {} });
+            }
+        }
+
+        const result = try arr.toOwnedSlice(allocator);
+        return RespValue{ .array = result };
+    } else {
+        // Single result
+        const node = results.items[0];
+        if (node.* == .string) {
+            return RespValue{ .integer = @intCast(node.string.len) };
+        } else {
+            return RespValue{ .null_bulk_string = {} };
+        }
+    }
+}
+
+test "JSON.STRAPPEND appends to string" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with string field
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"name\":\"Hello\"}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Append to string
+    const append_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.STRAPPEND" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.name" },
+        RespValue{ .bulk_string = " World" },
+    };
+
+    const result = try cmdJsonStrappend(&storage, &append_args, allocator);
+    try std.testing.expectEqual(@as(usize, 11), result.integer); // "Hello World".len
+
+    // Verify the string was modified
+    const get_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.name" },
+    };
+    const get_result = try cmdJsonGet(&storage, &get_args, allocator);
+    defer allocator.free(get_result.bulk_string);
+    try std.testing.expectEqualStrings("\"Hello World\"", get_result.bulk_string);
+}
+
+test "JSON.STRAPPEND on non-string returns error" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with numeric field
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"count\":10}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Try to append to number
+    const append_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.STRAPPEND" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.count" },
+        RespValue{ .bulk_string = "test" },
+    };
+
+    const result = try cmdJsonStrappend(&storage, &append_args, allocator);
+    try std.testing.expect(result == .error_string);
+}
+
+test "JSON.STRLEN returns string length" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with string field
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"name\":\"Hello\"}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Get string length
+    const strlen_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.STRLEN" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.name" },
+    };
+
+    const result = try cmdJsonStrlen(&storage, &strlen_args, allocator);
+    try std.testing.expectEqual(@as(usize, 5), result.integer);
+}
+
+test "JSON.STRLEN on non-string returns null" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with numeric field
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"count\":10}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Try to get length of number
+    const strlen_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.STRLEN" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.count" },
+    };
+
+    const result = try cmdJsonStrlen(&storage, &strlen_args, allocator);
+    try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.STRLEN on non-existent key returns null" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    const strlen_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.STRLEN" },
+        RespValue{ .bulk_string = "nonexistent" },
+    };
+
+    const result = try cmdJsonStrlen(&storage, &strlen_args, allocator);
+    try std.testing.expect(result == .null_bulk_string);
+}

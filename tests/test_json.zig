@@ -471,3 +471,155 @@ test "JSON.FORGET - on non-existent key" {
 
     try testing.expectEqualStrings(":0\r\n", response);
 }
+
+test "JSON.STRAPPEND - append to string field" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set document with string field
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nstr01\r\n$1\r\n$\r\n$17\r\n{\"name\":\"Hello\"}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+    try testing.expectEqualStrings("+OK\r\n", set_resp);
+
+    // Append to string
+    const cmd = "*4\r\n$14\r\nJSON.STRAPPEND\r\n$5\r\nstr01\r\n$7\r\n$.name\r\n$6\r\n World\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+    try testing.expectEqualStrings(":11\r\n", response); // "Hello World".len = 11
+
+    // Verify the string was modified
+    const get_cmd = "*3\r\n$8\r\nJSON.GET\r\n$5\r\nstr01\r\n$7\r\n$.name\r\n";
+    const get_resp = try sendCommand(stream, get_cmd);
+    defer freeResponse(get_resp);
+    try testing.expectEqualStrings("$13\r\n\"Hello World\"\r\n", get_resp);
+}
+
+test "JSON.STRAPPEND - implicit root path" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set root string value
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nstr02\r\n$1\r\n$\r\n$7\r\n\"test\"\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+    try testing.expectEqualStrings("+OK\r\n", set_resp);
+
+    // Append with implicit root path (3 args)
+    const cmd = "*3\r\n$14\r\nJSON.STRAPPEND\r\n$5\r\nstr02\r\n$2\r\n42\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+    try testing.expectEqualStrings(":6\r\n", response); // "test42".len = 6
+}
+
+test "JSON.STRAPPEND - on non-string field returns error" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set document with numeric field
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nstr03\r\n$1\r\n$\r\n$12\r\n{\"count\":10}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+
+    // Try to append to number
+    const cmd = "*4\r\n$14\r\nJSON.STRAPPEND\r\n$5\r\nstr03\r\n$8\r\n$.count\r\n$4\r\ntest\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.STRAPPEND - on non-existent key returns error" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*4\r\n$14\r\nJSON.STRAPPEND\r\n$11\r\nnonexistent\r\n$1\r\n$\r\n$4\r\ntest\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.STRAPPEND - wrong arity" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*2\r\n$14\r\nJSON.STRAPPEND\r\n$5\r\nstr04\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.STRLEN - get string length" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set document with string field
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nlen01\r\n$1\r\n$\r\n$17\r\n{\"name\":\"Hello\"}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+
+    // Get string length
+    const cmd = "*3\r\n$11\r\nJSON.STRLEN\r\n$5\r\nlen01\r\n$7\r\n$.name\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings(":5\r\n", response); // "Hello".len = 5
+}
+
+test "JSON.STRLEN - implicit root path" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set root string value
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nlen02\r\n$1\r\n$\r\n$6\r\n\"abc\"\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+
+    // Get length with implicit root path (2 args)
+    const cmd = "*2\r\n$11\r\nJSON.STRLEN\r\n$5\r\nlen02\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings(":3\r\n", response);
+}
+
+test "JSON.STRLEN - on non-string field returns null" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set document with numeric field
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nlen03\r\n$1\r\n$\r\n$12\r\n{\"count\":10}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+
+    // Try to get length of number
+    const cmd = "*3\r\n$11\r\nJSON.STRLEN\r\n$5\r\nlen03\r\n$8\r\n$.count\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "JSON.STRLEN - on non-existent key returns null" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*2\r\n$11\r\nJSON.STRLEN\r\n$11\r\nnonexistent\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "JSON.STRLEN - wrong arity" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*1\r\n$11\r\nJSON.STRLEN\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
