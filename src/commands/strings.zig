@@ -1762,6 +1762,21 @@ pub fn executeCommand(
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.NUMMULTBY")) {
+            const result = try json_cmds.cmdJsonNummultby(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.MSET")) {
+            const result = try json_cmds.cmdJsonMset(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.FORGET")) {
+            const result = try json_cmds.cmdJsonForget(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
         }
         // ACL commands
         else if (std.mem.eql(u8, cmd_upper, "ACL")) {

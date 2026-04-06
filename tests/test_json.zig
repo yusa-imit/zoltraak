@@ -338,3 +338,136 @@ test "JSON.NUMINCRBY - wrong arity" {
 
     try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
 }
+
+test "JSON.NUMMULTBY - multiply numeric value" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set initial document
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nmult1\r\n$1\r\n$\r\n$11\r\n{\"count\":5}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+    try testing.expectEqualStrings("+OK\r\n", set_resp);
+
+    // Multiply by 3
+    const cmd = "*4\r\n$14\r\nJSON.NUMMULTBY\r\n$5\r\nmult1\r\n$7\r\n$.count\r\n$1\r\n3\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings("$2\r\n15\r\n", response);
+}
+
+test "JSON.NUMMULTBY - multiply by negative number" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set initial document
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nmult2\r\n$1\r\n$\r\n$12\r\n{\"count\":10}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+    try testing.expectEqualStrings("+OK\r\n", set_resp);
+
+    // Multiply by -2
+    const cmd = "*4\r\n$14\r\nJSON.NUMMULTBY\r\n$5\r\nmult2\r\n$7\r\n$.count\r\n$2\r\n-2\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings("$3\r\n-20\r\n", response);
+}
+
+test "JSON.NUMMULTBY - on non-numeric value" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set document with string
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$5\r\nmult3\r\n$1\r\n$\r\n$13\r\n{\"name\":\"x\"}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+
+    const cmd = "*4\r\n$14\r\nJSON.NUMMULTBY\r\n$5\r\nmult3\r\n$6\r\n$.name\r\n$1\r\n3\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.NUMMULTBY - wrong arity" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*3\r\n$14\r\nJSON.NUMMULTBY\r\n$5\r\nmult4\r\n$7\r\n$.count\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.MSET - set multiple keys atomically" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // MSET three documents
+    const cmd = "*10\r\n$9\r\nJSON.MSET\r\n$5\r\nmset1\r\n$1\r\n$\r\n$7\r\n{\"a\":1}\r\n$5\r\nmset2\r\n$1\r\n$\r\n$7\r\n{\"b\":2}\r\n$5\r\nmset3\r\n$1\r\n$\r\n$7\r\n{\"c\":3}\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings("+OK\r\n", response);
+
+    // Verify first document
+    const get_cmd1 = "*3\r\n$8\r\nJSON.GET\r\n$5\r\nmset1\r\n$3\r\n$.a\r\n";
+    const get_resp1 = try sendCommand(stream, get_cmd1);
+    defer freeResponse(get_resp1);
+    try testing.expectEqualStrings("$1\r\n1\r\n", get_resp1);
+
+    // Verify second document
+    const get_cmd2 = "*3\r\n$8\r\nJSON.GET\r\n$5\r\nmset2\r\n$3\r\n$.b\r\n";
+    const get_resp2 = try sendCommand(stream, get_cmd2);
+    defer freeResponse(get_resp2);
+    try testing.expectEqualStrings("$1\r\n2\r\n", get_resp2);
+}
+
+test "JSON.MSET - wrong arity (not triplets)" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Only 2 args after command (need triplets)
+    const cmd = "*3\r\n$9\r\nJSON.MSET\r\n$5\r\nmset4\r\n$1\r\n$\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.FORGET - alias for JSON.DEL" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Set document
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$4\r\nfgt1\r\n$1\r\n$\r\n$7\r\n{\"a\":1}\r\n";
+    const set_resp = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_resp);
+
+    // Use FORGET to delete
+    const cmd = "*2\r\n$11\r\nJSON.FORGET\r\n$4\r\nfgt1\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings(":1\r\n", response);
+
+    // Verify key is gone
+    const get_cmd = "*2\r\n$8\r\nJSON.GET\r\n$4\r\nfgt1\r\n";
+    const get_resp = try sendCommand(stream, get_cmd);
+    defer freeResponse(get_resp);
+    try testing.expectEqualStrings("$-1\r\n", get_resp);
+}
+
+test "JSON.FORGET - on non-existent key" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*2\r\n$11\r\nJSON.FORGET\r\n$11\r\nnonexistent\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expectEqualStrings(":0\r\n", response);
+}

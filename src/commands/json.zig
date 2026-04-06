@@ -795,6 +795,181 @@ pub fn cmdJsonNumincrby(
     return RespValue{ .bulk_string = owned };
 }
 
+/// JSON.NUMMULTBY key path value
+/// Multiplies a numeric value at the specified path
+pub fn cmdJsonNummultby(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len != 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.nummultby' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    const multiplier_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid multiplier value" },
+    };
+
+    // Parse multiplier value
+    const multiplier = std.fmt.parseFloat(f64, multiplier_str) catch {
+        return RespValue{ .error_string = "ERR multiplier value is not a number" };
+    };
+
+    // Check if key exists
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    };
+
+    // Check if value is JSON
+    if (entry.* != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target node
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        return RespValue{ .error_string = "ERR path does not exist" };
+    }
+
+    // For now, only support multiplying a single value (first result)
+    const target_node = results.items[0];
+    if (target_node.* != .number) {
+        return RespValue{ .error_string = "ERR path value is not a number" };
+    }
+
+    // Multiply the number
+    target_node.number *= multiplier;
+
+    // Return the new value as a string
+    var buf: [32]u8 = undefined;
+    const result_str = try std.fmt.bufPrint(&buf, "{d}", .{target_node.number});
+    const owned = try allocator.dupe(u8, result_str);
+    return RespValue{ .bulk_string = owned };
+}
+
+/// JSON.MSET key1 path1 value1 [key2 path2 value2 ...]
+/// Sets multiple JSON values atomically
+pub fn cmdJsonMset(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    // Need at least command + 3 args (key path value), and must be in triplets
+    if (args.len < 4 or (args.len - 1) % 3 != 0) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.mset' command" };
+    }
+
+    const num_sets = (args.len - 1) / 3;
+
+    // First pass: validate all arguments and parse all JSON documents
+    var parsed_docs = try allocator.alloc(Value.JsonValue, num_sets);
+    defer {
+        for (parsed_docs) |*doc| {
+            doc.deinit(allocator);
+        }
+        allocator.free(parsed_docs);
+    }
+
+    var keys = try allocator.alloc([]const u8, num_sets);
+    defer allocator.free(keys);
+
+    var paths = try allocator.alloc([]const u8, num_sets);
+    defer allocator.free(paths);
+
+    for (0..num_sets) |i| {
+        const arg_idx = 1 + i * 3;
+
+        // Extract key
+        keys[i] = switch (args[arg_idx]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid key" },
+        };
+
+        // Extract path
+        paths[i] = switch (args[arg_idx + 1]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid path" },
+        };
+
+        // Parse path to check if it's root
+        var path = JsonPath.parse(allocator, paths[i]) catch {
+            return RespValue{ .error_string = "ERR invalid path syntax" };
+        };
+        defer path.deinit(allocator);
+
+        if (!path.canCreate()) {
+            return RespValue{ .error_string = "ERR new objects must be created at the root" };
+        }
+
+        // Extract and parse JSON value
+        const json_str = switch (args[arg_idx + 2]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid JSON value" },
+        };
+
+        parsed_docs[i] = Value.JsonValue.parse(allocator, json_str) catch {
+            return RespValue{ .error_string = "ERR invalid JSON syntax" };
+        };
+    }
+
+    // Second pass: atomically set all values
+    for (0..num_sets) |i| {
+        // Clone the parsed document for storage
+        const cloned = try parsed_docs[i].clone(allocator);
+        errdefer cloned.deinit(allocator);
+
+        // Check if key exists
+        if (storage.data.getPtr(keys[i])) |entry| {
+            // Key exists - replace if it's JSON, error if wrong type
+            if (entry.* != .json) {
+                // Clean up the clone before returning error
+                cloned.deinit(allocator);
+                return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+            }
+
+            // Free old JSON value
+            entry.json.deinit(allocator);
+            entry.* = .{ .json = cloned };
+        } else {
+            // Key doesn't exist - create new entry
+            try storage.data.put(try allocator.dupe(u8, keys[i]), .{ .json = cloned });
+        }
+    }
+
+    return RespValue{ .simple_string = "OK" };
+}
+
+/// JSON.FORGET key [path]
+/// Alias for JSON.DEL - deletes JSON value at path
+pub fn cmdJsonForget(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    // JSON.FORGET is just an alias for JSON.DEL
+    return cmdJsonDel(storage, args, allocator);
+}
+
 test "JSON.MGET with multiple keys" {
     const allocator = std.testing.allocator;
 
@@ -981,4 +1156,162 @@ test "JSON.NUMINCRBY on non-numeric value returns error" {
     const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "not a number") != null);
+}
+
+test "JSON.NUMMULTBY multiplies numeric value" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial document
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"count\":10}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Multiply by 3
+    const mult_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.NUMMULTBY" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.count" },
+        RespValue{ .bulk_string = "3" },
+    };
+
+    const result = try cmdJsonNummultby(&storage, &mult_args, allocator);
+    defer allocator.free(result.bulk_string);
+
+    try std.testing.expectEqualStrings("30", result.bulk_string);
+}
+
+test "JSON.NUMMULTBY with negative multiplier" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial document
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"count\":10}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Multiply by -2
+    const mult_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.NUMMULTBY" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.count" },
+        RespValue{ .bulk_string = "-2" },
+    };
+
+    const result = try cmdJsonNummultby(&storage, &mult_args, allocator);
+    defer allocator.free(result.bulk_string);
+
+    try std.testing.expectEqualStrings("-20", result.bulk_string);
+}
+
+test "JSON.NUMMULTBY on non-numeric value returns error" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with string field
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"name\":\"test\"}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Try to multiply string
+    const mult_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.NUMMULTBY" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$.name" },
+        RespValue{ .bulk_string = "3" },
+    };
+
+    const result = try cmdJsonNummultby(&storage, &mult_args, allocator);
+    try std.testing.expect(result == .error_string);
+}
+
+test "JSON.MSET sets multiple keys atomically" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // MSET three documents
+    const mset_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MSET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+        RespValue{ .bulk_string = "doc2" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"b\":2}" },
+        RespValue{ .bulk_string = "doc3" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"c\":3}" },
+    };
+
+    const result = try cmdJsonMset(&storage, &mset_args, allocator);
+    try std.testing.expect(result == .simple_string);
+    try std.testing.expectEqualStrings("OK", result.simple_string);
+
+    // Verify all three documents exist
+    try std.testing.expect(storage.data.get("doc1") != null);
+    try std.testing.expect(storage.data.get("doc2") != null);
+    try std.testing.expect(storage.data.get("doc3") != null);
+}
+
+test "JSON.MSET with wrong arity returns error" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Only 2 args after command (need triplets)
+    const mset_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MSET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+    };
+
+    const result = try cmdJsonMset(&storage, &mset_args, allocator);
+    try std.testing.expect(result == .error_string);
+}
+
+test "JSON.FORGET deletes key like JSON.DEL" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Use FORGET to delete
+    const forget_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.FORGET" },
+        RespValue{ .bulk_string = "doc1" },
+    };
+
+    const result = try cmdJsonForget(&storage, &forget_args, allocator);
+    try std.testing.expectEqual(@as(usize, 1), result.integer);
+    try std.testing.expect(storage.data.get("doc1") == null);
 }
