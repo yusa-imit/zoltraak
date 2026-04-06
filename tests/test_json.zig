@@ -220,3 +220,121 @@ test "JSON.DEL - wrong arity" {
 
     try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
 }
+
+test "JSON.MGET - retrieve from multiple keys" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET two JSON values
+    _ = try sendCommand(stream, "*4\r\n$8\r\nJSON.SET\r\n$5\r\nmget1\r\n$1\r\n$\r\n$7\r\n{\"a\":1}\r\n");
+    _ = try sendCommand(stream, "*4\r\n$8\r\nJSON.SET\r\n$5\r\nmget2\r\n$1\r\n$\r\n$7\r\n{\"a\":2}\r\n");
+
+    // MGET both keys at path $.a
+    const cmd = "*4\r\n$9\r\nJSON.MGET\r\n$5\r\nmget1\r\n$5\r\nmget2\r\n$3\r\n$.a\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    // Should return array with two values
+    try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\n1\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\n2\r\n") != null);
+}
+
+test "JSON.MGET - with non-existent key returns nil" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET one JSON value
+    _ = try sendCommand(stream, "*4\r\n$8\r\nJSON.SET\r\n$5\r\nmget3\r\n$1\r\n$\r\n$7\r\n{\"a\":1}\r\n");
+
+    // MGET with one existing and one non-existent key
+    const cmd = "*4\r\n$9\r\nJSON.MGET\r\n$5\r\nmget3\r\n$11\r\nnonexistent\r\n$3\r\n$.a\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    // Should return array with one value and one nil
+    try testing.expect(std.mem.startsWith(u8, response, "*2\r\n"));
+    try testing.expect(std.mem.indexOf(u8, response, "$1\r\n1\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "$-1\r\n") != null);
+}
+
+test "JSON.MGET - wrong arity" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*2\r\n$9\r\nJSON.MGET\r\n$5\r\nmget4\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.NUMINCRBY - increment numeric value" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET a JSON document with a number
+    _ = try sendCommand(stream, "*4\r\n$8\r\nJSON.SET\r\n$5\r\nincr1\r\n$1\r\n$\r\n$12\r\n{\"count\":10}\r\n");
+
+    // Increment the count by 5
+    const cmd = "*4\r\n$14\r\nJSON.NUMINCRBY\r\n$5\r\nincr1\r\n$7\r\n$.count\r\n$1\r\n5\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    // Should return bulk string with the new value "15"
+    try testing.expect(std.mem.indexOf(u8, response, "15") != null);
+}
+
+test "JSON.NUMINCRBY - with negative increment" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET a JSON document
+    _ = try sendCommand(stream, "*4\r\n$8\r\nJSON.SET\r\n$5\r\nincr2\r\n$1\r\n$\r\n$12\r\n{\"count\":10}\r\n");
+
+    // Decrement the count by 3
+    const cmd = "*4\r\n$14\r\nJSON.NUMINCRBY\r\n$5\r\nincr2\r\n$7\r\n$.count\r\n$2\r\n-3\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    // Should return bulk string with the new value "7"
+    try testing.expect(std.mem.indexOf(u8, response, "7") != null);
+}
+
+test "JSON.NUMINCRBY - on non-numeric value returns error" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET a JSON document with a string
+    _ = try sendCommand(stream, "*4\r\n$8\r\nJSON.SET\r\n$5\r\nincr3\r\n$1\r\n$\r\n$14\r\n{\"name\":\"test\"}\r\n");
+
+    // Try to increment a string
+    const cmd = "*4\r\n$14\r\nJSON.NUMINCRBY\r\n$5\r\nincr3\r\n$6\r\n$.name\r\n$1\r\n5\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try testing.expect(std.mem.indexOf(u8, response, "not a number") != null);
+}
+
+test "JSON.NUMINCRBY - on non-existent key returns error" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*4\r\n$14\r\nJSON.NUMINCRBY\r\n$11\r\nnonexistent\r\n$7\r\n$.count\r\n$1\r\n5\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "JSON.NUMINCRBY - wrong arity" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*3\r\n$14\r\nJSON.NUMINCRBY\r\n$5\r\nincr4\r\n$7\r\n$.count\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}

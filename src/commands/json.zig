@@ -628,3 +628,357 @@ test "JSON.TYPE on non-existent key returns nil" {
     const result = try cmdJsonType(&storage, &args, allocator);
     try std.testing.expect(result == .null_bulk_string);
 }
+
+/// JSON.MGET key [key ...] path
+/// Gets JSON values from multiple keys at the specified path
+pub fn cmdJsonMget(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.mget' command" };
+    }
+
+    // Last argument is the path
+    const path_str = switch (args[args.len - 1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    // Parse path once
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Build result array
+    var results: std.ArrayList(RespValue) = .{};
+    errdefer {
+        for (results.items) |item| {
+            switch (item) {
+                .bulk_string => |s| allocator.free(s),
+                else => {},
+            }
+        }
+        results.deinit(allocator);
+    }
+
+    // Process each key (all but the last arg)
+    var i: usize = 1;
+    while (i < args.len - 1) : (i += 1) {
+        const key = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => {
+                try results.append(allocator, RespValue{ .null_bulk_string = {} });
+                continue;
+            },
+        };
+
+        // Check if key exists
+        const entry = storage.data.get(key);
+        if (entry == null) {
+            try results.append(allocator, RespValue{ .null_bulk_string = {} });
+            continue;
+        }
+
+        // Check if value is JSON
+        if (entry.? != .json) {
+            try results.append(allocator, RespValue{ .null_bulk_string = {} });
+            continue;
+        }
+
+        // Evaluate path
+        const json_val = &entry.?.json;
+        var path_results = try path.evaluate(json_val.root, allocator);
+        defer path_results.deinit(allocator);
+
+        // Convert results to JSON string
+        if (path_results.items.len == 0) {
+            try results.append(allocator, RespValue{ .null_bulk_string = {} });
+        } else if (path_results.items.len == 1) {
+            // Single result
+            const json_str = try path_results.items[0].stringify(allocator);
+            try results.append(allocator, RespValue{ .bulk_string = json_str });
+        } else {
+            // Multiple results - return as array string
+            var buf: std.ArrayList(u8) = .{};
+            errdefer buf.deinit(allocator);
+
+            try buf.append(allocator, '[');
+            for (path_results.items, 0..) |node, j| {
+                if (j > 0) try buf.append(allocator, ',');
+                const node_str = try node.stringify(allocator);
+                defer allocator.free(node_str);
+                try buf.appendSlice(allocator, node_str);
+            }
+            try buf.append(allocator, ']');
+
+            const result = try buf.toOwnedSlice(allocator);
+            try results.append(allocator, RespValue{ .bulk_string = result });
+        }
+    }
+
+    const result = try results.toOwnedSlice(allocator);
+    return RespValue{ .array = result };
+}
+
+/// JSON.NUMINCRBY key path value
+/// Increments a numeric value at the specified path
+pub fn cmdJsonNumincrby(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len != 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.numincrby' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    const increment_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid increment value" },
+    };
+
+    // Parse increment value
+    const increment = std.fmt.parseFloat(f64, increment_str) catch {
+        return RespValue{ .error_string = "ERR increment value is not a number" };
+    };
+
+    // Check if key exists
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    };
+
+    // Check if value is JSON
+    if (entry.* != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target node
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        return RespValue{ .error_string = "ERR path does not exist" };
+    }
+
+    // For now, only support incrementing a single value (first result)
+    const target_node = results.items[0];
+    if (target_node.* != .number) {
+        return RespValue{ .error_string = "ERR path value is not a number" };
+    }
+
+    // Increment the value
+    target_node.number += increment;
+
+    // Return the new value as a string
+    var buf: [32]u8 = undefined;
+    const result_str = try std.fmt.bufPrint(&buf, "{d}", .{target_node.number});
+    const owned = try allocator.dupe(u8, result_str);
+    return RespValue{ .bulk_string = owned };
+}
+
+test "JSON.MGET with multiple keys" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set multiple JSON documents
+    const set_args1 = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args1, allocator);
+
+    const set_args2 = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc2" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":2}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args2, allocator);
+
+    // MGET both documents
+    const mget_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MGET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "doc2" },
+        RespValue{ .bulk_string = "$.a" },
+    };
+
+    const result = try cmdJsonMget(&storage, &mget_args, allocator);
+    defer {
+        for (result.array) |item| {
+            switch (item) {
+                .bulk_string => |s| allocator.free(s),
+                else => {},
+            }
+        }
+        allocator.free(result.array);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expectEqualStrings("1", result.array[0].bulk_string);
+    try std.testing.expectEqualStrings("2", result.array[1].bulk_string);
+}
+
+test "JSON.MGET with non-existent key returns nil" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set one document
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // MGET with one existing and one non-existent key
+    const mget_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MGET" },
+        RespValue{ .bulk_string = "doc1" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "$.a" },
+    };
+
+    const result = try cmdJsonMget(&storage, &mget_args, allocator);
+    defer {
+        for (result.array) |item| {
+            switch (item) {
+                .bulk_string => |s| allocator.free(s),
+                else => {},
+            }
+        }
+        allocator.free(result.array);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expectEqualStrings("1", result.array[0].bulk_string);
+    try std.testing.expect(result.array[1] == .null_bulk_string);
+}
+
+test "JSON.NUMINCRBY increments numeric value" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a JSON document with a number
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"count\":10}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Increment the count by 5
+    const incr_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.NUMINCRBY" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.count" },
+        RespValue{ .bulk_string = "5" },
+    };
+
+    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
+    defer allocator.free(result.bulk_string);
+
+    // Result should be "15"
+    const new_val = try std.fmt.parseFloat(f64, result.bulk_string);
+    try std.testing.expectEqual(@as(f64, 15.0), new_val);
+
+    // Verify the value was updated in storage
+    const get_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.count" },
+    };
+
+    const get_result = try cmdJsonGet(&storage, &get_args, allocator);
+    defer allocator.free(get_result.bulk_string);
+
+    const stored_val = try std.fmt.parseFloat(f64, get_result.bulk_string);
+    try std.testing.expectEqual(@as(f64, 15.0), stored_val);
+}
+
+test "JSON.NUMINCRBY with negative increment" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a JSON document
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"count\":10}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Decrement the count by 3
+    const incr_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.NUMINCRBY" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.count" },
+        RespValue{ .bulk_string = "-3" },
+    };
+
+    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
+    defer allocator.free(result.bulk_string);
+
+    const new_val = try std.fmt.parseFloat(f64, result.bulk_string);
+    try std.testing.expectEqual(@as(f64, 7.0), new_val);
+}
+
+test "JSON.NUMINCRBY on non-numeric value returns error" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a JSON document with a string
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"name\":\"test\"}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Try to increment a string
+    const incr_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.NUMINCRBY" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.name" },
+        RespValue{ .bulk_string = "5" },
+    };
+
+    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "not a number") != null);
+}
