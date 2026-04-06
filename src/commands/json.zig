@@ -915,7 +915,7 @@ pub fn cmdJsonMset(
         var path = JsonPath.parse(allocator, paths[i]) catch {
             return RespValue{ .error_string = "ERR invalid path syntax" };
         };
-        defer path.deinit(allocator);
+        defer path.deinit();
 
         if (!path.canCreate()) {
             return RespValue{ .error_string = "ERR new objects must be created at the root" };
@@ -927,23 +927,37 @@ pub fn cmdJsonMset(
             else => return RespValue{ .error_string = "ERR invalid JSON value" },
         };
 
-        parsed_docs[i] = Value.JsonValue.parse(allocator, json_str) catch {
+        const node = JsonNode.parse(allocator, json_str) catch {
             return RespValue{ .error_string = "ERR invalid JSON syntax" };
+        };
+        parsed_docs[i] = Value.JsonValue{
+            .root = node,
+            .expires_at = null,
+            .allocator = allocator,
         };
     }
 
     // Second pass: atomically set all values
     for (0..num_sets) |i| {
         // Clone the parsed document for storage
-        const cloned = try parsed_docs[i].clone(allocator);
-        errdefer cloned.deinit(allocator);
+        const cloned_root = try parsed_docs[i].root.clone(allocator);
+        const cloned = Value.JsonValue{
+            .root = cloned_root,
+            .expires_at = null,
+            .allocator = allocator,
+        };
+        errdefer {
+            cloned_root.deinit(allocator);
+            allocator.destroy(cloned_root);
+        }
 
         // Check if key exists
         if (storage.data.getPtr(keys[i])) |entry| {
             // Key exists - replace if it's JSON, error if wrong type
             if (entry.* != .json) {
                 // Clean up the clone before returning error
-                cloned.deinit(allocator);
+                cloned_root.deinit(allocator);
+                allocator.destroy(cloned_root);
                 return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
             }
 
