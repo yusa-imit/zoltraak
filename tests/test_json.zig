@@ -623,3 +623,134 @@ test "JSON.STRLEN - wrong arity" {
 
     try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
 }
+
+test "JSON.TOGGLE - single boolean" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET document with boolean
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$4\r\ntest\r\n$1\r\n$\r\n$15\r\n{\"active\":true}\r\n";
+    const set_response = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // TOGGLE the boolean
+    const toggle_cmd = "*3\r\n$11\r\nJSON.TOGGLE\r\n$4\r\ntest\r\n$8\r\n$.active\r\n";
+    const toggle_response = try sendCommand(stream, toggle_cmd);
+    defer freeResponse(toggle_response);
+    try testing.expectEqualStrings(":0\r\n", toggle_response);
+
+    // Verify it's now false
+    const get_cmd = "*3\r\n$8\r\nJSON.GET\r\n$4\r\ntest\r\n$8\r\n$.active\r\n";
+    const get_response = try sendCommand(stream, get_cmd);
+    defer freeResponse(get_response);
+    try testing.expectEqualStrings("$7\r\n[false]\r\n", get_response);
+}
+
+test "JSON.TOGGLE - multiple booleans with wildcard" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET document with multiple booleans
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$4\r\ntest\r\n$1\r\n$\r\n$31\r\n{\"a\":true,\"b\":false,\"c\":true}\r\n";
+    const set_response = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // TOGGLE all booleans
+    const toggle_cmd = "*3\r\n$11\r\nJSON.TOGGLE\r\n$4\r\ntest\r\n$3\r\n$.*\r\n";
+    const toggle_response = try sendCommand(stream, toggle_cmd);
+    defer freeResponse(toggle_response);
+    // Returns array: [0, 1, 0] (true->false, false->true, true->false)
+    try testing.expectEqualStrings("*3\r\n:0\r\n:1\r\n:0\r\n", toggle_response);
+}
+
+test "JSON.TOGGLE - non-boolean returns null" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET document with mixed types
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$4\r\ntest\r\n$1\r\n$\r\n$35\r\n{\"a\":true,\"b\":123,\"c\":\"text\"}\r\n";
+    const set_response = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // TOGGLE all fields
+    const toggle_cmd = "*3\r\n$11\r\nJSON.TOGGLE\r\n$4\r\ntest\r\n$3\r\n$.*\r\n";
+    const toggle_response = try sendCommand(stream, toggle_cmd);
+    defer freeResponse(toggle_response);
+    // Returns: [0, null, null]
+    try testing.expectEqualStrings("*3\r\n:0\r\n$-1\r\n$-1\r\n", toggle_response);
+}
+
+test "JSON.TOGGLE - root boolean with implicit path" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET root as boolean
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$4\r\ntest\r\n$1\r\n$\r\n$4\r\ntrue\r\n";
+    const set_response = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // TOGGLE without path (implicit $)
+    const toggle_cmd = "*2\r\n$11\r\nJSON.TOGGLE\r\n$4\r\ntest\r\n";
+    const toggle_response = try sendCommand(stream, toggle_cmd);
+    defer freeResponse(toggle_response);
+    try testing.expectEqualStrings(":0\r\n", toggle_response);
+}
+
+test "JSON.TOGGLE - non-existent key returns null" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const cmd = "*3\r\n$11\r\nJSON.TOGGLE\r\n$11\r\nnonexistent\r\n$1\r\n$\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+    try testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "JSON.TOGGLE - no matches returns empty array" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET document
+    const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$4\r\ntest\r\n$1\r\n$\r\n$7\r\n{\"x\":1}\r\n";
+    const set_response = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // TOGGLE non-existent path
+    const toggle_cmd = "*3\r\n$11\r\nJSON.TOGGLE\r\n$4\r\ntest\r\n$12\r\n$.nonexistent\r\n";
+    const toggle_response = try sendCommand(stream, toggle_cmd);
+    defer freeResponse(toggle_response);
+    try testing.expectEqualStrings("*0\r\n", toggle_response);
+}
+
+test "JSON.TOGGLE - wrong type key" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // SET a string key
+    const set_cmd = "*3\r\n$3\r\nSET\r\n$4\r\ntest\r\n$5\r\nvalue\r\n";
+    const set_response = try sendCommand(stream, set_cmd);
+    defer freeResponse(set_response);
+    try testing.expectEqualStrings("+OK\r\n", set_response);
+
+    // Try TOGGLE on string key
+    const toggle_cmd = "*3\r\n$11\r\nJSON.TOGGLE\r\n$4\r\ntest\r\n$1\r\n$\r\n";
+    const toggle_response = try sendCommand(stream, toggle_cmd);
+    defer freeResponse(toggle_response);
+    try testing.expect(std.mem.startsWith(u8, toggle_response, "-WRONGTYPE"));
+}
+
+test "JSON.TOGGLE - wrong arity" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    // Too few args
+    const cmd = "*1\r\n$11\r\nJSON.TOGGLE\r\n";
+    const response = try sendCommand(stream, cmd);
+    defer freeResponse(response);
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}

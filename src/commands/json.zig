@@ -1473,6 +1473,86 @@ pub fn cmdJsonStrlen(
     }
 }
 
+/// JSON.TOGGLE key [path]
+/// Toggles a boolean value at the specified path
+/// Returns array of integers (0/1) for JSONPath, single integer for legacy path
+/// Returns null for non-boolean values
+pub fn cmdJsonToggle(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.toggle' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // If 2 args: key (implicit root path "$")
+    // If 3 args: key path
+    const path_str = if (args.len == 2) "$" else switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    // Check if key exists
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .null_bulk_string = {} };
+    };
+
+    // Check if value is JSON
+    if (entry.* != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target nodes
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        // No matches - return empty array for JSONPath
+        return RespValue{ .array = &[_]RespValue{} };
+    }
+
+    // Toggle all boolean values and collect results
+    var arr: std.ArrayList(RespValue) = .{};
+    errdefer arr.deinit(allocator);
+
+    for (results.items) |node| {
+        if (node.* == .bool) {
+            // Toggle boolean value in-place
+            node.bool = !node.bool;
+            const new_val: i64 = if (node.bool) 1 else 0;
+            try arr.append(allocator, RespValue{ .integer = new_val });
+        } else {
+            // Non-boolean value - return null
+            try arr.append(allocator, RespValue{ .null_bulk_string = {} });
+        }
+    }
+
+    // Return array if multiple results, otherwise single value for legacy path
+    if (results.items.len == 1) {
+        // Single result - return the first element directly
+        const result_val = arr.items[0];
+        arr.deinit(allocator);
+        return result_val;
+    } else {
+        // Multiple results - return array
+        const result = try arr.toOwnedSlice(allocator);
+        return RespValue{ .array = result };
+    }
+}
+
 test "JSON.STRAPPEND appends to string" {
     const allocator = std.testing.allocator;
 
@@ -1602,4 +1682,225 @@ test "JSON.STRLEN on non-existent key returns null" {
 
     const result = try cmdJsonStrlen(&storage, &strlen_args, allocator);
     try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.TOGGLE toggles single boolean" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with boolean field
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"active\":true}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Toggle the boolean
+    const toggle_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.active" },
+    };
+
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+
+    // Verify document was modified
+    const get_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.active" },
+    };
+
+    const get_result = try cmdJsonGet(&storage, &get_args, allocator);
+    defer protocol.deinitRespValue(&get_result, allocator);
+
+    try std.testing.expect(get_result == .bulk_string);
+    try std.testing.expectEqualStrings("[false]", get_result.bulk_string);
+}
+
+test "JSON.TOGGLE toggles multiple booleans" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with multiple boolean fields
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":true,\"b\":false,\"c\":true}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Toggle all booleans with wildcard
+    const toggle_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.*" },
+    };
+
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    defer protocol.deinitRespValue(&result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+
+    // Check each toggled value
+    try std.testing.expectEqual(@as(i64, 0), result.array[0].integer); // true -> false (0)
+    try std.testing.expectEqual(@as(i64, 1), result.array[1].integer); // false -> true (1)
+    try std.testing.expectEqual(@as(i64, 0), result.array[2].integer); // true -> false (0)
+}
+
+test "JSON.TOGGLE on non-boolean returns null" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document with mixed types
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":true,\"b\":123,\"c\":\"text\"}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Toggle all fields
+    const toggle_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.*" },
+    };
+
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    defer protocol.deinitRespValue(&result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+
+    // a is boolean - toggled to false (0)
+    try std.testing.expectEqual(@as(i64, 0), result.array[0].integer);
+
+    // b is number - returns null
+    try std.testing.expect(result.array[1] == .null_bulk_string);
+
+    // c is string - returns null
+    try std.testing.expect(result.array[2] == .null_bulk_string);
+}
+
+test "JSON.TOGGLE on non-existent key returns null" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    const toggle_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "$" },
+    };
+
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.TOGGLE with no matches returns empty array" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set document
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"x\":1}" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Toggle non-existent path
+    const toggle_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.nonexistent" },
+    };
+
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
+}
+
+test "JSON.TOGGLE on root boolean" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set root as boolean
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "true" },
+    };
+    _ = try cmdJsonSet(&storage, &set_args, allocator);
+
+    // Toggle root (implicit $)
+    const toggle_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "doc" },
+    };
+
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+
+    // Verify toggled to false
+    const get_args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+    };
+
+    const get_result = try cmdJsonGet(&storage, &get_args, allocator);
+    defer protocol.deinitRespValue(&get_result, allocator);
+
+    try std.testing.expect(get_result == .bulk_string);
+    try std.testing.expectEqualStrings("false", get_result.bulk_string);
+}
+
+test "JSON.TOGGLE validates arity" {
+    const allocator = std.testing.allocator;
+
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    // Too few args
+    const too_few = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+    };
+
+    const result1 = try cmdJsonToggle(&storage, &too_few, allocator);
+    try std.testing.expect(result1 == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result1.error_string, "wrong number of arguments") != null);
+
+    // Too many args
+    const too_many = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.TOGGLE" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "extra" },
+    };
+
+    const result2 = try cmdJsonToggle(&storage, &too_many, allocator);
+    try std.testing.expect(result2 == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result2.error_string, "wrong number of arguments") != null);
 }
