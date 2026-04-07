@@ -1553,6 +1553,137 @@ pub fn cmdJsonToggle(
     }
 }
 
+/// JSON.CLEAR key [path]
+/// Clears values at the specified path
+/// Objects and arrays are emptied, numbers are set to 0
+/// Strings, booleans, and null are left unchanged
+pub fn cmdJsonClear(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.clear' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // If 2 args: key (implicit root path "$")
+    // If 3 args: key path
+    const path_str = if (args.len == 2) "$" else switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    // Check if key exists
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .null_bulk_string = {} };
+    };
+
+    // Check if value is JSON
+    if (entry.* != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target nodes
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        // No matches - return 0
+        return RespValue{ .integer = 0 };
+    }
+
+    // Clear all matching values and count modifications
+    var count: i64 = 0;
+    for (results.items) |node| {
+        const modified = clearNode(node, storage.allocator) catch |err| {
+            std.log.err("Failed to clear JSON node: {}", .{err});
+            return RespValue{ .error_string = "ERR failed to clear JSON value" };
+        };
+        if (modified) {
+            count += 1;
+        }
+    }
+
+    return RespValue{ .integer = count };
+}
+
+/// Helper function to clear a JSON node according to Redis semantics.
+///
+/// Clearing behavior by type:
+///   - object: Removes all key-value pairs, resulting in empty object {}
+///   - array: Removes all elements, resulting in empty array []
+///   - number: Sets value to 0.0
+///   - string/bool/null: No modification (returns false)
+///
+/// Arguments:
+///   - node: Pointer to the JsonNode to clear
+///   - allocator: Memory allocator for temporary operations
+///
+/// Returns true if the node was modified, false otherwise.
+/// Returns error if memory allocation fails during clearing.
+fn clearNode(node: *JsonNode, allocator: std.mem.Allocator) !bool {
+    switch (node.*) {
+        .object => |*obj| {
+            if (obj.count() > 0) {
+                // Collect keys to delete (we can't iterate and modify at the same time)
+                var keys_to_delete = try std.ArrayList([]const u8).initCapacity(allocator, obj.count());
+                defer keys_to_delete.deinit(allocator);
+
+                var it = obj.iterator();
+                while (it.next()) |entry| {
+                    try keys_to_delete.append(allocator, entry.key_ptr.*);
+                }
+
+                // Now delete the collected keys
+                for (keys_to_delete.items) |key| {
+                    if (obj.fetchRemove(key)) |kv| {
+                        allocator.free(kv.key);
+                        kv.value.deinit(allocator);
+                        allocator.destroy(kv.value);
+                    }
+                }
+
+                return true;
+            }
+            return false;
+        },
+        .array => |*arr| {
+            if (arr.items.len > 0) {
+                // Clear all elements from the array
+                for (arr.items) |item| {
+                    item.deinit(allocator);
+                    allocator.destroy(item);
+                }
+                arr.clearRetainingCapacity();
+                return true;
+            }
+            return false;
+        },
+        .number => |*n| {
+            if (n.* != 0.0) {
+                // Set number to 0 if not already 0
+                n.* = 0.0;
+                return true;
+            }
+            return false;
+        },
+        // Strings, booleans, and null are not cleared
+        .string, .bool, .null => return false,
+    }
+}
+
 test "JSON.STRAPPEND appends to string" {
     const allocator = std.testing.allocator;
 

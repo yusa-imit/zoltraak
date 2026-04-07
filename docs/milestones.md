@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 173 (256 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 46%** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 174 (257 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 50%** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 12 (JSON Data Type) — 12/26 commands (46% complete)
+- **Current phase**: Phase 12 (JSON Data Type) — 13/26 commands (50% complete)
 - **Next milestone**: Phase 12 (JSON Data Type) — 26 JSON.* commands
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
@@ -19,7 +19,7 @@
 
 ## Active Milestones
 
-### Phase 12 — JSON Data Type (46% complete) 🚧
+### Phase 12 — JSON Data Type (50% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -28,10 +28,11 @@
 | 171 | JSON.NUMMULTBY, JSON.MSET, JSON.FORGET (numeric multiply, batch write, DEL alias) | Done ✅ |
 | 172 | JSON.STRAPPEND, JSON.STRLEN (string append, string length) | Done ✅ |
 | 173 | JSON.TOGGLE (boolean toggle) | Done ✅ |
+| 174 | JSON.CLEAR (clear containers/numbers) | Done ✅ |
 
-**12/26 Phase 12 commands complete**: JSON.SET, JSON.GET, JSON.DEL, JSON.TYPE, JSON.MGET, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.MSET, JSON.FORGET, JSON.STRAPPEND, JSON.STRLEN, JSON.TOGGLE
+**13/26 Phase 12 commands complete**: JSON.SET, JSON.GET, JSON.DEL, JSON.TYPE, JSON.MGET, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.MSET, JSON.FORGET, JSON.STRAPPEND, JSON.STRLEN, JSON.TOGGLE, JSON.CLEAR
 
-**Remaining (14)**: JSON.CLEAR, JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN, JSON.RESP, JSON.MERGE, JSON.DEBUG, JSON.DEBUG HELP, JSON.DEBUG MEMORY
+**Remaining (13)**: JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN, JSON.RESP, JSON.MERGE, JSON.DEBUG, JSON.DEBUG HELP, JSON.DEBUG MEMORY
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
