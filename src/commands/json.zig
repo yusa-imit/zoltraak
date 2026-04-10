@@ -1619,6 +1619,28 @@ pub fn cmdJsonClear(
     return RespValue{ .integer = count };
 }
 
+/// Helper function to recursively free RespValue memory.
+///
+/// Handles nested arrays and frees all owned strings.
+/// Arguments:
+///   - value: RespValue to deinitialize
+///   - allocator: Allocator that was used to allocate the value
+fn deinitRespValue(value: *const RespValue, allocator: std.mem.Allocator) void {
+    switch (value.*) {
+        .array => |arr| {
+            for (arr) |*item| {
+                deinitRespValue(item, allocator);
+            }
+            // Cast away const for free
+            allocator.free(@constCast(arr));
+        },
+        .bulk_string => |s| allocator.free(@constCast(s)),
+        .simple_string => |s| allocator.free(@constCast(s)),
+        .error_string => |s| allocator.free(@constCast(s)),
+        else => {},
+    }
+}
+
 /// Helper function to clear a JSON node according to Redis semantics.
 ///
 /// Clearing behavior by type:
@@ -2034,4 +2056,343 @@ test "JSON.TOGGLE validates arity" {
     const result2 = try cmdJsonToggle(&storage, &too_many, allocator);
     try std.testing.expect(result2 == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result2.error_string, "wrong number of arguments") != null);
+}
+
+/// JSON.ARRAPPEND key [path] value [value ...]
+/// Append JSON values to an array at path
+/// Returns array of integers (new lengths) for each matching array, or null for non-arrays
+pub fn cmdJsonArrappend(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrappend' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    // All remaining args are values to append (at least one)
+    const values_start = 3;
+    const values_count = args.len - values_start;
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    }
+
+    // Check type
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Parse all values to append
+    var values_to_append = try std.ArrayList(*JsonNode).initCapacity(allocator, values_count);
+    defer {
+        for (values_to_append.items) |v| {
+            v.deinit(allocator);
+            allocator.destroy(v);
+        }
+        values_to_append.deinit(allocator);
+    }
+
+    for (values_start..args.len) |i| {
+        const value_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid JSON value" },
+        };
+
+        const node = JsonNode.parse(allocator, value_str) catch {
+            return RespValue{ .error_string = "ERR invalid JSON string" };
+        };
+        try values_to_append.append(allocator, node);
+    }
+
+    // Get root node
+    const root = &entry.?.json.root;
+
+    // Find nodes matching the path
+    var matched_nodes = try std.ArrayList(*JsonNode).initCapacity(allocator, 8);
+    defer matched_nodes.deinit(allocator);
+
+    try path.findNodes(root.*, &matched_nodes, allocator);
+
+    // If no matches, return empty array
+    if (matched_nodes.items.len == 0) {
+        return RespValue{ .array = &.{} };
+    }
+
+    // Build result array - one integer per matched node
+    var result_array = try std.ArrayList(RespValue).initCapacity(allocator, matched_nodes.items.len);
+    errdefer {
+        for (result_array.items) |*item| {
+            switch (item.*) {
+                .bulk_string => |s| allocator.free(s),
+                else => {},
+            }
+        }
+        result_array.deinit(allocator);
+    }
+
+    for (matched_nodes.items) |node| {
+        switch (node.*) {
+            .array => |*arr| {
+                // Append all values to this array
+                for (values_to_append.items) |value| {
+                    // Clone the value for this array
+                    const cloned = try value.clone(allocator);
+                    errdefer {
+                        cloned.deinit(allocator);
+                        allocator.destroy(cloned);
+                    }
+                    try arr.append(allocator, cloned);
+                }
+
+                // Return the new length
+                const new_len = arr.items.len;
+                try result_array.append(allocator, RespValue{ .integer = @intCast(new_len) });
+            },
+            else => {
+                // Non-array: return null
+                try result_array.append(allocator, RespValue{ .null_bulk_string = {} });
+            },
+        }
+    }
+
+    const owned_result = try result_array.toOwnedSlice(allocator);
+    return RespValue{ .array = owned_result };
+}
+
+test "JSON.ARRAPPEND - append single value to array" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set up initial JSON with array
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"arr\":[1,2,3]}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+    try std.testing.expectEqualStrings("OK", set_result.simple_string);
+
+    // Append value to array
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$.arr" },
+        RespValue{ .bulk_string = "4" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expect(result.array[0] == .integer);
+    try std.testing.expectEqual(@as(i64, 4), result.array[0].integer);
+
+    // Verify the array was modified
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$.arr" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+
+    try std.testing.expect(get_result == .bulk_string);
+    try std.testing.expectEqualStrings("[1,2,3,4]", get_result.bulk_string);
+}
+
+test "JSON.ARRAPPEND - append multiple values" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"arr\":[1]}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Append multiple values
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$.arr" },
+        RespValue{ .bulk_string = "2" },
+        RespValue{ .bulk_string = "3" },
+        RespValue{ .bulk_string = "4" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expectEqual(@as(i64, 4), result.array[0].integer);
+}
+
+test "JSON.ARRAPPEND - non-array returns null" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"num\":42}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Try to append to non-array
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$.num" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expect(result.array[0] == .null_bulk_string);
+}
+
+test "JSON.ARRAPPEND - multiple arrays" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":[1],\"b\":[2]}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Append to all arrays with wildcard
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$.*" },
+        RespValue{ .bulk_string = "99" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expectEqual(@as(i64, 2), result.array[0].integer);
+    try std.testing.expectEqual(@as(i64, 2), result.array[1].integer);
+}
+
+test "JSON.ARRAPPEND - key does not exist" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "key does not exist") != null);
+}
+
+test "JSON.ARRAPPEND - wrong type" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create a non-JSON key
+    const string_val = try storage.allocator.dupe(u8, "not json");
+    try storage.data.put("mykey", Value{ .string = string_val });
+
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "WRONGTYPE") != null);
+}
+
+test "JSON.ARRAPPEND - arity error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const too_few = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "$" },
+    };
+
+    const result = try cmdJsonArrappend(&storage, &too_few, allocator);
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
+}
+
+test "JSON.ARRAPPEND - append complex objects" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"arr\":[]}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Append objects and arrays
+    const args_append = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.ARRAPPEND" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$.arr" },
+        RespValue{ .bulk_string = "{\"name\":\"Alice\"}" },
+        RespValue{ .bulk_string = "[1,2,3]" },
+        RespValue{ .bulk_string = "\"string\"" },
+    };
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expectEqual(@as(i64, 3), result.array[0].integer);
 }
