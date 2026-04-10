@@ -1706,6 +1706,224 @@ fn clearNode(node: *JsonNode, allocator: std.mem.Allocator) !bool {
     }
 }
 
+/// JSON.ARRINDEX key path value [start [stop]]
+/// Finds the index of the first occurrence of value in an array
+pub fn cmdJsonArrindex(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 4 or args.len > 6) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrindex' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    const value_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid value" },
+    };
+
+    // Parse optional start and stop indices
+    var start_idx: i64 = 0;
+    var stop_idx: i64 = 0; // 0 means end
+    if (args.len >= 5) {
+        start_idx = std.fmt.parseInt(i64, switch (args[4]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid start index" },
+        }, 10) catch {
+            return RespValue{ .error_string = "ERR invalid start index" };
+        };
+    }
+    if (args.len >= 6) {
+        stop_idx = std.fmt.parseInt(i64, switch (args[5]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid stop index" },
+        }, 10) catch {
+            return RespValue{ .error_string = "ERR invalid stop index" };
+        };
+    }
+
+    // Check if key exists
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .null_bulk_string = {} };
+    };
+
+    // Check if value is JSON
+    if (entry.* != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Parse value to search for
+    const search_node = JsonNode.parse(allocator, value_str) catch {
+        return RespValue{ .error_string = "ERR invalid JSON value" };
+    };
+    defer {
+        search_node.deinit(allocator);
+        allocator.destroy(search_node);
+    }
+
+    // Evaluate path to find the target arrays
+    const json_val = &entry.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // If single result, check if it's an array
+    if (results.items.len == 1) {
+        if (results.items[0].* != .array) {
+            // Not an array - return null
+            return RespValue{ .null_bulk_string = {} };
+        }
+        const idx = try searchInArray(results.items[0], search_node, start_idx, stop_idx);
+        return RespValue{ .integer = idx };
+    }
+
+    // Multiple results - return array of indices
+    var indices = try allocator.alloc(RespValue, results.items.len);
+    errdefer allocator.free(indices);
+
+    for (results.items, 0..) |node, i| {
+        if (node.* != .array) {
+            // Not an array - return null for this result
+            indices[i] = RespValue{ .null_bulk_string = {} };
+        } else {
+            const idx = try searchInArray(node, search_node, start_idx, stop_idx);
+            indices[i] = RespValue{ .integer = idx };
+        }
+    }
+
+    return RespValue{ .array = indices };
+}
+
+/// Helper function to search for a value in an array
+/// Returns the index of the first occurrence, or -1 if not found or not an array
+/// Arguments:
+///   - node: Pointer to the JsonNode to search in (must be an array)
+///   - search_value: JsonNode value to search for
+///   - start_idx: Starting index (default 0), supports negative indices
+///   - stop_idx: Stopping index (default 0 = end), supports negative indices
+///
+/// Returns the index as i64 (-1 if not found or invalid array)
+fn searchInArray(
+    node: *JsonNode,
+    search_value: *const JsonNode,
+    start_idx: i64,
+    stop_idx: i64,
+) !i64 {
+    // Node must be an array
+    if (node.* != .array) {
+        return -1;
+    }
+
+    const array = &node.array;
+    const len = array.items.len;
+
+    if (len == 0) {
+        return -1;
+    }
+
+    // Normalize start index
+    var start: i64 = start_idx;
+    if (start < 0) {
+        start = @max(0, @as(i64, @intCast(len)) + start);
+    } else {
+        start = @min(start, @as(i64, @intCast(len)));
+    }
+
+    // Normalize stop index (0 means end)
+    var stop: i64 = @as(i64, @intCast(len));
+    if (stop_idx != 0) {
+        stop = stop_idx;
+        if (stop < 0) {
+            stop = @max(0, @as(i64, @intCast(len)) + stop);
+        } else {
+            stop = @min(stop, @as(i64, @intCast(len)));
+        }
+    }
+
+    // Check for invalid range
+    if (start >= stop) {
+        return -1;
+    }
+
+    // Search for the value
+    var i: i64 = start;
+    while (i < stop) : (i += 1) {
+        const idx = @as(usize, @intCast(i));
+        if (idx >= len) break;
+
+        if (jsonNodeEquals(array.items[idx], search_value)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+/// Helper function to compare two JsonNode values for equality
+/// Type-sensitive: number ≠ string, etc.
+/// Handles numeric equality: 2 == 2.0
+fn jsonNodeEquals(a: *const JsonNode, b: *const JsonNode) bool {
+    switch (a.*) {
+        .null => return b.* == .null,
+        .bool => |a_bool| {
+            if (b.* == .bool) {
+                return a_bool == b.bool;
+            }
+            return false;
+        },
+        .number => |a_num| {
+            if (b.* == .number) {
+                // Numeric comparison (handle 2 == 2.0)
+                return std.math.approxEqAbs(f64, a_num, b.number, 1e-10);
+            }
+            return false;
+        },
+        .string => |a_str| {
+            if (b.* == .string) {
+                return std.mem.eql(u8, a_str, b.string);
+            }
+            return false;
+        },
+        .array => |a_arr| {
+            if (b.* != .array) return false;
+            if (a_arr.items.len != b.array.items.len) return false;
+            for (a_arr.items, b.array.items) |a_item, b_item| {
+                if (!jsonNodeEquals(a_item, b_item)) return false;
+            }
+            return true;
+        },
+        .object => |a_obj| {
+            if (b.* != .object) return false;
+            if (a_obj.count() != b.object.count()) return false;
+            var it = a_obj.iterator();
+            while (it.next()) |entry| {
+                const b_val = b.object.get(entry.key_ptr.*) orelse return false;
+                if (!jsonNodeEquals(entry.value_ptr.*, b_val)) return false;
+            }
+            return true;
+        },
+    }
+}
+
 test "JSON.STRAPPEND appends to string" {
     const allocator = std.testing.allocator;
 
@@ -2123,22 +2341,18 @@ pub fn cmdJsonArrappend(
         try values_to_append.append(allocator, node);
     }
 
-    // Get root node
-    const root = &entry.?.json.root;
-
-    // Find nodes matching the path
-    var matched_nodes = try std.ArrayList(*JsonNode).initCapacity(allocator, 8);
-    defer matched_nodes.deinit(allocator);
-
-    try path.findNodes(root.*, &matched_nodes, allocator);
+    // Evaluate path to find the target arrays
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
 
     // If no matches, return empty array
-    if (matched_nodes.items.len == 0) {
+    if (results.items.len == 0) {
         return RespValue{ .array = &.{} };
     }
 
     // Build result array - one integer per matched node
-    var result_array = try std.ArrayList(RespValue).initCapacity(allocator, matched_nodes.items.len);
+    var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
     errdefer {
         for (result_array.items) |*item| {
             switch (item.*) {
@@ -2149,7 +2363,7 @@ pub fn cmdJsonArrappend(
         result_array.deinit(allocator);
     }
 
-    for (matched_nodes.items) |node| {
+    for (results.items) |node| {
         switch (node.*) {
             .array => |*arr| {
                 // Append all values to this array
