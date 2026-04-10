@@ -2399,6 +2399,158 @@ pub fn cmdJsonArrappend(
     return RespValue{ .array = owned_result };
 }
 
+/// JSON.ARRINSERT key path index value [value ...]
+/// Inserts one or more JSON values into an array at a specified index
+/// Index can be negative (count from end): -1 = before last element
+/// Returns: array of integers (new lengths) or nulls for each matched path
+pub fn cmdJsonArrinsert(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    // Minimum: JSON.ARRINSERT key path index value
+    if (args.len < 5) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrinsert' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    const index_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid index" },
+    };
+
+    // Parse index
+    const index = std.fmt.parseInt(i64, index_str, 10) catch {
+        return RespValue{ .error_string = "ERR index must be an integer" };
+    };
+
+    // All remaining args are values to insert (at least one)
+    const values_start = 4;
+    const values_count = args.len - values_start;
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    }
+
+    // Check type
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Parse all values to insert
+    var values_to_insert = try std.ArrayList(*JsonNode).initCapacity(allocator, values_count);
+    defer {
+        for (values_to_insert.items) |v| {
+            v.deinit(allocator);
+            allocator.destroy(v);
+        }
+        values_to_insert.deinit(allocator);
+    }
+
+    for (values_start..args.len) |i| {
+        const value_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid JSON value" },
+        };
+
+        const node = JsonNode.parse(allocator, value_str) catch {
+            return RespValue{ .error_string = "ERR invalid JSON string" };
+        };
+        try values_to_insert.append(allocator, node);
+    }
+
+    // Evaluate path to find the target arrays
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    // If no matches, return empty array
+    if (results.items.len == 0) {
+        return RespValue{ .array = &.{} };
+    }
+
+    // Build result array - one integer per matched node
+    var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
+    errdefer {
+        for (result_array.items) |*item| {
+            switch (item.*) {
+                .bulk_string => |s| allocator.free(s),
+                else => {},
+            }
+        }
+        result_array.deinit(allocator);
+    }
+
+    for (results.items) |node| {
+        switch (node.*) {
+            .array => |*arr| {
+                // Normalize index
+                const array_len = @as(i64, @intCast(arr.items.len));
+                var normalized_idx: i64 = undefined;
+
+                if (index < 0) {
+                    // Negative index: count from end
+                    normalized_idx = array_len + index + 1;
+                } else {
+                    normalized_idx = index;
+                }
+
+                // Check bounds: -(len+1) <= index <= len
+                if (normalized_idx < 0 or normalized_idx > array_len) {
+                    try result_array.append(allocator, RespValue{ .error_string = "ERR index out of range" });
+                    continue;
+                }
+
+                const uindex = @as(usize, @intCast(normalized_idx));
+
+                // Clone all values for this array
+                var cloned_values = try std.ArrayList(*JsonNode).initCapacity(allocator, values_count);
+                defer cloned_values.deinit(allocator);
+
+                for (values_to_insert.items) |value| {
+                    const cloned = try value.clone(allocator);
+                    errdefer {
+                        cloned.deinit(allocator);
+                        allocator.destroy(cloned);
+                    }
+                    try cloned_values.append(allocator, cloned);
+                }
+
+                // Insert all cloned values at once
+                try arr.insertSlice(allocator, uindex, cloned_values.items);
+
+                // Return the new length
+                const new_len = arr.items.len;
+                try result_array.append(allocator, RespValue{ .integer = @intCast(new_len) });
+            },
+            else => {
+                // Non-array: return null
+                try result_array.append(allocator, RespValue{ .null_bulk_string = {} });
+            },
+        }
+    }
+
+    const owned_result = try result_array.toOwnedSlice(allocator);
+    return RespValue{ .array = owned_result };
+}
+
 test "JSON.ARRAPPEND - append single value to array" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
