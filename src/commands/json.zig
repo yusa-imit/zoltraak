@@ -2403,6 +2403,30 @@ pub fn cmdJsonArrappend(
 /// Inserts one or more JSON values into an array at a specified index
 /// Index can be negative (count from end): -1 = before last element
 /// Returns: array of integers (new lengths) or nulls for each matched path
+/// Handles the JSON.ARRINSERT command to insert values into a JSON array at a specified index.
+///
+/// Syntax: JSON.ARRINSERT key path index value [value ...]
+///
+/// Inserts one or more JSON values into the array at the specified index.
+/// Negative indices are supported (count from the end).
+///
+/// Arguments:
+///   - storage: Storage instance
+///   - args: Command arguments [command, key, path, index, value1, value2, ...]
+///   - allocator: Memory allocator
+///
+/// Returns:
+///   - Array of integers (new lengths for each matched array)
+///   - Array containing null for non-array targets
+///   - Error for out-of-bounds indices
+///
+/// Errors:
+///   - ERR wrong number of arguments: fewer than 5 args
+///   - ERR key does not exist: key not found
+///   - WRONGTYPE: key exists but is not JSON type
+///   - ERR invalid path syntax: malformed JSONPath
+///   - ERR index must be an integer: non-numeric index
+///   - ERR index out of range: index < -(len+1) or index > len
 pub fn cmdJsonArrinsert(
     storage: *Storage,
     args: []const RespValue,
@@ -2434,6 +2458,7 @@ pub fn cmdJsonArrinsert(
     };
 
     // All remaining args are values to insert (at least one)
+    // Arguments: [0]=command, [1]=key, [2]=path, [3]=index, [4..]=values
     const values_start = 4;
     const values_count = args.len - values_start;
 
@@ -2473,6 +2498,10 @@ pub fn cmdJsonArrinsert(
         const node = JsonNode.parse(allocator, value_str) catch {
             return RespValue{ .error_string = "ERR invalid JSON string" };
         };
+        errdefer {
+            node.deinit(allocator);
+            allocator.destroy(node);
+        }
         try values_to_insert.append(allocator, node);
     }
 
