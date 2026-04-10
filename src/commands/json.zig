@@ -2580,6 +2580,99 @@ pub fn cmdJsonArrinsert(
     return RespValue{ .array = owned_result };
 }
 
+/// JSON.ARRLEN key [path]
+/// Returns the length of the JSON array at the specified path
+///
+/// Returns:
+///   - Integer: length of array for single path
+///   - Array of integers/nulls: for wildcard paths
+///   - Null: for non-array types or non-existent paths
+///   - Error: for non-existent keys
+pub fn cmdJsonArrlen(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    // Arity: JSON.ARRLEN key [path]
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrlen' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Default path is root ($)
+    const path_str = if (args.len >= 3) switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    } else "$";
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    }
+
+    // Check type
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target arrays
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    // If no matches, return null for single path, empty array for wildcards
+    if (results.items.len == 0) {
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Check if this is a single result (root or specific path) or multiple (wildcard)
+    if (results.items.len == 1) {
+        // Single result - return integer or null directly
+        const node = results.items[0];
+        switch (node.*) {
+            .array => |arr| {
+                const len: i64 = @intCast(arr.items.len);
+                return RespValue{ .integer = len };
+            },
+            else => {
+                // Non-array: return null
+                return RespValue{ .null_bulk_string = {} };
+            },
+        }
+    } else {
+        // Multiple results - return array of integers/nulls
+        var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
+        errdefer result_array.deinit(allocator);
+
+        for (results.items) |node| {
+            switch (node.*) {
+                .array => |arr| {
+                    const len: i64 = @intCast(arr.items.len);
+                    try result_array.append(allocator, RespValue{ .integer = len });
+                },
+                else => {
+                    // Non-array: append null
+                    try result_array.append(allocator, RespValue{ .null_bulk_string = {} });
+                },
+            }
+        }
+
+        const owned_result = try result_array.toOwnedSlice(allocator);
+        return RespValue{ .array = owned_result };
+    }
+}
+
 test "JSON.ARRAPPEND - append single value to array" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
