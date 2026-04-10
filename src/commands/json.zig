@@ -1792,7 +1792,7 @@ pub fn cmdJsonArrindex(
             // Not an array - return null
             return RespValue{ .null_bulk_string = {} };
         }
-        const idx = try searchInArray(results.items[0], search_node, start_idx, stop_idx);
+        const idx = searchInArray(results.items[0], search_node, start_idx, stop_idx);
         return RespValue{ .integer = idx };
     }
 
@@ -1805,7 +1805,7 @@ pub fn cmdJsonArrindex(
             // Not an array - return null for this result
             indices[i] = RespValue{ .null_bulk_string = {} };
         } else {
-            const idx = try searchInArray(node, search_node, start_idx, stop_idx);
+            const idx = searchInArray(node, search_node, start_idx, stop_idx);
             indices[i] = RespValue{ .integer = idx };
         }
     }
@@ -1827,7 +1827,7 @@ fn searchInArray(
     search_value: *const JsonNode,
     start_idx: i64,
     stop_idx: i64,
-) !i64 {
+) i64 {
     // Node must be an array
     if (node.* != .array) {
         return -1;
@@ -1878,9 +1878,16 @@ fn searchInArray(
     return -1;
 }
 
-/// Helper function to compare two JsonNode values for equality
-/// Type-sensitive: number ≠ string, etc.
-/// Handles numeric equality: 2 == 2.0
+/// Compares two JsonNode values for deep equality.
+///
+/// Performs type-sensitive comparison:
+/// - Primitives: Direct value comparison
+/// - Numbers: Approximate equality (handles 2 == 2.0)
+/// - Strings: Byte-wise comparison
+/// - Arrays: Element-wise recursive comparison
+/// - Objects: Key-value recursive comparison
+///
+/// Returns true if nodes are structurally and semantically equal.
 fn jsonNodeEquals(a: *const JsonNode, b: *const JsonNode) bool {
     switch (a.*) {
         .null => return b.* == .null,
