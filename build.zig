@@ -443,6 +443,17 @@ pub fn build(b: *std.Build) void {
     const run_json_arrpop_tests = b.addRunArtifact(json_arrpop_tests);
     integration_test_step.dependOn(&run_json_arrpop_tests.step);
 
+    // JSON.ARRTRIM integration tests (Iteration 179)
+    const json_arrtrim_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_json_arrtrim.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_json_arrtrim_tests = b.addRunArtifact(json_arrtrim_tests);
+    integration_test_step.dependOn(&run_json_arrtrim_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{

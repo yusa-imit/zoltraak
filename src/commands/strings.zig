@@ -1822,6 +1822,11 @@ pub fn executeCommand(
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.ARRTRIM")) {
+            const result = try json_cmds.cmdJsonArrtrim(storage, array, allocator);
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            break :blk try w.writeRespValue(result);
         }
         // ACL commands
         else if (std.mem.eql(u8, cmd_upper, "ACL")) {

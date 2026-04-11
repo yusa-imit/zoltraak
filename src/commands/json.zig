@@ -2869,6 +2869,173 @@ pub fn cmdJsonArrpop(
     }
 }
 
+/// JSON.ARRTRIM key path start stop
+/// Trims an array at path to contain only elements within the inclusive range [start, stop].
+/// Supports negative indices (e.g., -1 = last element, -2 = second-to-last).
+/// Out-of-bounds indices are clamped: negative overflow → 0, positive overflow → len-1.
+/// If start > stop after normalization, array becomes empty.
+/// Returns the new array length for single path, array of lengths/nulls for wildcards.
+/// Non-arrays return null.
+pub fn cmdJsonArrtrim(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    // Arity: JSON.ARRTRIM key path start stop
+    if (args.len != 5) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrtrim' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    // Parse start index
+    const start_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid start index" },
+    };
+    const start = std.fmt.parseInt(i64, start_str, 10) catch {
+        return RespValue{ .error_string = "ERR start index must be an integer" };
+    };
+
+    // Parse stop index
+    const stop_str = switch (args[4]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid stop index" },
+    };
+    const stop = std.fmt.parseInt(i64, stop_str, 10) catch {
+        return RespValue{ .error_string = "ERR stop index must be an integer" };
+    };
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    }
+
+    // Check type
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find target arrays
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    // If no matches, return null
+    if (results.items.len == 0) {
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Helper function to trim a single array node
+    const trimArray = struct {
+        fn trim(node: *JsonNode, start_idx: i64, stop_idx: i64, alloc: std.mem.Allocator) !i64 {
+            switch (node.*) {
+                .array => |*arr| {
+                    const len = @as(i64, @intCast(arr.items.len));
+
+                    // Normalize negative indices
+                    var norm_start: i64 = if (start_idx < 0) @max(0, len + start_idx) else start_idx;
+                    var norm_stop: i64 = if (stop_idx < 0) @max(0, len + stop_idx) else stop_idx;
+
+                    // Clamp to array bounds
+                    norm_start = @min(norm_start, len);
+                    norm_stop = @min(norm_stop, len - 1);
+
+                    // Check for empty result (start > stop or start >= len)
+                    if (norm_start > norm_stop or norm_start >= len) {
+                        // Free all elements (NOTE: JsonNode.deinit() is infallible)
+                        for (arr.items) |*item| {
+                            item.deinit(alloc);
+                            alloc.destroy(item);
+                        }
+                        arr.clearRetainingCapacity();
+                        return 0;
+                    }
+
+                    // Calculate new length and convert indices once
+                    const new_len = norm_stop - norm_start + 1;
+                    const unew_len = @as(usize, @intCast(new_len));
+                    const unorm_start = @as(usize, @intCast(norm_start));
+                    const unorm_stop = @as(usize, @intCast(norm_stop));
+
+                    // If trimming from start, shift elements left
+                    if (norm_start > 0) {
+                        // Free elements before start (NOTE: JsonNode.deinit() is infallible)
+                        for (arr.items[0..unorm_start]) |*item| {
+                            item.deinit(alloc);
+                            alloc.destroy(item);
+                        }
+
+                        // Shift remaining elements to start
+                        std.mem.copyForwards(*JsonNode, arr.items[0..unew_len], arr.items[unorm_start .. unorm_stop + 1]);
+                    }
+
+                    // Free elements after stop (NOTE: JsonNode.deinit() is infallible)
+                    for (arr.items[unew_len..]) |*item| {
+                        item.deinit(alloc);
+                        alloc.destroy(item);
+                    }
+
+                    // Resize array
+                    arr.shrinkRetainingCapacity(unew_len);
+
+                    return new_len;
+                },
+                else => {
+                    // Non-array: return -1 as sentinel (caller will convert to null)
+                    return -1;
+                },
+            }
+        }
+    }.trim;
+
+    // Single result or multiple?
+    if (results.items.len == 1) {
+        const new_len = try trimArray(results.items[0], start, stop, allocator);
+        if (new_len < 0) {
+            // Non-array
+            return RespValue{ .null_bulk_string = {} };
+        }
+        return RespValue{ .integer = new_len };
+    } else {
+        // Multiple results - return array of integers/nulls
+        var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
+        errdefer {
+            for (result_array.items) |*item| {
+                deinitRespValue(item, allocator);
+            }
+            result_array.deinit(allocator);
+        }
+
+        for (results.items) |node| {
+            const new_len = try trimArray(node, start, stop, allocator);
+            if (new_len < 0) {
+                try result_array.append(allocator, RespValue{ .null_bulk_string = {} });
+            } else {
+                try result_array.append(allocator, RespValue{ .integer = new_len });
+            }
+        }
+
+        const owned_result = try result_array.toOwnedSlice(allocator);
+        return RespValue{ .array = owned_result };
+    }
+}
+
 test "JSON.ARRAPPEND - append single value to array" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
