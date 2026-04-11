@@ -2673,6 +2673,202 @@ pub fn cmdJsonArrlen(
     }
 }
 
+/// JSON.ARRPOP key [path [index]]
+/// Removes and returns the element at index from the array at path
+///
+/// Returns:
+///   - Bulk string: JSON-encoded removed element for single path
+///   - Array of bulk strings/nulls: for wildcard paths
+///   - Null: for non-array types or non-existent paths
+///   - Error: for empty arrays, out of range index, or invalid arguments
+pub fn cmdJsonArrpop(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    // Arity: JSON.ARRPOP key [path [index]]
+    if (args.len < 2 or args.len > 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrpop' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Default path is root ($)
+    const path_str = if (args.len >= 3) switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    } else "$";
+
+    // Default index is -1 (last element)
+    const index: i64 = if (args.len >= 4) blk: {
+        const index_str = switch (args[3]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid index" },
+        };
+        break :blk std.fmt.parseInt(i64, index_str, 10) catch {
+            return RespValue{ .error_string = "ERR index must be an integer" };
+        };
+    } else -1;
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    }
+
+    // Check type
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path to find the target arrays
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    // If no matches, return null for single path, empty array for wildcards
+    if (results.items.len == 0) {
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Check if this is a single result or multiple (wildcard)
+    if (results.items.len == 1) {
+        // Single result - return JSON element or null directly
+        const node = results.items[0];
+        switch (node.*) {
+            .array => |*arr| {
+                // Check if array is empty
+                if (arr.items.len == 0) {
+                    return RespValue{ .error_string = "ERR array is empty" };
+                }
+
+                // Normalize index
+                const array_len = @as(i64, @intCast(arr.items.len));
+                var normalized_idx: i64 = undefined;
+
+                if (index < 0) {
+                    // Negative index: count from end
+                    normalized_idx = array_len + index;
+                } else {
+                    normalized_idx = index;
+                }
+
+                // Check bounds: 0 <= index < len
+                if (normalized_idx < 0 or normalized_idx >= array_len) {
+                    return RespValue{ .error_string = "ERR index out of range" };
+                }
+
+                const uindex = @as(usize, @intCast(normalized_idx));
+
+                // Clone the element before removal
+                const removed = try arr.items[uindex].clone(allocator);
+                errdefer {
+                    removed.deinit(allocator);
+                    allocator.destroy(removed);
+                }
+
+                // Remove the element from array
+                _ = arr.orderedRemove(uindex);
+
+                // Stringify and return the removed element
+                const json_str = try removed.stringify(allocator);
+                defer allocator.free(json_str);
+
+                removed.deinit(allocator);
+                allocator.destroy(removed);
+
+                // Return as bulk string
+                const result_str = try allocator.dupe(u8, json_str);
+                return RespValue{ .bulk_string = result_str };
+            },
+            else => {
+                // Non-array: return null
+                return RespValue{ .null_bulk_string = {} };
+            },
+        }
+    } else {
+        // Multiple results - return array of bulk strings/nulls
+        var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
+        errdefer {
+            for (result_array.items) |*item| {
+                switch (item.*) {
+                    .bulk_string => |s| allocator.free(s),
+                    else => {},
+                }
+            }
+            result_array.deinit(allocator);
+        }
+
+        for (results.items) |node| {
+            switch (node.*) {
+                .array => |*arr| {
+                    // Check if array is empty
+                    if (arr.items.len == 0) {
+                        try result_array.append(allocator, RespValue{ .error_string = "ERR array is empty" });
+                        continue;
+                    }
+
+                    // Normalize index
+                    const array_len = @as(i64, @intCast(arr.items.len));
+                    var normalized_idx: i64 = undefined;
+
+                    if (index < 0) {
+                        // Negative index: count from end
+                        normalized_idx = array_len + index;
+                    } else {
+                        normalized_idx = index;
+                    }
+
+                    // Check bounds
+                    if (normalized_idx < 0 or normalized_idx >= array_len) {
+                        try result_array.append(allocator, RespValue{ .error_string = "ERR index out of range" });
+                        continue;
+                    }
+
+                    const uindex = @as(usize, @intCast(normalized_idx));
+
+                    // Clone the element before removal
+                    const removed = try arr.items[uindex].clone(allocator);
+                    errdefer {
+                        removed.deinit(allocator);
+                        allocator.destroy(removed);
+                    }
+
+                    // Remove from array
+                    _ = arr.orderedRemove(uindex);
+
+                    // Stringify
+                    const json_str = try removed.stringify(allocator);
+                    defer allocator.free(json_str);
+
+                    removed.deinit(allocator);
+                    allocator.destroy(removed);
+
+                    // Add to result
+                    const result_str = try allocator.dupe(u8, json_str);
+                    try result_array.append(allocator, RespValue{ .bulk_string = result_str });
+                },
+                else => {
+                    // Non-array: append null
+                    try result_array.append(allocator, RespValue{ .null_bulk_string = {} });
+                },
+            }
+        }
+
+        const owned_result = try result_array.toOwnedSlice(allocator);
+        return RespValue{ .array = owned_result };
+    }
+}
+
 test "JSON.ARRAPPEND - append single value to array" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);

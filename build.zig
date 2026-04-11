@@ -432,6 +432,17 @@ pub fn build(b: *std.Build) void {
     const run_json_arrlen_tests = b.addRunArtifact(json_arrlen_tests);
     integration_test_step.dependOn(&run_json_arrlen_tests.step);
 
+    // JSON.ARRPOP integration tests (Iteration 178)
+    const json_arrpop_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_json_arrpop.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_json_arrpop_tests = b.addRunArtifact(json_arrpop_tests);
+    integration_test_step.dependOn(&run_json_arrpop_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{
