@@ -3420,6 +3420,122 @@ pub fn cmdJsonObjkeys(
     return RespValue{ .array = owned_result };
 }
 
+/// JSON.OBJLEN key [path]
+/// Returns the number of keys in JSON objects at the paths that match the expression.
+///
+/// For JSONPath expressions (starting with $):
+///   - Returns single integer if only one match
+///   - Returns array of integers/nils for multiple matches
+///   - Each result is integer (object count) or nil (non-object)
+///   - Empty array if no matches found
+///
+/// For legacy path expressions (starting with .):
+///   - Returns integer count if match is an object
+///   - Returns nil if key doesn't exist or no matches
+///   - Returns error if match is not an object
+///
+/// Arguments:
+///   - key: Redis key containing JSON data
+///   - path: JSONPath or legacy path expression (default: "$" for root)
+///
+/// Returns:
+///   - Integer count for single object match
+///   - Array of integers/nils for multiple matches (JSONPath only)
+///   - Nil if key doesn't exist, no matches, or non-object (context-dependent)
+///   - Error for WRONGTYPE or invalid path syntax
+pub fn cmdJsonObjlen(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.objlen' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = if (args.len == 3)
+        switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid path" },
+        }
+    else
+        "$"; // Default to root
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Check if value is JSON
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    // If no matches, return empty array (for JSONPath) or nil (for legacy path)
+    if (results.items.len == 0) {
+        if (!path.is_legacy) {
+            return RespValue{ .array = &.{} };
+        } else {
+            return RespValue{ .null_bulk_string = {} };
+        }
+    }
+
+    // Single result (legacy path or single JSONPath match)
+    if (results.items.len == 1) {
+        const node = results.items[0];
+        switch (node.*) {
+            .object => |*obj| {
+                // Return integer count of keys
+                return RespValue{ .integer = @as(i64, @intCast(obj.count())) };
+            },
+            else => {
+                // Legacy path: error if first match is not an object
+                if (path.is_legacy) {
+                    return RespValue{ .error_string = "ERR path does not contain an object" };
+                }
+                // JSONPath: return nil for non-object
+                return RespValue{ .null_bulk_string = {} };
+            },
+        }
+    }
+
+    // Multiple results (JSONPath only)
+    var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
+    errdefer result_array.deinit(allocator);
+
+    for (results.items) |node| {
+        switch (node.*) {
+            .object => |*obj| {
+                // Return integer count of keys
+                try result_array.append(allocator, RespValue{ .integer = @as(i64, @intCast(obj.count())) });
+            },
+            else => {
+                // Non-object: return nil
+                try result_array.append(allocator, RespValue{ .null_bulk_string = {} });
+            },
+        }
+    }
+
+    const owned_result = try result_array.toOwnedSlice(allocator);
+    return RespValue{ .array = owned_result };
+}
+
 // ============================================================================
 // JSON.OBJKEYS Tests
 // ============================================================================
@@ -3632,4 +3748,239 @@ test "JSON.OBJKEYS - default path is root" {
 
     try std.testing.expect(result == .array);
     try std.testing.expectEqual(@as(usize, 2), result.array.len);
+}
+
+// ============================================================================
+// JSON.OBJLEN Tests
+// ============================================================================
+
+test "JSON.OBJLEN - basic object" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
+}
+
+test "JSON.OBJLEN - empty object" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
+}
+
+test "JSON.OBJLEN - non-existent key returns nil" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args, allocator);
+
+    try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.OBJLEN - WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", Value{ .string = "not json" });
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args, allocator);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "WRONGTYPE") != null);
+}
+
+test "JSON.OBJLEN - nested object path" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"outer\":{\"inner\":{\"x\":1,\"y\":2}}}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.outer.inner" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "JSON.OBJLEN - wildcard path with multiple objects" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":{\"b\":1},\"nested\":{\"a\":{\"c\":2,\"d\":3}}}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$..a" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expect(result.array[0] == .integer);
+    try std.testing.expectEqual(@as(i64, 1), result.array[0].integer);
+    try std.testing.expect(result.array[1] == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.array[1].integer);
+}
+
+test "JSON.OBJLEN - non-object returns nil" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":[1,2],\"b\":{\"x\":1}}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.a" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.OBJLEN - arity error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const too_few = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+    };
+    const result = try cmdJsonObjlen(&storage, &too_few, allocator);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
+}
+
+test "JSON.OBJLEN - default path is root" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
+}
+
+test "JSON.OBJLEN - wildcard with mixed types returns array with nulls" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"obj\":{\"x\":1},\"arr\":[1,2],\"num\":42}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    const args_objlen = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.OBJLEN" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.*" },
+    };
+    const result = try cmdJsonObjlen(&storage, &args_objlen, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
 }
