@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 181 (264 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 73%** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 183 (265 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 77%** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 12 (JSON Data Type) — 19/26 commands (73% complete)
+- **Current phase**: Phase 12 (JSON Data Type) — 20/26 commands (77% complete)
 - **Next milestone**: Phase 12 (JSON Data Type) — 26 JSON.* commands
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
@@ -19,7 +19,7 @@
 
 ## Active Milestones
 
-### Phase 12 — JSON Data Type (73% complete) 🚧
+### Phase 12 — JSON Data Type (77% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -36,10 +36,12 @@
 | 179 | JSON.ARRTRIM (array range trim) | Done ✅ |
 | 180 | JSON.OBJKEYS (object key names) | Done ✅ |
 | 181 | JSON.OBJLEN (object key count) | Done ✅ |
+| 182 | JSON.RESP (deprecated RESP format serialization) | Done ✅ |
+| 183 | JSON.MERGE (RFC 7396 JSON Merge Patch) | Done ✅ |
 
-**19/26 Phase 12 commands complete**: JSON.SET, JSON.GET, JSON.DEL, JSON.TYPE, JSON.MGET, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.MSET, JSON.FORGET, JSON.STRAPPEND, JSON.STRLEN, JSON.TOGGLE, JSON.CLEAR, JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN
+**20/26 Phase 12 commands complete**: JSON.SET, JSON.GET, JSON.DEL, JSON.TYPE, JSON.MGET, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.MSET, JSON.FORGET, JSON.STRAPPEND, JSON.STRLEN, JSON.TOGGLE, JSON.CLEAR, JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN, JSON.RESP, JSON.MERGE
 
-**Remaining (7)**: JSON.RESP, JSON.MERGE, JSON.DEBUG, JSON.DEBUG HELP, JSON.DEBUG MEMORY
+**Remaining (6)**: JSON.DEBUG, JSON.DEBUG HELP, JSON.DEBUG MEMORY, JSON.ARRPOP (with index), JSON.NUMINCRBY (with path), JSON.NUMMULTBY (with path)
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
