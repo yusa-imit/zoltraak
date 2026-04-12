@@ -1847,6 +1847,55 @@ pub fn executeCommand(
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
+        } else if (std.mem.eql(u8, cmd_upper, "JSON.DEBUG")) {
+            // JSON.DEBUG has subcommands: HELP, MEMORY
+            if (array.len < 2) {
+                // Default to HELP if no subcommand
+                const result = try json_cmds.cmdJsonDebugHelp(storage, &[_]protocol.RespValue{array[0]}, allocator);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            }
+            const subcmd = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR invalid subcommand format");
+                },
+            };
+            const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+            defer allocator.free(subcmd_upper);
+
+            if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                const result = try json_cmds.cmdJsonDebugHelp(storage, &[_]protocol.RespValue{array[0]}, allocator);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, subcmd_upper, "MEMORY")) {
+                // Remove "DEBUG" and "MEMORY" from args, keep key and optional path
+                if (array.len == 2) {
+                    // JSON.DEBUG MEMORY -> error (need key)
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'json.debug' command");
+                }
+                const debug_args = if (array.len == 3) blk2: {
+                    // JSON.DEBUG MEMORY key
+                    break :blk2 &[_]protocol.RespValue{ array[0], array[2] };
+                } else blk2: {
+                    // JSON.DEBUG MEMORY key path
+                    break :blk2 &[_]protocol.RespValue{ array[0], array[2], array[3] };
+                };
+                const result = try json_cmds.cmdJsonDebugMemory(storage, debug_args, allocator);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR unknown JSON.DEBUG subcommand");
+            }
         }
         // ACL commands
         else if (std.mem.eql(u8, cmd_upper, "ACL")) {

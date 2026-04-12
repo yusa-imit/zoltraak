@@ -4743,3 +4743,348 @@ test "JSON.MERGE - deeply nested merge" {
     try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"c\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"d\":2") != null);
 }
+
+/// JSON.DEBUG MEMORY key [path]
+/// Reports memory usage in bytes of a JSON value at the specified path.
+/// Returns integer for single path, array of integers/nulls for multiple paths.
+/// Time complexity: O(N) where N is the size of the value.
+pub fn cmdJsonDebugMemory(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.debug' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = if (args.len == 3) blk: {
+        break :blk switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid path" },
+        };
+    } else "$"; // Default to root
+
+    // Get value from storage
+    const entry = storage.data.get(key) orelse {
+        return RespValue{ .null_bulk_string = {} };
+    };
+
+    if (entry != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path
+    var matches = try path.evaluate(entry.json.root, allocator);
+    defer matches.deinit(allocator);
+
+    if (matches.items.len == 0) {
+        // JSONPath: no matches -> empty array
+        return RespValue{ .array = &[_]RespValue{} };
+    }
+
+    if (matches.items.len == 1) {
+        // Single match - return integer directly
+        const size = calculateMemoryUsage(matches.items[0]);
+        return RespValue{ .integer = @intCast(size) };
+    }
+
+    // Multiple matches - return array of integers
+    var results = try std.ArrayList(RespValue).initCapacity(allocator, matches.items.len);
+    errdefer {
+        for (results.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    for (matches.items) |node| {
+        const size = calculateMemoryUsage(node);
+        try results.append(allocator, RespValue{ .integer = @intCast(size) });
+    }
+
+    const owned = try results.toOwnedSlice(allocator);
+    return RespValue{ .array = owned };
+}
+
+/// Calculate approximate memory usage of a JSON node in bytes.
+/// This is a simplified estimation that counts:
+/// - Basic node overhead (type tag + union storage)
+/// - String content length
+/// - Array/object container sizes
+fn calculateMemoryUsage(node: *const JsonNode) u64 {
+    var total: u64 = @sizeOf(JsonNode); // Base node size
+
+    switch (node.*) {
+        .null, .bool => {
+            // No additional memory beyond the node itself
+        },
+        .number => {
+            // f64 is stored inline in the union
+        },
+        .string => |s| {
+            total += s.len; // String content
+        },
+        .array => |arr| {
+            total += @sizeOf(std.ArrayList(*JsonNode)) + arr.items.len * @sizeOf(*JsonNode);
+            for (arr.items) |item| {
+                total += calculateMemoryUsage(item);
+            }
+        },
+        .object => |obj| {
+            total += @sizeOf(std.StringHashMap(*JsonNode));
+            var it = obj.iterator();
+            while (it.next()) |kv| {
+                total += kv.key_ptr.len; // Key string
+                total += calculateMemoryUsage(kv.value_ptr.*);
+            }
+        },
+    }
+
+    return total;
+}
+
+/// JSON.DEBUG HELP
+/// Returns help messages for JSON.DEBUG subcommands.
+pub fn cmdJsonDebugHelp(
+    _: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.debug' command" };
+    }
+
+    const help_messages = [_][]const u8{
+        "JSON.DEBUG HELP - Print this help message",
+        "JSON.DEBUG MEMORY <key> [path] - Report memory usage in bytes",
+    };
+
+    var results = try std.ArrayList(RespValue).initCapacity(allocator, help_messages.len);
+    errdefer {
+        for (results.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    for (help_messages) |msg| {
+        const copied = try allocator.dupe(u8, msg);
+        errdefer allocator.free(copied);
+        try results.append(allocator, RespValue{ .bulk_string = copied });
+    }
+
+    const owned = try results.toOwnedSlice(allocator);
+    return RespValue{ .array = owned };
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+test "JSON.DEBUG MEMORY - basic types" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a simple string
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "\"hello\"" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Get memory usage
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expect(result.integer > 0); // Should return positive byte count
+}
+
+test "JSON.DEBUG MEMORY - object" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set an object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Get memory usage
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "doc" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expect(result.integer > 0);
+}
+
+test "JSON.DEBUG MEMORY - array" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set an array
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "[1,2,3]" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Get memory usage
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expect(result.integer > 0);
+}
+
+test "JSON.DEBUG MEMORY - nested path" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set nested object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":{\"b\":\"value\"}}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Get memory usage of nested path
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.a.b" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .integer);
+    try std.testing.expect(result.integer > 0);
+}
+
+test "JSON.DEBUG MEMORY - wildcard path" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set object with multiple fields
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Get memory usage with wildcard
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.*" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expect(result.array.len == 3); // Should have 3 results
+}
+
+test "JSON.DEBUG MEMORY - non-existent key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "nonexistent" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.DEBUG MEMORY - wrong type" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a non-JSON value
+    try storage.data.put("key", Value{ .string = "not json" });
+
+    const args_debug = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "key" },
+    };
+    const result = try cmdJsonDebugMemory(&storage, &args_debug, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .error_string);
+}
+
+test "JSON.DEBUG HELP - returns help messages" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_help = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+    };
+    const result = try cmdJsonDebugHelp(&storage, &args_help, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .array);
+    try std.testing.expect(result.array.len == 2); // Should have 2 help messages
+}
+
+test "JSON.DEBUG HELP - wrong arity" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_help = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.DEBUG" },
+        RespValue{ .bulk_string = "extra" },
+    };
+    const result = try cmdJsonDebugHelp(&storage, &args_help, allocator);
+    defer deinitRespValue(result, allocator);
+
+    try std.testing.expect(result == .error_string);
+}
