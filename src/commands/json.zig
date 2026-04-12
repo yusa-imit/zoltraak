@@ -3762,6 +3762,181 @@ fn nodeToResp(node: *const JsonNode, allocator: std.mem.Allocator) !RespValue {
     }
 }
 
+/// JSON.MERGE key path value
+/// Merges JSON values at the specified path using RFC 7396 semantics.
+///
+/// **RFC 7396 Merge Patch Semantics**:
+/// - Objects are merged recursively: if the patch is an object, iterate its
+///   properties and recursively merge them into the target object.
+/// - For each property in the patch object:
+///   - If value is `null`, delete the property from the target object.
+///   - Otherwise, set the property to the patch value (replacing any existing value).
+/// - Arrays are **replaced entirely** (not merged element-wise).
+/// - Primitive values in the patch replace the entire target value.
+/// - If the target doesn't exist or is null, it's treated as an empty object `{}`.
+pub fn cmdJsonMerge(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len != 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.merge' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid path" },
+    };
+
+    const patch_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid JSON value" },
+    };
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Parse patch JSON
+    const patch_node = JsonNode.parse(storage.allocator, patch_str) catch {
+        return RespValue{ .error_string = "ERR invalid JSON string" };
+    };
+    errdefer {
+        patch_node.deinit(storage.allocator);
+        storage.allocator.destroy(patch_node);
+    }
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        patch_node.deinit(storage.allocator);
+        storage.allocator.destroy(patch_node);
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Check if value is JSON
+    if (entry.? != .json) {
+        patch_node.deinit(storage.allocator);
+        storage.allocator.destroy(patch_node);
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // For root path ($), merge directly with root
+    if (std.mem.eql(u8, path_str, "$")) {
+        // Merge patch into root
+        try mergePatch(entry.?.json.root, patch_node, storage.allocator);
+        patch_node.deinit(storage.allocator);
+        storage.allocator.destroy(patch_node);
+        return RespValue{ .simple_string = "OK" };
+    }
+
+    // For non-root paths, find the nodes and merge at each location
+    var results = try path.evaluate(entry.?.json.root, allocator);
+    defer results.deinit(allocator);
+
+    if (results.items.len == 0) {
+        patch_node.deinit(storage.allocator);
+        storage.allocator.destroy(patch_node);
+        return RespValue{ .null_bulk_string = {} };
+    }
+
+    // Merge patch into each matched node
+    for (results.items) |target_node| {
+        try mergePatch(target_node, patch_node, storage.allocator);
+    }
+
+    patch_node.deinit(storage.allocator);
+    storage.allocator.destroy(patch_node);
+    return RespValue{ .simple_string = "OK" };
+}
+
+/// Helper: Apply RFC 7396 merge patch to a target JSON node.
+///
+/// **Algorithm**:
+/// 1. If patch is an object:
+///    - Convert target to object (or treat null/missing as empty object)
+///    - For each property in patch:
+///      - If patch value is null: delete property from target
+///      - Otherwise: recursively merge patch value into target property
+/// 2. If patch is not an object:
+///    - Replace target with patch value entirely
+///
+/// **Arguments**:
+///   - target: Mutable pointer to target JsonNode (may be modified in-place)
+///   - patch: Const pointer to patch JsonNode (source, not modified)
+///   - allocator: Memory allocator for cloning and new allocations
+///
+/// **Side effects**:
+///   - Modifies `target` in-place (object properties, array replacement, etc.)
+///   - May allocate memory for cloned patch values
+///   - May deallocate existing target values when properties are deleted
+fn mergePatch(target: *JsonNode, patch: *const JsonNode, allocator: std.mem.Allocator) !void {
+    // If patch is not an object, replace target entirely
+    if (patch.* != .object) {
+        // Clone patch value into target
+        const cloned = try patch.clone(allocator);
+        errdefer {
+            cloned.deinit(allocator);
+            allocator.destroy(cloned);
+        }
+
+        // Deinit old target content
+        target.deinit(allocator);
+        target.* = cloned.*;
+        allocator.destroy(cloned);
+        return;
+    }
+
+    // Patch is an object: merge into target object
+    // First ensure target is an object (or convert from null)
+    if (target.* != .object) {
+        target.deinit(allocator);
+        target.* = JsonNode{ .object = std.StringHashMap(*JsonNode).init(allocator) };
+    }
+
+    // Merge each property from patch into target
+    var patch_it = patch.object.iterator();
+    while (patch_it.next()) |patch_entry| {
+        const patch_key = patch_entry.key_ptr.*;
+        const patch_val = patch_entry.value_ptr.*;
+
+        // Check if patch value is null (delete property)
+        if (patch_val.* == .null) {
+            // Delete property from target if it exists
+            if (target.object.get(patch_key)) |existing_val| {
+                const owned_key = target.object.fetchRemove(patch_key).?.key;
+                allocator.free(owned_key);
+                existing_val.deinit(allocator);
+                allocator.destroy(existing_val);
+            }
+        } else {
+            // Merge or set property
+            const existing_opt = target.object.getPtr(patch_key);
+            if (existing_opt) |existing_val| {
+                // Property exists: merge recursively
+                try mergePatch(existing_val.*, patch_val, allocator);
+            } else {
+                // Property doesn't exist: clone patch value and insert
+                const cloned = try patch_val.clone(allocator);
+                errdefer {
+                    cloned.deinit(allocator);
+                    allocator.destroy(cloned);
+                }
+                const owned_key = try allocator.dupe(u8, patch_key);
+                errdefer allocator.free(owned_key);
+                try target.object.put(owned_key, cloned);
+            }
+        }
+    }
+}
+
 // ============================================================================
 // JSON.OBJKEYS Tests
 // ============================================================================
@@ -4209,4 +4384,362 @@ test "JSON.OBJLEN - wildcard with mixed types returns array with nulls" {
 
     try std.testing.expect(result == .array);
     try std.testing.expectEqual(@as(usize, 3), result.array.len);
+}
+
+// ============================================================================
+// JSON.MERGE TESTS (TDD RED PHASE - FAILING TESTS)
+// ============================================================================
+
+test "JSON.MERGE - basic object property merge" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Merge object with updated property
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"b\":3,\"c\":4}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+    try std.testing.expectEqualStrings("OK", merge_result.simple_string);
+
+    // Verify result
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    try std.testing.expect(get_result == .bulk_string);
+    // Should be {"a":1,"b":3,"c":4}
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"a\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"b\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"c\":4") != null);
+}
+
+test "JSON.MERGE - delete property with null value" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Merge with null to delete property
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"b\":null}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+
+    // Verify property is deleted
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"b\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"a\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"c\":3") != null);
+}
+
+test "JSON.MERGE - nested object merge" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial nested object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"user\":{\"name\":\"Alice\",\"age\":30}}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Merge with nested object update
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"user\":{\"age\":31,\"city\":\"NYC\"}}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+
+    // Verify nested merge
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.user" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    // Should preserve name, update age, add city
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "Alice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "31") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "NYC") != null);
+}
+
+test "JSON.MERGE - array replacement (not merge)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial object with array
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"items\":[1,2,3]}" },
+    };
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    try std.testing.expect(set_result == .simple_string);
+
+    // Merge with different array - should replace, not merge elements
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"items\":[4,5]}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+
+    // Verify array is replaced
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.items" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "5") != null);
+    // Original elements should not be there
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "3") == null);
+}
+
+test "JSON.MERGE - non-existent key error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    const result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(result == .null_bulk_string);
+}
+
+test "JSON.MERGE - WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Manually add a non-JSON value to storage
+    const string_val = Value{ .string = "mystring" };
+    try storage.data.put("mykey", string_val);
+
+    // Try to merge on non-JSON key
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    const result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "WRONGTYPE") != null);
+}
+
+test "JSON.MERGE - arity error (too few args)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+    };
+    const result = try cmdJsonMerge(&storage, &args, allocator);
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
+}
+
+test "JSON.MERGE - arity error (too many args)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+        RespValue{ .bulk_string = "extra" },
+    };
+    const result = try cmdJsonMerge(&storage, &args, allocator);
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
+}
+
+test "JSON.MERGE - invalid JSON patch" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Try to merge with invalid JSON
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{invalid json" },
+    };
+    const result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(result == .error_string);
+}
+
+test "JSON.MERGE - primitive to object conversion" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial object with number value
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"value\":42}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Merge to replace number with object
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"value\":{\"x\":1}}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+
+    // Verify the value is now an object
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.value" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"x\":1") != null);
+}
+
+test "JSON.MERGE - empty object merge" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set initial object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":1}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Merge with empty object
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+
+    // Verify object is unchanged
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"a\":1") != null);
+}
+
+test "JSON.MERGE - deeply nested merge" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set deeply nested object
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.SET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":{\"b\":{\"c\":1}}}" },
+    };
+    _ = try cmdJsonSet(&storage, &args_set, allocator);
+
+    // Merge deeply nested update
+    const args_merge = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.MERGE" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$" },
+        RespValue{ .bulk_string = "{\"a\":{\"b\":{\"d\":2}}}" },
+    };
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    try std.testing.expect(merge_result == .simple_string);
+
+    // Verify nested values
+    const args_get = [_]RespValue{
+        RespValue{ .bulk_string = "JSON.GET" },
+        RespValue{ .bulk_string = "doc" },
+        RespValue{ .bulk_string = "$.a.b" },
+    };
+    const get_result = try cmdJsonGet(&storage, &args_get, allocator);
+    defer deinitRespValue(get_result, allocator);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"c\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result.bulk_string, "\"d\":2") != null);
 }
