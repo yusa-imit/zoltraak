@@ -3536,6 +3536,232 @@ pub fn cmdJsonObjlen(
     return RespValue{ .array = owned_result };
 }
 
+/// JSON.RESP key [path]
+/// Returns the JSON value at path in Redis Serialization Protocol (RESP) form.
+///
+/// **NOTE**: As of JSON version 2.6, this command is regarded as deprecated,
+/// but remains functional for backward compatibility.
+///
+/// ## RESP Mapping Rules:
+///
+/// | JSON Type | RESP Mapping |
+/// |-----------|--------------|
+/// | `null`    | Bulk string reply (null) |
+/// | `false`   | Simple string reply "false" |
+/// | `true`    | Simple string reply "true" |
+/// | Number (int) | Integer reply |
+/// | Number (float) | Bulk string reply |
+/// | String    | Bulk string reply |
+/// | Array     | Array reply: first element is simple string "[", followed by elements |
+/// | Object    | Array reply: first element is simple string "{", followed by key-value pairs as bulk strings |
+///
+/// ## Return Value:
+///
+/// For JSONPath (starting with $):
+///   - Single match: RESP representation of the value
+///   - Multiple matches: Array of RESP representations
+///   - No matches: Empty array
+///
+/// For legacy path expressions (starting with .):
+///   - Returns RESP representation if match found
+///   - Returns error if key doesn't exist
+///   - Returns empty array if no matches
+///
+/// Arguments:
+///   - key: Redis key containing JSON data
+///   - path: JSONPath or legacy path expression (default: "$" for root)
+///
+/// Returns:
+///   - RESP representation of JSON value(s)
+///   - Error for WRONGTYPE or invalid path syntax
+///   - Error if key doesn't exist
+pub fn cmdJsonResp(
+    storage: *Storage,
+    args: []const RespValue,
+    allocator: std.mem.Allocator,
+) !RespValue {
+    if (args.len < 2 or args.len > 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'json.resp' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const path_str = if (args.len == 3)
+        switch (args[2]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid path" },
+        }
+    else
+        "$"; // Default to root
+
+    // Check if key exists
+    const entry = storage.data.get(key);
+    if (entry == null) {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    }
+
+    // Check if value is JSON
+    if (entry.? != .json) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    // Parse path
+    var path = JsonPath.parse(allocator, path_str) catch {
+        return RespValue{ .error_string = "ERR invalid path syntax" };
+    };
+    defer path.deinit();
+
+    // Evaluate path
+    const json_val = &entry.?.json;
+    var results = try path.evaluate(json_val.root, allocator);
+    defer results.deinit(allocator);
+
+    // If no matches, return empty array
+    if (results.items.len == 0) {
+        return RespValue{ .array = &.{} };
+    }
+
+    // Single result (legacy path or single JSONPath match)
+    if (results.items.len == 1) {
+        return try nodeToResp(results.items[0], allocator);
+    }
+
+    // Multiple results (JSONPath only)
+    var result_array = try std.ArrayList(RespValue).initCapacity(allocator, results.items.len);
+    errdefer {
+        for (result_array.items) |*item| {
+            deinitRespValue(item, allocator);
+        }
+        result_array.deinit(allocator);
+    }
+
+    for (results.items) |node| {
+        const resp_val = try nodeToResp(node, allocator);
+        errdefer deinitRespValue(&resp_val, allocator);
+        try result_array.append(allocator, resp_val);
+    }
+
+    const owned_result = try result_array.toOwnedSlice(allocator);
+    return RespValue{ .array = owned_result };
+}
+
+/// Helper: Convert JsonNode to RESP representation
+///
+/// Recursively converts JSON values to their RESP equivalents following the mapping rules:
+///   - null → Bulk string null
+///   - bool → Simple string "true" or "false"
+///   - integer → Integer reply
+///   - float → Bulk string with decimal representation
+///   - string → Bulk string
+///   - array → Array reply with "[" marker + elements
+///   - object → Array reply with "{" marker + key-value pairs
+///
+/// Arguments:
+///   - node: The JSON node to convert
+///   - allocator: Memory allocator for string duplication and array construction
+///
+/// Returns RespValue with allocated memory that must be freed via deinitRespValue.
+/// Returns error.OutOfMemory if allocation fails.
+/// Returns error.NoSpaceLeft if buffer formatting fails.
+fn nodeToResp(node: *const JsonNode, allocator: std.mem.Allocator) !RespValue {
+    switch (node.*) {
+        .null => {
+            // null → Bulk string null
+            return RespValue{ .null_bulk_string = {} };
+        },
+        .bool => |b| {
+            // bool → Simple string "true" or "false"
+            const str = if (b) "true" else "false";
+            const owned = try allocator.dupe(u8, str);
+            return RespValue{ .simple_string = owned };
+        },
+        .number => |num| {
+            // Check if number is an integer or float
+            // Use constants that can be represented in f64
+            const min_safe_int: f64 = -9007199254740992.0; // -(2^53)
+            const max_safe_int: f64 = 9007199254740992.0; // 2^53
+            const is_int = @floor(num) == num and num >= min_safe_int and num <= max_safe_int;
+            if (is_int) {
+                // Integer → Integer reply
+                return RespValue{ .integer = @as(i64, @intFromFloat(num)) };
+            } else {
+                // Float → Bulk string with number representation
+                var buf: [64]u8 = undefined;
+                const num_str = try std.fmt.bufPrint(&buf, "{d}", .{num});
+                const owned_str = try allocator.dupe(u8, num_str);
+                return RespValue{ .bulk_string = owned_str };
+            }
+        },
+        .string => |s| {
+            // String → Bulk string
+            const owned_str = try allocator.dupe(u8, s);
+            return RespValue{ .bulk_string = owned_str };
+        },
+        .array => |*arr| {
+            // Array → Array reply with "[" marker + elements
+            // Total elements: 1 (marker) + array.length
+            var result_array = try std.ArrayList(RespValue).initCapacity(allocator, 1 + arr.items.len);
+            errdefer {
+                for (result_array.items) |*item| {
+                    deinitRespValue(item, allocator);
+                }
+                result_array.deinit(allocator);
+            }
+
+            // First element: "[" marker
+            const marker = try allocator.dupe(u8, "[");
+            errdefer allocator.free(marker);
+            try result_array.append(allocator, RespValue{ .simple_string = marker });
+
+            // Followed by array elements
+            for (arr.items) |item| {
+                const resp_val = try nodeToResp(item, allocator);
+                errdefer deinitRespValue(&resp_val, allocator);
+                try result_array.append(allocator, resp_val);
+            }
+
+            const owned_result = try result_array.toOwnedSlice(allocator);
+            return RespValue{ .array = owned_result };
+        },
+        .object => |*obj| {
+            // Object → Array reply with "{" marker + key-value pairs
+            // Total elements: 1 (marker) + (2 * key_count)
+            var result_array = try std.ArrayList(RespValue).initCapacity(allocator, 1 + (obj.count() * 2));
+            errdefer {
+                for (result_array.items) |*item| {
+                    deinitRespValue(item, allocator);
+                }
+                result_array.deinit(allocator);
+            }
+
+            // First element: "{" marker
+            const marker = try allocator.dupe(u8, "{");
+            errdefer allocator.free(marker);
+            try result_array.append(allocator, RespValue{ .simple_string = marker });
+
+            // Followed by key-value pairs (each as separate bulk strings)
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                // Key as bulk string
+                const owned_key = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(owned_key); // Cleanup if append fails (ownership transfers on success)
+                try result_array.append(allocator, RespValue{ .bulk_string = owned_key });
+
+                // Value as RESP
+                const resp_val = try nodeToResp(entry.value_ptr.*, allocator);
+                errdefer deinitRespValue(&resp_val, allocator);
+                try result_array.append(allocator, resp_val);
+            }
+
+            const owned_result = try result_array.toOwnedSlice(allocator);
+            return RespValue{ .array = owned_result };
+        },
+    }
+}
+
 // ============================================================================
 // JSON.OBJKEYS Tests
 // ============================================================================

@@ -454,6 +454,17 @@ pub fn build(b: *std.Build) void {
     const run_json_arrtrim_tests = b.addRunArtifact(json_arrtrim_tests);
     integration_test_step.dependOn(&run_json_arrtrim_tests.step);
 
+    // JSON.RESP integration tests (Iteration 182)
+    const json_resp_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_json_resp.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_json_resp_tests = b.addRunArtifact(json_resp_tests);
+    integration_test_step.dependOn(&run_json_resp_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{
