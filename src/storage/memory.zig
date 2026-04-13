@@ -9,6 +9,7 @@ const cluster_mod = @import("cluster.zig");
 const sentinel_mod = @import("sentinel.zig");
 const functions_mod = @import("functions.zig");
 const json_value_mod = @import("json_value.zig");
+const search_mod = @import("search.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -21,6 +22,7 @@ pub const MemoryTracker = memory_tracker_mod.MemoryTracker;
 pub const ClusterState = cluster_mod.ClusterState;
 pub const SentinelState = sentinel_mod.SentinelState;
 pub const FunctionStore = functions_mod.FunctionStore;
+pub const SearchStore = search_mod.SearchStore;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -481,6 +483,7 @@ pub const Storage = struct {
     sentinel: SentinelState, // Sentinel state management
     sentinel_config_path: []const u8, // Path to sentinel.conf Sentinel config file
     functions: FunctionStore, // Redis Functions library storage
+    search: SearchStore, // Search index storage
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -556,6 +559,9 @@ pub const Storage = struct {
         // Initialize function store (empty by default)
         const function_store = functions_mod.FunctionStore.init(allocator);
 
+        // Initialize search store (empty by default)
+        const search_store = search_mod.SearchStore.init(allocator);
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
@@ -566,6 +572,7 @@ pub const Storage = struct {
             .sentinel = sentinel_state,
             .sentinel_config_path = "sentinel.conf", // Default sentinel config file
             .functions = function_store,
+            .search = search_store,
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
@@ -596,6 +603,9 @@ pub const Storage = struct {
 
         // Free function store
         self.functions.deinit();
+
+        // Free search store
+        self.search.deinit();
 
         // Free all keys and values
         var it = self.data.iterator();

@@ -34,6 +34,7 @@ const cluster_cmds = @import("cluster.zig");
 const sentinel_cmds = @import("sentinel.zig");
 const function_cmds = @import("functions.zig");
 const json_cmds = @import("json.zig");
+const search_cmds = @import("search.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -1895,6 +1896,41 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeError("ERR unknown JSON.DEBUG subcommand");
+            }
+        }
+        // Search (FT.*) commands
+        else if (std.mem.startsWith(u8, cmd_upper, "FT.")) {
+            // Extract command args (skip command name)
+            var args = try allocator.alloc([]const u8, array.len - 1);
+            defer allocator.free(args);
+            for (array[1..], 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+
+            if (std.mem.eql(u8, cmd_upper, "FT.CREATE")) {
+                const result = try search_cmds.cmdFtCreate(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT._LIST")) {
+                const result = try search_cmds.cmdFtList(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.DROPINDEX")) {
+                const result = try search_cmds.cmdFtDropindex(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_upper});
+                break :blk try w.writeError(err_msg);
             }
         }
         // ACL commands
