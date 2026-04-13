@@ -380,3 +380,224 @@ test "FT.DROPINDEX: nonexistent index" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "Unknown Index name") != null);
 }
+
+test "FT.INFO: basic index info" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const cmd1 = "FT.CREATE myindex ON HASH SCHEMA title TEXT\r\n";
+    const parsed1 = try parseCommand(allocator, cmd1);
+    defer parsed1.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed1.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    // Get info
+    const cmd2 = "FT.INFO myindex\r\n";
+    const parsed2 = try parseCommand(allocator, cmd2);
+    defer parsed2.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed2.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    // Verify response contains expected fields
+    try std.testing.expect(std.mem.indexOf(u8, result2, "index_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "myindex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "index_definition") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "HASH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "attributes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "num_docs") != null);
+}
+
+test "FT.INFO: nonexistent index" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const cmd = "FT.INFO nonexistent\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown index name") != null);
+}
+
+test "FT.INFO: JSON index with prefix" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create JSON index with prefix
+    const cmd1 = "FT.CREATE products ON JSON PREFIX 1 product: SCHEMA $.title TEXT $.price NUMERIC\r\n";
+    const parsed1 = try parseCommand(allocator, cmd1);
+    defer parsed1.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed1.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    // Get info
+    const cmd2 = "FT.INFO products\r\n";
+    const parsed2 = try parseCommand(allocator, cmd2);
+    defer parsed2.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed2.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    // Verify JSON type and prefix
+    try std.testing.expect(std.mem.indexOf(u8, result2, "JSON") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "product:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "prefixes") != null);
+}
+
+test "FT.INFO: multiple fields with options" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index with multiple fields and options
+    const cmd1 = "FT.CREATE myindex ON HASH SCHEMA title TEXT SORTABLE NOSTEM description TEXT price NUMERIC SORTABLE tags TAG\r\n";
+    const parsed1 = try parseCommand(allocator, cmd1);
+    defer parsed1.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed1.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    // Get info
+    const cmd2 = "FT.INFO myindex\r\n";
+    const parsed2 = try parseCommand(allocator, cmd2);
+    defer parsed2.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed2.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    // Verify field types appear
+    try std.testing.expect(std.mem.indexOf(u8, result2, "TEXT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "NUMERIC") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "TAG") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "SORTABLE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "NOSTEM") != null);
+}
+
+test "FT.INFO: arity validation" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Missing index name
+    const cmd = "FT.INFO\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}

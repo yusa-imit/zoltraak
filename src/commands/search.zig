@@ -197,3 +197,166 @@ pub fn cmdFtDropindex(storage: *Storage, arena: std.mem.Allocator, args: []const
 
     return RespValue{ .simple_string = "OK" };
 }
+
+/// FT.INFO index_name
+///
+/// Returns information and statistics about an index.
+///
+/// Arguments:
+///   args[0] = index_name
+///
+/// Returns:
+///   Array of key-value pairs containing index metadata:
+///   - index_name: string
+///   - index_options: array (empty for now)
+///   - index_definition: nested array with key_type, prefixes, default_score
+///   - attributes: array of field definitions
+///   - num_docs: integer (0 for stub)
+///   - max_doc_id: integer (0 for stub)
+///   - num_terms: integer (0 for stub)
+///   - num_records: integer (0 for stub)
+///   - inverted_sz_mb: float (0.0 for stub)
+///   - percent_indexed: float (1.0 = fully indexed)
+///
+/// Error:
+///   "ERR Unknown index name" if index doesn't exist
+pub fn cmdFtInfo(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.INFO' command" };
+    }
+
+    const index_name = args[0];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const index = storage.search.getIndex(index_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    };
+
+    // Build response as flat array of key-value pairs (RESP2 format)
+    // Total fields: 10 base fields * 2 = 20 elements
+    var result = try std.ArrayList(RespValue).initCapacity(arena, 0);
+    errdefer result.deinit(arena);
+
+    // Field 1: index_name
+    try result.append(arena, RespValue{ .bulk_string = "index_name" });
+    try result.append(arena, RespValue{ .bulk_string = index.name });
+
+    // Field 2: index_options (empty array for now)
+    try result.append(arena, RespValue{ .bulk_string = "index_options" });
+    const empty_array = try arena.alloc(RespValue, 0);
+    try result.append(arena, RespValue{ .array = empty_array });
+
+    // Field 3: index_definition (nested array with key_type, prefixes, default_score)
+    try result.append(arena, RespValue{ .bulk_string = "index_definition" });
+    var def = try std.ArrayList(RespValue).initCapacity(arena, 0);
+    errdefer def.deinit(arena);
+
+    // key_type
+    try def.append(arena, RespValue{ .bulk_string = "key_type" });
+    const key_type_str = switch (index.index_on) {
+        .hash => "HASH",
+        .json => "JSON",
+    };
+    try def.append(arena, RespValue{ .bulk_string = key_type_str });
+
+    // prefixes
+    try def.append(arena, RespValue{ .bulk_string = "prefixes" });
+    if (index.prefix) |prefix| {
+        var prefix_array = try arena.alloc(RespValue, 1);
+        prefix_array[0] = RespValue{ .bulk_string = prefix };
+        try def.append(arena, RespValue{ .array = prefix_array });
+    } else {
+        const empty_prefix_array = try arena.alloc(RespValue, 0);
+        try def.append(arena, RespValue{ .array = empty_prefix_array });
+    }
+
+    // default_score
+    try def.append(arena, RespValue{ .bulk_string = "default_score" });
+    try def.append(arena, RespValue{ .bulk_string = "1" });
+
+    const def_slice = try def.toOwnedSlice(arena);
+    try result.append(arena, RespValue{ .array = def_slice });
+
+    // Field 4: attributes (field definitions)
+    try result.append(arena, RespValue{ .bulk_string = "attributes" });
+    var attrs = try std.ArrayList(RespValue).initCapacity(arena, 0);
+    errdefer attrs.deinit(arena);
+
+    for (index.fields.items) |field| {
+        // Each field is an array of key-value pairs
+        var field_info = try std.ArrayList(RespValue).initCapacity(arena, 0);
+        errdefer field_info.deinit(arena);
+
+        // identifier (field name or alias)
+        try field_info.append(arena, RespValue{ .bulk_string = "identifier" });
+        const identifier = field.alias orelse field.name;
+        try field_info.append(arena, RespValue{ .bulk_string = identifier });
+
+        // attribute (original field name)
+        try field_info.append(arena, RespValue{ .bulk_string = "attribute" });
+        try field_info.append(arena, RespValue{ .bulk_string = field.name });
+
+        // type
+        try field_info.append(arena, RespValue{ .bulk_string = "type" });
+        const type_str = switch (field.field_type) {
+            .text => "TEXT",
+            .tag => "TAG",
+            .numeric => "NUMERIC",
+            .geo => "GEO",
+            .vector => "VECTOR",
+            .geoshape => "GEOSHAPE",
+        };
+        try field_info.append(arena, RespValue{ .bulk_string = type_str });
+
+        // SORTABLE flag
+        if (field.sortable) {
+            try field_info.append(arena, RespValue{ .bulk_string = "SORTABLE" });
+        }
+
+        // NOINDEX flag
+        if (field.noindex) {
+            try field_info.append(arena, RespValue{ .bulk_string = "NOINDEX" });
+        }
+
+        // NOSTEM flag (TEXT only)
+        if (field.nostem and field.field_type == .text) {
+            try field_info.append(arena, RespValue{ .bulk_string = "NOSTEM" });
+        }
+
+        const field_slice = try field_info.toOwnedSlice(arena);
+        try attrs.append(arena, RespValue{ .array = field_slice });
+    }
+
+    const attrs_slice = try attrs.toOwnedSlice(arena);
+    try result.append(arena, RespValue{ .array = attrs_slice });
+
+    // Field 5-10: Statistics (all stubs for now)
+    // num_docs
+    try result.append(arena, RespValue{ .bulk_string = "num_docs" });
+    try result.append(arena, RespValue{ .bulk_string = "0" });
+
+    // max_doc_id
+    try result.append(arena, RespValue{ .bulk_string = "max_doc_id" });
+    try result.append(arena, RespValue{ .bulk_string = "0" });
+
+    // num_terms
+    try result.append(arena, RespValue{ .bulk_string = "num_terms" });
+    try result.append(arena, RespValue{ .bulk_string = "0" });
+
+    // num_records
+    try result.append(arena, RespValue{ .bulk_string = "num_records" });
+    try result.append(arena, RespValue{ .bulk_string = "0" });
+
+    // inverted_sz_mb
+    try result.append(arena, RespValue{ .bulk_string = "inverted_sz_mb" });
+    try result.append(arena, RespValue{ .bulk_string = "0" });
+
+    // percent_indexed (1.0 = 100% indexed)
+    try result.append(arena, RespValue{ .bulk_string = "percent_indexed" });
+    try result.append(arena, RespValue{ .bulk_string = "1" });
+
+    const final_slice = try result.toOwnedSlice(arena);
+    return RespValue{ .array = final_slice };
+}
