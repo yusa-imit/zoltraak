@@ -979,3 +979,121 @@ test "FT.ALTER: add multiple options" {
 
     try std.testing.expect(std.mem.indexOf(u8, result2, "+OK") != null);
 }
+
+test "FT.SEARCH: basic search empty results" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE myindex ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    // Search (should return 0 results since stub implementation)
+    const search_cmd = "FT.SEARCH myindex hello\r\n";
+    const parsed_search = try parseCommand(allocator, search_cmd);
+    defer parsed_search.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed_search.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    // Should return array with count 0
+    try std.testing.expect(std.mem.indexOf(u8, result2, "*1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, ":0") != null);
+}
+
+test "FT.SEARCH: error on nonexistent index" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Search on non-existent index
+    const search_cmd = "FT.SEARCH nonexistent hello\r\n";
+    const parsed_search = try parseCommand(allocator, search_cmd);
+    defer parsed_search.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed_search.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown index name") != null);
+}
+
+test "FT.SEARCH: error on wrong arity" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Search with missing query
+    const search_cmd = "FT.SEARCH myindex\r\n";
+    const parsed_search = try parseCommand(allocator, search_cmd);
+    defer parsed_search.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed_search.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}

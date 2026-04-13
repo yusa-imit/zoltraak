@@ -126,6 +126,133 @@ pub const SearchIndex = struct {
         }
         self.prefix = try self.allocator.dupe(u8, prefix);
     }
+
+    /// Performs basic text search on indexed documents (stub implementation)
+    ///
+    /// This initial version performs a linear scan over all keys matching the index prefix.
+    /// Future iterations will implement inverted index for efficient lookups.
+    ///
+    /// Arguments:
+    ///   storage: pointer to Storage for accessing data HashMap
+    ///   allocator: allocator for results
+    ///   query: search query string (simple text match or "*" wildcard)
+    ///   limit_offset: pagination offset (default 0)
+    ///   limit_count: pagination count (default 10)
+    ///   nocontent: if true, return only document IDs
+    ///   return_fields: optional array of field names to return (null = all fields)
+    ///   sortby_field: optional field name to sort by (must be SORTABLE)
+    ///   sortby_desc: sort descending if true (default false/ASC)
+    ///
+    /// Returns:
+    ///   SearchResult struct with total_count and documents
+    pub fn search(
+        self: *SearchIndex,
+        storage: anytype,
+        allocator: Allocator,
+        query: []const u8,
+        limit_offset: usize,
+        limit_count: usize,
+        nocontent: bool,
+        return_fields: ?[]const []const u8,
+        sortby_field: ?[]const u8,
+        sortby_desc: bool,
+    ) !SearchResult {
+        _ = self;
+        _ = storage;
+        _ = sortby_field;
+        _ = sortby_desc;
+
+        // Parse query into terms (simple space-separated for now)
+        const is_wildcard = std.mem.eql(u8, query, "*");
+        var terms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        defer terms.deinit(allocator);
+
+        if (!is_wildcard) {
+            var iter = std.mem.splitScalar(u8, query, ' ');
+            while (iter.next()) |term| {
+                if (term.len > 0) {
+                    try terms.append(allocator, term);
+                }
+            }
+        }
+
+        // Stub: For now, return empty results
+        // Real implementation will iterate storage.data and match documents
+        var documents = try std.ArrayList(Document).initCapacity(allocator, 0);
+        errdefer {
+            for (documents.items) |*doc| {
+                doc.deinit(allocator);
+            }
+            documents.deinit(allocator);
+        }
+
+        // Apply pagination
+        const start = @min(limit_offset, documents.items.len);
+        const end = @min(limit_offset + limit_count, documents.items.len);
+
+        // Create return slice
+        const result_docs = try allocator.alloc(Document, end - start);
+        errdefer allocator.free(result_docs);
+
+        // Copy documents (this is a stub - real implementation will populate from storage)
+        _ = nocontent;
+        _ = return_fields;
+
+        return SearchResult{
+            .total_count = documents.items.len,
+            .documents = result_docs,
+            .allocator = allocator,
+        };
+    }
+};
+
+/// Document result from search
+pub const Document = struct {
+    id: []const u8,
+    fields: std.StringHashMap([]const u8),
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, id: []const u8) !Document {
+        return Document{
+            .id = try allocator.dupe(u8, id),
+            .fields = std.StringHashMap([]const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Document, allocator: Allocator) void {
+        allocator.free(self.id);
+        var it = self.fields.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.fields.deinit();
+    }
+
+    pub fn setField(self: *Document, name: []const u8, value: []const u8) !void {
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+
+        const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
+
+        try self.fields.put(name_copy, value_copy);
+    }
+};
+
+/// Search result with total count and documents
+pub const SearchResult = struct {
+    total_count: usize,
+    documents: []Document,
+    allocator: Allocator,
+
+    pub fn deinit(self: *SearchResult) void {
+        for (self.documents) |*doc| {
+            doc.deinit(self.allocator);
+        }
+        self.allocator.free(self.documents);
+    }
 };
 
 /// Search index store — manages all indices
@@ -293,4 +420,62 @@ test "IndexOn: fromString" {
     try std.testing.expectEqual(IndexOn.hash, try IndexOn.fromString("HASH"));
     try std.testing.expectEqual(IndexOn.json, try IndexOn.fromString("JSON"));
     try std.testing.expectError(error.InvalidIndexOn, IndexOn.fromString("INVALID"));
+}
+
+test "SearchIndex: basic search returns empty results (stub)" {
+    const allocator = std.testing.allocator;
+
+    var index = try SearchIndex.init(allocator, "testIndex", .hash);
+    defer index.deinit();
+
+    // Stub search should return empty results
+    var result = try index.search(null, allocator, "hello", 0, 10, false, null, null, false);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.total_count);
+    try std.testing.expectEqual(@as(usize, 0), result.documents.len);
+}
+
+test "SearchIndex: wildcard search returns empty results (stub)" {
+    const allocator = std.testing.allocator;
+
+    var index = try SearchIndex.init(allocator, "testIndex", .hash);
+    defer index.deinit();
+
+    // Wildcard search should also return empty (stub)
+    var result = try index.search(null, allocator, "*", 0, 10, false, null, null, false);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.total_count);
+    try std.testing.expectEqual(@as(usize, 0), result.documents.len);
+}
+
+test "Document: init and deinit" {
+    const allocator = std.testing.allocator;
+
+    var doc = try Document.init(allocator, "doc:1");
+    defer doc.deinit(allocator);
+
+    try std.testing.expectEqualStrings("doc:1", doc.id);
+    try std.testing.expectEqual(@as(usize, 0), doc.fields.count());
+}
+
+test "Document: setField" {
+    const allocator = std.testing.allocator;
+
+    var doc = try Document.init(allocator, "doc:1");
+    defer doc.deinit(allocator);
+
+    try doc.setField("title", "Hello World");
+    try doc.setField("body", "Test document");
+
+    try std.testing.expectEqual(@as(usize, 2), doc.fields.count());
+
+    const title = doc.fields.get("title");
+    try std.testing.expect(title != null);
+    try std.testing.expectEqualStrings("Hello World", title.?);
+
+    const body = doc.fields.get("body");
+    try std.testing.expect(body != null);
+    try std.testing.expectEqualStrings("Test document", body.?);
 }

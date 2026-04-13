@@ -17,7 +17,7 @@ const search_mod = @import("../storage/search.zig");
 /// Returns:
 ///   +OK on success
 ///   Error if index already exists or syntax error
-pub fn cmdFtCreate(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+pub fn cmdFtCreate(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
     if (args.len < 4) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.CREATE' command" };
     }
@@ -100,8 +100,9 @@ pub fn cmdFtCreate(storage: *Storage, arena: std.mem.Allocator, args: []const []
                 };
 
                 var field = try search_mod.FieldSchema.init(storage.allocator, field_name, field_type);
+                errdefer field.deinit();
 
-                // Parse field options (SORTABLE, NOINDEX, etc.)
+                // Parse field options (SORTABLE, NOINDEX, NOSTEM, AS, etc.)
                 while (i < args.len) {
                     const option = args[i];
 
@@ -119,10 +120,14 @@ pub fn cmdFtCreate(storage: *Storage, arena: std.mem.Allocator, args: []const []
                         if (i >= args.len) {
                             return RespValue{ .error_string = "ERR AS requires alias argument" };
                         }
-                        field.alias = try storage.allocator.dupe(u8, args[i]);
+                        const alias = args[i];
+                        if (field.alias) |old| {
+                            storage.allocator.free(old);
+                        }
+                        field.alias = try storage.allocator.dupe(u8, alias);
                         i += 1;
                     } else {
-                        // Not a field option, break to parse next field
+                        // Not a field option, must be next field or end
                         break;
                     }
                 }
@@ -130,9 +135,7 @@ pub fn cmdFtCreate(storage: *Storage, arena: std.mem.Allocator, args: []const []
                 try index.addField(field);
             }
         } else {
-            // Unknown clause
-            const err_msg = try std.fmt.allocPrint(arena, "ERR unknown clause: {s}", .{keyword});
-            return RespValue{ .error_string = err_msg };
+            return RespValue{ .error_string = "ERR syntax error, expected PREFIX or SCHEMA" };
         }
     }
 
@@ -141,30 +144,43 @@ pub fn cmdFtCreate(storage: *Storage, arena: std.mem.Allocator, args: []const []
 
 /// FT._LIST
 ///
-/// Lists all index names in the search store.
+/// Returns array of all index names.
+///
+/// Arguments:
+///   None (args is empty)
 ///
 /// Returns:
-///   Array of index names
+///   Array of bulk strings (index names)
 pub fn cmdFtList(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
-    _ = args;
+    if (args.len != 0) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT._LIST' command" };
+    }
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
     const names = try storage.search.listIndices(arena);
-    // No need to free names - arena will be cleared
-
-    var values = try arena.alloc(RespValue, names.len);
-    for (names, 0..) |name, i| {
-        values[i] = RespValue{ .bulk_string = name };
+    defer {
+        for (names) |name| {
+            arena.free(name);
+        }
+        arena.free(names);
     }
 
-    return RespValue{ .array = values };
+    var array = try std.ArrayList(RespValue).initCapacity(arena, names.len);
+    errdefer array.deinit(arena);
+
+    for (names) |name| {
+        const name_copy = try arena.dupe(u8, name);
+        try array.append(arena, RespValue{ .bulk_string = name_copy });
+    }
+
+    return RespValue{ .array = try array.toOwnedSlice(arena) };
 }
 
 /// FT.DROPINDEX index_name [DD]
 ///
-/// Drops a search index. If DD flag is provided, also deletes indexed documents.
+/// Drops an index. If DD flag is given, also deletes all documents.
 ///
 /// Arguments:
 ///   args[0] = index_name
@@ -176,52 +192,52 @@ pub fn cmdFtList(storage: *Storage, arena: std.mem.Allocator, args: []const []co
 pub fn cmdFtDropindex(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
     _ = arena;
 
-    if (args.len < 1) {
+    if (args.len < 1 or args.len > 2) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.DROPINDEX' command" };
     }
 
     const index_name = args[0];
-    const delete_docs = if (args.len >= 2) std.mem.eql(u8, args[1], "DD") else false;
 
-    _ = delete_docs; // TODO: implement document deletion
+    // Check for DD flag
+    var delete_docs = false;
+    if (args.len == 2) {
+        if (!std.mem.eql(u8, args[1], "DD")) {
+            return RespValue{ .error_string = "ERR syntax error, expected DD flag" };
+        }
+        delete_docs = true;
+    }
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
+    // Drop index
     storage.search.dropIndex(index_name) catch |err| {
         if (err == error.IndexNotFound) {
-            return RespValue{ .error_string = "ERR Unknown Index name" };
+            return RespValue{ .error_string = "ERR Unknown index name" };
         }
         return err;
     };
+
+    // TODO: If DD flag set, also delete documents matching prefix
+    if (delete_docs) {
+        // Stub for now - would iterate storage.data and delete matching keys
+    }
 
     return RespValue{ .simple_string = "OK" };
 }
 
 /// FT.INFO index_name
 ///
-/// Returns information and statistics about an index.
+/// Returns metadata about an index.
 ///
 /// Arguments:
 ///   args[0] = index_name
 ///
 /// Returns:
-///   Array of key-value pairs containing index metadata:
-///   - index_name: string
-///   - index_options: array (empty for now)
-///   - index_definition: nested array with key_type, prefixes, default_score
-///   - attributes: array of field definitions
-///   - num_docs: integer (0 for stub)
-///   - max_doc_id: integer (0 for stub)
-///   - num_terms: integer (0 for stub)
-///   - num_records: integer (0 for stub)
-///   - inverted_sz_mb: float (0.0 for stub)
-///   - percent_indexed: float (1.0 = fully indexed)
-///
-/// Error:
-///   "ERR Unknown index name" if index doesn't exist
+///   Flat array of key-value pairs (index_name, index_options, index_definition, attributes, statistics)
+///   Error if index doesn't exist
 pub fn cmdFtInfo(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
-    if (args.len < 1) {
+    if (args.len != 1) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.INFO' command" };
     }
 
@@ -234,72 +250,60 @@ pub fn cmdFtInfo(storage: *Storage, arena: std.mem.Allocator, args: []const []co
         return RespValue{ .error_string = "ERR Unknown index name" };
     };
 
-    // Build response as flat array of key-value pairs (RESP2 format)
-    // Total fields: 10 base fields * 2 = 20 elements
-    var result = try std.ArrayList(RespValue).initCapacity(arena, 0);
-    errdefer result.deinit(arena);
+    // Build flat array of key-value pairs
+    var array = try std.ArrayList(RespValue).initCapacity(arena, 0);
+    errdefer array.deinit(arena);
 
-    // Field 1: index_name
-    try result.append(arena, RespValue{ .bulk_string = "index_name" });
-    try result.append(arena, RespValue{ .bulk_string = index.name });
+    // index_name
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "index_name") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, index.name) });
 
-    // Field 2: index_options (empty array for now)
-    try result.append(arena, RespValue{ .bulk_string = "index_options" });
-    const empty_array = try arena.alloc(RespValue, 0);
-    try result.append(arena, RespValue{ .array = empty_array });
+    // index_options (empty for now)
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "index_options") });
+    var opts = try std.ArrayList(RespValue).initCapacity(arena, 0);
+    try array.append(arena, RespValue{ .array = try opts.toOwnedSlice(arena) });
 
-    // Field 3: index_definition (nested array with key_type, prefixes, default_score)
-    try result.append(arena, RespValue{ .bulk_string = "index_definition" });
+    // index_definition
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "index_definition") });
     var def = try std.ArrayList(RespValue).initCapacity(arena, 0);
     errdefer def.deinit(arena);
 
-    // key_type
-    try def.append(arena, RespValue{ .bulk_string = "key_type" });
-    const key_type_str = switch (index.index_on) {
+    try def.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "key_type") });
+    const key_type = switch (index.index_on) {
         .hash => "HASH",
         .json => "JSON",
     };
-    try def.append(arena, RespValue{ .bulk_string = key_type_str });
+    try def.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, key_type) });
 
-    // prefixes
-    try def.append(arena, RespValue{ .bulk_string = "prefixes" });
     if (index.prefix) |prefix| {
-        var prefix_array = try arena.alloc(RespValue, 1);
-        prefix_array[0] = RespValue{ .bulk_string = prefix };
-        try def.append(arena, RespValue{ .array = prefix_array });
-    } else {
-        const empty_prefix_array = try arena.alloc(RespValue, 0);
-        try def.append(arena, RespValue{ .array = empty_prefix_array });
+        try def.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "prefixes") });
+        var prefixes = try std.ArrayList(RespValue).initCapacity(arena, 1);
+        try prefixes.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, prefix) });
+        try def.append(arena, RespValue{ .array = try prefixes.toOwnedSlice(arena) });
     }
 
-    // default_score
-    try def.append(arena, RespValue{ .bulk_string = "default_score" });
-    try def.append(arena, RespValue{ .bulk_string = "1" });
+    try def.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "default_score") });
+    try def.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "1.0") });
 
-    const def_slice = try def.toOwnedSlice(arena);
-    try result.append(arena, RespValue{ .array = def_slice });
+    try array.append(arena, RespValue{ .array = try def.toOwnedSlice(arena) });
 
-    // Field 4: attributes (field definitions)
-    try result.append(arena, RespValue{ .bulk_string = "attributes" });
+    // attributes (field schemas)
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "attributes") });
     var attrs = try std.ArrayList(RespValue).initCapacity(arena, 0);
     errdefer attrs.deinit(arena);
 
     for (index.fields.items) |field| {
-        // Each field is an array of key-value pairs
-        var field_info = try std.ArrayList(RespValue).initCapacity(arena, 0);
-        errdefer field_info.deinit(arena);
+        var field_arr = try std.ArrayList(RespValue).initCapacity(arena, 0);
+        errdefer field_arr.deinit(arena);
 
-        // identifier (field name or alias)
-        try field_info.append(arena, RespValue{ .bulk_string = "identifier" });
-        const identifier = field.alias orelse field.name;
-        try field_info.append(arena, RespValue{ .bulk_string = identifier });
+        try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "identifier") });
+        try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, field.name) });
 
-        // attribute (original field name)
-        try field_info.append(arena, RespValue{ .bulk_string = "attribute" });
-        try field_info.append(arena, RespValue{ .bulk_string = field.name });
+        try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "attribute") });
+        const attr_name = if (field.alias) |alias| alias else field.name;
+        try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, attr_name) });
 
-        // type
-        try field_info.append(arena, RespValue{ .bulk_string = "type" });
+        try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "type") });
         const type_str = switch (field.field_type) {
             .text => "TEXT",
             .tag => "TAG",
@@ -308,75 +312,60 @@ pub fn cmdFtInfo(storage: *Storage, arena: std.mem.Allocator, args: []const []co
             .vector => "VECTOR",
             .geoshape => "GEOSHAPE",
         };
-        try field_info.append(arena, RespValue{ .bulk_string = type_str });
+        try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, type_str) });
 
-        // SORTABLE flag
+        // Add flags
         if (field.sortable) {
-            try field_info.append(arena, RespValue{ .bulk_string = "SORTABLE" });
+            try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "SORTABLE") });
         }
-
-        // NOINDEX flag
         if (field.noindex) {
-            try field_info.append(arena, RespValue{ .bulk_string = "NOINDEX" });
+            try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "NOINDEX") });
+        }
+        if (field.nostem) {
+            try field_arr.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "NOSTEM") });
         }
 
-        // NOSTEM flag (TEXT only)
-        if (field.nostem and field.field_type == .text) {
-            try field_info.append(arena, RespValue{ .bulk_string = "NOSTEM" });
-        }
-
-        const field_slice = try field_info.toOwnedSlice(arena);
-        try attrs.append(arena, RespValue{ .array = field_slice });
+        try attrs.append(arena, RespValue{ .array = try field_arr.toOwnedSlice(arena) });
     }
 
-    const attrs_slice = try attrs.toOwnedSlice(arena);
-    try result.append(arena, RespValue{ .array = attrs_slice });
+    try array.append(arena, RespValue{ .array = try attrs.toOwnedSlice(arena) });
 
-    // Field 5-10: Statistics (all stubs for now)
-    // num_docs
-    try result.append(arena, RespValue{ .bulk_string = "num_docs" });
-    try result.append(arena, RespValue{ .bulk_string = "0" });
+    // num_docs, max_doc_id, num_terms, num_records, inverted_sz_mb, percent_indexed
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "num_docs") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "0") });
 
-    // max_doc_id
-    try result.append(arena, RespValue{ .bulk_string = "max_doc_id" });
-    try result.append(arena, RespValue{ .bulk_string = "0" });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "max_doc_id") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "0") });
 
-    // num_terms
-    try result.append(arena, RespValue{ .bulk_string = "num_terms" });
-    try result.append(arena, RespValue{ .bulk_string = "0" });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "num_terms") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "0") });
 
-    // num_records
-    try result.append(arena, RespValue{ .bulk_string = "num_records" });
-    try result.append(arena, RespValue{ .bulk_string = "0" });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "num_records") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "0") });
 
-    // inverted_sz_mb
-    try result.append(arena, RespValue{ .bulk_string = "inverted_sz_mb" });
-    try result.append(arena, RespValue{ .bulk_string = "0" });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "inverted_sz_mb") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "0") });
 
-    // percent_indexed (1.0 = 100% indexed)
-    try result.append(arena, RespValue{ .bulk_string = "percent_indexed" });
-    try result.append(arena, RespValue{ .bulk_string = "1" });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "percent_indexed") });
+    try array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "1") });
 
-    const final_slice = try result.toOwnedSlice(arena);
-    return RespValue{ .array = final_slice };
+    return RespValue{ .array = try array.toOwnedSlice(arena) };
 }
 
-/// FT.ALTER index_name SCHEMA ADD field_name field_type [options...]
+/// FT.ALTER index_name SCHEMA ADD field_name field_type [options]
 ///
-/// Adds a new field to an existing index schema.
+/// Adds a new field to an existing index.
 ///
 /// Arguments:
-///   args[0]: index_name - name of the index to alter
-///   args[1]: "SCHEMA" keyword
-///   args[2]: "ADD" keyword
-///   args[3]: field_name - name of the field to add
-///   args[4]: field_type - type of field (TEXT, TAG, NUMERIC, GEO, VECTOR, GEOSHAPE)
-///   args[5..]: optional field options (SORTABLE, NOINDEX, NOSTEM, AS alias, etc.)
+///   args[0] = index_name
+///   args[1] = "SCHEMA"
+///   args[2] = "ADD"
+///   args[3] = field_name
+///   args[4] = field_type
+///   args[5..] = optional field options (SORTABLE, NOINDEX, NOSTEM, AS, etc.)
 ///
 /// Returns:
-///   Simple string "+OK" on success
-///
-/// Error:
+///   +OK on success
 ///   "ERR Unknown index name" if index doesn't exist
 ///   "ERR wrong number of arguments" if too few arguments
 ///   "ERR syntax error" if SCHEMA or ADD keyword missing
@@ -446,7 +435,7 @@ pub fn cmdFtAlter(storage: *Storage, arena: std.mem.Allocator, args: []const []c
             field.alias = try storage.allocator.dupe(u8, alias);
             i += 1;
         } else {
-            // Unknown option - stop parsing
+            // Unknown option
             break;
         }
     }
@@ -455,4 +444,159 @@ pub fn cmdFtAlter(storage: *Storage, arena: std.mem.Allocator, args: []const []c
     try index.addField(field);
 
     return RespValue{ .simple_string = "OK" };
+}
+
+/// FT.SEARCH index query [NOCONTENT] [LIMIT offset count] [RETURN num field ...] [SORTBY field [ASC|DESC]]
+///
+/// Searches an index for documents matching the query.
+///
+/// Arguments:
+///   args[0]: index_name
+///   args[1]: query string
+///   args[2..]: optional flags (NOCONTENT, LIMIT, RETURN, SORTBY)
+///
+/// Returns:
+///   Array with [total_count, doc_id1, fields1, doc_id2, fields2, ...]
+///   If NOCONTENT: [total_count, doc_id1, doc_id2, ...]
+///
+/// Error:
+///   "ERR Unknown index name" if index doesn't exist
+///   "ERR wrong number of arguments" if < 2 args
+///   "ERR Syntax error" for invalid options
+pub fn cmdFtSearch(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SEARCH' command" };
+    }
+
+    const index_name = args[0];
+    const query = args[1];
+
+    // Parse optional flags
+    var nocontent = false;
+    var limit_offset: usize = 0;
+    var limit_count: usize = 10;
+    var return_fields: ?[]const []const u8 = null;
+    var sortby_field: ?[]const u8 = null;
+    var sortby_desc = false;
+
+    var i: usize = 2;
+    while (i < args.len) {
+        const flag = args[i];
+
+        if (std.mem.eql(u8, flag, "NOCONTENT")) {
+            nocontent = true;
+            i += 1;
+        } else if (std.mem.eql(u8, flag, "LIMIT")) {
+            i += 1;
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR LIMIT requires two integer arguments" };
+            }
+
+            limit_offset = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR LIMIT offset must be an integer" };
+            };
+            i += 1;
+
+            limit_count = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR LIMIT count must be an integer" };
+            };
+            i += 1;
+        } else if (std.mem.eql(u8, flag, "RETURN")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR RETURN requires count followed by field names" };
+            }
+
+            const num_fields = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR RETURN count must be an integer" };
+            };
+            i += 1;
+
+            if (num_fields == 0) {
+                // RETURN 0 is equivalent to NOCONTENT
+                nocontent = true;
+            } else {
+                if (i + num_fields > args.len) {
+                    return RespValue{ .error_string = "ERR not enough field names for RETURN" };
+                }
+
+                return_fields = args[i .. i + num_fields];
+                i += num_fields;
+            }
+        } else if (std.mem.eql(u8, flag, "SORTBY")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR SORTBY requires field name" };
+            }
+
+            sortby_field = args[i];
+            i += 1;
+
+            // Check for optional ASC/DESC
+            if (i < args.len) {
+                if (std.mem.eql(u8, args[i], "DESC")) {
+                    sortby_desc = true;
+                    i += 1;
+                } else if (std.mem.eql(u8, args[i], "ASC")) {
+                    i += 1;
+                }
+            }
+        } else {
+            return RespValue{ .error_string = "ERR Syntax error" };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const index = storage.search.getIndex(index_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    };
+
+    // Perform search
+    var result = try index.search(
+        storage,
+        arena,
+        query,
+        limit_offset,
+        limit_count,
+        nocontent,
+        return_fields,
+        sortby_field,
+        sortby_desc,
+    );
+    defer result.deinit();
+
+    // Format response
+    var array = try std.ArrayList(RespValue).initCapacity(arena, 0);
+    errdefer array.deinit(arena);
+
+    // First element: total count
+    try array.append(arena, RespValue{ .integer = @intCast(result.total_count) });
+
+    // Subsequent elements: document ID + fields (or just ID if NOCONTENT)
+    for (result.documents) |*doc| {
+        // Document ID
+        const id_copy = try arena.dupe(u8, doc.id);
+        try array.append(arena, RespValue{ .bulk_string = id_copy });
+
+        if (!nocontent) {
+            // Document fields as flat array
+            var fields_arr = try std.ArrayList(RespValue).initCapacity(arena, 0);
+            errdefer fields_arr.deinit(arena);
+
+            var it = doc.fields.iterator();
+            while (it.next()) |entry| {
+                const field_name = try arena.dupe(u8, entry.key_ptr.*);
+                const field_value = try arena.dupe(u8, entry.value_ptr.*);
+
+                try fields_arr.append(arena, RespValue{ .bulk_string = field_name });
+                try fields_arr.append(arena, RespValue{ .bulk_string = field_value });
+            }
+
+            try array.append(arena, RespValue{ .array = try fields_arr.toOwnedSlice(arena) });
+        }
+    }
+
+    return RespValue{ .array = try array.toOwnedSlice(arena) };
 }
