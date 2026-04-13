@@ -601,3 +601,381 @@ test "FT.INFO: arity validation" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
 }
+
+test "FT.ALTER: add field to existing index" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index first
+    const create_cmd = "FT.CREATE myindex ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    // Alter index: add new field
+    const alter_cmd = "FT.ALTER myindex SCHEMA ADD price NUMERIC\r\n";
+    const parsed_alter = try parseCommand(allocator, alter_cmd);
+    defer parsed_alter.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed_alter.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "+OK") != null);
+}
+
+test "FT.ALTER: add field with SORTABLE" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE idx ON JSON SCHEMA name TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const alter_cmd = "FT.ALTER idx SCHEMA ADD age NUMERIC SORTABLE\r\n";
+    const parsed_alter = try parseCommand(allocator, alter_cmd);
+    defer parsed_alter.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed_alter.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "+OK") != null);
+}
+
+test "FT.ALTER: add field with AS alias" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE idx ON HASH SCHEMA f1 TAG\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const alter_cmd = "FT.ALTER idx SCHEMA ADD full_name TEXT AS name\r\n";
+    const parsed_alter = try parseCommand(allocator, alter_cmd);
+    defer parsed_alter.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed_alter.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "+OK") != null);
+}
+
+test "FT.ALTER: error on nonexistent index" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const cmd = "FT.ALTER nonexistent SCHEMA ADD field TEXT\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown index name") != null);
+}
+
+test "FT.ALTER: error on wrong arity" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const cmd = "FT.ALTER idx SCHEMA\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "FT.ALTER: error on missing SCHEMA keyword" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE idx ON HASH SCHEMA f1 TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const cmd = "FT.ALTER idx ADD field TEXT\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "expected SCHEMA") != null);
+}
+
+test "FT.ALTER: error on missing ADD keyword" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE idx ON HASH SCHEMA f1 TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const cmd = "FT.ALTER idx SCHEMA field TEXT\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "expected ADD") != null);
+}
+
+test "FT.ALTER: error on invalid field type" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE idx ON HASH SCHEMA f1 TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const cmd = "FT.ALTER idx SCHEMA ADD field INVALID\r\n";
+    const parsed = try parseCommand(allocator, cmd);
+    defer parsed.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "invalid field type") != null);
+}
+
+test "FT.ALTER: add multiple options" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE idx ON JSON SCHEMA f1 TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const alter_cmd = "FT.ALTER idx SCHEMA ADD f2 TEXT SORTABLE NOINDEX NOSTEM\r\n";
+    const parsed_alter = try parseCommand(allocator, alter_cmd);
+    defer parsed_alter.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result2 = try processCommand(arena2.allocator(), parsed_alter.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "+OK") != null);
+}

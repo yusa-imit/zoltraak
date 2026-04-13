@@ -360,3 +360,99 @@ pub fn cmdFtInfo(storage: *Storage, arena: std.mem.Allocator, args: []const []co
     const final_slice = try result.toOwnedSlice(arena);
     return RespValue{ .array = final_slice };
 }
+
+/// FT.ALTER index_name SCHEMA ADD field_name field_type [options...]
+///
+/// Adds a new field to an existing index schema.
+///
+/// Arguments:
+///   args[0]: index_name - name of the index to alter
+///   args[1]: "SCHEMA" keyword
+///   args[2]: "ADD" keyword
+///   args[3]: field_name - name of the field to add
+///   args[4]: field_type - type of field (TEXT, TAG, NUMERIC, GEO, VECTOR, GEOSHAPE)
+///   args[5..]: optional field options (SORTABLE, NOINDEX, NOSTEM, AS alias, etc.)
+///
+/// Returns:
+///   Simple string "+OK" on success
+///
+/// Error:
+///   "ERR Unknown index name" if index doesn't exist
+///   "ERR wrong number of arguments" if too few arguments
+///   "ERR syntax error" if SCHEMA or ADD keyword missing
+///   "ERR invalid field type" if field_type is not valid
+pub fn cmdFtAlter(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    _ = arena;
+
+    if (args.len < 5) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.ALTER' command" };
+    }
+
+    const index_name = args[0];
+
+    // Validate "SCHEMA" keyword
+    if (!std.mem.eql(u8, args[1], "SCHEMA")) {
+        return RespValue{ .error_string = "ERR syntax error, expected SCHEMA after index name" };
+    }
+
+    // Validate "ADD" keyword
+    if (!std.mem.eql(u8, args[2], "ADD")) {
+        return RespValue{ .error_string = "ERR syntax error, expected ADD after SCHEMA" };
+    }
+
+    const field_name = args[3];
+    const field_type_str = args[4];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get mutable index
+    var index = storage.search.getIndex(index_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    };
+
+    // Parse field type
+    const field_type = search_mod.FieldType.fromString(field_type_str) catch {
+        return RespValue{ .error_string = "ERR invalid field type" };
+    };
+
+    // Create new field
+    var field = try search_mod.FieldSchema.init(storage.allocator, field_name, field_type);
+    errdefer field.deinit();
+
+    // Parse field options (SORTABLE, NOINDEX, NOSTEM, AS, etc.)
+    var i: usize = 5;
+    while (i < args.len) {
+        const option = args[i];
+
+        if (std.mem.eql(u8, option, "SORTABLE")) {
+            field.sortable = true;
+            i += 1;
+        } else if (std.mem.eql(u8, option, "NOINDEX")) {
+            field.noindex = true;
+            i += 1;
+        } else if (std.mem.eql(u8, option, "NOSTEM")) {
+            field.nostem = true;
+            i += 1;
+        } else if (std.mem.eql(u8, option, "AS")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR AS requires alias argument" };
+            }
+            const alias = args[i];
+            if (field.alias) |old| {
+                storage.allocator.free(old);
+            }
+            field.alias = try storage.allocator.dupe(u8, alias);
+            i += 1;
+        } else {
+            // Unknown option - stop parsing
+            break;
+        }
+    }
+
+    // Add field to index
+    try index.addField(field);
+
+    return RespValue{ .simple_string = "OK" };
+}
