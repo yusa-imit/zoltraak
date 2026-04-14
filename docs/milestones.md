@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 190 (275 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 21% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 191 (276 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 24% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 13 (Search Engine) — in progress
 - **Next milestone**: Phase 13 (Search Engine FT.* commands) or Phase 14 (Time Series TS.* commands)
@@ -42,7 +42,7 @@
 
 **All 23 Phase 12 commands complete**: JSON.SET, JSON.GET, JSON.DEL, JSON.TYPE, JSON.MGET, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.MSET, JSON.FORGET, JSON.STRAPPEND, JSON.STRLEN, JSON.TOGGLE, JSON.CLEAR, JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN, JSON.RESP, JSON.MERGE, JSON.DEBUG HELP, JSON.DEBUG MEMORY
 
-### Phase 13 — Search Engine (21% complete) 🚧
+### Phase 13 — Search Engine (24% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -52,8 +52,9 @@
 | 188 | FT.SEARCH (basic query syntax: text matching, wildcards, NOCONTENT, LIMIT, RETURN, SORTBY) | Done ✅ |
 | 189 | FT.AGGREGATE (aggregation pipeline: LOAD, GROUPBY, REDUCE, SORTBY, LIMIT — stub implementation) | Done ✅ |
 | 190 | FT.EXPLAIN (query execution plan visualization — stub returns TERM wrapper) | Done ✅ |
+| 191 | FT.EXPLAINCLI (CLI-formatted query plan with array output — stub implementation) | Done ✅ |
 
-**7/30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN
+**8/30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
