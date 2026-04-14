@@ -523,6 +523,97 @@ pub fn cmdFtExplain(storage: *Storage, arena: std.mem.Allocator, args: []const [
     return RespValue{ .bulk_string = try plan.toOwnedSlice(arena) };
 }
 
+/// FT.EXPLAINCLI index query [DIALECT dialect]
+///
+/// Returns the query execution plan with CLI-formatted output (ANSI color codes).
+/// Similar to FT.EXPLAIN but returns an array of strings for CLI display.
+///
+/// Arguments:
+///   args[0]: index_name
+///   args[1]: query string
+///   args[2-3]: optional DIALECT <dialect_version>
+///
+/// Returns:
+///   Array of strings with color-coded query plan (stub: simple array representation)
+///
+/// Error:
+///   "ERR Unknown index name" if index doesn't exist
+///   "ERR wrong number of arguments" for invalid arity
+///   "ERR DIALECT requires an integer argument" if DIALECT without value
+///   "ERR DIALECT must be an integer" if non-numeric dialect
+///   "ERR syntax error" for invalid arguments
+pub fn cmdFtExplaincli(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.EXPLAINCLI' command" };
+    }
+
+    if (args.len > 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.EXPLAINCLI' command" };
+    }
+
+    const index_name = args[0];
+    const query = args[1];
+
+    // Parse optional DIALECT argument
+    var dialect: u32 = 1; // Default dialect
+    var i: usize = 2;
+    while (i < args.len) {
+        const keyword = args[i];
+
+        if (std.mem.eql(u8, keyword, "DIALECT")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR DIALECT requires an integer argument" };
+            }
+
+            dialect = std.fmt.parseInt(u32, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR DIALECT must be an integer" };
+            };
+
+            i += 1;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Verify index exists
+    if (storage.search.getIndex(index_name) == null) {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    }
+
+    // Generate CLI-formatted execution plan (stub)
+    // FT.EXPLAINCLI returns an array of strings with ANSI color codes
+    // For this stub implementation, we'll return a simple array representation
+    // Future iterations will add full query parsing and color coding
+    // Note: dialect parsed but not used in this stub implementation
+
+    // Build CLI-formatted plan as array of strings
+    var result_array = try std.ArrayList(RespValue).initCapacity(arena, 3);
+    errdefer {
+        for (result_array.items) |item| {
+            if (item == .bulk_string) arena.free(item.bulk_string);
+        }
+        result_array.deinit(arena);
+    }
+
+    // Line 1: Opening with TERM keyword (color code stub)
+    const line1 = try std.fmt.allocPrint(arena, "TERM {{", .{});
+    try result_array.append(arena, RespValue{ .bulk_string = line1 });
+
+    // Line 2: Query text indented
+    const line2 = try std.fmt.allocPrint(arena, "  {s}", .{query});
+    try result_array.append(arena, RespValue{ .bulk_string = line2 });
+
+    // Line 3: Closing brace
+    const line3 = try std.fmt.allocPrint(arena, "}}", .{});
+    try result_array.append(arena, RespValue{ .bulk_string = line3 });
+
+    return RespValue{ .array = try result_array.toOwnedSlice(arena) };
+}
+
 /// FT.SEARCH index query [NOCONTENT] [LIMIT offset count] [RETURN num field ...] [SORTBY field [ASC|DESC]]
 ///
 /// Searches an index for documents matching the query.
