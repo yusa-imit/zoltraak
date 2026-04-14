@@ -498,6 +498,17 @@ pub fn build(b: *std.Build) void {
     const run_ft_alter_tests = b.addRunArtifact(ft_alter_tests);
     integration_test_step.dependOn(&run_ft_alter_tests.step);
 
+    // FT.AGGREGATE integration tests
+    const ft_aggregate_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_ft_aggregate.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ft_aggregate_tests = b.addRunArtifact(ft_aggregate_tests);
+    integration_test_step.dependOn(&run_ft_aggregate_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{

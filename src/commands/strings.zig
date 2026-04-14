@@ -35,6 +35,7 @@ const sentinel_cmds = @import("sentinel.zig");
 const function_cmds = @import("functions.zig");
 const json_cmds = @import("json.zig");
 const search_cmds = @import("search.zig");
+const search_agg_cmds = @import("search_aggregate.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -1937,6 +1938,11 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "FT.SEARCH")) {
                 const result = try search_cmds.cmdFtSearch(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.AGGREGATE")) {
+                const result = try search_agg_cmds.cmdFtAggregate(storage, allocator, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

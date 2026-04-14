@@ -97,7 +97,7 @@ pub const SearchIndex = struct {
             .name = try allocator.dupe(u8, name),
             .index_on = index_on,
             .prefix = null,
-            .fields = try std.ArrayList(FieldSchema).initCapacity(allocator, 0),
+            .fields = std.ArrayList(FieldSchema).init(allocator),
             .created_at = std.time.timestamp(),
             .allocator = allocator,
         };
@@ -204,6 +204,71 @@ pub const SearchIndex = struct {
             .allocator = allocator,
         };
     }
+
+    /// Performs aggregation pipeline on search results (stub implementation)
+    ///
+    /// This initial version returns empty results. Future iterations will implement:
+    /// - GROUP BY with field grouping
+    /// - REDUCE operations (COUNT, SUM, AVG, MIN, MAX)
+    /// - SORTBY clause
+    /// - LOAD clause for field selection
+    ///
+    /// Arguments:
+    ///   storage: pointer to Storage for accessing data HashMap
+    ///   allocator: allocator for results
+    ///   query: search query string
+    ///   load_fields: optional fields to load into pipeline
+    ///   groupby_fields: optional fields to group by
+    ///   reduce_ops: reduce operations to apply
+    ///   sortby_fields: optional fields to sort by
+    ///   sortby_orders: sort orders (true=DESC, false=ASC)
+    ///   limit_offset: pagination offset
+    ///   limit_count: pagination count
+    ///
+    /// Returns:
+    ///   AggregateResult with row count and aggregated rows
+    pub fn aggregate(
+        self: *SearchIndex,
+        storage: anytype,
+        allocator: Allocator,
+        query: []const u8,
+        load_fields: ?[]const []const u8,
+        groupby_fields: ?[]const []const u8,
+        reduce_ops: []const ReduceOp,
+        sortby_fields: ?[]const []const u8,
+        sortby_orders: ?[]bool,
+        limit_offset: usize,
+        limit_count: usize,
+    ) !AggregateResult {
+        // TODO: Real implementation will use all parameters for:
+        // 1. search() with query to get base documents
+        // 2. LOAD clause to extract load_fields
+        // 3. GROUP BY groupby_fields
+        // 4. Apply reduce_ops (COUNT/SUM/AVG/MIN/MAX)
+        // 5. SORT BY sortby_fields with sortby_orders
+        // 6. Apply LIMIT limit_offset/limit_count
+
+        _ = self;
+        _ = storage;
+        _ = query;
+        _ = load_fields;
+        _ = groupby_fields;
+        _ = reduce_ops;
+        _ = sortby_fields;
+        _ = sortby_orders;
+        _ = limit_offset;
+        _ = limit_count;
+
+        // Stub: For now, return empty results
+
+        const rows = try allocator.alloc(AggregateRow, 0);
+
+        return AggregateResult{
+            .total_count = 0,
+            .rows = rows,
+            .allocator = allocator,
+        };
+    }
 };
 
 /// Document result from search
@@ -230,6 +295,16 @@ pub const Document = struct {
         self.fields.deinit();
     }
 
+    /// Sets a field in the document with automatic memory duplication.
+    ///
+    /// Ownership: Caller retains ownership of name and value.
+    /// This function duplicates both before storing.
+    ///
+    /// Arguments:
+    ///   - name: Field name (will be duplicated)
+    ///   - value: Field value (will be duplicated)
+    ///
+    /// Returns error if allocation fails or HashMap put fails.
     pub fn setField(self: *Document, name: []const u8, value: []const u8) !void {
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
@@ -252,6 +327,87 @@ pub const SearchResult = struct {
             doc.deinit(self.allocator);
         }
         self.allocator.free(self.documents);
+    }
+};
+
+/// Reduce operation type for aggregation
+pub const ReduceType = enum {
+    count,
+    sum,
+    min,
+    max,
+    avg,
+
+    pub fn fromString(s: []const u8) !ReduceType {
+        if (std.mem.eql(u8, s, "COUNT")) return .count;
+        if (std.mem.eql(u8, s, "SUM")) return .sum;
+        if (std.mem.eql(u8, s, "MIN")) return .min;
+        if (std.mem.eql(u8, s, "MAX")) return .max;
+        if (std.mem.eql(u8, s, "AVG")) return .avg;
+        return error.InvalidReduceType;
+    }
+};
+
+/// Reduce operation definition
+pub const ReduceOp = struct {
+    reduce_type: ReduceType,
+    args: []const []const u8,
+    as_name: ?[]const u8,
+};
+
+/// Aggregation row (group result)
+pub const AggregateRow = struct {
+    fields: std.StringHashMap([]const u8),
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) AggregateRow {
+        return AggregateRow{
+            .fields = std.StringHashMap([]const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *AggregateRow) void {
+        var it = self.fields.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.fields.deinit();
+    }
+
+    /// Sets a field in the aggregation row with automatic memory duplication.
+    ///
+    /// Ownership: Caller retains ownership of name and value.
+    /// This function duplicates both before storing.
+    ///
+    /// Arguments:
+    ///   - name: Field name (will be duplicated)
+    ///   - value: Field value (will be duplicated)
+    ///
+    /// Returns error if allocation fails or HashMap put fails.
+    pub fn setField(self: *AggregateRow, name: []const u8, value: []const u8) !void {
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+
+        const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
+
+        try self.fields.put(name_copy, value_copy);
+    }
+};
+
+/// Aggregation result
+pub const AggregateResult = struct {
+    total_count: usize,
+    rows: []AggregateRow,
+    allocator: Allocator,
+
+    pub fn deinit(self: *AggregateResult) void {
+        for (self.rows) |*row| {
+            row.deinit();
+        }
+        self.allocator.free(self.rows);
     }
 };
 
