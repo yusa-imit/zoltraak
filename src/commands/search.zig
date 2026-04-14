@@ -3,6 +3,7 @@ const Storage = @import("../storage/memory.zig").Storage;
 const parser = @import("../protocol/parser.zig");
 const RespValue = parser.RespValue;
 const search_mod = @import("../storage/search.zig");
+const search_agg = @import("search_aggregate.zig");
 
 /// FT.CREATE index_name ON HASH|JSON [PREFIX count prefix [prefix ...]] SCHEMA field_name field_type [options ...]
 ///
@@ -767,4 +768,219 @@ pub fn cmdFtSearch(storage: *Storage, arena: std.mem.Allocator, args: []const []
     }
 
     return RespValue{ .array = try array.toOwnedSlice(arena) };
+}
+
+/// FT.PROFILE index SEARCH|AGGREGATE [LIMITED] QUERY query [options...]
+///
+/// Profiles an FT.SEARCH or FT.AGGREGATE command and returns both the query results
+/// and detailed performance metrics.
+///
+/// Arguments:
+///   args[0] = index_name
+///   args[1] = "SEARCH" or "AGGREGATE"
+///   args[2] = optional "LIMITED" flag
+///   args[next] = "QUERY"
+///   args[next+1] = query string
+///   args[next+2..] = optional options (NOCONTENT, LIMIT, DIALECT, etc.)
+///
+/// Returns:
+///   2-element array:
+///     1) Query results (identical to FT.SEARCH or FT.AGGREGATE)
+///     2) Profile data array with metrics:
+///        - "Total profile time" => milliseconds
+///        - "Parsing time" => milliseconds
+///        - "Pipeline creation time" => milliseconds
+///        - "Warning" => warning message (empty if none)
+///        - "Iterators profile" => iterator tree structure
+///        - "Result processors profile" => processor metrics array
+///
+/// Errors:
+///   "ERR wrong number of arguments for 'FT.PROFILE' command" if too few args
+///   "ERR Unknown index name" if index doesn't exist
+///   "ERR syntax error, expected SEARCH or AGGREGATE" if invalid query type
+///   "ERR syntax error, expected QUERY keyword" if QUERY keyword missing
+pub fn cmdFtProfile(storage: *Storage, allocator: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.PROFILE' command" };
+    }
+
+    const index_name = args[0];
+    const query_type_str = args[1];
+
+    // Validate query type (SEARCH or AGGREGATE)
+    const is_search = std.mem.eql(u8, query_type_str, "SEARCH");
+    const is_aggregate = std.mem.eql(u8, query_type_str, "AGGREGATE");
+
+    if (!is_search and !is_aggregate) {
+        return RespValue{ .error_string = "ERR syntax error, expected SEARCH or AGGREGATE" };
+    }
+
+    // Parse LIMITED flag if present (when set, omits "Child iterators" field from iterator tree to reduce output size)
+    var query_start_idx: usize = 2;
+    var limited = false;
+    if (args.len > 2 and std.mem.eql(u8, args[2], "LIMITED")) {
+        limited = true;
+        query_start_idx = 3;
+    }
+
+    // Validate QUERY keyword
+    if (query_start_idx >= args.len or !std.mem.eql(u8, args[query_start_idx], "QUERY")) {
+        return RespValue{ .error_string = "ERR syntax error, expected QUERY keyword" };
+    }
+
+    if (query_start_idx + 1 >= args.len) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.PROFILE' command" };
+    }
+
+    // Verify index exists
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    if (storage.search.getIndex(index_name) == null) {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    }
+
+    // Build arguments for FT.SEARCH or FT.AGGREGATE (skip "QUERY" keyword)
+    const query_args = args[query_start_idx + 1..];
+
+    // Time the query execution
+    const start_time_ns = std.time.nanoTimestamp();
+
+    // Execute query (delegates to FT.SEARCH or FT.AGGREGATE based on query type)
+    const query_result = if (is_search)
+        try cmdFtSearch(storage, allocator, query_args)
+    else
+        try search_agg.cmdFtAggregate(storage, allocator, query_args);
+
+    const end_time_ns = std.time.nanoTimestamp();
+    const total_time_ms = @as(f64, @floatFromInt(end_time_ns - start_time_ns)) / 1_000_000.0;
+
+    // Build profile data structure
+    var profile_array = try std.ArrayList(RespValue).initCapacity(allocator, 6);
+    errdefer profile_array.deinit(allocator);
+
+    // "Total profile time"
+    var total_pair = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer total_pair.deinit(allocator);
+    try total_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Total profile time") });
+    var time_buf: [32]u8 = undefined;
+    const time_str = try std.fmt.bufPrint(&time_buf, "{d:.3}", .{total_time_ms});
+    try total_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, time_str) });
+    const total_slice = try total_pair.toOwnedSlice(allocator);
+    errdefer allocator.free(total_slice);
+    try profile_array.append(allocator, RespValue{ .array = total_slice });
+
+    // "Parsing time" (stub: 0.0)
+    var parsing_pair = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer parsing_pair.deinit(allocator);
+    try parsing_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Parsing time") });
+    try parsing_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0.0") });
+    const parsing_slice = try parsing_pair.toOwnedSlice(allocator);
+    errdefer allocator.free(parsing_slice);
+    try profile_array.append(allocator, RespValue{ .array = parsing_slice });
+
+    // "Pipeline creation time" (stub: 0.0)
+    var pipeline_pair = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer pipeline_pair.deinit(allocator);
+    try pipeline_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Pipeline creation time") });
+    try pipeline_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0.0") });
+    const pipeline_slice = try pipeline_pair.toOwnedSlice(allocator);
+    errdefer allocator.free(pipeline_slice);
+    try profile_array.append(allocator, RespValue{ .array = pipeline_slice });
+
+    // "Warning" (stub: empty)
+    var warning_pair = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer warning_pair.deinit(allocator);
+    try warning_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Warning") });
+    try warning_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "") });
+    const warning_slice = try warning_pair.toOwnedSlice(allocator);
+    errdefer allocator.free(warning_slice);
+    try profile_array.append(allocator, RespValue{ .array = warning_slice });
+
+    // "Iterators profile" (stub: WILDCARD iterator tree)
+    var iterators_pair = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer iterators_pair.deinit(allocator);
+    try iterators_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Iterators profile") });
+
+    var iterator_tree = try std.ArrayList(RespValue).initCapacity(allocator, 8);
+    errdefer iterator_tree.deinit(allocator);
+
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Type") });
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "WILDCARD") });
+
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Query type") });
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "WILDCARD") });
+
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Time") });
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0.0") });
+
+    try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Number of reading operations") });
+    try iterator_tree.append(allocator, RespValue{ .integer = 0 });
+
+    // Add child iterators only if not LIMITED
+    if (!limited) {
+        try iterator_tree.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Child iterators") });
+        var children = try std.ArrayList(RespValue).initCapacity(allocator, 0);
+        const children_slice = try children.toOwnedSlice(allocator);
+        errdefer allocator.free(children_slice);
+        try iterator_tree.append(allocator, RespValue{ .array = children_slice });
+    }
+
+    const iterator_tree_slice = try iterator_tree.toOwnedSlice(allocator);
+    errdefer allocator.free(iterator_tree_slice);
+    try iterators_pair.append(allocator, RespValue{ .array = iterator_tree_slice });
+    const iterators_pair_slice = try iterators_pair.toOwnedSlice(allocator);
+    errdefer allocator.free(iterators_pair_slice);
+    try profile_array.append(allocator, RespValue{ .array = iterators_pair_slice });
+
+    // "Result processors profile" (stub: basic processors)
+    var processors_pair = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer processors_pair.deinit(allocator);
+    try processors_pair.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Result processors profile") });
+
+    var processors_list = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer processors_list.deinit(allocator);
+
+    // Index processor
+    var index_proc = try std.ArrayList(RespValue).initCapacity(allocator, 6);
+    errdefer index_proc.deinit(allocator);
+    try index_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Type") });
+    try index_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Index") });
+    try index_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Time") });
+    try index_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0.0") });
+    try index_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Results processed") });
+    try index_proc.append(allocator, RespValue{ .integer = 0 });
+    const index_proc_slice = try index_proc.toOwnedSlice(allocator);
+    errdefer allocator.free(index_proc_slice);
+    try processors_list.append(allocator, RespValue{ .array = index_proc_slice });
+
+    // Processor based on query type
+    const processor_type = if (is_search) "Counter" else "Grouper";
+    var typed_proc = try std.ArrayList(RespValue).initCapacity(allocator, 6);
+    errdefer typed_proc.deinit(allocator);
+    try typed_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Type") });
+    try typed_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, processor_type) });
+    try typed_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Time") });
+    try typed_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "0.0") });
+    try typed_proc.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "Results processed") });
+    try typed_proc.append(allocator, RespValue{ .integer = 0 });
+    const typed_proc_slice = try typed_proc.toOwnedSlice(allocator);
+    errdefer allocator.free(typed_proc_slice);
+    try processors_list.append(allocator, RespValue{ .array = typed_proc_slice });
+
+    const processors_list_slice = try processors_list.toOwnedSlice(allocator);
+    errdefer allocator.free(processors_list_slice);
+    try processors_pair.append(allocator, RespValue{ .array = processors_list_slice });
+    const processors_pair_slice = try processors_pair.toOwnedSlice(allocator);
+    errdefer allocator.free(processors_pair_slice);
+    try profile_array.append(allocator, RespValue{ .array = processors_pair_slice });
+
+    // Build final 2-element response array
+    var response = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer response.deinit(allocator);
+
+    try response.append(allocator, query_result);
+    try response.append(allocator, RespValue{ .array = try profile_array.toOwnedSlice(allocator) });
+
+    return RespValue{ .array = try response.toOwnedSlice(allocator) };
 }
