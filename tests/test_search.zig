@@ -1097,3 +1097,352 @@ test "FT.SEARCH: error on wrong arity" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
 }
+
+// FT.EXPLAIN tests
+test "FT.EXPLAIN: basic query explanation" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE myindex ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const create_result = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(create_result);
+
+    // Explain query
+    const explain_cmd = "FT.EXPLAIN myindex hello\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result = try processCommand(arena2.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "TERM") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "hello") != null);
+}
+
+test "FT.EXPLAIN: multi-word query" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE idx ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const create_result = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(create_result);
+
+    // Explain multi-word query
+    const explain_cmd = "FT.EXPLAIN idx hello world\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result = try processCommand(arena2.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "hello world") != null);
+}
+
+test "FT.EXPLAIN: with DIALECT argument" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE idx2 ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const create_result = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(create_result);
+
+    // Explain with DIALECT 2
+    const explain_cmd = "FT.EXPLAIN idx2 test DIALECT 2\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result = try processCommand(arena2.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "TERM") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "test") != null);
+}
+
+test "FT.EXPLAIN: error on nonexistent index" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Explain on nonexistent index
+    const explain_cmd = "FT.EXPLAIN nonexistent hello\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown index name") != null);
+}
+
+test "FT.EXPLAIN: error on missing query" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Explain with missing query argument
+    const explain_cmd = "FT.EXPLAIN myindex\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const result = try processCommand(arena.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "FT.EXPLAIN: error on invalid DIALECT" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE idx3 ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const create_result = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(create_result);
+
+    // Explain with invalid DIALECT value
+    const explain_cmd = "FT.EXPLAIN idx3 hello DIALECT abc\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result = try processCommand(arena2.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "must be an integer") != null);
+}
+
+test "FT.EXPLAIN: error on too many arguments" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE idx4 ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const create_result = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(create_result);
+
+    // Explain with too many arguments
+    const explain_cmd = "FT.EXPLAIN idx4 hello DIALECT 1 extra\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result = try processCommand(arena2.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "wrong number of arguments") != null);
+}
+
+test "FT.EXPLAIN: error on missing DIALECT value" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    // Create index
+    const create_cmd = "FT.CREATE idx5 ON HASH SCHEMA title TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+
+    const create_result = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(create_result);
+
+    // Explain with DIALECT but no value
+    const explain_cmd = "FT.EXPLAIN idx5 hello DIALECT\r\n";
+    const parsed_explain = try parseCommand(allocator, explain_cmd);
+    defer parsed_explain.deinit(allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+
+    const result = try processCommand(arena2.allocator(), parsed_explain.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "requires an integer argument") != null);
+}

@@ -39,7 +39,7 @@ pub fn cmdFtAggregate(storage: *Storage, arena: std.mem.Allocator, args: []const
     // Parse aggregation pipeline clauses
     var load_fields: ?[]const []const u8 = null;
     var groupby_fields: ?[]const []const u8 = null;
-    var reduce_ops = std.ArrayList(search_mod.ReduceOp).init(arena);
+    var reduce_ops = try std.ArrayList(search_mod.ReduceOp).initCapacity(arena, 0);
     defer reduce_ops.deinit(arena);
     var sortby_fields: ?[]const []const u8 = null;
     var sortby_orders: ?[]bool = null; // true = DESC, false = ASC
@@ -206,7 +206,7 @@ pub fn cmdFtAggregate(storage: *Storage, arena: std.mem.Allocator, args: []const
     try array.append(arena, RespValue{ .integer = @intCast(agg_result.total_count) });
 
     for (agg_result.rows) |*row| {
-        var row_arr = std.ArrayList(RespValue).init(arena);
+        var row_arr = try std.ArrayList(RespValue).initCapacity(arena, 0);
         errdefer row_arr.deinit(arena);
 
         var field_iter = row.fields.iterator();

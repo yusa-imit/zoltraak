@@ -97,7 +97,7 @@ pub const SearchIndex = struct {
             .name = try allocator.dupe(u8, name),
             .index_on = index_on,
             .prefix = null,
-            .fields = std.ArrayList(FieldSchema).init(allocator),
+            .fields = try std.ArrayList(FieldSchema).initCapacity(allocator, 0),
             .created_at = std.time.timestamp(),
             .allocator = allocator,
         };

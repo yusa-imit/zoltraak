@@ -446,6 +446,83 @@ pub fn cmdFtAlter(storage: *Storage, arena: std.mem.Allocator, args: []const []c
     return RespValue{ .simple_string = "OK" };
 }
 
+/// FT.EXPLAIN index query [DIALECT dialect]
+///
+/// Returns the execution plan for a query without executing it.
+///
+/// This is a stub implementation that:
+/// - Validates the index exists
+/// - Parses DIALECT argument if present (stored but not used yet)
+/// - Returns a simple execution plan showing the query as a TERM
+///
+/// Arguments:
+///   args[0] = index_name
+///   args[1] = query string
+///   args[2..] = optional DIALECT argument
+///
+/// Returns:
+///   Bulk string containing the execution plan
+///   Error if index doesn't exist or wrong number of arguments
+pub fn cmdFtExplain(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.EXPLAIN' command" };
+    }
+
+    if (args.len > 4) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.EXPLAIN' command" };
+    }
+
+    const index_name = args[0];
+    const query = args[1];
+
+    // Parse optional DIALECT argument
+    var dialect: u32 = 1; // Default dialect
+    var i: usize = 2;
+    while (i < args.len) {
+        const keyword = args[i];
+
+        if (std.mem.eql(u8, keyword, "DIALECT")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR DIALECT requires an integer argument" };
+            }
+
+            dialect = std.fmt.parseInt(u32, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR DIALECT must be an integer" };
+            };
+
+            i += 1;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Verify index exists
+    if (storage.search.getIndex(index_name) == null) {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    }
+
+    // Generate simple execution plan (stub)
+    // For now, just return the query as a single TERM
+    // Future iterations will add full query parsing
+    // Note: dialect parsed but not used in this stub implementation
+
+    // Build execution plan string
+    var plan = try std.ArrayList(u8).initCapacity(arena, 100);
+    errdefer plan.deinit(arena);
+
+    try plan.appendSlice(arena, "TERM {\n");
+    try plan.appendSlice(arena, "  ");
+    try plan.appendSlice(arena, query);
+    try plan.appendSlice(arena, "\n");
+    try plan.appendSlice(arena, "}\n");
+
+    return RespValue{ .bulk_string = try plan.toOwnedSlice(arena) };
+}
+
 /// FT.SEARCH index query [NOCONTENT] [LIMIT offset count] [RETURN num field ...] [SORTBY field [ASC|DESC]]
 ///
 /// Searches an index for documents matching the query.
