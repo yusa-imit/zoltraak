@@ -566,6 +566,18 @@ pub fn build(b: *std.Build) void {
     const run_ft_cursor_tests = b.addRunArtifact(ft_cursor_tests);
     integration_test_step.dependOn(&run_ft_cursor_tests.step);
 
+    // FT.ALIAS* commands integration tests (Iteration 195)
+    const ft_alias_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_ft_alias.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_ft_alias_tests = b.addRunArtifact(ft_alias_tests);
+    integration_test_step.dependOn(&run_ft_alias_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{

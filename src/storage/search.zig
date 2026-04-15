@@ -611,6 +611,8 @@ pub const SearchStore = struct {
     next_cursor_id: u64,
     /// Maximum cursor idle time in seconds (default 300)
     cursor_max_idle: i64,
+    /// Map: alias_name -> target_index_name
+    aliases: std.StringHashMap([]const u8),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) SearchStore {
@@ -619,6 +621,7 @@ pub const SearchStore = struct {
             .cursors = std.AutoHashMap(u64, SearchCursor).init(allocator),
             .next_cursor_id = 1,
             .cursor_max_idle = 300, // 300 seconds = 5 minutes
+            .aliases = std.StringHashMap([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
@@ -637,6 +640,14 @@ pub const SearchStore = struct {
             cursor.deinit();
         }
         self.cursors.deinit();
+
+        // Free aliases: both key and value strings
+        var alias_it = self.aliases.iterator();
+        while (alias_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.aliases.deinit();
     }
 
     /// Create a new search index
@@ -659,7 +670,7 @@ pub const SearchStore = struct {
         return self.indices.getPtr(name);
     }
 
-    /// Drop index by name
+    /// Drop index by name and remove all aliases pointing to it
     pub fn dropIndex(self: *SearchStore, name: []const u8) !void {
         if (self.indices.fetchRemove(name)) |kv| {
             var index = kv.value;
@@ -667,6 +678,25 @@ pub const SearchStore = struct {
         } else {
             return error.IndexNotFound;
         }
+
+        // Remove all aliases pointing to this index
+        var alias_keys_to_remove = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch return;
+        errdefer alias_keys_to_remove.deinit(self.allocator);
+
+        var alias_it = self.aliases.iterator();
+        while (alias_it.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.*, name)) {
+                alias_keys_to_remove.append(self.allocator, entry.key_ptr.*) catch return;
+            }
+        }
+
+        for (alias_keys_to_remove.items) |alias_key| {
+            if (self.aliases.fetchRemove(alias_key)) |kv| {
+                self.allocator.free(kv.key);
+                self.allocator.free(kv.value);
+            }
+        }
+        alias_keys_to_remove.deinit(self.allocator);
     }
 
     /// List all index names
@@ -793,6 +823,108 @@ pub const SearchStore = struct {
         }
 
         return expired_count;
+    }
+
+    /// Add an alias for an index
+    ///
+    /// Arguments:
+    ///   alias: alias name
+    ///   index_name: target index name
+    ///
+    /// Returns error if:
+    ///   - index doesn't exist (IndexNotFound)
+    ///   - alias already exists (AliasAlreadyExists)
+    ///   - alias name equals index name (AliasEqualsIndexName)
+    pub fn addAlias(self: *SearchStore, alias: []const u8, index_name: []const u8) !void {
+        // Validate index exists
+        if (!self.indices.contains(index_name)) {
+            return error.IndexNotFound;
+        }
+
+        // Validate alias != index_name
+        if (std.mem.eql(u8, alias, index_name)) {
+            return error.AliasEqualsIndexName;
+        }
+
+        // Validate alias not already in aliases map
+        if (self.aliases.contains(alias)) {
+            return error.AliasAlreadyExists;
+        }
+
+        // Duplicate alias and index_name strings
+        const alias_copy = try self.allocator.dupe(u8, alias);
+        errdefer self.allocator.free(alias_copy);
+
+        const index_copy = try self.allocator.dupe(u8, index_name);
+        errdefer self.allocator.free(index_copy);
+
+        // Put into aliases map
+        try self.aliases.put(alias_copy, index_copy);
+    }
+
+    /// Delete an alias
+    ///
+    /// Arguments:
+    ///   alias: alias name to delete
+    ///
+    /// Returns error if alias doesn't exist (AliasNotFound)
+    pub fn deleteAlias(self: *SearchStore, alias: []const u8) !void {
+        if (self.aliases.fetchRemove(alias)) |kv| {
+            self.allocator.free(kv.key);
+            self.allocator.free(kv.value);
+        } else {
+            return error.AliasNotFound;
+        }
+    }
+
+    /// Update an existing alias to point to a different index
+    ///
+    /// Arguments:
+    ///   alias: existing alias name
+    ///   new_index_name: new target index name
+    ///
+    /// Returns error if:
+    ///   - alias doesn't exist (AliasNotFound)
+    ///   - new_index doesn't exist (IndexNotFound)
+    pub fn updateAlias(self: *SearchStore, alias: []const u8, new_index_name: []const u8) !void {
+        // Check alias exists
+        if (!self.aliases.contains(alias)) {
+            return error.AliasNotFound;
+        }
+
+        // Validate new_index exists
+        if (!self.indices.contains(new_index_name)) {
+            return error.IndexNotFound;
+        }
+
+        // Duplicate new_index_name
+        const index_copy = try self.allocator.dupe(u8, new_index_name);
+        errdefer self.allocator.free(index_copy);
+
+        // Update map value
+        if (self.aliases.fetchRemove(alias)) |kv| {
+            self.allocator.free(kv.value);
+            try self.aliases.put(kv.key, index_copy);
+        }
+    }
+
+    /// Resolve a name to an index name
+    ///
+    /// If name is an index, returns the index name.
+    /// If name is an alias, returns the target index name.
+    /// Otherwise returns IndexNotFound.
+    pub fn getIndexByAlias(self: *SearchStore, name_or_alias: []const u8) ![]const u8 {
+        // Check if it's an index name
+        if (self.indices.contains(name_or_alias)) {
+            return name_or_alias;
+        }
+
+        // Check if it's an alias
+        if (self.aliases.get(name_or_alias)) |target_name| {
+            return target_name;
+        }
+
+        return error.IndexNotFound;
     }
 };
 

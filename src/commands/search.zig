@@ -1314,3 +1314,94 @@ pub fn cmdFtCursorDel(storage: *Storage, _: std.mem.Allocator, args: []const []c
 
     return RespValue{ .simple_string = "OK" };
 }
+
+/// FT.ALIASADD alias index
+///
+/// Creates an alias for a search index.
+///
+/// Returns +OK on success.
+/// Errors:
+/// - wrong number of arguments
+/// - Unknown index name (if index doesn't exist)
+/// - Alias already exists
+pub fn cmdFtAliasadd(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.ALIASADD' command" };
+    }
+
+    const alias = args[0];
+    const index_name = args[1];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    storage.search.addAlias(alias, index_name) catch |err| {
+        return switch (err) {
+            error.IndexNotFound => RespValue{ .error_string = "ERR Unknown index name" },
+            error.AliasAlreadyExists => RespValue{ .error_string = "ERR Alias already exists" },
+            error.AliasEqualsIndexName => RespValue{ .error_string = "ERR Alias name equals index name" },
+            else => return err,
+        };
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}
+
+/// FT.ALIASDEL alias
+///
+/// Deletes an alias.
+///
+/// Returns +OK on success.
+/// Errors:
+/// - wrong number of arguments
+/// - Alias does not exist
+pub fn cmdFtAliasdel(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.ALIASDEL' command" };
+    }
+
+    const alias = args[0];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    storage.search.deleteAlias(alias) catch |err| {
+        return switch (err) {
+            error.AliasNotFound => RespValue{ .error_string = "ERR Alias does not exist" },
+            else => return err,
+        };
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}
+
+/// FT.ALIASUPDATE alias index
+///
+/// Updates an existing alias to point to a different index.
+///
+/// Returns +OK on success.
+/// Errors:
+/// - wrong number of arguments
+/// - Alias does not exist
+/// - Unknown index name (if new index doesn't exist)
+pub fn cmdFtAliasupdate(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.ALIASUPDATE' command" };
+    }
+
+    const alias = args[0];
+    const new_index_name = args[1];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    storage.search.updateAlias(alias, new_index_name) catch |err| {
+        return switch (err) {
+            error.AliasNotFound => RespValue{ .error_string = "ERR Alias does not exist" },
+            error.IndexNotFound => RespValue{ .error_string = "ERR Unknown index name" },
+            else => return err,
+        };
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}
