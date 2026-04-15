@@ -1156,3 +1156,161 @@ pub fn cmdFtSpellcheck(storage: *Storage, arena: std.mem.Allocator, args: []cons
     const outer_slice = try outer_array.toOwnedSlice(arena);
     return RespValue{ .array = outer_slice };
 }
+
+/// FT.CURSOR READ index cursor_id [COUNT read_size]
+///
+/// Reads from a cursor created by FT.AGGREGATE ... WITHCURSOR.
+/// Advances the cursor offset by the number of documents returned.
+///
+/// Arguments:
+///   args[0] = index_name
+///   args[1] = cursor_id (integer)
+///   args[2..] = optional COUNT read_size
+///
+/// Returns:
+///   2-element array: [results_array, cursor_id or 0 if exhausted]
+///   Error if cursor not found or index doesn't exist
+///
+/// Side Effects:
+///   Mutates cursor.offset to track pagination position
+pub fn cmdFtCursorRead(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.CURSOR READ' command" };
+    }
+
+    const index_name = args[0];
+    const cursor_id = std.fmt.parseInt(u64, args[1], 10) catch {
+        return RespValue{ .error_string = "ERR invalid cursor ID" };
+    };
+
+    // Parse optional COUNT parameter
+    var read_count: ?usize = null;
+    if (args.len >= 4 and std.mem.eql(u8, args[2], "COUNT")) {
+        read_count = std.fmt.parseInt(usize, args[3], 10) catch {
+            return RespValue{ .error_string = "ERR invalid COUNT value" };
+        };
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Verify index exists
+    const index = storage.search.getIndex(index_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    };
+
+    // Get cursor
+    const cursor = storage.search.getCursor(cursor_id) orelse {
+        return RespValue{ .error_string = "ERR Cursor does not exist" };
+    };
+
+    // Verify cursor belongs to this index
+    if (!std.mem.eql(u8, cursor.index_name, index_name)) {
+        return RespValue{ .error_string = "ERR Cursor belongs to different index" };
+    }
+
+    // Determine page size (use COUNT parameter or cursor default)
+    const page_size = read_count orelse cursor.default_count;
+
+    // Execute search with current offset
+    var result = try index.search(
+        storage,
+        arena,
+        cursor.query,
+        cursor.offset,
+        page_size,
+        cursor.nocontent,
+        cursor.return_fields,
+        cursor.sortby_field,
+        cursor.sortby_desc,
+    );
+    defer result.deinit();
+
+    // Update cursor offset
+    cursor.offset += result.documents.len;
+
+    // Check if cursor exhausted
+    const next_cursor_id = if (cursor.offset >= cursor.total_count) 0 else cursor_id;
+
+    // Build result array: [results, cursor_id]
+    var response_array = try std.ArrayList(RespValue).initCapacity(arena, 2);
+    errdefer response_array.deinit(arena);
+
+    // Results array
+    var docs_array = try std.ArrayList(RespValue).initCapacity(arena, result.documents.len);
+    errdefer docs_array.deinit(arena);
+
+    for (result.documents) |doc| {
+        // Build document result (same as FT.SEARCH format)
+        var doc_array = try std.ArrayList(RespValue).initCapacity(arena, 2);
+        errdefer doc_array.deinit(arena);
+
+        try doc_array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, doc.id) });
+
+        if (!cursor.nocontent) {
+            var field_array = try std.ArrayList(RespValue).initCapacity(arena, doc.fields.count() * 2);
+            errdefer field_array.deinit(arena);
+
+            var field_it = doc.fields.iterator();
+            while (field_it.next()) |entry| {
+                try field_array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, entry.key_ptr.*) });
+                try field_array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, entry.value_ptr.*) });
+            }
+
+            const field_slice = try field_array.toOwnedSlice(arena);
+            errdefer arena.free(field_slice);
+            try doc_array.append(arena, RespValue{ .array = field_slice });
+        }
+
+        const doc_slice = try doc_array.toOwnedSlice(arena);
+        errdefer arena.free(doc_slice);
+        try docs_array.append(arena, RespValue{ .array = doc_slice });
+    }
+
+    const docs_slice = try docs_array.toOwnedSlice(arena);
+    errdefer arena.free(docs_slice);
+    try response_array.append(arena, RespValue{ .array = docs_slice });
+
+    // Cursor ID (0 if exhausted)
+    try response_array.append(arena, RespValue{ .integer = @intCast(next_cursor_id) });
+
+    const response_slice = try response_array.toOwnedSlice(arena);
+    return RespValue{ .array = response_slice };
+}
+
+/// FT.CURSOR DEL index cursor_id
+///
+/// Deletes a cursor to free resources.
+///
+/// Arguments:
+///   args[0] = index_name
+///   args[1] = cursor_id (integer)
+///
+/// Returns:
+///   +OK on success
+///   Error if cursor doesn't exist
+pub fn cmdFtCursorDel(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.CURSOR DEL' command" };
+    }
+
+    const index_name = args[0];
+    const cursor_id = std.fmt.parseInt(u64, args[1], 10) catch {
+        return RespValue{ .error_string = "ERR invalid cursor ID" };
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Verify index exists
+    if (storage.search.getIndex(index_name) == null) {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    }
+
+    // Delete cursor
+    storage.search.deleteCursor(cursor_id) catch {
+        return RespValue{ .error_string = "ERR Cursor does not exist" };
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}

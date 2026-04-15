@@ -505,15 +505,120 @@ pub const SpellCheckResult = struct {
     }
 };
 
+/// Search cursor for pagination
+pub const SearchCursor = struct {
+    /// Cursor ID (unique integer)
+    id: u64,
+    /// Index name
+    index_name: []const u8,
+    /// Search query
+    query: []const u8,
+    /// Current offset in results
+    offset: usize,
+    /// Total result count
+    total_count: usize,
+    /// Default page size (COUNT parameter)
+    default_count: usize,
+    /// Last access timestamp (for idle timeout)
+    last_access: i64,
+    /// Search parameters
+    nocontent: bool,
+    return_fields: ?[]const []const u8,
+    sortby_field: ?[]const u8,
+    sortby_desc: bool,
+
+    allocator: Allocator,
+
+    pub fn init(
+        allocator: Allocator,
+        id: u64,
+        index_name: []const u8,
+        query: []const u8,
+        total_count: usize,
+        default_count: usize,
+        nocontent: bool,
+        return_fields: ?[]const []const u8,
+        sortby_field: ?[]const u8,
+        sortby_desc: bool,
+    ) !SearchCursor {
+        const index_name_copy = try allocator.dupe(u8, index_name);
+        errdefer allocator.free(index_name_copy);
+
+        const query_copy = try allocator.dupe(u8, query);
+        errdefer allocator.free(query_copy);
+
+        const return_fields_copy = if (return_fields) |fields| blk: {
+            const fields_copy = try allocator.alloc([]const u8, fields.len);
+            var allocated_count: usize = 0;
+            errdefer {
+                for (fields_copy[0..allocated_count]) |field| {
+                    allocator.free(field);
+                }
+                allocator.free(fields_copy);
+            }
+            for (fields, 0..) |field, i| {
+                fields_copy[i] = try allocator.dupe(u8, field);
+                allocated_count = i + 1;
+            }
+            break :blk fields_copy;
+        } else null;
+        errdefer if (return_fields_copy) |fields| {
+            for (fields) |field| allocator.free(field);
+            allocator.free(fields);
+        };
+
+        const sortby_field_copy = if (sortby_field) |field| try allocator.dupe(u8, field) else null;
+        errdefer if (sortby_field_copy) |field| allocator.free(field);
+
+        return SearchCursor{
+            .id = id,
+            .index_name = index_name_copy,
+            .query = query_copy,
+            .offset = 0,
+            .total_count = total_count,
+            .default_count = default_count,
+            .last_access = std.time.timestamp(),
+            .nocontent = nocontent,
+            .return_fields = return_fields_copy,
+            .sortby_field = sortby_field_copy,
+            .sortby_desc = sortby_desc,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *SearchCursor) void {
+        self.allocator.free(self.index_name);
+        self.allocator.free(self.query);
+        if (self.return_fields) |fields| {
+            for (fields) |field| {
+                self.allocator.free(field);
+            }
+            self.allocator.free(fields);
+        }
+        if (self.sortby_field) |field| {
+            self.allocator.free(field);
+        }
+    }
+};
+
 /// Search index store — manages all indices
 pub const SearchStore = struct {
     /// Map: index_name -> SearchIndex
     indices: std.StringHashMap(SearchIndex),
+    /// Map: cursor_id -> SearchCursor (for pagination)
+    cursors: std.AutoHashMap(u64, SearchCursor),
+    /// Next cursor ID
+    next_cursor_id: u64,
+    /// Maximum cursor idle time in seconds (default 300)
+    cursor_max_idle: i64,
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) SearchStore {
         return SearchStore{
             .indices = std.StringHashMap(SearchIndex).init(allocator),
+            .cursors = std.AutoHashMap(u64, SearchCursor).init(allocator),
+            .next_cursor_id = 1,
+            .cursor_max_idle = 300, // 300 seconds = 5 minutes
             .allocator = allocator,
         };
     }
@@ -525,6 +630,13 @@ pub const SearchStore = struct {
             index.deinit();
         }
         self.indices.deinit();
+
+        var cursor_it = self.cursors.iterator();
+        while (cursor_it.next()) |entry| {
+            var cursor = entry.value_ptr;
+            cursor.deinit();
+        }
+        self.cursors.deinit();
     }
 
     /// Create a new search index
@@ -568,6 +680,119 @@ pub const SearchStore = struct {
         }
 
         return try names.toOwnedSlice(allocator);
+    }
+
+    /// Create a new cursor for pagination
+    ///
+    /// Arguments:
+    ///   index_name: name of the index
+    ///   query: search query
+    ///   total_count: total number of results
+    ///   default_count: default page size
+    ///   nocontent: whether to return content
+    ///   return_fields: optional fields to return
+    ///   sortby_field: optional sort field
+    ///   sortby_desc: sort descending
+    ///
+    /// Returns:
+    ///   cursor_id for subsequent FT.CURSOR READ calls
+    pub fn createCursor(
+        self: *SearchStore,
+        index_name: []const u8,
+        query: []const u8,
+        total_count: usize,
+        default_count: usize,
+        nocontent: bool,
+        return_fields: ?[]const []const u8,
+        sortby_field: ?[]const u8,
+        sortby_desc: bool,
+    ) !u64 {
+        const cursor_id = self.next_cursor_id;
+        self.next_cursor_id += 1;
+
+        const cursor = try SearchCursor.init(
+            self.allocator,
+            cursor_id,
+            index_name,
+            query,
+            total_count,
+            default_count,
+            nocontent,
+            return_fields,
+            sortby_field,
+            sortby_desc,
+        );
+        errdefer {
+            var c = cursor;
+            c.deinit();
+        }
+
+        try self.cursors.put(cursor_id, cursor);
+        return cursor_id;
+    }
+
+    /// Get mutable cursor by ID
+    ///
+    /// Returns null if cursor not found or expired.
+    pub fn getCursor(self: *SearchStore, cursor_id: u64) ?*SearchCursor {
+        const cursor_ptr = self.cursors.getPtr(cursor_id) orelse return null;
+
+        // Check if cursor expired
+        const now = std.time.timestamp();
+        if (now - cursor_ptr.last_access > self.cursor_max_idle) {
+            // Cursor expired, remove it
+            var cursor = self.cursors.fetchRemove(cursor_id).?.value;
+            cursor.deinit();
+            return null;
+        }
+
+        // Update last access time
+        cursor_ptr.last_access = now;
+        return cursor_ptr;
+    }
+
+    /// Delete cursor by ID
+    ///
+    /// Returns error if cursor doesn't exist.
+    pub fn deleteCursor(self: *SearchStore, cursor_id: u64) !void {
+        if (self.cursors.fetchRemove(cursor_id)) |kv| {
+            var cursor = kv.value;
+            cursor.deinit();
+        } else {
+            return error.CursorNotFound;
+        }
+    }
+
+    /// Expire old cursors (cleanup task)
+    ///
+    /// Should be called periodically to clean up idle cursors.
+    /// Returns number of cursors expired.
+    pub fn expireOldCursors(self: *SearchStore) usize {
+        const now = std.time.timestamp();
+        var expired_count: usize = 0;
+
+        var expired_ids = std.ArrayList(u64).initCapacity(self.allocator, 0) catch return 0;
+        defer expired_ids.deinit(self.allocator);
+
+        // Collect expired cursor IDs
+        var it = self.cursors.iterator();
+        while (it.next()) |entry| {
+            const cursor = entry.value_ptr;
+            if (now - cursor.last_access > self.cursor_max_idle) {
+                expired_ids.append(self.allocator, entry.key_ptr.*) catch continue;
+            }
+        }
+
+        // Remove expired cursors
+        for (expired_ids.items) |cursor_id| {
+            if (self.cursors.fetchRemove(cursor_id)) |kv| {
+                var cursor = kv.value;
+                cursor.deinit();
+                expired_count += 1;
+            }
+        }
+
+        return expired_count;
     }
 };
 
@@ -728,4 +953,115 @@ test "Document: setField" {
     const body = doc.fields.get("body");
     try std.testing.expect(body != null);
     try std.testing.expectEqualStrings("Test document", body.?);
+}
+
+test "SearchStore: create cursor" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    const cursor_id = try store.createCursor("idx1", "test query", 100, 10, false, null, null, false);
+    try std.testing.expectEqual(@as(u64, 1), cursor_id);
+
+    const cursor = store.getCursor(cursor_id);
+    try std.testing.expect(cursor != null);
+    try std.testing.expectEqualStrings("idx1", cursor.?.index_name);
+    try std.testing.expectEqualStrings("test query", cursor.?.query);
+    try std.testing.expectEqual(@as(usize, 100), cursor.?.total_count);
+    try std.testing.expectEqual(@as(usize, 10), cursor.?.default_count);
+}
+
+test "SearchStore: cursor ID increments" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    const cursor_id1 = try store.createCursor("idx1", "query1", 50, 5, false, null, null, false);
+    const cursor_id2 = try store.createCursor("idx2", "query2", 100, 10, false, null, null, false);
+
+    try std.testing.expectEqual(@as(u64, 1), cursor_id1);
+    try std.testing.expectEqual(@as(u64, 2), cursor_id2);
+}
+
+test "SearchStore: delete cursor" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    const cursor_id = try store.createCursor("idx1", "query", 50, 5, false, null, null, false);
+    try store.deleteCursor(cursor_id);
+
+    const cursor = store.getCursor(cursor_id);
+    try std.testing.expect(cursor == null);
+}
+
+test "SearchStore: delete nonexistent cursor" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    const result = store.deleteCursor(999);
+    try std.testing.expectError(error.CursorNotFound, result);
+}
+
+test "SearchStore: cursor with return_fields" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    var fields = [_][]const u8{ "field1", "field2" };
+    const cursor_id = try store.createCursor("idx1", "query", 50, 5, false, &fields, null, false);
+
+    const cursor = store.getCursor(cursor_id);
+    try std.testing.expect(cursor != null);
+    try std.testing.expect(cursor.?.return_fields != null);
+    try std.testing.expectEqual(@as(usize, 2), cursor.?.return_fields.?.len);
+    try std.testing.expectEqualStrings("field1", cursor.?.return_fields.?[0]);
+    try std.testing.expectEqualStrings("field2", cursor.?.return_fields.?[1]);
+}
+
+test "SearchStore: cursor offset tracking" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    const cursor_id = try store.createCursor("idx1", "query", 100, 10, false, null, null, false);
+
+    const cursor = store.getCursor(cursor_id);
+    try std.testing.expect(cursor != null);
+    try std.testing.expectEqual(@as(usize, 0), cursor.?.offset);
+
+    // Simulate reading a page
+    cursor.?.offset += 10;
+    try std.testing.expectEqual(@as(usize, 10), cursor.?.offset);
+}
+
+test "SearchStore: expire old cursors" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    // Create cursor and manually set old last_access time
+    const cursor_id = try store.createCursor("idx1", "query", 50, 5, false, null, null, false);
+
+    const cursor = store.getCursor(cursor_id);
+    try std.testing.expect(cursor != null);
+
+    // Set last_access to 400 seconds ago (beyond 300s timeout)
+    cursor.?.last_access = std.time.timestamp() - 400;
+
+    // Expire old cursors
+    const expired_count = store.expireOldCursors();
+    try std.testing.expectEqual(@as(usize, 1), expired_count);
+
+    // Cursor should be gone
+    const cursor_after = store.getCursor(cursor_id);
+    try std.testing.expect(cursor_after == null);
 }

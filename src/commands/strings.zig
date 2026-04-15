@@ -1966,6 +1966,23 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.CURSOR")) {
+                if (args.len == 0) {
+                    return "ERR wrong number of arguments for 'FT.CURSOR' command\r\n";
+                }
+                const subcmd_upper = try std.ascii.allocUpperString(allocator, args[0]);
+                defer allocator.free(subcmd_upper);
+
+                const result = if (std.mem.eql(u8, subcmd_upper, "READ"))
+                    try search_cmds.cmdFtCursorRead(storage, allocator, args[1..])
+                else if (std.mem.eql(u8, subcmd_upper, "DEL"))
+                    try search_cmds.cmdFtCursorDel(storage, allocator, args[1..])
+                else
+                    RespValue{ .error_string = "ERR unknown FT.CURSOR subcommand" };
+
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
