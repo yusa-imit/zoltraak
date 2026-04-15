@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 194 (279 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 30% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 195 (282 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 33% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 13 (Search Engine) — in progress
 - **Next milestone**: Phase 13 (Search Engine FT.* commands) or Phase 14 (Time Series TS.* commands)
@@ -56,8 +56,9 @@
 | 192 | FT.PROFILE (query performance profiling with timing metrics — stub implementation) | Done ✅ |
 | 193 | FT.SPELLCHECK (spell checking with Levenshtein distance — stub returns empty suggestions) | Done ✅ |
 | 194 | FT.CURSOR READ/DEL (cursor pagination for large result sets, auto-expiry) | Done ✅ |
+| 195 | FT.ALIASADD/ALIASDEL/ALIASUPDATE (index aliasing for zero-downtime rebuilds, atomic operations) | Done ✅ |
 
-**11/30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL
+**14/30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL, FT.ALIASADD, FT.ALIASDEL, FT.ALIASUPDATE
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
