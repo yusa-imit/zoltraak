@@ -984,3 +984,175 @@ pub fn cmdFtProfile(storage: *Storage, allocator: std.mem.Allocator, args: []con
 
     return RespValue{ .array = try response.toOwnedSlice(allocator) };
 }
+
+/// FT.SPELLCHECK command — Performs spell checking on search query (stub)
+///
+/// Syntax: FT.SPELLCHECK index query [DISTANCE distance] [TERMS INCLUDE|EXCLUDE dict [terms ...]] [DIALECT dialect]
+///
+/// Returns: Array of term/suggestions pairs
+///
+/// Errors:
+///   "ERR wrong number of arguments for 'FT.SPELLCHECK' command" if args < 2
+///   "ERR Unknown index name" if index doesn't exist
+///   "ERR DISTANCE must be between 1 and 4" if invalid distance
+///   "ERR DISTANCE must be an integer" if distance not numeric
+///   "ERR DIALECT must be an integer" if dialect not numeric
+///   "ERR TERMS requires dictionary name" if TERMS without dict name
+///   "ERR syntax error" if invalid keyword
+pub fn cmdFtSpellcheck(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SPELLCHECK' command" };
+    }
+
+    const index_name = args[0];
+    const query = args[1];
+
+    // Parse optional arguments
+    var distance: u32 = 1; // Default distance
+    var dialect: u32 = 1; // Default dialect
+    var include_dicts = try std.ArrayList([]const u8).initCapacity(arena, 0);
+    var exclude_dicts = try std.ArrayList([]const u8).initCapacity(arena, 0);
+
+    var i: usize = 2;
+    while (i < args.len) {
+        const keyword = args[i];
+
+        if (std.mem.eql(u8, keyword, "DISTANCE")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR DISTANCE requires an integer argument" };
+            }
+
+            distance = std.fmt.parseInt(u32, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR DISTANCE must be an integer" };
+            };
+
+            if (distance < 1 or distance > 4) {
+                return RespValue{ .error_string = "ERR DISTANCE must be between 1 and 4" };
+            }
+
+            i += 1;
+        } else if (std.mem.eql(u8, keyword, "TERMS")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR TERMS requires INCLUDE or EXCLUDE keyword" };
+            }
+
+            const mode = args[i];
+            const is_include = std.mem.eql(u8, mode, "INCLUDE");
+            const is_exclude = std.mem.eql(u8, mode, "EXCLUDE");
+
+            if (!is_include and !is_exclude) {
+                return RespValue{ .error_string = "ERR TERMS requires INCLUDE or EXCLUDE keyword" };
+            }
+
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR TERMS requires dictionary name" };
+            }
+
+            const dict_name = args[i];
+            if (is_include) {
+                try include_dicts.append(arena, dict_name);
+            } else {
+                try exclude_dicts.append(arena, dict_name);
+            }
+
+            i += 1;
+
+            // Consume optional terms after dictionary name (until next keyword)
+            while (i < args.len) {
+                const next_arg = args[i];
+                if (std.mem.eql(u8, next_arg, "DISTANCE") or
+                    std.mem.eql(u8, next_arg, "TERMS") or
+                    std.mem.eql(u8, next_arg, "DIALECT")) {
+                    break;
+                }
+                // Terms after dict name are currently ignored in stub
+                i += 1;
+            }
+        } else if (std.mem.eql(u8, keyword, "DIALECT")) {
+            i += 1;
+            if (i >= args.len) {
+                return RespValue{ .error_string = "ERR DIALECT requires an integer argument" };
+            }
+
+            dialect = std.fmt.parseInt(u32, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR DIALECT must be an integer" };
+            };
+
+            i += 1;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Verify index exists
+    const index = storage.search.getIndex(index_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown index name" };
+    };
+
+    // Perform spell checking (stub)
+    var result = try index.spellCheck(
+        storage,
+        arena,
+        query,
+        distance,
+        include_dicts.items,
+        exclude_dicts.items,
+    );
+    defer result.deinit();
+
+    // Format response
+    var outer_array = try std.ArrayList(RespValue).initCapacity(arena, result.terms.len);
+    errdefer outer_array.deinit(arena);
+
+    for (result.terms) |*term_result| {
+        // Build term entry: ["TERM", <original_term>, [suggestions]]
+        var term_array = try std.ArrayList(RespValue).initCapacity(arena, 3);
+        errdefer term_array.deinit(arena);
+
+        // 1. "TERM" marker
+        try term_array.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, "TERM") });
+
+        // 2. Original term
+        const term_copy = try arena.dupe(u8, term_result.original_term);
+        try term_array.append(arena, RespValue{ .bulk_string = term_copy });
+
+        // 3. Suggestions array
+        var suggestions_array = try std.ArrayList(RespValue).initCapacity(arena, term_result.suggestions.len);
+        errdefer suggestions_array.deinit(arena);
+
+        for (term_result.suggestions) |*suggestion| {
+            // Each suggestion is [score, term]
+            var suggestion_pair = try std.ArrayList(RespValue).initCapacity(arena, 2);
+            errdefer suggestion_pair.deinit(arena);
+
+            // Score as bulk string
+            var score_buf: [32]u8 = undefined;
+            const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{suggestion.score});
+            try suggestion_pair.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, score_str) });
+
+            // Suggestion term
+            try suggestion_pair.append(arena, RespValue{ .bulk_string = try arena.dupe(u8, suggestion.term) });
+
+            const pair_slice = try suggestion_pair.toOwnedSlice(arena);
+            errdefer arena.free(pair_slice);
+            try suggestions_array.append(arena, RespValue{ .array = pair_slice });
+        }
+
+        const suggestions_slice = try suggestions_array.toOwnedSlice(arena);
+        errdefer arena.free(suggestions_slice);
+        try term_array.append(arena, RespValue{ .array = suggestions_slice });
+
+        const term_slice = try term_array.toOwnedSlice(arena);
+        errdefer arena.free(term_slice);
+        try outer_array.append(arena, RespValue{ .array = term_slice });
+    }
+
+    const outer_slice = try outer_array.toOwnedSlice(arena);
+    return RespValue{ .array = outer_slice };
+}

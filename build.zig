@@ -542,6 +542,18 @@ pub fn build(b: *std.Build) void {
     const run_ft_profile_tests = b.addRunArtifact(ft_profile_tests);
     integration_test_step.dependOn(&run_ft_profile_tests.step);
 
+    // FT.SPELLCHECK integration tests
+    const ft_spellcheck_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_ft_spellcheck.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_ft_spellcheck_tests = b.addRunArtifact(ft_spellcheck_tests);
+    integration_test_step.dependOn(&run_ft_spellcheck_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{

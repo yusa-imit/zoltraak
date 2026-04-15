@@ -269,6 +269,66 @@ pub const SearchIndex = struct {
             .allocator = allocator,
         };
     }
+
+    /// Performs spell checking on query terms (stub implementation)
+    ///
+    /// Returns empty suggestions for all terms. Real implementation will:
+    /// 1. Parse query into terms
+    /// 2. For each term, calculate Levenshtein distance to indexed terms
+    /// 3. Filter suggestions by distance threshold
+    /// 4. Apply include/exclude dictionaries
+    /// 5. Calculate scores based on document frequency
+    /// 6. Sort suggestions by score descending
+    ///
+    /// Arguments:
+    ///   storage: pointer to Storage for accessing data
+    ///   allocator: allocator for results
+    ///   query: query string to spell check
+    ///   distance: maximum Levenshtein distance (1-4)
+    ///   include_dicts: list of dictionaries to include
+    ///   exclude_dicts: list of dictionaries to exclude
+    ///
+    /// Returns:
+    ///   SpellCheckResult with terms and suggestions
+    pub fn spellCheck(
+        self: *SearchIndex,
+        storage: anytype,
+        allocator: Allocator,
+        query: []const u8,
+        distance: u32,
+        include_dicts: []const []const u8,
+        exclude_dicts: []const []const u8,
+    ) !SpellCheckResult {
+        _ = self;
+        _ = storage;
+        _ = distance;
+        _ = include_dicts;
+        _ = exclude_dicts;
+        _ = query;
+
+        // Stub: Parse query into terms (simple whitespace split)
+        var terms = try std.ArrayList(SpellCheckTermResult).initCapacity(allocator, 0);
+        errdefer {
+            for (terms.items) |*term| {
+                term.deinit();
+            }
+            terms.deinit(allocator);
+        }
+
+        // TODO: Real implementation will:
+        // 1. Parse query into terms
+        // 2. For each term, calculate Levenshtein distance to indexed terms
+        // 3. Filter suggestions by distance threshold
+        // 4. Apply include/exclude dictionaries
+        // 5. Calculate scores based on document frequency
+        // 6. Sort suggestions by score descending
+
+        const terms_slice = try terms.toOwnedSlice(allocator);
+        return SpellCheckResult{
+            .terms = terms_slice,
+            .allocator = allocator,
+        };
+    }
 };
 
 /// Document result from search
@@ -408,6 +468,40 @@ pub const AggregateResult = struct {
             row.deinit();
         }
         self.allocator.free(self.rows);
+    }
+};
+
+/// Spell check suggestion result
+pub const SpellCheckSuggestion = struct {
+    term: []const u8,
+    score: f64,
+};
+
+/// Spell check term result
+pub const SpellCheckTermResult = struct {
+    original_term: []const u8,
+    suggestions: []SpellCheckSuggestion,
+    allocator: Allocator,
+
+    pub fn deinit(self: *SpellCheckTermResult) void {
+        for (self.suggestions) |*suggestion| {
+            self.allocator.free(suggestion.term);
+        }
+        self.allocator.free(self.suggestions);
+        self.allocator.free(self.original_term);
+    }
+};
+
+/// Spell check result
+pub const SpellCheckResult = struct {
+    terms: []SpellCheckTermResult,
+    allocator: Allocator,
+
+    pub fn deinit(self: *SpellCheckResult) void {
+        for (self.terms) |*term| {
+            term.deinit();
+        }
+        self.allocator.free(self.terms);
     }
 };
 
