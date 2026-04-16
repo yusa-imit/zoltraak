@@ -1595,3 +1595,207 @@ pub fn cmdFtSynupdate(storage: *Storage, _: std.mem.Allocator, args: []const []c
 
     return RespValue{ .simple_string = "OK" };
 }
+
+/// FT.SUGADD key string score [INCR] [PAYLOAD payload]
+/// Add suggestion to auto-complete dictionary
+pub fn cmdFtSugadd(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SUGADD' command" };
+    }
+
+    const key = args[0];
+    const string = args[1];
+    const score_str = args[2];
+
+    // Parse score
+    const score = std.fmt.parseFloat(f64, score_str) catch {
+        return RespValue{ .error_string = "ERR invalid score" };
+    };
+
+    // Parse options
+    var incr = false;
+    var payload: ?[]const u8 = null;
+    var i: usize = 3;
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.ascii.eqlIgnoreCase(arg, "INCR")) {
+            incr = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "PAYLOAD")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR syntax error" };
+            }
+            payload = args[i + 1];
+            i += 2;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get or create suggestion dictionary
+    const gop = try storage.search.suggestion_dictionaries.getOrPut(key);
+    if (!gop.found_existing) {
+        gop.key_ptr.* = try storage.allocator.dupe(u8, key);
+        errdefer {
+            storage.allocator.free(gop.key_ptr.*);
+            _ = storage.search.suggestion_dictionaries.remove(key);
+        }
+
+        gop.value_ptr.* = try search_mod.SuggestionDictionary.init(storage.allocator);
+    }
+
+    const dict = gop.value_ptr;
+
+    // Add suggestion
+    _ = try dict.addSuggestion(string, score, payload, incr);
+
+    // Return new size
+    return RespValue{ .integer = @intCast(dict.getCount()) };
+}
+
+/// FT.SUGGET key prefix [FUZZY] [WITHSCORES] [WITHPAYLOADS] [MAX max]
+/// Get auto-complete suggestions
+pub fn cmdFtSugget(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SUGGET' command" };
+    }
+
+    const key = args[0];
+    const prefix = args[1];
+
+    // Parse options
+    var fuzzy = false;
+    var withscores = false;
+    var withpayloads = false;
+    var max: usize = 5;
+    var i: usize = 2;
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.ascii.eqlIgnoreCase(arg, "FUZZY")) {
+            fuzzy = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "WITHSCORES")) {
+            withscores = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "WITHPAYLOADS")) {
+            withpayloads = true;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "MAX")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR syntax error" };
+            }
+            max = std.fmt.parseInt(usize, args[i + 1], 10) catch {
+                return RespValue{ .error_string = "ERR invalid max value" };
+            };
+            if (max == 0) {
+                return RespValue{ .error_string = "ERR max must be positive" };
+            }
+            i += 2;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get suggestion dictionary
+    const dict = storage.search.suggestion_dictionaries.getPtr(key) orelse {
+        // Non-existent key returns empty array
+        return RespValue{ .array = &[_]RespValue{} };
+    };
+
+    // Get suggestions
+    var suggestions = if (fuzzy)
+        try dict.getFuzzySuggestions(prefix, max)
+    else
+        try dict.getSuggestions(prefix, max);
+    defer {
+        for (suggestions.items) |item| {
+            storage.allocator.free(item.string);
+            if (item.payload) |p| storage.allocator.free(p);
+        }
+        suggestions.deinit(storage.allocator);
+    }
+
+    // Build response
+    const items_per_suggestion: usize = if (withscores and withpayloads) 3 else if (withscores or withpayloads) 2 else 1;
+    const array_len = suggestions.items.len * items_per_suggestion;
+
+    const array = try arena.alloc(RespValue, array_len);
+    var idx: usize = 0;
+
+    for (suggestions.items) |item| {
+        // String
+        const string_copy = try arena.dupe(u8, item.string);
+        array[idx] = RespValue{ .bulk_string = string_copy };
+        idx += 1;
+
+        // Score
+        if (withscores) {
+            const score_str = try std.fmt.allocPrint(arena, "{d}", .{item.score});
+            array[idx] = RespValue{ .bulk_string = score_str };
+            idx += 1;
+        }
+
+        // Payload
+        if (withpayloads) {
+            if (item.payload) |p| {
+                const payload_copy = try arena.dupe(u8, p);
+                array[idx] = RespValue{ .bulk_string = payload_copy };
+            } else {
+                array[idx] = RespValue{ .null_bulk_string = {} };
+            }
+            idx += 1;
+        }
+    }
+
+    return RespValue{ .array = array };
+}
+
+/// FT.SUGLEN key
+/// Get number of suggestions in dictionary
+pub fn cmdFtSuglen(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SUGLEN' command" };
+    }
+
+    const key = args[0];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get suggestion dictionary
+    const dict = storage.search.suggestion_dictionaries.getPtr(key) orelse {
+        // Non-existent key returns 0
+        return RespValue{ .integer = 0 };
+    };
+
+    return RespValue{ .integer = @intCast(dict.getCount()) };
+}
+
+/// FT.SUGDEL key string
+/// Delete suggestion from dictionary
+pub fn cmdFtSugdel(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SUGDEL' command" };
+    }
+
+    const key = args[0];
+    const string = args[1];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get suggestion dictionary
+    const dict = storage.search.suggestion_dictionaries.getPtr(key) orelse {
+        // Non-existent key returns 0
+        return RespValue{ .integer = 0 };
+    };
+
+    const deleted = try dict.deleteSuggestion(string);
+    return RespValue{ .integer = if (deleted) 1 else 0 };
+}

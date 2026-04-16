@@ -602,6 +602,17 @@ pub fn build(b: *std.Build) void {
     const run_ft_synonym_tests = b.addRunArtifact(ft_synonym_tests);
     integration_test_step.dependOn(&run_ft_synonym_tests.step);
 
+    // FT.SUG* (auto-complete suggestions) integration tests
+    const ft_suggestions_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_ft_suggestions.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ft_suggestions_tests = b.addRunArtifact(ft_suggestions_tests);
+    integration_test_step.dependOn(&run_ft_suggestions_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{
