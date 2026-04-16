@@ -590,6 +590,18 @@ pub fn build(b: *std.Build) void {
     const run_ft_dict_tests = b.addRunArtifact(ft_dict_tests);
     integration_test_step.dependOn(&run_ft_dict_tests.step);
 
+    // FT.SYNDUMP/FT.SYNUPDATE integration tests (Iteration 197)
+    const ft_synonym_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_ft_synonym.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_ft_synonym_tests = b.addRunArtifact(ft_synonym_tests);
+    integration_test_step.dependOn(&run_ft_synonym_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{

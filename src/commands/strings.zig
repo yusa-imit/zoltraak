@@ -2043,6 +2043,26 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.SYNDUMP")) {
+                if (args.len < 1) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'FT.SYNDUMP' command");
+                }
+                const result = try search_cmds.cmdFtSyndump(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.SYNUPDATE")) {
+                if (args.len < 3) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'FT.SYNUPDATE' command");
+                }
+                const result = try search_cmds.cmdFtSynupdate(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();

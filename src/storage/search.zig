@@ -160,6 +160,50 @@ pub const Dictionary = struct {
     }
 };
 
+/// Synonym group for search index
+pub const SynonymGroup = struct {
+    /// Synonym group ID (assigned by user via FT.SYNUPDATE)
+    id: u64,
+    /// List of synonym terms
+    terms: std.ArrayList([]const u8),
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, id: u64) !SynonymGroup {
+        return SynonymGroup{
+            .id = id,
+            .terms = try std.ArrayList([]const u8).initCapacity(allocator, 0),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *SynonymGroup) void {
+        for (self.terms.items) |term| {
+            self.allocator.free(term);
+        }
+        self.terms.deinit(self.allocator);
+    }
+
+    /// Add synonym term to group (no duplicates)
+    pub fn addTerm(self: *SynonymGroup, term: []const u8) !void {
+        // Check for duplicates
+        for (self.terms.items) |existing| {
+            if (std.mem.eql(u8, existing, term)) {
+                return; // Already exists, skip
+            }
+        }
+
+        const term_copy = try self.allocator.dupe(u8, term);
+        errdefer self.allocator.free(term_copy);
+
+        try self.terms.append(self.allocator, term_copy);
+    }
+
+    /// Get all terms in the group
+    pub fn getTerms(self: *SynonymGroup) []const []const u8 {
+        return self.terms.items;
+    }
+};
+
 /// Search index definition
 pub const SearchIndex = struct {
     /// Index name
@@ -172,6 +216,8 @@ pub const SearchIndex = struct {
     fields: std.ArrayList(FieldSchema),
     /// Creation timestamp
     created_at: i64,
+    /// Map: synonym_group_id -> SynonymGroup
+    synonym_groups: std.AutoHashMap(u64, SynonymGroup),
 
     allocator: Allocator,
 
@@ -182,6 +228,7 @@ pub const SearchIndex = struct {
             .prefix = null,
             .fields = try std.ArrayList(FieldSchema).initCapacity(allocator, 0),
             .created_at = std.time.timestamp(),
+            .synonym_groups = std.AutoHashMap(u64, SynonymGroup).init(allocator),
             .allocator = allocator,
         };
     }
@@ -195,6 +242,14 @@ pub const SearchIndex = struct {
             field.deinit();
         }
         self.fields.deinit(self.allocator);
+
+        // Free synonym groups
+        var syn_it = self.synonym_groups.valueIterator();
+        while (syn_it.next()) |group| {
+            var g = group;
+            g.deinit();
+        }
+        self.synonym_groups.deinit();
     }
 
     /// Add field schema to index
@@ -208,6 +263,54 @@ pub const SearchIndex = struct {
             self.allocator.free(old);
         }
         self.prefix = try self.allocator.dupe(u8, prefix);
+    }
+
+    /// Add or update synonym group
+    ///
+    /// If the group already exists, it is replaced with the new terms.
+    /// Arguments:
+    ///   group_id: Synonym group ID
+    ///   terms: Array of synonym terms
+    pub fn updateSynonymGroup(self: *SearchIndex, group_id: u64, terms: []const []const u8) !void {
+        // Remove existing group if present
+        if (self.synonym_groups.fetchRemove(group_id)) |kv| {
+            var old_group = kv.value;
+            old_group.deinit();
+        }
+
+        // Create new group
+        var group = try SynonymGroup.init(self.allocator, group_id);
+        errdefer group.deinit();
+
+        for (terms) |term| {
+            try group.addTerm(term);
+        }
+
+        try self.synonym_groups.put(group_id, group);
+    }
+
+    /// Get all synonym groups in the index
+    ///
+    /// Returns array of group_id values sorted in ascending order.
+    /// Caller must free the returned array.
+    pub fn getSynonymGroupIds(self: *SearchIndex, allocator: Allocator) ![]u64 {
+        var ids = try std.ArrayList(u64).initCapacity(allocator, self.synonym_groups.count());
+        errdefer ids.deinit(allocator);
+
+        var it = self.synonym_groups.keyIterator();
+        while (it.next()) |key| {
+            try ids.append(allocator, key.*);
+        }
+
+        // Sort in ascending order
+        std.mem.sort(u64, ids.items, {}, std.sort.asc(u64));
+
+        return try ids.toOwnedSlice(allocator);
+    }
+
+    /// Get synonym group by ID
+    pub fn getSynonymGroup(self: *SearchIndex, group_id: u64) ?*SynonymGroup {
+        return self.synonym_groups.getPtr(group_id);
     }
 
     /// Performs basic text search on indexed documents (stub implementation)

@@ -1484,3 +1484,114 @@ pub fn cmdFtDictdump(storage: *Storage, allocator: std.mem.Allocator, args: []co
 
     return RespValue{ .array = try resp_array.toOwnedSlice(allocator) };
 }
+
+/// FT.SYNDUMP index_name
+///
+/// Dump all synonym groups for an index.
+/// Returns array of [term_id, [terms...]] pairs.
+pub fn cmdFtSyndump(storage: *Storage, allocator: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SYNDUMP' command" };
+    }
+
+    const index_name = args[0];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Resolve alias to index name
+    const actual_name = storage.search.getIndexByAlias(index_name) catch {
+        return RespValue{ .error_string = "ERR Unknown Index name" };
+    };
+
+    // Get index
+    const index = storage.search.getIndex(actual_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown Index name" };
+    };
+
+    // Get all synonym group IDs
+    const group_ids = try index.getSynonymGroupIds(allocator);
+    defer allocator.free(group_ids);
+
+    // Build result array: for each group, [group_id, [term1, term2, ...]]
+    var result = try std.ArrayList(RespValue).initCapacity(allocator, group_ids.len * 2);
+    errdefer result.deinit(allocator);
+
+    for (group_ids) |group_id| {
+        const group = index.getSynonymGroup(group_id).?;
+        const terms = group.getTerms();
+
+        // Add term_id as bulk string (integer as string)
+        const id_str = try std.fmt.allocPrint(allocator, "{d}", .{group_id});
+        errdefer allocator.free(id_str);
+        try result.append(allocator, RespValue{ .bulk_string = id_str });
+
+        // Add terms array
+        var terms_array = try std.ArrayList(RespValue).initCapacity(allocator, terms.len);
+        errdefer terms_array.deinit(allocator);
+
+        for (terms) |term| {
+            const term_copy = try allocator.dupe(u8, term);
+            errdefer allocator.free(term_copy);
+            try terms_array.append(allocator, RespValue{ .bulk_string = term_copy });
+        }
+
+        try result.append(allocator, RespValue{ .array = try terms_array.toOwnedSlice(allocator) });
+    }
+
+    return RespValue{ .array = try result.toOwnedSlice(allocator) };
+}
+
+/// FT.SYNUPDATE index_name synonym_group_id [SKIPINITIALSCAN] term [term ...]
+///
+/// Update a synonym group with new terms.
+/// SKIPINITIALSCAN flag is parsed but ignored (no actual indexing yet).
+pub fn cmdFtSynupdate(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SYNUPDATE' command" };
+    }
+
+    const index_name = args[0];
+    const group_id_str = args[1];
+
+    // Parse group ID
+    const group_id = std.fmt.parseInt(u64, group_id_str, 10) catch {
+        return RespValue{ .error_string = "ERR invalid synonym group id" };
+    };
+
+    // Check for SKIPINITIALSCAN flag
+    var terms_start: usize = 2;
+    if (args.len > 2) {
+        const maybe_flag = args[2];
+        if (std.ascii.eqlIgnoreCase(maybe_flag, "SKIPINITIALSCAN")) {
+            terms_start = 3;
+        }
+    }
+
+    if (terms_start >= args.len) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.SYNUPDATE' command" };
+    }
+
+    const terms = args[terms_start..];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Resolve alias to index name
+    const actual_name = storage.search.getIndexByAlias(index_name) catch {
+        return RespValue{ .error_string = "ERR Unknown Index name" };
+    };
+
+    // Get index (mutable)
+    const index = storage.search.getIndex(actual_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown Index name" };
+    };
+
+    // Update synonym group
+    index.updateSynonymGroup(group_id, terms) catch |err| {
+        std.log.err("Failed to update synonym group: {}", .{err});
+        return RespValue{ .error_string = "ERR failed to update synonym group" };
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}
