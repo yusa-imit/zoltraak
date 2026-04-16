@@ -2013,6 +2013,36 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.DICTADD")) {
+                if (args.len < 2) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'FT.DICTADD' command");
+                }
+                const result = try search_cmds.cmdFtDictadd(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.DICTDEL")) {
+                if (args.len < 2) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'FT.DICTDEL' command");
+                }
+                const result = try search_cmds.cmdFtDictdel(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.DICTDUMP")) {
+                if (args.len < 1) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'FT.DICTDUMP' command");
+                }
+                const result = try search_cmds.cmdFtDictdump(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();

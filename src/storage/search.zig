@@ -77,6 +77,89 @@ pub const FieldSchema = struct {
     }
 };
 
+/// Dictionary for stop words and synonyms
+pub const Dictionary = struct {
+    /// Dictionary name
+    name: []const u8,
+    /// Map: term -> void (for O(1) deduplication)
+    /// Keys are owned strings
+    terms: std.StringHashMap(void),
+    /// Insertion order list (references keys in terms map)
+    order: std.ArrayList([]const u8),
+    allocator: Allocator,
+
+    /// Initialize a new dictionary
+    pub fn init(allocator: Allocator, name: []const u8) !Dictionary {
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+
+        return Dictionary{
+            .name = name_copy,
+            .terms = std.StringHashMap(void).init(allocator),
+            .order = try std.ArrayList([]const u8).initCapacity(allocator, 0),
+            .allocator = allocator,
+        };
+    }
+
+    /// Free dictionary resources
+    pub fn deinit(self: *Dictionary) void {
+        // Free all term strings in the map
+        var it = self.terms.keyIterator();
+        while (it.next()) |term| {
+            self.allocator.free(term.*);
+        }
+        self.terms.deinit();
+        self.order.deinit(self.allocator);
+        self.allocator.free(self.name);
+    }
+
+    /// Add a term to the dictionary
+    /// Returns true if the term was newly added, false if it already existed
+    pub fn addTerm(self: *Dictionary, term: []const u8) !bool {
+        // Check if term already exists
+        if (self.terms.contains(term)) {
+            return false;
+        }
+
+        // Allocate new term string
+        const term_copy = try self.allocator.dupe(u8, term);
+        errdefer self.allocator.free(term_copy);
+
+        // Add to terms map
+        try self.terms.put(term_copy, {});
+
+        // Add to order list
+        try self.order.append(self.allocator, term_copy);
+
+        return true;
+    }
+
+    /// Remove a term from the dictionary
+    /// Returns true if the term existed and was removed, false otherwise
+    pub fn removeTerm(self: *Dictionary, term: []const u8) bool {
+        if (self.terms.fetchRemove(term)) |kv| {
+            // Free the removed term string
+            self.allocator.free(kv.key);
+
+            // Remove from order list
+            for (self.order.items, 0..) |item, i| {
+                if (std.mem.eql(u8, item, term)) {
+                    _ = self.order.orderedRemove(i);
+                    break;
+                }
+            }
+
+            return true;
+        }
+        return false;
+    }
+
+    /// Get terms in insertion order
+    pub fn getTerms(self: *Dictionary) []const []const u8 {
+        return self.order.items;
+    }
+};
+
 /// Search index definition
 pub const SearchIndex = struct {
     /// Index name
@@ -613,6 +696,8 @@ pub const SearchStore = struct {
     cursor_max_idle: i64,
     /// Map: alias_name -> target_index_name
     aliases: std.StringHashMap([]const u8),
+    /// Map: dictionary_name -> Dictionary
+    dictionaries: std.StringHashMap(Dictionary),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) SearchStore {
@@ -622,6 +707,7 @@ pub const SearchStore = struct {
             .next_cursor_id = 1,
             .cursor_max_idle = 300, // 300 seconds = 5 minutes
             .aliases = std.StringHashMap([]const u8).init(allocator),
+            .dictionaries = std.StringHashMap(Dictionary).init(allocator),
             .allocator = allocator,
         };
     }
@@ -648,6 +734,14 @@ pub const SearchStore = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.aliases.deinit();
+
+        // Free dictionaries
+        var dict_it = self.dictionaries.iterator();
+        while (dict_it.next()) |entry| {
+            var dict = entry.value_ptr;
+            dict.deinit();
+        }
+        self.dictionaries.deinit();
     }
 
     /// Create a new search index
@@ -926,6 +1020,90 @@ pub const SearchStore = struct {
 
         return error.IndexNotFound;
     }
+
+    /// Add multiple terms to a dictionary
+    ///
+    /// Creates the dictionary if it doesn't exist.
+    /// Returns the count of newly added terms (duplicates are ignored).
+    pub fn addTermsToDictionary(self: *SearchStore, dict_name: []const u8, terms: []const []const u8) !u64 {
+        // Get or create dictionary
+        if (!self.dictionaries.contains(dict_name)) {
+            const dict = try Dictionary.init(self.allocator, dict_name);
+            errdefer {
+                var d = dict;
+                d.deinit();
+            }
+            try self.dictionaries.put(dict.name, dict);
+        }
+
+        // Get mutable dictionary pointer
+        var dict = self.dictionaries.getPtr(dict_name).?;
+
+        // Add terms and count newly added ones
+        var added_count: u64 = 0;
+        for (terms) |term| {
+            const is_new = try dict.addTerm(term);
+            if (is_new) {
+                added_count += 1;
+            }
+        }
+
+        return added_count;
+    }
+
+    /// Remove multiple terms from a dictionary
+    ///
+    /// Returns the count of removed terms.
+    /// Returns 0 if the dictionary doesn't exist.
+    pub fn removeTermsFromDictionary(self: *SearchStore, dict_name: []const u8, terms: []const []const u8) !u64 {
+        // If dictionary doesn't exist, return 0
+        if (!self.dictionaries.contains(dict_name)) {
+            return 0;
+        }
+
+        // Get mutable dictionary pointer
+        var dict = self.dictionaries.getPtr(dict_name).?;
+
+        // Remove terms and count removed ones
+        var removed_count: u64 = 0;
+        for (terms) |term| {
+            const was_removed = dict.removeTerm(term);
+            if (was_removed) {
+                removed_count += 1;
+            }
+        }
+
+        return removed_count;
+    }
+
+    /// Dump all terms from a dictionary in insertion order
+    ///
+    /// Returns empty array if dictionary doesn't exist.
+    /// Returned array and strings must be freed by caller.
+    pub fn dumpDictionary(self: *SearchStore, allocator: Allocator, dict_name: []const u8) ![][]const u8 {
+        // If dictionary doesn't exist, return empty array
+        if (!self.dictionaries.contains(dict_name)) {
+            return try allocator.alloc([]const u8, 0);
+        }
+
+        const dict = self.dictionaries.getPtr(dict_name).?;
+        const terms = dict.getTerms();
+
+        // Allocate result array and copy term strings
+        var result = try allocator.alloc([]const u8, terms.len);
+        errdefer allocator.free(result);
+
+        for (terms, 0..) |term, i| {
+            result[i] = try allocator.dupe(u8, term);
+            errdefer {
+                for (result[0..i]) |term_copy| {
+                    allocator.free(term_copy);
+                }
+            }
+        }
+
+        return result;
+    }
 };
 
 // Unit tests
@@ -1196,4 +1374,172 @@ test "SearchStore: expire old cursors" {
     // Cursor should be gone
     const cursor_after = store.getCursor(cursor_id);
     try std.testing.expect(cursor_after == null);
+}
+
+// Dictionary tests
+test "Dictionary: init and deinit" {
+    const allocator = std.testing.allocator;
+
+    var dict = try Dictionary.init(allocator, "mydict");
+    defer dict.deinit();
+
+    try std.testing.expectEqualStrings("mydict", dict.name);
+    try std.testing.expectEqual(@as(usize, 0), dict.terms.count());
+}
+
+test "Dictionary: add single term" {
+    const allocator = std.testing.allocator;
+
+    var dict = try Dictionary.init(allocator, "mydict");
+    defer dict.deinit();
+
+    const is_new = try dict.addTerm("hello");
+    try std.testing.expect(is_new);
+    try std.testing.expectEqual(@as(usize, 1), dict.terms.count());
+}
+
+test "Dictionary: add duplicate term returns false" {
+    const allocator = std.testing.allocator;
+
+    var dict = try Dictionary.init(allocator, "mydict");
+    defer dict.deinit();
+
+    const is_new1 = try dict.addTerm("hello");
+    const is_new2 = try dict.addTerm("hello");
+
+    try std.testing.expect(is_new1);
+    try std.testing.expect(!is_new2);
+    try std.testing.expectEqual(@as(usize, 1), dict.terms.count());
+}
+
+test "Dictionary: insertion order preserved" {
+    const allocator = std.testing.allocator;
+
+    var dict = try Dictionary.init(allocator, "mydict");
+    defer dict.deinit();
+
+    _ = try dict.addTerm("zebra");
+    _ = try dict.addTerm("apple");
+    _ = try dict.addTerm("middle");
+
+    const terms = dict.getTerms();
+    try std.testing.expectEqual(@as(usize, 3), terms.len);
+    try std.testing.expectEqualStrings("zebra", terms[0]);
+    try std.testing.expectEqualStrings("apple", terms[1]);
+    try std.testing.expectEqualStrings("middle", terms[2]);
+}
+
+test "Dictionary: remove term" {
+    const allocator = std.testing.allocator;
+
+    var dict = try Dictionary.init(allocator, "mydict");
+    defer dict.deinit();
+
+    _ = try dict.addTerm("hello");
+    _ = try dict.addTerm("world");
+
+    const was_removed = dict.removeTerm("hello");
+    try std.testing.expect(was_removed);
+    try std.testing.expectEqual(@as(usize, 1), dict.terms.count());
+    try std.testing.expectEqual(@as(usize, 1), dict.getTerms().len);
+}
+
+test "Dictionary: remove nonexistent term" {
+    const allocator = std.testing.allocator;
+
+    var dict = try Dictionary.init(allocator, "mydict");
+    defer dict.deinit();
+
+    const was_removed = dict.removeTerm("nonexistent");
+    try std.testing.expect(!was_removed);
+}
+
+test "SearchStore: addTermsToDictionary creates dict" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    var terms = [_][]const u8{ "hello", "world" };
+    const count = try store.addTermsToDictionary("mydict", &terms);
+
+    try std.testing.expectEqual(@as(u64, 2), count);
+    try std.testing.expect(store.dictionaries.contains("mydict"));
+}
+
+test "SearchStore: addTermsToDictionary ignores duplicates" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    var terms1 = [_][]const u8{ "hello", "world" };
+    const count1 = try store.addTermsToDictionary("mydict", &terms1);
+    try std.testing.expectEqual(@as(u64, 2), count1);
+
+    var terms2 = [_][]const u8{ "hello", "foo" };
+    const count2 = try store.addTermsToDictionary("mydict", &terms2);
+    try std.testing.expectEqual(@as(u64, 1), count2);
+}
+
+test "SearchStore: removeTermsFromDictionary" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    var add_terms = [_][]const u8{ "a", "b", "c" };
+    _ = try store.addTermsToDictionary("mydict", &add_terms);
+
+    var remove_terms = [_][]const u8{ "a", "c" };
+    const count = try store.removeTermsFromDictionary("mydict", &remove_terms);
+
+    try std.testing.expectEqual(@as(u64, 2), count);
+}
+
+test "SearchStore: removeTermsFromDictionary returns 0 for nonexistent dict" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    var terms = [_][]const u8{ "hello" };
+    const count = try store.removeTermsFromDictionary("nonexistent", &terms);
+
+    try std.testing.expectEqual(@as(u64, 0), count);
+}
+
+test "SearchStore: dumpDictionary returns terms in order" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    var add_terms = [_][]const u8{ "zebra", "apple", "middle" };
+    _ = try store.addTermsToDictionary("mydict", &add_terms);
+
+    const terms = try store.dumpDictionary(allocator, "mydict");
+    defer {
+        for (terms) |term| {
+            allocator.free(term);
+        }
+        allocator.free(terms);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), terms.len);
+    try std.testing.expectEqualStrings("zebra", terms[0]);
+    try std.testing.expectEqualStrings("apple", terms[1]);
+    try std.testing.expectEqualStrings("middle", terms[2]);
+}
+
+test "SearchStore: dumpDictionary returns empty for nonexistent dict" {
+    const allocator = std.testing.allocator;
+
+    var store = SearchStore.init(allocator);
+    defer store.deinit();
+
+    const terms = try store.dumpDictionary(allocator, "nonexistent");
+    defer allocator.free(terms);
+
+    try std.testing.expectEqual(@as(usize, 0), terms.len);
 }

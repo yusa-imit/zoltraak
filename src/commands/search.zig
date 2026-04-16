@@ -1405,3 +1405,82 @@ pub fn cmdFtAliasupdate(storage: *Storage, _: std.mem.Allocator, args: []const [
 
     return RespValue{ .simple_string = "OK" };
 }
+
+/// FT.DICTADD dict_name term [term ...]
+///
+/// Add terms to a dictionary (for stop words, synonyms).
+///
+/// Returns the number of newly added terms (ignoring duplicates).
+pub fn cmdFtDictadd(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.DICTADD' command" };
+    }
+
+    const dict_name = args[0];
+    const terms = args[1..];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const count = try storage.search.addTermsToDictionary(dict_name, terms);
+
+    return RespValue{ .integer = @as(i64, @intCast(count)) };
+}
+
+/// FT.DICTDEL dict_name term [term ...]
+///
+/// Remove terms from a dictionary.
+///
+/// Returns the number of removed terms.
+/// Returns 0 if dictionary doesn't exist.
+pub fn cmdFtDictdel(storage: *Storage, _: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.DICTDEL' command" };
+    }
+
+    const dict_name = args[0];
+    const terms = args[1..];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const count = try storage.search.removeTermsFromDictionary(dict_name, terms);
+
+    return RespValue{ .integer = @as(i64, @intCast(count)) };
+}
+
+/// FT.DICTDUMP dict_name
+///
+/// Return all terms in a dictionary in insertion order.
+///
+/// Returns empty array if dictionary doesn't exist.
+pub fn cmdFtDictdump(storage: *Storage, allocator: std.mem.Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.DICTDUMP' command" };
+    }
+
+    const dict_name = args[0];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const terms = try storage.search.dumpDictionary(allocator, dict_name);
+    defer {
+        for (terms) |term| {
+            allocator.free(term);
+        }
+        allocator.free(terms);
+    }
+
+    // Build RESP array response
+    var resp_array = try std.ArrayList(RespValue).initCapacity(allocator, terms.len);
+    errdefer resp_array.deinit(allocator);
+
+    for (terms) |term| {
+        const term_copy = try allocator.dupe(u8, term);
+        errdefer allocator.free(term_copy);
+        try resp_array.append(allocator, RespValue{ .bulk_string = term_copy });
+    }
+
+    return RespValue{ .array = try resp_array.toOwnedSlice(allocator) };
+}
