@@ -656,6 +656,9 @@ pub const SearchIndex = struct {
     created_at: i64,
     /// Map: synonym_group_id -> SynonymGroup
     synonym_groups: std.AutoHashMap(u64, SynonymGroup),
+    /// TAG field inverted index: field_name -> tag_value -> doc_ids
+    /// Structure: StringHashMap(field_name -> StringHashMap(tag_value -> ArrayList(doc_id)))
+    tag_inverted_index: std.StringHashMap(std.StringHashMap(std.ArrayList([]const u8))),
 
     allocator: Allocator,
 
@@ -667,6 +670,7 @@ pub const SearchIndex = struct {
             .fields = try std.ArrayList(FieldSchema).initCapacity(allocator, 0),
             .created_at = std.time.timestamp(),
             .synonym_groups = std.AutoHashMap(u64, SynonymGroup).init(allocator),
+            .tag_inverted_index = std.StringHashMap(std.StringHashMap(std.ArrayList([]const u8))).init(allocator),
             .allocator = allocator,
         };
     }
@@ -688,6 +692,23 @@ pub const SearchIndex = struct {
             g.deinit();
         }
         self.synonym_groups.deinit();
+
+        // Free tag inverted index
+        var tag_it = self.tag_inverted_index.iterator();
+        while (tag_it.next()) |field_entry| {
+            var field_index = field_entry.value_ptr;
+            var value_it = field_index.iterator();
+            while (value_it.next()) |value_entry| {
+                // Free each ArrayList of doc_ids
+                var doc_list = value_entry.value_ptr;
+                for (doc_list.items) |doc_id| {
+                    self.allocator.free(doc_id);
+                }
+                doc_list.deinit(self.allocator);
+            }
+            field_index.deinit();
+        }
+        self.tag_inverted_index.deinit();
     }
 
     /// Add field schema to index
@@ -749,6 +770,82 @@ pub const SearchIndex = struct {
     /// Get synonym group by ID
     pub fn getSynonymGroup(self: *SearchIndex, group_id: u64) ?*SynonymGroup {
         return self.synonym_groups.getPtr(group_id);
+    }
+
+    /// Add a tag value to the inverted index for a field
+    /// Automatically normalizes the tag (lowercase, trimmed)
+    /// Arguments:
+    ///   field_name: name of the TAG field
+    ///   tag_value: the tag value to add (will be normalized)
+    ///   doc_id: document ID that contains this tag
+    pub fn addTagValue(self: *SearchIndex, field_name: []const u8, tag_value: []const u8, doc_id: []const u8) !void {
+        // Normalize tag value: lowercase and trim whitespace
+        const trimmed = std.mem.trim(u8, tag_value, " \t\n\r");
+        const normalized = try self.allocator.alloc(u8, trimmed.len);
+        defer self.allocator.free(normalized);
+
+        for (trimmed, 0..) |char, i| {
+            normalized[i] = std.ascii.toLower(char);
+        }
+
+        // Get or create field index map
+        const field_index_ptr = try self.tag_inverted_index.getOrPutValue(field_name, std.StringHashMap(std.ArrayList([]const u8)).init(self.allocator));
+        var field_index = field_index_ptr.value_ptr;
+
+        // Allocate normalized tag copy for the map key
+        const tag_key = try self.allocator.dupe(u8, normalized);
+        errdefer self.allocator.free(tag_key);
+
+        // Get or create doc_id list for this tag value
+        const doc_list_ptr = try field_index.getOrPutValue(tag_key, try std.ArrayList([]const u8).initCapacity(self.allocator, 0));
+        var doc_list = doc_list_ptr.value_ptr;
+
+        // If tag already existed (found_existing), free our allocated tag_key
+        // because the HashMap uses its own stored key
+        if (doc_list_ptr.found_existing) {
+            self.allocator.free(tag_key);
+        }
+
+        // Check if doc_id already exists in list (avoid duplicates)
+        for (doc_list.items) |existing_doc_id| {
+            if (std.mem.eql(u8, existing_doc_id, doc_id)) {
+                return; // Already exists, skip (safe now - tag_key freed above if duplicate)
+            }
+        }
+
+        // Allocate doc_id copy and add to list
+        const doc_id_copy = try self.allocator.dupe(u8, doc_id);
+        errdefer self.allocator.free(doc_id_copy);
+
+        try doc_list.append(self.allocator, doc_id_copy);
+    }
+
+    /// Get all distinct tag values for a field
+    /// Returns owned array of strings (caller must free)
+    /// Arguments:
+    ///   allocator: allocator for returned array
+    ///   field_name: name of the TAG field
+    pub fn getDistinctTagValues(self: *SearchIndex, allocator: Allocator, field_name: []const u8) ![][]const u8 {
+        // Get field index or return empty array
+        const field_index = self.tag_inverted_index.get(field_name) orelse {
+            return try allocator.alloc([]const u8, 0);
+        };
+
+        // Collect all distinct tag values
+        var result = try std.ArrayList([]const u8).initCapacity(allocator, field_index.count());
+        errdefer {
+            for (result.items) |tag| allocator.free(tag);
+            result.deinit(allocator);
+        }
+
+        var it = field_index.keyIterator();
+        while (it.next()) |tag_key| {
+            const tag_copy = try allocator.dupe(u8, tag_key.*);
+            errdefer allocator.free(tag_copy);
+            try result.append(allocator, tag_copy);
+        }
+
+        return try result.toOwnedSlice(allocator);
     }
 
     /// Performs basic text search on indexed documents (stub implementation)
@@ -2783,4 +2880,276 @@ test "SuggestionDictionary: preserves score precision with INCR" {
     try std.testing.expectEqual(@as(usize, 1), suggestions.len);
     // 0.1 + 0.2 + 0.3 = 0.6
     try std.testing.expectApproxEqAbs(@as(f64, 0.6), suggestions[0].score, 0.0001);
+}
+
+// ============================================================================
+// TAG FIELD INDEX TESTS — FT.TAGVALS Command
+// ============================================================================
+
+test "TagIndex: addTagValue stores tag in inverted index" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Test that addTagValue method exists and properly stores tags
+    // This will initially fail because method doesn't exist yet
+    try index.addTagValue("category", "electronics", "doc1");
+
+    // Retrieve tags and verify
+    const tags = try index.getDistinctTagValues(allocator, "category");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), tags.len);
+    try std.testing.expect(std.mem.eql(u8, tags[0], "electronics"));
+}
+
+test "TagIndex: multiple tags from single field" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    try index.addTagValue("tags", "apple", "doc1");
+    try index.addTagValue("tags", "banana", "doc1");
+    try index.addTagValue("tags", "cherry", "doc1");
+
+    const tags = try index.getDistinctTagValues(allocator, "tags");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), tags.len);
+}
+
+test "TagIndex: deduplication across documents" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Same tag in multiple documents
+    try index.addTagValue("category", "electronics", "doc1");
+    try index.addTagValue("category", "electronics", "doc2");
+    try index.addTagValue("category", "electronics", "doc3");
+
+    const tags = try index.getDistinctTagValues(allocator, "category");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    // Should only have one distinct value
+    try std.testing.expectEqual(@as(usize, 1), tags.len);
+    try std.testing.expect(std.mem.eql(u8, tags[0], "electronics"));
+}
+
+test "TagIndex: case normalization (lowercase)" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Add tags with mixed case
+    try index.addTagValue("brand", "Apple", "doc1");
+    try index.addTagValue("brand", "SAMSUNG", "doc2");
+    try index.addTagValue("brand", "Sony", "doc3");
+
+    const tags = try index.getDistinctTagValues(allocator, "brand");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), tags.len);
+    // All should be lowercase
+    for (tags) |tag| {
+        for (tag) |char| {
+            try std.testing.expect(char == std.ascii.toLower(char));
+        }
+    }
+}
+
+test "TagIndex: whitespace trimming" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    try index.addTagValue("tags", "  electronics  ", "doc1");
+    try index.addTagValue("tags", "\tgaming\n", "doc2");
+
+    const tags = try index.getDistinctTagValues(allocator, "tags");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), tags.len);
+    // Should be trimmed
+    for (tags) |tag| {
+        try std.testing.expect(tag.len == 0 or tag[0] != ' ');
+        try std.testing.expect(tag.len == 0 or tag[tag.len - 1] != ' ');
+    }
+}
+
+test "TagIndex: empty field returns empty array" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Don't add any tags to "category" field
+
+    const tags = try index.getDistinctTagValues(allocator, "category");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), tags.len);
+}
+
+test "TagIndex: nonexistent field returns empty array" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    try index.addTagValue("existing_field", "tag1", "doc1");
+
+    // Query different field
+    const tags = try index.getDistinctTagValues(allocator, "nonexistent_field");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), tags.len);
+}
+
+test "TagIndex: complex tag values" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    try index.addTagValue("tags", "c++", "doc1");
+    try index.addTagValue("tags", "node.js", "doc2");
+    try index.addTagValue("tags", "rust-lang", "doc3");
+    try index.addTagValue("tags", "python@3.9", "doc4");
+
+    const tags = try index.getDistinctTagValues(allocator, "tags");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), tags.len);
+}
+
+test "TagIndex: many documents same tag" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Add same tag to 100 documents
+    for (0..100) |i| {
+        const doc_id = try std.fmt.allocPrint(allocator, "doc{}", .{i});
+        defer allocator.free(doc_id);
+        try index.addTagValue("category", "popular", doc_id);
+    }
+
+    const tags = try index.getDistinctTagValues(allocator, "category");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), tags.len);
+}
+
+test "TagIndex: multiple fields independent" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    try index.addTagValue("category", "electronics", "doc1");
+    try index.addTagValue("category", "gaming", "doc1");
+    try index.addTagValue("brand", "apple", "doc1");
+    try index.addTagValue("brand", "samsung", "doc1");
+
+    const cat_tags = try index.getDistinctTagValues(allocator, "category");
+    defer {
+        for (cat_tags) |tag| allocator.free(tag);
+        allocator.free(cat_tags);
+    }
+
+    const brand_tags = try index.getDistinctTagValues(allocator, "brand");
+    defer {
+        for (brand_tags) |tag| allocator.free(tag);
+        allocator.free(brand_tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), cat_tags.len);
+    try std.testing.expectEqual(@as(usize, 2), brand_tags.len);
+}
+
+test "TagIndex: unicode tags" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    try index.addTagValue("tags", "日本語", "doc1");
+    try index.addTagValue("tags", "français", "doc2");
+    try index.addTagValue("tags", "español", "doc3");
+
+    const tags = try index.getDistinctTagValues(allocator, "tags");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), tags.len);
+}
+
+test "TagIndex: very long tag values" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Create a long tag (1000 chars)
+    const long_tag = try allocator.alloc(u8, 1000);
+    defer allocator.free(long_tag);
+    for (long_tag, 0..) |*c, i| {
+        c.* = @as(u8, @intCast('a' + (i % 26)));
+    }
+
+    try index.addTagValue("tags", long_tag, "doc1");
+
+    const tags = try index.getDistinctTagValues(allocator, "tags");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), tags.len);
+    try std.testing.expectEqual(@as(usize, 1000), tags[0].len);
+}
+
+test "TagIndex: many distinct tags" {
+    const allocator = std.testing.allocator;
+    var index = try SearchIndex.init(allocator, "idx", .hash);
+    defer index.deinit();
+
+    // Add 100 distinct tags
+    for (0..100) |i| {
+        const tag = try std.fmt.allocPrint(allocator, "tag{}", .{i});
+        defer allocator.free(tag);
+        try index.addTagValue("tags", tag, "doc1");
+    }
+
+    const tags = try index.getDistinctTagValues(allocator, "tags");
+    defer {
+        for (tags) |tag| allocator.free(tag);
+        allocator.free(tags);
+    }
+
+    try std.testing.expectEqual(@as(usize, 100), tags.len);
 }

@@ -1799,3 +1799,159 @@ pub fn cmdFtSugdel(storage: *Storage, _: std.mem.Allocator, args: []const []cons
     const deleted = try dict.deleteSuggestion(string);
     return RespValue{ .integer = if (deleted) 1 else 0 };
 }
+
+/// FT.TAGVALS index field_name
+/// Return all distinct values indexed in a TAG field
+pub fn cmdFtTagvals(storage: *Storage, allocator: std.mem.Allocator, args: []const []const u8) !RespValue {
+    // Validate arity: exactly 2 args (index and field_name)
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.TAGVALS' command" };
+    }
+
+    const index_name = args[0];
+    const field_name = args[1];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get index by name (resolve alias if needed)
+    const actual_index_name = storage.search.aliases.get(index_name) orelse index_name;
+    const index = storage.search.getIndex(actual_index_name) orelse {
+        return RespValue{ .error_string = "ERR Unknown Index name" };
+    };
+
+    // Find field schema and validate it's a TAG field
+    var field_schema: ?*const search_mod.FieldSchema = null;
+    for (index.fields.items) |*field| {
+        if (std.mem.eql(u8, field.name, field_name)) {
+            field_schema = field;
+            break;
+        }
+    }
+
+    if (field_schema == null) {
+        return RespValue{ .error_string = "ERR Unknown field name" };
+    }
+
+    if (field_schema.?.field_type != .tag) {
+        var buf: [256]u8 = undefined;
+        const error_msg = try std.fmt.bufPrint(&buf, "ERR {s} is not a tag field", .{field_name});
+        return RespValue{ .error_string = error_msg };
+    }
+
+    // Collect all distinct tag values for this field
+    const tag_values = try index.getDistinctTagValues(allocator, field_name);
+    defer allocator.free(tag_values); // Only frees the array, not the strings
+
+    // Build RESP response: array of bulk strings
+    const result_array = try allocator.alloc(RespValue, tag_values.len);
+    errdefer allocator.free(result_array);
+
+    for (tag_values, 0..) |tag, i| {
+        // Transfer ownership of tag string to RESP response (no copy needed)
+        result_array[i] = RespValue{ .bulk_string = tag };
+    }
+
+    return RespValue{ .array = result_array };
+}
+
+// ============================================================================
+// FT.TAGVALS Integration Tests
+// ============================================================================
+
+test "FT.TAGVALS: basic command returns distinct tag values" {
+    const allocator = std.testing.allocator;
+    
+    // Create a storage with search module
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create an index
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+
+    // Add field
+    var field = try search_mod.FieldSchema.init(allocator, "category", .tag);
+    defer field.deinit();
+    try index.addField(field);
+
+    // Add tags
+    try index.addTagValue("category", "electronics", "doc1");
+    try index.addTagValue("category", "gaming", "doc2");
+    try index.addTagValue("category", "mobile", "doc1");
+
+    // Call command handler
+    const args = [_][]const u8{ "idx", "category" };
+    const result = try cmdFtTagvals(&storage, allocator, &args);
+    
+    // Verify result is array
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+
+    // Clean up result
+    allocator.free(result.array);
+}
+
+test "FT.TAGVALS: error on nonexistent index" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "nosuchindex", "field" };
+    const result = try cmdFtTagvals(&storage, allocator, &args);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.eql(u8, result.error_string, "ERR Unknown Index name"));
+}
+
+test "FT.TAGVALS: error on nonexistent field" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try search_mod.FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    const args = [_][]const u8{ "idx", "nosuchfield" };
+    const result = try cmdFtTagvals(&storage, allocator, &args);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.eql(u8, result.error_string, "ERR Unknown field name"));
+}
+
+test "FT.TAGVALS: error on wrong field type" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try search_mod.FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    const args = [_][]const u8{ "idx", "title" };
+    const result = try cmdFtTagvals(&storage, allocator, &args);
+
+    try std.testing.expect(result == .error_string);
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.error_string, 1, "not a tag field"));
+}
+
+test "FT.TAGVALS: error on arity mismatch" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Too few args
+    const args1 = [_][]const u8{ "idx" };
+    const result1 = try cmdFtTagvals(&storage, allocator, &args1);
+    try std.testing.expect(result1 == .error_string);
+
+    // Too many args
+    const args2 = [_][]const u8{ "idx", "field", "extra" };
+    const result2 = try cmdFtTagvals(&storage, allocator, &args2);
+    try std.testing.expect(result2 == .error_string);
+}
