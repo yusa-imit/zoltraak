@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 201 (294+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 203 (296+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 14 (Time Series) — starting
 - **Next milestone**: Phase 14 (Time Series TS.* commands)
@@ -66,13 +66,14 @@
 
 **All 30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL, FT.ALIASADD, FT.ALIASDEL, FT.ALIASUPDATE, FT.DICTADD, FT.DICTDEL, FT.DICTDUMP, FT.SYNDUMP, FT.SYNUPDATE, FT.SUGADD, FT.SUGGET, FT.SUGLEN, FT.SUGDEL, FT.TAGVALS, FT.CONFIG GET/SET/HELP, **FT.HYBRID** ✅
 
-### Phase 14 — Time Series (12% complete) 🚧
+### Phase 14 — Time Series (24% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
 | 202 | Foundation (TimeSeriesValue, DataPoint, TimeSeriesInfo, TS.CREATE, TS.INFO) | Done ✅ |
+| 203 | TS.ADD, TS.MADD (add data points with auto-create, wildcard timestamps, ON_DUPLICATE override, batch processing) | Done ✅ |
 
-**2/17 Phase 14 commands complete**: TS.CREATE, TS.INFO
+**4/17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
