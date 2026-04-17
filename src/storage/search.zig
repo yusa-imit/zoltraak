@@ -1322,6 +1322,87 @@ pub const SearchCursor = struct {
     }
 };
 
+/// Search engine runtime configuration
+pub const SearchConfig = struct {
+    /// Query timeout in milliseconds (default: 500ms)
+    timeout: u64,
+    /// Action when query times out: "fail" or "return" (default: "return")
+    on_timeout: []const u8,
+    /// Maximum wildcard expansions (default: 200)
+    max_expansions: u64,
+    /// Maximum prefix expansions (default: 200)
+    max_prefix_expansions: u64,
+
+    allocator: Allocator,
+
+    /// Initialize with default values
+    pub fn init(allocator: Allocator) !SearchConfig {
+        return SearchConfig{
+            .timeout = 500,
+            .on_timeout = try allocator.dupe(u8, "return"),
+            .max_expansions = 200,
+            .max_prefix_expansions = 200,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *SearchConfig) void {
+        self.allocator.free(self.on_timeout);
+    }
+
+    /// Get configuration option value as string
+    /// Caller owns the returned string
+    pub fn get(self: *const SearchConfig, allocator: Allocator, option: []const u8) ![]const u8 {
+        const lower_option = try allocator.alloc(u8, option.len);
+        defer allocator.free(lower_option);
+        for (option, 0..) |char, i| {
+            lower_option[i] = std.ascii.toLower(char);
+        }
+
+        if (std.mem.eql(u8, lower_option, "timeout")) {
+            return std.fmt.allocPrint(allocator, "{d}", .{self.timeout});
+        } else if (std.mem.eql(u8, lower_option, "on_timeout")) {
+            return allocator.dupe(u8, self.on_timeout);
+        } else if (std.mem.eql(u8, lower_option, "maxexpansions")) {
+            return std.fmt.allocPrint(allocator, "{d}", .{self.max_expansions});
+        } else if (std.mem.eql(u8, lower_option, "maxprefixexpansions")) {
+            return std.fmt.allocPrint(allocator, "{d}", .{self.max_prefix_expansions});
+        }
+        return error.UnknownConfigOption;
+    }
+
+    /// Set configuration option value
+    /// Returns error if option is unknown or value is invalid
+    pub fn set(self: *SearchConfig, option: []const u8, value: []const u8) !void {
+        const lower_option = try self.allocator.alloc(u8, option.len);
+        defer self.allocator.free(lower_option);
+        for (option, 0..) |char, i| {
+            lower_option[i] = std.ascii.toLower(char);
+        }
+
+        if (std.mem.eql(u8, lower_option, "timeout")) {
+            self.timeout = try std.fmt.parseInt(u64, value, 10);
+        } else if (std.mem.eql(u8, lower_option, "on_timeout")) {
+            const lower_value = try self.allocator.alloc(u8, value.len);
+            defer self.allocator.free(lower_value);
+            for (value, 0..) |char, i| {
+                lower_value[i] = std.ascii.toLower(char);
+            }
+            if (!std.mem.eql(u8, lower_value, "fail") and !std.mem.eql(u8, lower_value, "return")) {
+                return error.InvalidConfigValue;
+            }
+            self.allocator.free(self.on_timeout);
+            self.on_timeout = try self.allocator.dupe(u8, lower_value);
+        } else if (std.mem.eql(u8, lower_option, "maxexpansions")) {
+            self.max_expansions = try std.fmt.parseInt(u64, value, 10);
+        } else if (std.mem.eql(u8, lower_option, "maxprefixexpansions")) {
+            self.max_prefix_expansions = try std.fmt.parseInt(u64, value, 10);
+        } else {
+            return error.UnknownConfigOption;
+        }
+    }
+};
+
 /// Search index store — manages all indices
 pub const SearchStore = struct {
     /// Map: index_name -> SearchIndex
@@ -1338,9 +1419,17 @@ pub const SearchStore = struct {
     dictionaries: std.StringHashMap(Dictionary),
     /// Map: key -> SuggestionDictionary (for auto-complete)
     suggestion_dictionaries: std.StringHashMap(SuggestionDictionary),
+    /// Runtime configuration
+    config: SearchConfig,
     allocator: Allocator,
 
-    pub fn init(allocator: Allocator) SearchStore {
+    pub fn init(allocator: Allocator) !SearchStore {
+        const config = try SearchConfig.init(allocator);
+        errdefer {
+            var cfg = config;
+            cfg.deinit();
+        }
+
         return SearchStore{
             .indices = std.StringHashMap(SearchIndex).init(allocator),
             .cursors = std.AutoHashMap(u64, SearchCursor).init(allocator),
@@ -1349,6 +1438,7 @@ pub const SearchStore = struct {
             .aliases = std.StringHashMap([]const u8).init(allocator),
             .dictionaries = std.StringHashMap(Dictionary).init(allocator),
             .suggestion_dictionaries = std.StringHashMap(SuggestionDictionary).init(allocator),
+            .config = config,
             .allocator = allocator,
         };
     }
@@ -1392,6 +1482,9 @@ pub const SearchStore = struct {
             dict.deinit();
         }
         self.suggestion_dictionaries.deinit();
+
+        // Free config
+        self.config.deinit();
     }
 
     /// Create a new search index

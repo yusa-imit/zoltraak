@@ -560,7 +560,7 @@ pub const Storage = struct {
         const function_store = functions_mod.FunctionStore.init(allocator);
 
         // Initialize search store (empty by default)
-        const search_store = search_mod.SearchStore.init(allocator);
+        const search_store = try search_mod.SearchStore.init(allocator);
 
         storage.* = Storage{
             .allocator = allocator,

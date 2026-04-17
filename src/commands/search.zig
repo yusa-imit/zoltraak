@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Storage = @import("../storage/memory.zig").Storage;
 const parser = @import("../protocol/parser.zig");
 const RespValue = parser.RespValue;
@@ -1954,4 +1955,111 @@ test "FT.TAGVALS: error on arity mismatch" {
     const args2 = [_][]const u8{ "idx", "field", "extra" };
     const result2 = try cmdFtTagvals(&storage, allocator, &args2);
     try std.testing.expect(result2 == .error_string);
+}
+
+/// FT.CONFIG <subcommand> [args...]
+/// Manage search engine runtime configuration
+///
+/// Subcommands:
+/// - GET <option>: Get configuration value
+/// - SET <option> <value>: Set configuration value
+/// - HELP: Show configuration help
+///
+/// Returns: depends on subcommand
+pub fn cmdFtConfig(storage: *Storage, allocator: Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.CONFIG' command" };
+    }
+
+    const subcommand_lower = try allocator.alloc(u8, args[0].len);
+    defer allocator.free(subcommand_lower);
+    for (args[0], 0..) |char, i| {
+        subcommand_lower[i] = std.ascii.toLower(char);
+    }
+
+    if (std.mem.eql(u8, subcommand_lower, "get")) {
+        return cmdFtConfigGet(storage, allocator, args[1..]);
+    } else if (std.mem.eql(u8, subcommand_lower, "set")) {
+        return cmdFtConfigSet(storage, allocator, args[1..]);
+    } else if (std.mem.eql(u8, subcommand_lower, "help")) {
+        return cmdFtConfigHelp(allocator);
+    }
+
+    return RespValue{ .error_string = "ERR unknown FT.CONFIG subcommand" };
+}
+
+/// FT.CONFIG GET <option>
+/// Get configuration option value
+fn cmdFtConfigGet(storage: *Storage, allocator: Allocator, args: []const []const u8) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.CONFIG GET' command" };
+    }
+
+    const option = args[0];
+    const value = storage.search.config.get(allocator, option) catch |err| {
+        if (err == error.UnknownConfigOption) {
+            return RespValue{ .error_string = "ERR Unknown option" };
+        }
+        return err;
+    };
+    errdefer allocator.free(value);
+
+    // Return array: [option, value]
+    var result = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer result.deinit(allocator);
+
+    try result.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, option) });
+    try result.append(allocator, RespValue{ .bulk_string = value });
+
+    return RespValue{ .array = try result.toOwnedSlice(allocator) };
+}
+
+/// FT.CONFIG SET <option> <value>
+/// Set configuration option value
+fn cmdFtConfigSet(storage: *Storage, allocator: Allocator, args: []const []const u8) !RespValue {
+    _ = allocator;
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.CONFIG SET' command" };
+    }
+
+    const option = args[0];
+    const value = args[1];
+
+    storage.search.config.set(option, value) catch |err| {
+        if (err == error.UnknownConfigOption) {
+            return RespValue{ .error_string = "ERR Unknown option" };
+        } else if (err == error.InvalidConfigValue) {
+            return RespValue{ .error_string = "ERR Invalid value" };
+        } else if (err == error.InvalidCharacter) {
+            return RespValue{ .error_string = "ERR Invalid value format" };
+        }
+        return err;
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}
+
+/// FT.CONFIG HELP
+/// Return configuration help text
+fn cmdFtConfigHelp(allocator: Allocator) !RespValue {
+    const help_lines = [_][]const u8{
+        "FT.CONFIG GET <option> - Get configuration value",
+        "FT.CONFIG SET <option> <value> - Set configuration value",
+        "FT.CONFIG HELP - Show this help",
+        "",
+        "Available options:",
+        "  TIMEOUT - Query timeout in milliseconds (default: 500)",
+        "  ON_TIMEOUT - Action on timeout: 'fail' or 'return' (default: 'return')",
+        "  MAXEXPANSIONS - Maximum wildcard expansions (default: 200)",
+        "  MAXPREFIXEXPANSIONS - Maximum prefix expansions (default: 200)",
+    };
+
+    var result = try std.ArrayList(RespValue).initCapacity(allocator, help_lines.len);
+    errdefer result.deinit(allocator);
+
+    for (help_lines) |line| {
+        try result.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, line) });
+    }
+
+    return RespValue{ .array = try result.toOwnedSlice(allocator) };
 }

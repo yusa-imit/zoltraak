@@ -2113,6 +2113,16 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "FT.CONFIG")) {
+                if (args.len < 1) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR wrong number of arguments for 'FT.CONFIG' command");
+                }
+                const result = try search_cmds.cmdFtConfig(storage, allocator, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
