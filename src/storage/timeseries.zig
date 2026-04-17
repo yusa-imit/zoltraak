@@ -122,9 +122,10 @@ pub const TimeSeriesValue = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !TimeSeriesValue {
+        const samples = try std.ArrayList(DataPoint).initCapacity(allocator, 0);
         return TimeSeriesValue{
             .info = try TimeSeriesInfo.init(allocator),
-            .samples = std.ArrayList(DataPoint).init(allocator),
+            .samples = samples,
             .expires_at = null,
             .allocator = allocator,
         };
@@ -136,13 +137,19 @@ pub const TimeSeriesValue = struct {
     }
 
     /// Add a data point with duplicate policy enforcement
-    pub fn add(self: *TimeSeriesValue, timestamp: i64, value: f64) !void {
+    ///
+    /// Arguments:
+    ///   - timestamp: Unix timestamp in milliseconds
+    ///   - value: Numeric value for the data point
+    ///   - policy_override: Optional override for duplicate policy (for TS.ADD ON_DUPLICATE)
+    pub fn add(self: *TimeSeriesValue, timestamp: i64, value: f64, policy_override: ?DuplicatePolicy) !void {
         // Find insertion point (binary search for sorted insertion)
         const index = self.findTimestampIndex(timestamp);
 
         if (index < self.samples.items.len and self.samples.items[index].timestamp == timestamp) {
-            // Duplicate timestamp found - apply duplicate policy
-            switch (self.info.duplicate_policy) {
+            // Duplicate timestamp found - apply duplicate policy (use override if provided)
+            const policy = policy_override orelse self.info.duplicate_policy;
+            switch (policy) {
                 .block => return error.DuplicateTimestamp,
                 .first => return, // Keep existing value
                 .last => self.samples.items[index].value = value,
@@ -202,7 +209,7 @@ pub const TimeSeriesValue = struct {
         if (remove_count > 0) {
             // Shift remaining samples to front
             std.mem.copyForwards(DataPoint, self.samples.items[0..], self.samples.items[remove_count..]);
-            self.samples.shrinkRetainingCapacity(self.allocator, self.samples.items.len - remove_count);
+            self.samples.shrinkRetainingCapacity(self.samples.items.len - remove_count);
             self.info.total_samples -= remove_count;
 
             // Update first timestamp
@@ -264,7 +271,7 @@ test "TimeSeriesValue add single sample" {
     var ts = try TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
-    try ts.add(1000, 10.5);
+    try ts.add(1000, 10.5, null);
     try std.testing.expectEqual(@as(usize, 1), ts.samples.items.len);
     try std.testing.expectEqual(@as(i64, 1000), ts.samples.items[0].timestamp);
     try std.testing.expectEqual(@as(f64, 10.5), ts.samples.items[0].value);
@@ -276,9 +283,9 @@ test "TimeSeriesValue add multiple samples sorted" {
     var ts = try TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
-    try ts.add(3000, 30.0);
-    try ts.add(1000, 10.0);
-    try ts.add(2000, 20.0);
+    try ts.add(3000, 30.0, null);
+    try ts.add(1000, 10.0, null);
+    try ts.add(2000, 20.0, null);
 
     try std.testing.expectEqual(@as(usize, 3), ts.samples.items.len);
     try std.testing.expectEqual(@as(i64, 1000), ts.samples.items[0].timestamp);
@@ -292,8 +299,8 @@ test "TimeSeriesValue duplicate policy LAST" {
     defer ts.deinit();
 
     ts.info.duplicate_policy = .last;
-    try ts.add(1000, 10.0);
-    try ts.add(1000, 20.0);
+    try ts.add(1000, 10.0, null);
+    try ts.add(1000, 20.0, null);
 
     try std.testing.expectEqual(@as(usize, 1), ts.samples.items.len);
     try std.testing.expectEqual(@as(f64, 20.0), ts.samples.items[0].value);
@@ -305,8 +312,8 @@ test "TimeSeriesValue duplicate policy BLOCK" {
     defer ts.deinit();
 
     ts.info.duplicate_policy = .block;
-    try ts.add(1000, 10.0);
-    try std.testing.expectError(error.DuplicateTimestamp, ts.add(1000, 20.0));
+    try ts.add(1000, 10.0, null);
+    try std.testing.expectError(error.DuplicateTimestamp, ts.add(1000, 20.0, null));
 }
 
 test "TimeSeriesValue duplicate policy SUM" {
@@ -315,8 +322,8 @@ test "TimeSeriesValue duplicate policy SUM" {
     defer ts.deinit();
 
     ts.info.duplicate_policy = .sum;
-    try ts.add(1000, 10.0);
-    try ts.add(1000, 5.0);
+    try ts.add(1000, 10.0, null);
+    try ts.add(1000, 5.0, null);
 
     try std.testing.expectEqual(@as(usize, 1), ts.samples.items.len);
     try std.testing.expectEqual(@as(f64, 15.0), ts.samples.items[0].value);
@@ -328,9 +335,9 @@ test "TimeSeriesValue retention policy" {
     defer ts.deinit();
 
     ts.info.retention_ms = 1000; // 1 second retention
-    try ts.add(1000, 10.0);
-    try ts.add(1500, 15.0);
-    try ts.add(2500, 25.0); // This should trigger retention
+    try ts.add(1000, 10.0, null);
+    try ts.add(1500, 15.0, null);
+    try ts.add(2500, 25.0, null); // This should trigger retention
 
     // Only samples within last 1000ms should remain
     try std.testing.expectEqual(@as(usize, 2), ts.samples.items.len);
@@ -345,8 +352,8 @@ test "TimeSeriesValue getLatest" {
 
     try std.testing.expectEqual(@as(?DataPoint, null), ts.getLatest());
 
-    try ts.add(1000, 10.0);
-    try ts.add(2000, 20.0);
+    try ts.add(1000, 10.0, null);
+    try ts.add(2000, 20.0, null);
 
     const latest = ts.getLatest().?;
     try std.testing.expectEqual(@as(i64, 2000), latest.timestamp);
@@ -358,10 +365,10 @@ test "TimeSeriesValue getRange" {
     var ts = try TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
-    try ts.add(1000, 10.0);
-    try ts.add(2000, 20.0);
-    try ts.add(3000, 30.0);
-    try ts.add(4000, 40.0);
+    try ts.add(1000, 10.0, null);
+    try ts.add(2000, 20.0, null);
+    try ts.add(3000, 30.0, null);
+    try ts.add(4000, 40.0, null);
 
     const range = ts.getRange(1500, 3500);
     try std.testing.expectEqual(@as(usize, 2), range.len);

@@ -92,6 +92,7 @@ pub fn cmdMemoryUsage(
             .stream => |s| s.entries.items.len * 256 + 512, // Entry struct + metadata
             .hyperloglog => 12304, // 16384 registers
             .json => |j| blk2: { _ = j; break :blk2 512; }, // JSON tree * 6 bits
+            .timeseries => |ts| ts.samples.items.len * 16 + 512, // DataPoint + metadata
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };

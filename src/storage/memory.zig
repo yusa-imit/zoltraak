@@ -753,6 +753,7 @@ pub const Storage = struct {
                             .stream => |st| st.expires_at,
                             .hyperloglog => |hll| hll.expires_at,
                             .json => |j| j.expires_at,
+                            .timeseries => |ts| ts.expires_at,
                         };
                     }
                 }
@@ -4086,6 +4087,7 @@ pub const Storage = struct {
             .stream => |*v| v.expires_at = expires_at,
             .hyperloglog => |*v| v.expires_at = expires_at,
             .json => |*v| v.expires_at = expires_at,
+            .timeseries => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -4436,6 +4438,7 @@ pub const Storage = struct {
             .stream => 0xFE, // Stream type
             .hyperloglog => 0xFD, // HyperLogLog type
             .json => 0x0F, // JSON type
+            .timeseries => 0xFC, // Time Series type
         };
         try w.writeByte(type_byte);
 
@@ -4499,6 +4502,10 @@ pub const Storage = struct {
                 const json_str = try j.root.stringify(j.allocator);
                 defer j.allocator.free(json_str);
                 try writeBlob(w, json_str);
+            },
+            .timeseries => {
+                // Time series not yet implemented in dump
+                try w.writeInt(u32, 0, .little);
             },
         }
 
@@ -4900,13 +4907,18 @@ pub const Storage = struct {
             },
             .json => |j| blk: {
                 // Deep clone JSON tree
-                
+
                 const cloned_root = try j.root.clone(self.allocator);
                 break :blk Value{ .json = .{
                     .root = cloned_root,
                     .expires_at = j.expires_at,
                     .allocator = self.allocator,
                 } };
+            },
+            .timeseries => |ts| blk: {
+                // Time series deep copy not yet implemented
+                // For now, return the original (stub for COPY command)
+                break :blk Value{ .timeseries = ts };
             },
         };
     }

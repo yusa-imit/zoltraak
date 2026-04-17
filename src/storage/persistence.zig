@@ -99,6 +99,7 @@ pub const Persistence = struct {
                     .stream => 0xFF, // Placeholder - streams not yet serialized
                     .hyperloglog => 0xFE, // HyperLogLog type
                     .json => 0x0F, // JSON type
+                    .timeseries => 0xFD, // Time Series type
                 };
                 try w.writeByte(type_byte);
 
@@ -159,6 +160,10 @@ pub const Persistence = struct {
                         const json_str = try j.root.stringify(j.allocator);
                         defer j.allocator.free(json_str);
                         try writeBlob(w, json_str);
+                    },
+                    .timeseries => {
+                        // Time series not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
                     },
                 }
             }
@@ -583,6 +588,7 @@ pub const Persistence = struct {
                     .stream => 0xFF, // Streams not yet serialized
                     .hyperloglog => 0xFE, // HyperLogLog
                     .json => 0x0F, // JSON type
+                    .timeseries => 0xFD, // Time Series type
                 };
                 try w.writeByte(type_byte);
 
@@ -635,6 +641,10 @@ pub const Persistence = struct {
                         const json_str = try j.root.stringify(j.allocator);
                         defer j.allocator.free(json_str);
                         try writeBlob(w, json_str);
+                    },
+                    .timeseries => {
+                        // Time series not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
                     },
                 }
             }

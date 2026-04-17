@@ -267,6 +267,10 @@ pub const Aof = struct {
                     // JSON values handled by JSON.SET command in AOF replay
                     // The command will be replayed from AOF log
                 },
+                .timeseries => {
+                    // Time series values handled by TS.* commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 

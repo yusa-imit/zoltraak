@@ -168,6 +168,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "SETBIT", "BITOP", "BITFIELD",
         "GEOADD", "PFADD", "PFMERGE",
         "RESTORE", "SORT", "DELEX", "MIGRATE",
+        "TS.CREATE", "TS.ADD", "TS.MADD",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -2159,6 +2160,10 @@ pub fn executeCommand(
                 break :blk try timeseries_cmds.cmdTsCreate(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.INFO")) {
                 break :blk try timeseries_cmds.cmdTsInfo(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.ADD")) {
+                break :blk try timeseries_cmds.cmdTsAdd(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.MADD")) {
+                break :blk try timeseries_cmds.cmdTsMadd(storage, args, allocator);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
