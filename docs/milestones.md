@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 198 (291 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 47% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 200 (294 Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 90% complete** 🚧, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Phase 13 (Search Engine) — in progress
 - **Next milestone**: Phase 13 (Search Engine FT.* commands) or Phase 14 (Time Series TS.* commands)
@@ -42,7 +42,7 @@
 
 **All 23 Phase 12 commands complete**: JSON.SET, JSON.GET, JSON.DEL, JSON.TYPE, JSON.MGET, JSON.NUMINCRBY, JSON.NUMMULTBY, JSON.MSET, JSON.FORGET, JSON.STRAPPEND, JSON.STRLEN, JSON.TOGGLE, JSON.CLEAR, JSON.ARRAPPEND, JSON.ARRINDEX, JSON.ARRINSERT, JSON.ARRLEN, JSON.ARRPOP, JSON.ARRTRIM, JSON.OBJKEYS, JSON.OBJLEN, JSON.RESP, JSON.MERGE, JSON.DEBUG HELP, JSON.DEBUG MEMORY
 
-### Phase 13 — Search Engine (47% complete) 🚧
+### Phase 13 — Search Engine (90% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -60,8 +60,10 @@
 | 196 | FT.DICTADD/DICTDEL/DICTDUMP (dictionary management for stop words and synonyms, global dictionaries) | Done ✅ |
 | 197 | FT.SYNDUMP/FT.SYNUPDATE (synonym group management per index, SKIPINITIALSCAN support) | Done ✅ |
 | 198 | FT.SUGADD/SUGGET/SUGLEN/SUGDEL (auto-complete suggestions with trie-based storage, Levenshtein distance-1 fuzzy matching, INCR/PAYLOAD/WITHSCORES/WITHPAYLOADS/FUZZY/MAX options) | Done ✅ |
+| 199 | FT.TAGVALS (TAG field inverted index, distinct value retrieval) | Done ✅ |
+| 200 | FT.CONFIG GET/SET/HELP (runtime configuration: TIMEOUT, ON_TIMEOUT, MAXEXPANSIONS, MAXPREFIXEXPANSIONS) | Done ✅ |
 
-**23/30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL, FT.ALIASADD, FT.ALIASDEL, FT.ALIASUPDATE, FT.DICTADD, FT.DICTDEL, FT.DICTDUMP, FT.SYNDUMP, FT.SYNUPDATE, **FT.SUGADD, FT.SUGGET, FT.SUGLEN, FT.SUGDEL** ✅
+**27/30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL, FT.ALIASADD, FT.ALIASDEL, FT.ALIASUPDATE, FT.DICTADD, FT.DICTDEL, FT.DICTDUMP, FT.SYNDUMP, FT.SYNUPDATE, FT.SUGADD, FT.SUGGET, FT.SUGLEN, FT.SUGDEL, FT.TAGVALS, **FT.CONFIG GET/SET/HELP** ✅
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
