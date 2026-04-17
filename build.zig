@@ -635,6 +635,17 @@ pub fn build(b: *std.Build) void {
     const run_ft_config_tests = b.addRunArtifact(ft_config_tests);
     integration_test_step.dependOn(&run_ft_config_tests.step);
 
+    // FT.HYBRID integration tests (Iteration 201)
+    const ft_hybrid_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_ft_hybrid.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ft_hybrid_tests = b.addRunArtifact(ft_hybrid_tests);
+    integration_test_step.dependOn(&run_ft_hybrid_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{

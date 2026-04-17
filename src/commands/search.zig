@@ -2063,3 +2063,196 @@ fn cmdFtConfigHelp(allocator: Allocator) !RespValue {
 
     return RespValue{ .array = try result.toOwnedSlice(allocator) };
 }
+
+/// FT.HYBRID index SEARCH query [SCORER scorer] [YIELD_SCORE_AS name]
+///   VSIM @vector_field $vector_param [KNN|RANGE options] [YIELD_SCORE_AS name] [FILTER filter]
+///   [COMBINE RRF|LINEAR ...] [LIMIT offset num] [SORTBY ...] [LOAD ...] [GROUPBY ...]
+///   [APPLY ...] PARAMS nargs ... [TIMEOUT timeout]
+///
+/// Performs hybrid search combining full-text search and vector similarity search.
+/// Available since Redis 8.4.0.
+///
+/// This is a STUB implementation that validates argument parsing and returns empty results.
+/// Full implementation requires:
+/// - Vector indexing infrastructure (HNSW graph)
+/// - Vector similarity search (KNN, range queries)
+/// - Hybrid scoring fusion (RRF, LINEAR)
+/// - SIMD-accelerated distance calculations
+///
+/// Arguments (required):
+///   args[0] = index_name
+///   args[1] = "SEARCH"
+///   args[2] = text_query
+///   args[...] = "VSIM" @field $param
+///   args[...] = "PARAMS" nargs param_name param_value ...
+///
+/// Optional clauses:
+///   SCORER <algorithm> <params...> - Text scoring (e.g., BM25 1.2 0.75)
+///   YIELD_SCORE_AS <name> - Alias for search/vector scores
+///   KNN <count> K <k> [EF_RUNTIME <ef>] - K-nearest neighbors
+///   RANGE <count> RADIUS <radius> [EPSILON <epsilon>] - Range-based vector search
+///   FILTER "<expression>" - Pre-filter vector results
+///   COMBINE RRF|LINEAR <count> <params...> - Fusion method
+///   LIMIT <offset> <num> - Pagination
+///   SORTBY <count> <field> [ASC|DESC] - Sort results
+///   LOAD <count> <field...> - Fields to return
+///   GROUPBY <nproperties> <property...> - Grouping
+///   APPLY "<expression>" AS <name> - Computed fields
+///   TIMEOUT <timeout> - Query timeout in milliseconds
+///
+/// Returns:
+///   RESP2: Array [total_count, doc_id, [field, value, ...], ...]
+///   RESP3: Map {total_results, execution_time, warnings, results}
+///
+pub fn cmdFtHybrid(storage: *Storage, allocator: Allocator, args: []const []const u8) !RespValue {
+    if (args.len < 5) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.HYBRID' command" };
+    }
+
+    const index_name = args[0];
+
+    // Validate index exists (check index name or alias)
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    const actual_index_name = storage.search.getIndexByAlias(index_name) catch index_name;
+    const maybe_index = storage.search.getIndex(actual_index_name);
+    if (maybe_index == null) {
+        const err_msg = try std.fmt.allocPrint(allocator, "ERR {s}: no such index", .{index_name});
+        return RespValue{ .error_string = err_msg };
+    }
+
+    // Validate SEARCH keyword
+    if (!std.mem.eql(u8, args[1], "SEARCH")) {
+        return RespValue{ .error_string = "ERR syntax error, expected SEARCH after index name" };
+    }
+
+    // Parse query and find VSIM clause
+    var i: usize = 2;
+    var found_vsim = false;
+    var found_params = false;
+
+    // Skip to VSIM (query can be complex with spaces)
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "VSIM")) {
+            found_vsim = true;
+            break;
+        }
+    }
+
+    if (!found_vsim) {
+        return RespValue{ .error_string = "ERR VSIM clause is required for hybrid search" };
+    }
+
+    // Validate VSIM has field and parameter
+    if (i + 2 >= args.len) {
+        return RespValue{ .error_string = "ERR VSIM requires vector field and parameter" };
+    }
+
+    i += 1;
+    const vector_field = args[i];
+    i += 1;
+    const vector_param = args[i];
+
+    // Vector field must start with @
+    if (!std.mem.startsWith(u8, vector_field, "@")) {
+        return RespValue{ .error_string = "ERR vector field must start with @" };
+    }
+
+    // Vector parameter must start with $
+    if (!std.mem.startsWith(u8, vector_param, "$")) {
+        return RespValue{ .error_string = "ERR vector parameter must start with $" };
+    }
+
+    i += 1;
+
+    // Parse optional clauses and find PARAMS (required)
+    while (i < args.len) : (i += 1) {
+        const keyword = args[i];
+
+        if (std.mem.eql(u8, keyword, "PARAMS")) {
+            found_params = true;
+            // Validate PARAMS has at least nargs
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR PARAMS requires nargs argument" };
+            }
+            i += 1;
+            const nargs = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR PARAMS nargs must be a valid integer" };
+            };
+
+            // Validate we have enough arguments
+            if (i + nargs >= args.len) {
+                return RespValue{ .error_string = "ERR not enough PARAMS arguments" };
+            }
+
+            // nargs must be even (key-value pairs)
+            if (nargs % 2 != 0) {
+                return RespValue{ .error_string = "ERR PARAMS nargs must be even (key-value pairs)" };
+            }
+
+            break;
+        } else if (std.mem.eql(u8, keyword, "KNN")) {
+            // Validate KNN has count and K arguments
+            if (i + 3 >= args.len) {
+                return RespValue{ .error_string = "ERR KNN requires count K k arguments" };
+            }
+            i += 1;
+            _ = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR KNN count must be a valid integer" };
+            };
+            i += 1;
+            if (!std.mem.eql(u8, args[i], "K")) {
+                return RespValue{ .error_string = "ERR KNN requires K keyword" };
+            }
+            i += 1;
+            _ = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR KNN k must be a valid integer" };
+            };
+        } else if (std.mem.eql(u8, keyword, "RANGE")) {
+            // Validate RANGE has count RADIUS radius arguments
+            if (i + 3 >= args.len) {
+                return RespValue{ .error_string = "ERR RANGE requires count RADIUS radius arguments" };
+            }
+            i += 1;
+            _ = std.fmt.parseInt(usize, args[i], 10) catch {
+                return RespValue{ .error_string = "ERR RANGE count must be a valid integer" };
+            };
+            i += 1;
+            if (!std.mem.eql(u8, args[i], "RADIUS")) {
+                return RespValue{ .error_string = "ERR RANGE requires RADIUS keyword" };
+            }
+            i += 1;
+            _ = std.fmt.parseFloat(f64, args[i]) catch {
+                return RespValue{ .error_string = "ERR RANGE radius must be a valid float" };
+            };
+        } else if (std.mem.eql(u8, keyword, "SCORER") or
+            std.mem.eql(u8, keyword, "YIELD_SCORE_AS") or
+            std.mem.eql(u8, keyword, "FILTER") or
+            std.mem.eql(u8, keyword, "COMBINE") or
+            std.mem.eql(u8, keyword, "LIMIT") or
+            std.mem.eql(u8, keyword, "SORTBY") or
+            std.mem.eql(u8, keyword, "LOAD") or
+            std.mem.eql(u8, keyword, "GROUPBY") or
+            std.mem.eql(u8, keyword, "APPLY") or
+            std.mem.eql(u8, keyword, "TIMEOUT"))
+        {
+            // Skip these optional clauses for now (stub implementation)
+            // Real implementation would parse and validate each one
+            continue;
+        }
+    }
+
+    if (!found_params) {
+        return RespValue{ .error_string = "ERR PARAMS clause is required for hybrid search" };
+    }
+
+    // STUB: Return empty result array [0]
+    // Format: [total_results]
+    var result = try std.ArrayList(RespValue).initCapacity(allocator, 1);
+    errdefer result.deinit(allocator);
+
+    try result.append(allocator, RespValue{ .integer = 0 });
+
+    return RespValue{ .array = try result.toOwnedSlice(allocator) };
+}
