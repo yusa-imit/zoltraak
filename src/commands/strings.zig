@@ -36,6 +36,7 @@ const function_cmds = @import("functions.zig");
 const json_cmds = @import("json.zig");
 const search_cmds = @import("search.zig");
 const search_agg_cmds = @import("search_aggregate.zig");
+const timeseries_cmds = @import("timeseries.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -2133,6 +2134,31 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_upper});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+        // Time Series (TS.*) commands
+        else if (std.mem.startsWith(u8, cmd_upper, "TS.")) {
+            // Extract command args
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            args[0] = cmd_upper;
+            for (array[1..], 1..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+
+            if (std.mem.eql(u8, cmd_upper, "TS.CREATE")) {
+                break :blk try timeseries_cmds.cmdTsCreate(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.INFO")) {
+                break :blk try timeseries_cmds.cmdTsInfo(storage, args, allocator);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();

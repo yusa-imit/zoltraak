@@ -10,6 +10,7 @@ const sentinel_mod = @import("sentinel.zig");
 const functions_mod = @import("functions.zig");
 const json_value_mod = @import("json_value.zig");
 const search_mod = @import("search.zig");
+const timeseries_mod = @import("timeseries.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -23,6 +24,7 @@ pub const ClusterState = cluster_mod.ClusterState;
 pub const SentinelState = sentinel_mod.SentinelState;
 pub const FunctionStore = functions_mod.FunctionStore;
 pub const SearchStore = search_mod.SearchStore;
+pub const TimeSeriesValue = timeseries_mod.TimeSeriesValue;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -41,6 +43,7 @@ pub const ValueType = enum {
     stream,
     hyperloglog,
     json,
+    timeseries,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -54,6 +57,7 @@ pub const Value = union(ValueType) {
     stream: StreamValue,
     hyperloglog: HyperLogLogValue,
     json: JsonValue,
+    timeseries: TimeSeriesValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -388,6 +392,7 @@ pub const Value = union(ValueType) {
             .stream => |*st| st.deinit(allocator),
             .hyperloglog => |*hll| hll.deinit(allocator),
             .json => |*j| j.deinit(allocator),
+            .timeseries => |*ts| ts.deinit(),
         }
     }
 
@@ -402,6 +407,7 @@ pub const Value = union(ValueType) {
             .stream => |st| st.expires_at,
             .hyperloglog => |hll| hll.expires_at,
             .json => |j| j.expires_at,
+            .timeseries => |ts| ts.expires_at,
         };
     }
 
