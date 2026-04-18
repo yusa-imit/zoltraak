@@ -228,6 +228,61 @@ pub const TimeSeriesValue = struct {
         return self.samples.items[self.samples.items.len - 1];
     }
 
+    /// Increment a data point at the specified timestamp by delta amount
+    ///
+    /// If timestamp exists:
+    ///   - Respects duplicate_policy: returns error.DuplicateTimestamp if policy is BLOCK
+    ///   - Otherwise adds delta to existing value
+    /// If timestamp doesn't exist, creates new sample with value = delta.
+    /// If series is empty, creates sample with value = delta.
+    /// Respects retention policy.
+    ///
+    /// Arguments:
+    ///   - timestamp: Unix timestamp in milliseconds
+    ///   - delta: Amount to increment by
+    pub fn incrementBy(self: *TimeSeriesValue, timestamp: i64, delta: f64) !void {
+        // Find the insertion point
+        const index = self.findTimestampIndex(timestamp);
+
+        if (index < self.samples.items.len and self.samples.items[index].timestamp == timestamp) {
+            // Timestamp already exists - check duplicate policy
+            if (self.info.duplicate_policy == .block) {
+                return error.DuplicateTimestamp;
+            }
+            // Apply increment
+            self.samples.items[index].value += delta;
+        } else {
+            // Timestamp doesn't exist - create new sample with delta as value
+            try self.samples.insert(self.allocator, index, DataPoint.init(timestamp, delta));
+            self.info.total_samples += 1;
+
+            // Update first/last timestamps
+            if (self.info.first_timestamp == null or timestamp < self.info.first_timestamp.?) {
+                self.info.first_timestamp = timestamp;
+            }
+            if (self.info.last_timestamp == null or timestamp > self.info.last_timestamp.?) {
+                self.info.last_timestamp = timestamp;
+            }
+        }
+
+        // Apply retention policy (remove old samples)
+        if (self.info.retention_ms > 0) {
+            const cutoff = timestamp - self.info.retention_ms;
+            self.applyRetention(cutoff);
+        }
+    }
+
+    /// Decrement a data point at the specified timestamp by delta amount
+    ///
+    /// This is equivalent to calling incrementBy with negated delta.
+    ///
+    /// Arguments:
+    ///   - timestamp: Unix timestamp in milliseconds
+    ///   - delta: Amount to decrement by (will be negated internally)
+    pub fn decrementBy(self: *TimeSeriesValue, timestamp: i64, delta: f64) !void {
+        try self.incrementBy(timestamp, -delta);
+    }
+
     /// Get samples in a time range
     pub fn getRange(self: *const TimeSeriesValue, from_ts: i64, to_ts: i64) []const DataPoint {
         const start_idx = self.findTimestampIndex(from_ts);

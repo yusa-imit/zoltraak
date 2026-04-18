@@ -477,6 +477,324 @@ pub fn cmdTsMadd(
     return try buf.toOwnedSlice(arena);
 }
 
+/// TS.INCRBY key timestamp delta [RETENTION retentionPeriod] [ENCODING <COMPRESSED|UNCOMPRESSED>] [CHUNK_SIZE size] [DUPLICATE_POLICY <BLOCK|FIRST|LAST|MIN|MAX|SUM>] [IGNORE] [LABELS label value [label value ...]]
+///
+/// Increment a time series value by delta at specified timestamp.
+/// Auto-creates the time series if key doesn't exist.
+/// Returns: timestamp as integer
+///
+/// Example:
+/// TS.INCRBY counter 1000 5 RETENTION 86400000 LABELS env prod
+pub fn cmdTsIncrby(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    if (args.len < 4) {
+        return "ERR wrong number of arguments for 'TS.INCRBY' command\r\n";
+    }
+
+    const key = args[1];
+    const timestamp_arg = args[2];
+    const delta_arg = args[3];
+
+    // Parse timestamp and delta
+    const timestamp = parseTimestamp(timestamp_arg) catch {
+        return "ERR invalid timestamp\r\n";
+    };
+
+    const delta = parseValue(delta_arg) catch {
+        return "ERR invalid delta value\r\n";
+    };
+
+    // Parse optional arguments
+    var retention_ms: i64 = 0;
+    var encoding: Encoding = .uncompressed;
+    var chunk_size: u32 = 4096;
+    var duplicate_policy: DuplicatePolicy = .last;
+    var labels = try std.ArrayList(struct { key: []const u8, value: []const u8 }).initCapacity(arena, 8);
+    defer labels.deinit(arena);
+    // Note: IGNORE option is parsed but not used (stub implementation)
+    var _ignore = false;
+
+    var i: usize = 4;
+    var is_creation = false;
+
+    while (i < args.len) : (i += 1) {
+        const option = args[i];
+
+        if (std.ascii.eqlIgnoreCase(option, "RETENTION")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR RETENTION requires a value\r\n";
+            retention_ms = std.fmt.parseInt(i64, args[i], 10) catch {
+                return "ERR invalid RETENTION value\r\n";
+            };
+            if (retention_ms < 0) return "ERR RETENTION must be non-negative\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "ENCODING")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR ENCODING requires a value\r\n";
+            encoding = Encoding.fromString(args[i]) orelse {
+                return "ERR invalid ENCODING value (must be COMPRESSED or UNCOMPRESSED)\r\n";
+            };
+        } else if (std.ascii.eqlIgnoreCase(option, "CHUNK_SIZE")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR CHUNK_SIZE requires a value\r\n";
+            chunk_size = std.fmt.parseInt(u32, args[i], 10) catch {
+                return "ERR invalid CHUNK_SIZE value\r\n";
+            };
+            if (chunk_size == 0) return "ERR CHUNK_SIZE must be positive\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "DUPLICATE_POLICY")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR DUPLICATE_POLICY requires a value\r\n";
+            duplicate_policy = DuplicatePolicy.fromString(args[i]) orelse {
+                return "ERR invalid DUPLICATE_POLICY value\r\n";
+            };
+        } else if (std.ascii.eqlIgnoreCase(option, "IGNORE")) {
+            // Parse but don't use (stub for filtering based on duplicate policy)
+            _ignore = true;
+        } else if (std.ascii.eqlIgnoreCase(option, "LABELS")) {
+            is_creation = true;
+            i += 1;
+            // Parse label key-value pairs
+            while (i + 1 < args.len) {
+                const next = args[i];
+                if (std.ascii.eqlIgnoreCase(next, "RETENTION") or
+                    std.ascii.eqlIgnoreCase(next, "ENCODING") or
+                    std.ascii.eqlIgnoreCase(next, "CHUNK_SIZE") or
+                    std.ascii.eqlIgnoreCase(next, "DUPLICATE_POLICY") or
+                    std.ascii.eqlIgnoreCase(next, "IGNORE"))
+                {
+                    i -= 1;
+                    break;
+                }
+
+                const label_key = args[i];
+                i += 1;
+                if (i >= args.len) return "ERR LABELS requires key-value pairs\r\n";
+                const label_value = args[i];
+                try labels.append(arena, .{ .key = label_key, .value = label_value });
+                i += 1;
+            }
+            i -= 1;
+        } else {
+            return "ERR unknown option for TS.INCRBY\r\n";
+        }
+    }
+
+    // Check if key exists
+    const entry = try storage.data.getOrPut(key);
+
+    if (entry.found_existing) {
+        // Key exists - must be a time series
+        if (entry.value_ptr.* != .timeseries) {
+            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+
+        var ts = &entry.value_ptr.timeseries;
+
+        // Increment the sample
+        ts.incrementBy(timestamp, delta) catch |err| {
+            if (err == error.DuplicateTimestamp) {
+                return "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+            }
+            return "ERR failed to increment sample\r\n";
+        };
+    } else {
+        // Key doesn't exist - create time series with creation params
+        var ts = try TimeSeriesValue.init(storage.allocator);
+        errdefer ts.deinit();
+
+        ts.info.retention_ms = retention_ms;
+        ts.info.encoding = encoding;
+        ts.info.chunk_size = chunk_size;
+        ts.info.duplicate_policy = duplicate_policy;
+
+        // Add labels
+        for (labels.items) |label| {
+            try ts.info.setLabel(storage.allocator, label.key, label.value);
+        }
+
+        // Increment the sample
+        try ts.incrementBy(timestamp, delta);
+
+        // Store in database
+        const key_copy = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(key_copy);
+        entry.key_ptr.* = key_copy;
+        entry.value_ptr.* = Value{ .timeseries = ts };
+    }
+
+    // Return the timestamp as integer
+    var buf = try std.ArrayList(u8).initCapacity(arena, 256);
+    defer buf.deinit(arena);
+
+    try buf.writer(arena).print(":{d}\r\n", .{timestamp});
+    return try buf.toOwnedSlice(arena);
+}
+
+/// TS.DECRBY key timestamp delta [RETENTION retentionPeriod] [ENCODING <COMPRESSED|UNCOMPRESSED>] [CHUNK_SIZE size] [DUPLICATE_POLICY <BLOCK|FIRST|LAST|MIN|MAX|SUM>] [IGNORE] [LABELS label value [label value ...]]
+///
+/// Decrement a time series value by delta at specified timestamp.
+/// Auto-creates the time series if key doesn't exist.
+/// Returns: timestamp as integer
+///
+/// Example:
+/// TS.DECRBY counter 1000 5 RETENTION 86400000
+pub fn cmdTsDecrby(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    if (args.len < 4) {
+        return "ERR wrong number of arguments for 'TS.DECRBY' command\r\n";
+    }
+
+    const key = args[1];
+    const timestamp_arg = args[2];
+    const delta_arg = args[3];
+
+    // Parse timestamp and delta
+    const timestamp = parseTimestamp(timestamp_arg) catch {
+        return "ERR invalid timestamp\r\n";
+    };
+
+    const delta = parseValue(delta_arg) catch {
+        return "ERR invalid delta value\r\n";
+    };
+
+    // Parse optional arguments
+    var retention_ms: i64 = 0;
+    var encoding: Encoding = .uncompressed;
+    var chunk_size: u32 = 4096;
+    var duplicate_policy: DuplicatePolicy = .last;
+    var labels = try std.ArrayList(struct { key: []const u8, value: []const u8 }).initCapacity(arena, 8);
+    defer labels.deinit(arena);
+    // Note: IGNORE option is parsed but not used (stub implementation)
+    var _ignore = false;
+
+    var i: usize = 4;
+    var is_creation = false;
+
+    while (i < args.len) : (i += 1) {
+        const option = args[i];
+
+        if (std.ascii.eqlIgnoreCase(option, "RETENTION")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR RETENTION requires a value\r\n";
+            retention_ms = std.fmt.parseInt(i64, args[i], 10) catch {
+                return "ERR invalid RETENTION value\r\n";
+            };
+            if (retention_ms < 0) return "ERR RETENTION must be non-negative\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "ENCODING")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR ENCODING requires a value\r\n";
+            encoding = Encoding.fromString(args[i]) orelse {
+                return "ERR invalid ENCODING value (must be COMPRESSED or UNCOMPRESSED)\r\n";
+            };
+        } else if (std.ascii.eqlIgnoreCase(option, "CHUNK_SIZE")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR CHUNK_SIZE requires a value\r\n";
+            chunk_size = std.fmt.parseInt(u32, args[i], 10) catch {
+                return "ERR invalid CHUNK_SIZE value\r\n";
+            };
+            if (chunk_size == 0) return "ERR CHUNK_SIZE must be positive\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "DUPLICATE_POLICY")) {
+            is_creation = true;
+            i += 1;
+            if (i >= args.len) return "ERR DUPLICATE_POLICY requires a value\r\n";
+            duplicate_policy = DuplicatePolicy.fromString(args[i]) orelse {
+                return "ERR invalid DUPLICATE_POLICY value\r\n";
+            };
+        } else if (std.ascii.eqlIgnoreCase(option, "IGNORE")) {
+            // Parse but don't use (stub for filtering based on duplicate policy)
+            _ignore = true;
+        } else if (std.ascii.eqlIgnoreCase(option, "LABELS")) {
+            is_creation = true;
+            i += 1;
+            // Parse label key-value pairs
+            while (i + 1 < args.len) {
+                const next = args[i];
+                if (std.ascii.eqlIgnoreCase(next, "RETENTION") or
+                    std.ascii.eqlIgnoreCase(next, "ENCODING") or
+                    std.ascii.eqlIgnoreCase(next, "CHUNK_SIZE") or
+                    std.ascii.eqlIgnoreCase(next, "DUPLICATE_POLICY") or
+                    std.ascii.eqlIgnoreCase(next, "IGNORE"))
+                {
+                    i -= 1;
+                    break;
+                }
+
+                const label_key = args[i];
+                i += 1;
+                if (i >= args.len) return "ERR LABELS requires key-value pairs\r\n";
+                const label_value = args[i];
+                try labels.append(arena, .{ .key = label_key, .value = label_value });
+                i += 1;
+            }
+            i -= 1;
+        } else {
+            return "ERR unknown option for TS.DECRBY\r\n";
+        }
+    }
+
+    // Check if key exists
+    const entry = try storage.data.getOrPut(key);
+
+    if (entry.found_existing) {
+        // Key exists - must be a time series
+        if (entry.value_ptr.* != .timeseries) {
+            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+
+        var ts = &entry.value_ptr.timeseries;
+
+        // Decrement the sample (negate delta)
+        ts.decrementBy(timestamp, delta) catch |err| {
+            if (err == error.DuplicateTimestamp) {
+                return "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+            }
+            return "ERR failed to decrement sample\r\n";
+        };
+    } else {
+        // Key doesn't exist - create time series with creation params
+        var ts = try TimeSeriesValue.init(storage.allocator);
+        errdefer ts.deinit();
+
+        ts.info.retention_ms = retention_ms;
+        ts.info.encoding = encoding;
+        ts.info.chunk_size = chunk_size;
+        ts.info.duplicate_policy = duplicate_policy;
+
+        // Add labels
+        for (labels.items) |label| {
+            try ts.info.setLabel(storage.allocator, label.key, label.value);
+        }
+
+        // Decrement the sample (negate delta)
+        try ts.decrementBy(timestamp, delta);
+
+        // Store in database
+        const key_copy = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(key_copy);
+        entry.key_ptr.* = key_copy;
+        entry.value_ptr.* = Value{ .timeseries = ts };
+    }
+
+    // Return the timestamp as integer
+    var buf = try std.ArrayList(u8).initCapacity(arena, 256);
+    defer buf.deinit(arena);
+
+    try buf.writer(arena).print(":{d}\r\n", .{timestamp});
+    return try buf.toOwnedSlice(arena);
+}
+
 // ============================================================================
 // Tests for TS.ADD
 // ============================================================================
