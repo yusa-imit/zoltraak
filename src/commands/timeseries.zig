@@ -1226,3 +1226,289 @@ test "TS.MADD duplicate BLOCK error" {
 
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR DUPLICATE_POLICY is BLOCK"));
 }
+
+/// TS.DEL key fromTimestamp toTimestamp
+///
+/// Delete all samples in the time range [fromTimestamp, toTimestamp] inclusive.
+/// Returns the number of samples deleted.
+///
+/// Example:
+/// TS.DEL sensor:temp 1000 2000
+pub fn cmdTsDel(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    _ = arena; // Not needed for this command
+
+    if (args.len != 4) {
+        return "ERR wrong number of arguments for 'TS.DEL' command\r\n";
+    }
+
+    const key = args[1];
+    const from_ts = parseTimestamp(args[2]) catch {
+        return "ERR invalid fromTimestamp\r\n";
+    };
+    const to_ts = parseTimestamp(args[3]) catch {
+        return "ERR invalid toTimestamp\r\n";
+    };
+
+    // Validate range
+    if (from_ts > to_ts) {
+        return "ERR fromTimestamp must be <= toTimestamp\r\n";
+    }
+
+    // Get existing time series
+    const value = storage.get(key) orelse {
+        return "ERR key does not exist\r\n";
+    };
+
+    if (value.* != .timeseries) {
+        return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    }
+
+    var ts = &value.timeseries;
+    const deleted_count = ts.deleteRange(from_ts, to_ts);
+
+    // Return integer count
+    var buf: [32]u8 = undefined;
+    const num_str = try std.fmt.bufPrint(&buf, ":{d}\r\n", .{deleted_count});
+    return try storage.allocator.dupe(u8, num_str);
+}
+
+/// TS.GET key [LATEST]
+///
+/// Get the most recent sample from the time series.
+/// LATEST flag is optional (default behavior is already latest).
+/// Returns [timestamp, value] array or null if no samples exist.
+///
+/// Example:
+/// TS.GET sensor:temp
+/// TS.GET sensor:temp LATEST
+pub fn cmdTsGet(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    _ = arena; // Not needed for this command
+
+    if (args.len < 2 or args.len > 3) {
+        return "ERR wrong number of arguments for 'TS.GET' command\r\n";
+    }
+
+    const key = args[1];
+
+    // Parse optional LATEST flag (default is latest anyway)
+    if (args.len == 3) {
+        if (!std.ascii.eqlIgnoreCase(args[2], "LATEST")) {
+            return "ERR unknown option for TS.GET\r\n";
+        }
+    }
+
+    // Get existing time series
+    const value = storage.get(key) orelse {
+        return "ERR key does not exist\r\n";
+    };
+
+    if (value.* != .timeseries) {
+        return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    }
+
+    const ts = &value.timeseries;
+    const latest = ts.getLatest();
+
+    if (latest == null) {
+        // No samples exist
+        return "$-1\r\n";
+    }
+
+    // Return [timestamp, value] array
+    const sample = latest.?;
+    var buf: [128]u8 = undefined;
+    const result_str = try std.fmt.bufPrint(&buf, "*2\r\n:{d}\r\n+{d}\r\n", .{ sample.timestamp, sample.value });
+    return try storage.allocator.dupe(u8, result_str);
+}
+
+//
+// Unit tests
+//
+
+test "TS.DEL basic" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with samples
+    const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
+    const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
+    defer allocator.free(create_result);
+
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "1000", "10.0" }, allocator);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "2000", "20.0" }, allocator);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "3000", "30.0" }, allocator);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "4000", "40.0" }, allocator);
+
+    // Delete range
+    const del_cmd = [_][]const u8{ "TS.DEL", "myts", "1500", "3500" };
+    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":2\r\n", result);
+
+    // Verify samples were deleted
+    const value = storage.get("myts").?;
+    try std.testing.expectEqual(@as(usize, 2), value.timeseries.samples.items.len);
+}
+
+test "TS.DEL nonexistent key error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    const del_cmd = [_][]const u8{ "TS.DEL", "nonexistent", "1000", "2000" };
+    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR key does not exist"));
+}
+
+test "TS.DEL WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Set a string key
+    const set_result = try @import("../commands/strings.zig").handleCommand(allocator, &storage, &[_]@import("../protocol/parser.zig").RespValue{
+        .{ .bulk_string = "SET" },
+        .{ .bulk_string = "mystring" },
+        .{ .bulk_string = "value" },
+    }, 0, null, null, null);
+    defer allocator.free(set_result);
+
+    const del_cmd = [_][]const u8{ "TS.DEL", "mystring", "1000", "2000" };
+    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGTYPE"));
+}
+
+test "TS.DEL invalid range error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
+    const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
+    defer allocator.free(create_result);
+
+    // from > to
+    const del_cmd = [_][]const u8{ "TS.DEL", "myts", "5000", "3000" };
+    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR fromTimestamp must be"));
+}
+
+test "TS.GET basic" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with samples
+    const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
+    const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
+    defer allocator.free(create_result);
+
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "1000", "10.5" }, allocator);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "2000", "20.5" }, allocator);
+
+    const get_cmd = [_][]const u8{ "TS.GET", "myts" };
+    const result = try cmdTsGet(&storage, &get_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("*2\r\n:2000\r\n+20.5\r\n", result);
+}
+
+test "TS.GET with LATEST flag" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
+    const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
+    defer allocator.free(create_result);
+
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "1000", "10.0" }, allocator);
+
+    const get_cmd = [_][]const u8{ "TS.GET", "myts", "LATEST" };
+    const result = try cmdTsGet(&storage, &get_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("*2\r\n:1000\r\n+10\r\n", result);
+}
+
+test "TS.GET empty series" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
+    const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
+    defer allocator.free(create_result);
+
+    const get_cmd = [_][]const u8{ "TS.GET", "myts" };
+    const result = try cmdTsGet(&storage, &get_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "TS.GET nonexistent key error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    const get_cmd = [_][]const u8{ "TS.GET", "nonexistent" };
+    const result = try cmdTsGet(&storage, &get_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR key does not exist"));
+}
+
+test "TS.GET WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Set a string key
+    const set_result = try @import("../commands/strings.zig").handleCommand(allocator, &storage, &[_]@import("../protocol/parser.zig").RespValue{
+        .{ .bulk_string = "SET" },
+        .{ .bulk_string = "mystring" },
+        .{ .bulk_string = "value" },
+    }, 0, null, null, null);
+    defer allocator.free(set_result);
+
+    const get_cmd = [_][]const u8{ "TS.GET", "mystring" };
+    const result = try cmdTsGet(&storage, &get_cmd, allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGTYPE"));
+}

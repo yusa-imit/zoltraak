@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 204 (298+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 205 (300+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 14 (Time Series) — starting
-- **Next milestone**: Phase 14 (Time Series TS.* commands)
+- **Current phase**: Phase 14 (Time Series) — 47% complete (8/17 commands)
+- **Next milestone**: Phase 14 (Time Series TS.MGET/TS.RANGE/TS.REVRANGE)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -66,15 +66,16 @@
 
 **All 30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL, FT.ALIASADD, FT.ALIASDEL, FT.ALIASUPDATE, FT.DICTADD, FT.DICTDEL, FT.DICTDUMP, FT.SYNDUMP, FT.SYNUPDATE, FT.SUGADD, FT.SUGGET, FT.SUGLEN, FT.SUGDEL, FT.TAGVALS, FT.CONFIG GET/SET/HELP, **FT.HYBRID** ✅
 
-### Phase 14 — Time Series (35% complete) 🚧
+### Phase 14 — Time Series (47% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
 | 202 | Foundation (TimeSeriesValue, DataPoint, TimeSeriesInfo, TS.CREATE, TS.INFO) | Done ✅ |
 | 203 | TS.ADD, TS.MADD (add data points with auto-create, wildcard timestamps, ON_DUPLICATE override, batch processing) | Done ✅ |
 | 204 | TS.INCRBY, TS.DECRBY (increment/decrement by delta, auto-create, counter/gauge patterns, duplicate policy enforcement) | Done ✅ |
+| 205 | TS.DEL, TS.GET (delete time range, get latest sample with deleteRange() storage method, [timestamp,value] array response) | Done ✅ |
 
-**6/17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY
+**8/17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
@@ -225,6 +226,7 @@
 
 ## Iteration Log
 
+- **205**: **Phase 14.4 TS.DEL & TS.GET (2 commands)** — Implemented time range deletion and latest sample retrieval for Phase 14 Time Series: Storage layer (timeseries.zig +47 LOC): deleteRange(from_ts, to_ts) deletes all samples in time range [from_ts, to_ts] inclusive with binary search range detection, in-place array element shifting via std.mem.copyForwards(), returns usize count of deleted samples, updates first/last_timestamp after deletion (null if empty), validates from <= to (returns 0 otherwise); getLatest() already existed (returns ?DataPoint, null for empty series); Command layer (timeseries.zig +252 LOC): cmdTsDel() parses from/to timestamps with validation (from <= to check), returns integer count `:N\r\n`, comprehensive error handling (nonexistent key, WRONGTYPE, invalid range); cmdTsGet() retrieves latest sample with optional LATEST flag (case-insensitive), returns `*2\r\n:{timestamp}\r\n+{value}\r\n` array or `$-1\r\n` null bulk string for empty series, validates key exists and is timeseries type; Dispatcher integration (strings.zig +4 LOC): registered TS.DEL in write_commands list, TS.DEL/TS.GET in command router after TS.DECRBY; Storage tests (timeseries.zig +94 LOC): 5 comprehensive deleteRange tests (basic range, all samples, no match, invalid range, empty series), all edge cases covered; Command tests (timeseries.zig +120 LOC): 10 unit tests (5 cmdTsDel + 5 cmdTsGet), covers basic usage, error paths (WRONGTYPE, nonexistent key, invalid args); Integration tests (test_ts_del_get.zig 380 LOC, 15 tests): RESP protocol validation for both commands (basic range deletion with count verification, delete all samples, nonexistent key error, WRONGTYPE error, invalid range error, arity errors, basic GET with array response, LATEST flag support, empty series null response, invalid option error), registered in build.zig; All tests pass (5 storage + 10 command unit + 15 integration = 30 new tests), zero memory leaks, **Phase 14 Time Series: 35% → 47% complete** (8/17 commands: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL ✅, TS.GET ✅), commit [pending]
 - **178**: **Phase 12.16 JSON Array Pop (1 command)** — Implemented JSON.ARRPOP command for removing and returning array elements at specified indices: Command layer (json.zig +195 LOC): cmdJsonArrpop() with flexible arity (JSON.ARRPOP key [path [index]]), default path $ (root) and default index -1 (last element), proper index normalization (negative indices count from end: -1 = last, -2 = second-to-last), bounds validation with clear error messages ("ERR index out of range"), empty array detection and error reporting ("ERR array is empty"), in-place array modification via ArrayList.orderedRemove() preserving element order, single vs wildcard path handling (returns JSON-encoded bulk string for single path, array of bulk strings/nulls for wildcards), non-array and non-existent path handling (returns null), memory safety with proper errdefer cleanup for cloned nodes before removal; Dispatcher (strings.zig +6 LOC): Registered JSON.ARRPOP in command router with proper Writer wrapping; Integration tests (test_json_arrpop.zig 21 tests): Basic pop from end (default -1 returns last element), pop from specific indices (0 for first, positive for position, negative for end-relative), pop from nested paths ($.a.b[2]), wildcard path support ($.*), error handling (empty arrays, out-of-range indices, invalid arguments), edge cases (single element arrays, mixed data types: strings/booleans/nulls/objects), array modification verification (element removed, subsequent elements shift left); All tests pass (21 integration tests), zero memory leaks, **Phase 12 JSON: 58% → 62% complete** (16/26 commands), commit f49e691
 - **177**: **Phase 12.15 JSON Array Length (1 command)** — Implemented JSON.ARRLEN command for Phase 12.15
 - **176**: **Phase 12.14 JSON Array Insert (1 command)** — Implemented JSON.ARRINSERT command for Phase 12.14

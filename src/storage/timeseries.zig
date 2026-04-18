@@ -293,6 +293,46 @@ pub const TimeSeriesValue = struct {
 
         return self.samples.items[start_idx..end_idx];
     }
+
+    /// Delete all samples in the time range [from_ts, to_ts] inclusive
+    ///
+    /// Returns the number of samples deleted.
+    ///
+    /// Arguments:
+    ///   - from_ts: Start of the time range (inclusive)
+    ///   - to_ts: End of the time range (inclusive)
+    pub fn deleteRange(self: *TimeSeriesValue, from_ts: i64, to_ts: i64) usize {
+        // Validate range
+        if (from_ts > to_ts) return 0;
+        if (self.samples.items.len == 0) return 0;
+
+        // Find the indices for the range
+        const start_idx = self.findTimestampIndex(from_ts);
+        const end_idx = self.findTimestampIndex(to_ts + 1); // Exclusive upper bound
+
+        if (start_idx >= self.samples.items.len) return 0;
+        if (start_idx >= end_idx) return 0;
+
+        const delete_count = end_idx - start_idx;
+
+        // Shift remaining samples
+        if (end_idx < self.samples.items.len) {
+            std.mem.copyForwards(DataPoint, self.samples.items[start_idx..], self.samples.items[end_idx..]);
+        }
+        self.samples.shrinkRetainingCapacity(self.samples.items.len - delete_count);
+        self.info.total_samples -= delete_count;
+
+        // Update first/last timestamps
+        if (self.samples.items.len == 0) {
+            self.info.first_timestamp = null;
+            self.info.last_timestamp = null;
+        } else {
+            self.info.first_timestamp = self.samples.items[0].timestamp;
+            self.info.last_timestamp = self.samples.items[self.samples.items.len - 1].timestamp;
+        }
+
+        return delete_count;
+    }
 };
 
 test "DataPoint init" {
@@ -442,4 +482,70 @@ test "TimeSeriesInfo setLabel" {
     try std.testing.expectEqual(@as(usize, 2), info.labels.count());
     try std.testing.expectEqualStrings("temp", info.labels.get("sensor").?);
     try std.testing.expectEqualStrings("room1", info.labels.get("location").?);
+}
+
+test "TimeSeriesValue deleteRange basic" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    try ts.add(1000, 10.0, null);
+    try ts.add(2000, 20.0, null);
+    try ts.add(3000, 30.0, null);
+    try ts.add(4000, 40.0, null);
+
+    const deleted = ts.deleteRange(1500, 3500);
+    try std.testing.expectEqual(@as(usize, 2), deleted);
+    try std.testing.expectEqual(@as(usize, 2), ts.samples.items.len);
+    try std.testing.expectEqual(@as(i64, 1000), ts.samples.items[0].timestamp);
+    try std.testing.expectEqual(@as(i64, 4000), ts.samples.items[1].timestamp);
+}
+
+test "TimeSeriesValue deleteRange all samples" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    try ts.add(1000, 10.0, null);
+    try ts.add(2000, 20.0, null);
+
+    const deleted = ts.deleteRange(0, 5000);
+    try std.testing.expectEqual(@as(usize, 2), deleted);
+    try std.testing.expectEqual(@as(usize, 0), ts.samples.items.len);
+    try std.testing.expectEqual(@as(?i64, null), ts.info.first_timestamp);
+    try std.testing.expectEqual(@as(?i64, null), ts.info.last_timestamp);
+}
+
+test "TimeSeriesValue deleteRange no match" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    try ts.add(1000, 10.0, null);
+    try ts.add(2000, 20.0, null);
+
+    const deleted = ts.deleteRange(3000, 4000);
+    try std.testing.expectEqual(@as(usize, 0), deleted);
+    try std.testing.expectEqual(@as(usize, 2), ts.samples.items.len);
+}
+
+test "TimeSeriesValue deleteRange invalid range" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    try ts.add(1000, 10.0, null);
+
+    const deleted = ts.deleteRange(5000, 3000); // from > to
+    try std.testing.expectEqual(@as(usize, 0), deleted);
+    try std.testing.expectEqual(@as(usize, 1), ts.samples.items.len);
+}
+
+test "TimeSeriesValue deleteRange empty series" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    const deleted = ts.deleteRange(1000, 2000);
+    try std.testing.expectEqual(@as(usize, 0), deleted);
 }
