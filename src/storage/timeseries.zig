@@ -1,5 +1,123 @@
 const std = @import("std");
 
+/// Time series label filter for TS.MGET
+pub const TimeSeriesFilter = struct {
+    label_name: []const u8,
+    filter_type: enum { equals, not_equals, in_list, not_in_list, exists, not_exists },
+    values: std.ArrayList([]const u8), // For in_list and not_in_list
+    allocator: std.mem.Allocator,
+
+    /// Clean up allocated filter resources (label_name and values array).
+    pub fn deinit(self: *TimeSeriesFilter) void {
+        for (self.values.items) |v| {
+            self.allocator.free(v);
+        }
+        self.values.deinit(self.allocator);
+    }
+
+    /// Parse a filter expression like "label=value", "label=(v1,v2)", "label!=value", "label!=", "label="
+    /// Returns null if filter expression is invalid
+    pub fn parse(expr: []const u8, allocator: std.mem.Allocator) !?TimeSeriesFilter {
+        // Find the position of = or !=
+        var eq_pos: ?usize = null;
+        var is_not_equals = false;
+
+        var i: usize = 0;
+        while (i < expr.len) : (i += 1) {
+            if (i + 1 < expr.len and expr[i] == '!' and expr[i + 1] == '=') {
+                eq_pos = i;
+                is_not_equals = true;
+                break;
+            } else if (expr[i] == '=' and (i == 0 or expr[i - 1] != '!')) {
+                eq_pos = i;
+                is_not_equals = false;
+                break;
+            }
+        }
+
+        if (eq_pos == null) return null;
+
+        const label_name = expr[0..eq_pos.?];
+        const value_start = if (is_not_equals) eq_pos.? + 2 else eq_pos.? + 1;
+        const value_part = if (value_start < expr.len) expr[value_start..] else "";
+
+        var filter = TimeSeriesFilter{
+            .label_name = try allocator.dupe(u8, label_name),
+            .filter_type = undefined,
+            .values = try std.ArrayList([]const u8).initCapacity(allocator, 4),
+            .allocator = allocator,
+        };
+        errdefer {
+            allocator.free(filter.label_name);
+            filter.values.deinit(allocator);
+        }
+
+        // Determine filter type based on value part
+        if (value_part.len == 0) {
+            // label= or label!=
+            filter.filter_type = if (is_not_equals) .not_exists else .exists;
+        } else if (std.mem.startsWith(u8, value_part, "(") and std.mem.endsWith(u8, value_part, ")")) {
+            // label=(v1,v2,...) or label!=(v1,v2,...)
+            const values_str = value_part[1 .. value_part.len - 1];
+            var iter = std.mem.splitSequence(u8, values_str, ",");
+            while (iter.next()) |val| {
+                const trimmed = std.mem.trim(u8, val, " \t");
+                try filter.values.append(allocator, try allocator.dupe(u8, trimmed));
+            }
+            filter.filter_type = if (is_not_equals) .not_in_list else .in_list;
+        } else {
+            // label=value or label!=value
+            try filter.values.append(allocator, try allocator.dupe(u8, value_part));
+            filter.filter_type = if (is_not_equals) .not_equals else .equals;
+        }
+
+        return filter;
+    }
+
+    /// Check if a time series matches this filter
+    pub fn matches(self: *const TimeSeriesFilter, info: *const TimeSeriesInfo) bool {
+        const label_value = info.labels.get(self.label_name);
+
+        switch (self.filter_type) {
+            .equals => {
+                if (label_value) |v| {
+                    return std.mem.eql(u8, v, self.values.items[0]);
+                }
+                return false;
+            },
+            .not_equals => {
+                if (label_value) |v| {
+                    return !std.mem.eql(u8, v, self.values.items[0]);
+                }
+                return true;
+            },
+            .in_list => {
+                if (label_value) |v| {
+                    for (self.values.items) |val| {
+                        if (std.mem.eql(u8, v, val)) return true;
+                    }
+                }
+                return false;
+            },
+            .not_in_list => {
+                if (label_value) |v| {
+                    for (self.values.items) |val| {
+                        if (std.mem.eql(u8, v, val)) return false;
+                    }
+                    return true;
+                }
+                return true;
+            },
+            .exists => {
+                return label_value != null;
+            },
+            .not_exists => {
+                return label_value == null;
+            },
+        }
+    }
+};
+
 /// Time series data point with timestamp and value
 pub const DataPoint = struct {
     timestamp: i64, // Unix timestamp in milliseconds
@@ -333,6 +451,57 @@ pub const TimeSeriesValue = struct {
 
         return delete_count;
     }
+
+    /// Alter time series configuration.
+    ///
+    /// Updates specified fields of the time series. Fields that are null are left unchanged.
+    /// Labels: if provided, completely replaces existing labels (CLEAR all, then add new ones).
+    /// ENCODING cannot be changed (immutable after creation).
+    ///
+    /// Arguments:
+    ///   - retention_ms: Optional new retention period (null = unchanged)
+    ///   - chunk_size: Optional new chunk size (null = unchanged)
+    ///   - duplicate_policy: Optional new duplicate policy (null = unchanged)
+    ///   - labels: Optional array of [key, value] pairs to replace all labels (null = unchanged)
+    pub fn alter(
+        self: *TimeSeriesValue,
+        allocator: std.mem.Allocator,
+        retention_ms: ?i64,
+        chunk_size: ?u32,
+        duplicate_policy: ?DuplicatePolicy,
+        labels: ?[]const struct { key: []const u8, value: []const u8 },
+    ) !void {
+        // Update retention if provided
+        if (retention_ms) |new_retention| {
+            self.info.retention_ms = new_retention;
+        }
+
+        // Update chunk size if provided
+        if (chunk_size) |new_chunk_size| {
+            self.info.chunk_size = new_chunk_size;
+        }
+
+        // Update duplicate policy if provided
+        if (duplicate_policy) |new_policy| {
+            self.info.duplicate_policy = new_policy;
+        }
+
+        // Update labels if provided (complete replacement)
+        if (labels) |new_labels| {
+            // Clear existing labels
+            var it = self.info.labels.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            self.info.labels.clearRetainingCapacity();
+
+            // Add new labels
+            for (new_labels) |label| {
+                try self.info.setLabel(allocator, label.key, label.value);
+            }
+        }
+    }
 };
 
 test "DataPoint init" {
@@ -548,4 +717,217 @@ test "TimeSeriesValue deleteRange empty series" {
 
     const deleted = ts.deleteRange(1000, 2000);
     try std.testing.expectEqual(@as(usize, 0), deleted);
+}
+
+test "TimeSeriesValue alter retention" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    // Initial retention should be 0
+    try std.testing.expectEqual(@as(i64, 0), ts.info.retention_ms);
+
+    // Alter retention
+    try ts.alter(allocator, 86400000, null, null, null);
+    try std.testing.expectEqual(@as(i64, 86400000), ts.info.retention_ms);
+
+    // Alter again with different value
+    try ts.alter(allocator, 3600000, null, null, null);
+    try std.testing.expectEqual(@as(i64, 3600000), ts.info.retention_ms);
+}
+
+test "TimeSeriesValue alter chunk_size" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    // Initial chunk size should be 4096
+    try std.testing.expectEqual(@as(u32, 4096), ts.info.chunk_size);
+
+    // Alter chunk size
+    try ts.alter(allocator, null, 8192, null, null);
+    try std.testing.expectEqual(@as(u32, 8192), ts.info.chunk_size);
+}
+
+test "TimeSeriesValue alter duplicate_policy" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    // Initial policy should be LAST
+    try std.testing.expectEqual(DuplicatePolicy.last, ts.info.duplicate_policy);
+
+    // Alter to SUM
+    try ts.alter(allocator, null, null, DuplicatePolicy.sum, null);
+    try std.testing.expectEqual(DuplicatePolicy.sum, ts.info.duplicate_policy);
+
+    // Alter to MIN
+    try ts.alter(allocator, null, null, DuplicatePolicy.min, null);
+    try std.testing.expectEqual(DuplicatePolicy.min, ts.info.duplicate_policy);
+}
+
+test "TimeSeriesValue alter labels" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    // Set initial labels
+    try ts.info.setLabel(allocator, "sensor", "temp");
+    try ts.info.setLabel(allocator, "location", "room1");
+    try std.testing.expectEqual(@as(usize, 2), ts.info.labels.count());
+
+    // Alter with new labels (should replace)
+    const new_labels = [_]struct { key: []const u8, value: []const u8 }{
+        .{ .key = "type", .value = "sensor" },
+        .{ .key = "id", .value = "123" },
+    };
+    try ts.alter(allocator, null, null, null, &new_labels);
+
+    // Verify old labels are gone and new ones are present
+    try std.testing.expectEqual(@as(usize, 2), ts.info.labels.count());
+    try std.testing.expectEqualStrings("sensor", ts.info.labels.get("type").?);
+    try std.testing.expectEqualStrings("123", ts.info.labels.get("id").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), ts.info.labels.get("sensor"));
+}
+
+test "TimeSeriesValue alter empty labels" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    // Set initial labels
+    try ts.info.setLabel(allocator, "sensor", "temp");
+    try std.testing.expectEqual(@as(usize, 1), ts.info.labels.count());
+
+    // Alter with empty labels (should clear all)
+    const new_labels: [0]struct { key: []const u8, value: []const u8 } = .{};
+    try ts.alter(allocator, null, null, null, &new_labels);
+
+    // Verify all labels are cleared
+    try std.testing.expectEqual(@as(usize, 0), ts.info.labels.count());
+}
+
+test "TimeSeriesValue alter multiple fields" {
+    const allocator = std.testing.allocator;
+    var ts = try TimeSeriesValue.init(allocator);
+    defer ts.deinit();
+
+    // Set initial state
+    try ts.info.setLabel(allocator, "sensor", "temp");
+
+    // Alter multiple fields at once
+    const new_labels = [_]struct { key: []const u8, value: []const u8 }{
+        .{ .key = "type", .value = "metric" },
+    };
+    try ts.alter(allocator, 3600000, 2048, DuplicatePolicy.max, &new_labels);
+
+    // Verify all changes
+    try std.testing.expectEqual(@as(i64, 3600000), ts.info.retention_ms);
+    try std.testing.expectEqual(@as(u32, 2048), ts.info.chunk_size);
+    try std.testing.expectEqual(DuplicatePolicy.max, ts.info.duplicate_policy);
+    try std.testing.expectEqual(@as(usize, 1), ts.info.labels.count());
+    try std.testing.expectEqualStrings("metric", ts.info.labels.get("type").?);
+}
+
+test "TimeSeriesFilter parse equals" {
+    const allocator = std.testing.allocator;
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor=temp", allocator);
+    try std.testing.expect(filter_opt != null);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expectEqualStrings("sensor", filter.label_name);
+    try std.testing.expect(filter.filter_type == .equals);
+    try std.testing.expectEqualStrings("temp", filter.values.items[0]);
+}
+
+test "TimeSeriesFilter parse not_equals" {
+    const allocator = std.testing.allocator;
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor!=temp", allocator);
+    try std.testing.expect(filter_opt != null);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expect(filter.filter_type == .not_equals);
+}
+
+test "TimeSeriesFilter parse in_list" {
+    const allocator = std.testing.allocator;
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor=(temp,humid,pressure)", allocator);
+    try std.testing.expect(filter_opt != null);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expect(filter.filter_type == .in_list);
+    try std.testing.expectEqual(@as(usize, 3), filter.values.items.len);
+    try std.testing.expectEqualStrings("temp", filter.values.items[0]);
+    try std.testing.expectEqualStrings("humid", filter.values.items[1]);
+    try std.testing.expectEqualStrings("pressure", filter.values.items[2]);
+}
+
+test "TimeSeriesFilter parse exists" {
+    const allocator = std.testing.allocator;
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor=", allocator);
+    try std.testing.expect(filter_opt != null);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expect(filter.filter_type == .exists);
+}
+
+test "TimeSeriesFilter parse not_exists" {
+    const allocator = std.testing.allocator;
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor!=", allocator);
+    try std.testing.expect(filter_opt != null);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expect(filter.filter_type == .not_exists);
+}
+
+test "TimeSeriesFilter matches equals" {
+    const allocator = std.testing.allocator;
+
+    var info = try TimeSeriesInfo.init(allocator);
+    defer info.deinit(allocator);
+    try info.setLabel(allocator, "sensor", "temp");
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor=temp", allocator);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expectEqual(true, filter.matches(&info));
+}
+
+test "TimeSeriesFilter matches equals mismatch" {
+    const allocator = std.testing.allocator;
+
+    var info = try TimeSeriesInfo.init(allocator);
+    defer info.deinit(allocator);
+    try info.setLabel(allocator, "sensor", "temp");
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor=humid", allocator);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expectEqual(false, filter.matches(&info));
+}
+
+test "TimeSeriesFilter matches in_list" {
+    const allocator = std.testing.allocator;
+
+    var info = try TimeSeriesInfo.init(allocator);
+    defer info.deinit(allocator);
+    try info.setLabel(allocator, "sensor", "humid");
+
+    const filter_opt = try TimeSeriesFilter.parse("sensor=(temp,humid,pressure)", allocator);
+    var filter = filter_opt.?;
+    defer filter.deinit();
+
+    try std.testing.expectEqual(true, filter.matches(&info));
 }

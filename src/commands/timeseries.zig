@@ -1329,6 +1329,294 @@ pub fn cmdTsGet(
     return try storage.allocator.dupe(u8, result_str);
 }
 
+/// TS.ALTER key [RETENTION ms] [CHUNK_SIZE size] [DUPLICATE_POLICY policy] [LABELS label value ...]
+///
+/// Alter configuration of an existing time series.
+/// ENCODING is immutable and cannot be changed.
+/// LABELS provided completely replace all existing labels (if specified, old labels are cleared first).
+/// Returns: +OK on success
+///
+/// Example:
+/// TS.ALTER sensor:temp RETENTION 86400000 LABELS type temperature location room1
+pub fn cmdTsAlter(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    if (args.len < 2) {
+        return "ERR wrong number of arguments for 'TS.ALTER' command\r\n";
+    }
+
+    const key = args[1];
+
+    // Get existing time series
+    const value = storage.get(key) orelse {
+        return "ERR key does not exist\r\n";
+    };
+
+    if (value.* != .timeseries) {
+        return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    }
+
+    var ts = &value.timeseries;
+
+    // Parse optional arguments
+    var retention_ms: ?i64 = null;
+    var chunk_size: ?u32 = null;
+    var duplicate_policy: ?DuplicatePolicy = null;
+    var labels = try std.ArrayList(struct { key: []const u8, value: []const u8 }).initCapacity(arena, 8);
+    defer labels.deinit(arena);
+
+    // Parse optional arguments (all are update-only - no creation mode like TS.ADD)
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const option = args[i];
+
+        if (std.ascii.eqlIgnoreCase(option, "RETENTION")) {
+            i += 1;
+            if (i >= args.len) return "ERR RETENTION requires a value\r\n";
+            retention_ms = std.fmt.parseInt(i64, args[i], 10) catch {
+                return "ERR invalid RETENTION value\r\n";
+            };
+            if (retention_ms.? < 0) return "ERR RETENTION must be non-negative\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "CHUNK_SIZE")) {
+            i += 1;
+            if (i >= args.len) return "ERR CHUNK_SIZE requires a value\r\n";
+            chunk_size = std.fmt.parseInt(u32, args[i], 10) catch {
+                return "ERR invalid CHUNK_SIZE value\r\n";
+            };
+            if (chunk_size.? == 0) return "ERR CHUNK_SIZE must be positive\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "DUPLICATE_POLICY")) {
+            i += 1;
+            if (i >= args.len) return "ERR DUPLICATE_POLICY requires a value\r\n";
+            duplicate_policy = DuplicatePolicy.fromString(args[i]) orelse {
+                return "ERR invalid DUPLICATE_POLICY value\r\n";
+            };
+        } else if (std.ascii.eqlIgnoreCase(option, "ENCODING")) {
+            return "ERR ENCODING cannot be altered after creation\r\n";
+        } else if (std.ascii.eqlIgnoreCase(option, "LABELS")) {
+            i += 1;
+            // Parse label key-value pairs
+            while (i + 1 < args.len) {
+                const next = args[i];
+                if (std.ascii.eqlIgnoreCase(next, "RETENTION") or
+                    std.ascii.eqlIgnoreCase(next, "CHUNK_SIZE") or
+                    std.ascii.eqlIgnoreCase(next, "DUPLICATE_POLICY") or
+                    std.ascii.eqlIgnoreCase(next, "ENCODING"))
+                {
+                    i -= 1;
+                    break;
+                }
+
+                const label_key = args[i];
+                i += 1;
+                if (i >= args.len) return "ERR LABELS requires key-value pairs\r\n";
+                const label_value = args[i];
+                try labels.append(arena, .{ .key = label_key, .value = label_value });
+                i += 1;
+            }
+            i -= 1;
+        } else {
+            return "ERR unknown option for TS.ALTER\r\n";
+        }
+    }
+
+    // Call alter() only if labels were provided (non-empty list)
+    const labels_to_alter = if (labels.items.len > 0) labels.items else null;
+
+    // Apply alterations
+    try ts.alter(storage.allocator, retention_ms, chunk_size, duplicate_policy, labels_to_alter);
+
+    return "+OK\r\n";
+}
+
+/// TS.MGET [LATEST] [WITHLABELS] [SELECTED_LABELS label1 label2 ...] FILTER filter1 [FILTER filter2 ...]
+///
+/// Get latest samples from multiple time series matching label filters.
+/// Returns array of [key, labels, [timestamp, value]] for each matching time series.
+/// Filters use label=value, label=(v1,v2), label!=value, label=, label!= syntax.
+/// At least one positive filter (equals or in_list) is required.
+///
+/// Example:
+/// TS.MGET WITHLABELS FILTER type=sensor FILTER location=(room1,room2)
+pub fn cmdTsMget(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    if (args.len < 3) {
+        return "ERR wrong number of arguments for 'TS.MGET' command\r\n";
+    }
+
+    const TimeSeriesFilter = timeseries_mod.TimeSeriesFilter;
+
+    // Parse optional flags and filter expressions
+    var with_latest = false;
+    var with_labels = false;
+    var selected_labels = try std.ArrayList([]const u8).initCapacity(arena, 8);
+    defer selected_labels.deinit(arena);
+
+    var filters = try std.ArrayList(TimeSeriesFilter).initCapacity(arena, 8);
+    defer {
+        for (filters.items) |*f| {
+            f.deinit();
+        }
+        filters.deinit(arena);
+    }
+
+    var has_positive_filter = false;
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.ascii.eqlIgnoreCase(arg, "LATEST")) {
+            with_latest = true;
+        } else if (std.ascii.eqlIgnoreCase(arg, "WITHLABELS")) {
+            with_labels = true;
+        } else if (std.ascii.eqlIgnoreCase(arg, "SELECTED_LABELS")) {
+            i += 1;
+            // Parse label names until next flag
+            while (i < args.len) : (i += 1) {
+                const next = args[i];
+                if (std.ascii.eqlIgnoreCase(next, "FILTER") or
+                    std.ascii.eqlIgnoreCase(next, "LATEST") or
+                    std.ascii.eqlIgnoreCase(next, "WITHLABELS"))
+                {
+                    i -= 1;
+                    break;
+                }
+                try selected_labels.append(arena, next);
+            }
+        } else if (std.ascii.eqlIgnoreCase(arg, "FILTER")) {
+            i += 1;
+            if (i >= args.len) return "ERR FILTER requires an expression\r\n";
+
+            const filter_expr = args[i];
+            const filter_opt = try TimeSeriesFilter.parse(filter_expr, arena);
+
+            if (filter_opt) |filter| {
+                // Check if this is a positive filter
+                if (filter.filter_type == .equals or filter.filter_type == .in_list) {
+                    has_positive_filter = true;
+                }
+                try filters.append(arena, filter);
+            } else {
+                return "ERR invalid FILTER expression\r\n";
+            }
+        } else {
+            return "ERR unknown option for TS.MGET\r\n";
+        }
+    }
+
+    // Validate: at least one positive filter is required
+    if (!has_positive_filter) {
+        return "ERR MGET requires at least one positive filter (label=value or label=(v1,v2))\r\n";
+    }
+
+    // Validate: at least one filter is required
+    if (filters.items.len == 0) {
+        return "ERR MGET requires at least one FILTER\r\n";
+    }
+
+    // Scan storage for all timeseries keys matching all filters
+    var results = try std.ArrayList(struct { key: []const u8, ts: *TimeSeriesValue }).initCapacity(arena, 16);
+    defer results.deinit(arena);
+
+    var iter = storage.data.iterator();
+    while (iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const val = entry.value_ptr;
+
+        if (val.* != .timeseries) continue;
+
+        var ts = &val.timeseries;
+
+        // Check all filters - all must match
+        var all_match = true;
+        for (filters.items) |*filter| {
+            if (!filter.matches(&ts.info)) {
+                all_match = false;
+                break;
+            }
+        }
+
+        if (all_match) {
+            try results.append(arena, .{ .key = key, .ts = ts });
+        }
+    }
+
+    // Build RESP response
+    var buf = try std.ArrayList(u8).initCapacity(arena, 512);
+    defer buf.deinit(arena);
+
+    const writer = buf.writer(arena);
+
+    // Array of results
+    try writer.print("*{d}\r\n", .{results.items.len});
+
+    for (results.items) |result| {
+        const key = result.key;
+        var ts = result.ts;
+
+        // Get latest sample
+        const latest = ts.getLatest();
+
+        if (latest != null) {
+            const sample = latest.?;
+
+            // For each match, format: [key, labels, [timestamp, value]]
+            try writer.writeAll("*3\r\n");
+
+            // Key
+            try writer.print("${d}\r\n{s}\r\n", .{ key.len, key });
+
+            // Labels array
+            if (with_labels or selected_labels.items.len > 0) {
+                if (selected_labels.items.len > 0) {
+                    // SELECTED_LABELS: return only specified labels
+                    var label_count: usize = 0;
+                    for (selected_labels.items) |label_name| {
+                        if (ts.info.labels.get(label_name)) |_| {
+                            label_count += 1;
+                        }
+                    }
+
+                    try writer.print("*{d}\r\n", .{label_count * 2});
+
+                    for (selected_labels.items) |label_name| {
+                        if (ts.info.labels.get(label_name)) |label_value| {
+                            try writer.print("${d}\r\n{s}\r\n", .{ label_name.len, label_name });
+                            try writer.print("${d}\r\n{s}\r\n", .{ label_value.len, label_value });
+                        }
+                    }
+                } else {
+                    // WITHLABELS: return all labels
+                    const label_count = ts.info.labels.count();
+                    try writer.print("*{d}\r\n", .{label_count * 2});
+
+                    var label_iter = ts.info.labels.iterator();
+                    while (label_iter.next()) |entry| {
+                        const label_key = entry.key_ptr.*;
+                        const label_value = entry.value_ptr.*;
+
+                        try writer.print("${d}\r\n{s}\r\n", .{ label_key.len, label_key });
+                        try writer.print("${d}\r\n{s}\r\n", .{ label_value.len, label_value });
+                    }
+                }
+            } else {
+                // No labels
+                try writer.writeAll("*0\r\n");
+            }
+
+            // Sample [timestamp, value]
+            try writer.print("*2\r\n:{d}\r\n+{d}\r\n", .{ sample.timestamp, sample.value });
+        }
+    }
+
+    return try buf.toOwnedSlice(arena);
+}
+
 //
 // Unit tests
 //
