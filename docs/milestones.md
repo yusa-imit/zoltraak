@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 209 (310+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 210 (313+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 15 (Probabilistic Data Structures) — 0% complete (0/49 commands)
-- **Next milestone**: Phase 15.1 (Bloom Filter BF.RESERVE/BF.ADD/BF.EXISTS)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 6% complete (3/49 commands)
+- **Next milestone**: Phase 15.2 (Bloom Filter BF.MADD/BF.MEXISTS)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -80,6 +80,14 @@
 | 209 | TS.QUERYINDEX (label-based key discovery), TS.CREATERULE, TS.DELETERULE (compaction rule management with 13 aggregation types) | Done ✅ |
 
 **All 17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET, TS.ALTER, TS.MGET, TS.RANGE, TS.REVRANGE, TS.MRANGE, TS.MREVRANGE, TS.QUERYINDEX, TS.CREATERULE, TS.DELETERULE
+
+### Phase 15 — Probabilistic Data Structures (6% complete) 🚧
+
+| Iteration | Command | Status |
+|-----------|---------|--------|
+| 210 | Bloom Filter foundation (BF.RESERVE, BF.ADD, BF.EXISTS with MurmurHash3 double hashing, auto-scaling) | Done ✅ |
+
+**3/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
