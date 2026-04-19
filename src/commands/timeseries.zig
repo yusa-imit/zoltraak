@@ -5,6 +5,8 @@ const TimeSeriesValue = @import("../storage/memory.zig").TimeSeriesValue;
 const timeseries_mod = @import("../storage/timeseries.zig");
 const DuplicatePolicy = timeseries_mod.DuplicatePolicy;
 const Encoding = timeseries_mod.Encoding;
+const AggregationType = timeseries_mod.AggregationType;
+const CompactionRule = timeseries_mod.CompactionRule;
 
 /// Parse a timestamp argument, handling special "*" for current time
 fn parseTimestamp(arg: []const u8) !i64 {
@@ -2346,6 +2348,235 @@ pub fn cmdTsMrevrange(
     return try buf.toOwnedSlice(arena);
 }
 
+/// TS.QUERYINDEX filterExpr [filterExpr ...]
+///
+/// Retrieve time series keys matching label filter expressions (keys only, no data).
+/// Similar to TS.MGET but returns only the keys, not the data or labels.
+/// Requires at least one positive filter (label=value or label=(v1,v2)).
+/// All filters are combined with AND logic.
+/// Returns: RESP array of matching key strings
+///
+/// Example:
+/// TS.QUERYINDEX type=temp
+/// TS.QUERYINDEX type=temp room=kitchen
+/// TS.QUERYINDEX room=(kitchen,living) sensor=temp
+pub fn cmdTsQueryindex(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    if (args.len < 2) {
+        return "ERR wrong number of arguments for 'TS.QUERYINDEX' command\r\n";
+    }
+
+    const TimeSeriesFilter = timeseries_mod.TimeSeriesFilter;
+
+    // Parse filter expressions from args[1..]
+    var filters = try std.ArrayList(TimeSeriesFilter).initCapacity(arena, 8);
+    defer {
+        for (filters.items) |*f| {
+            f.deinit();
+        }
+        filters.deinit(arena);
+    }
+
+    var has_positive_filter = false;
+
+    for (args[1..]) |filter_expr| {
+        const filter_opt = try TimeSeriesFilter.parse(filter_expr, arena);
+
+        if (filter_opt) |filter| {
+            // Check if this is a positive filter
+            if (filter.filter_type == .equals or filter.filter_type == .in_list) {
+                has_positive_filter = true;
+            }
+            try filters.append(arena, filter);
+        } else {
+            return "ERR invalid FILTER expression\r\n";
+        }
+    }
+
+    // Validate: at least one positive filter is required
+    if (!has_positive_filter) {
+        return "ERR QUERYINDEX requires at least one positive filter (label=value or label=(v1,v2))\r\n";
+    }
+
+    // Validate: at least one filter is required
+    if (filters.items.len == 0) {
+        return "ERR QUERYINDEX requires at least one filter\r\n";
+    }
+
+    // Scan storage for all timeseries keys matching all filters
+    var matching_keys = try std.ArrayList([]const u8).initCapacity(arena, 16);
+    defer matching_keys.deinit(arena);
+
+    var iter = storage.data.iterator();
+    while (iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const val = entry.value_ptr;
+
+        if (val.* != .timeseries) continue;
+
+        var ts = &val.timeseries;
+
+        // Check all filters - all must match
+        var all_match = true;
+        for (filters.items) |*filter| {
+            if (!filter.matches(&ts.info)) {
+                all_match = false;
+                break;
+            }
+        }
+
+        if (all_match) {
+            try matching_keys.append(arena, key);
+        }
+    }
+
+    // Build RESP response
+    var buf = try std.ArrayList(u8).initCapacity(arena, 512);
+    defer buf.deinit(arena);
+
+    const writer = buf.writer(arena);
+
+    // Array of keys
+    try writer.print("*{d}\r\n", .{matching_keys.items.len});
+
+    for (matching_keys.items) |key| {
+        try writer.print("${d}\r\n{s}\r\n", .{ key.len, key });
+    }
+
+    return try buf.toOwnedSlice(arena);
+}
+
+/// TS.CREATERULE sourceKey destKey AGGREGATION aggregator bucketDuration
+///
+/// Create a compaction rule to downsample data from source to destination time series.
+/// The aggregator specifies how to aggregate samples within each bucket.
+/// Bucket duration is in milliseconds.
+///
+/// Returns: OK on success, error if source/dest keys don't exist or rule already exists
+///
+/// Example:
+/// TS.CREATERULE sensor:temp:raw sensor:temp:avg AGGREGATION avg 60000
+pub fn cmdTsCreaterule(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    _ = arena; // Not needed for this command
+
+    if (args.len != 6) {
+        return "ERR wrong number of arguments for 'TS.CREATERULE' command\r\n";
+    }
+
+    const source_key = args[1];
+    const dest_key = args[2];
+
+    // Validate AGGREGATION keyword
+    if (!std.ascii.eqlIgnoreCase(args[3], "AGGREGATION")) {
+        return "ERR syntax error, expected AGGREGATION keyword\r\n";
+    }
+
+    // Parse aggregation type
+    const aggregator_str = args[4];
+    const aggregation = AggregationType.fromString(aggregator_str) orelse {
+        return "ERR invalid aggregation type (must be AVG, SUM, MIN, MAX, RANGE, COUNT, FIRST, LAST, STD.P, STD.S, VAR.P, VAR.S, or TWA)\r\n";
+    };
+
+    // Parse bucket duration
+    const bucket_duration_ms = std.fmt.parseInt(i64, args[5], 10) catch {
+        return "ERR invalid bucket duration (must be positive integer in milliseconds)\r\n";
+    };
+    if (bucket_duration_ms <= 0) {
+        return "ERR bucket duration must be positive\r\n";
+    }
+
+    // Validate that source key exists and is a time series
+    const source_entry = storage.data.getPtr(source_key) orelse {
+        return "ERR source key does not exist\r\n";
+    };
+    if (source_entry.* != .timeseries) {
+        return "ERR source key is not a time series\r\n";
+    }
+
+    // Validate that destination key exists and is a time series
+    const dest_entry = storage.data.getPtr(dest_key) orelse {
+        return "ERR destination key does not exist\r\n";
+    };
+    if (dest_entry.* != .timeseries) {
+        return "ERR destination key is not a time series\r\n";
+    }
+
+    // Check if rule already exists
+    var source_ts = &source_entry.timeseries;
+    for (source_ts.info.rules.items) |*rule| {
+        if (std.mem.eql(u8, rule.dest_key, dest_key)) {
+            return "ERR compaction rule already exists for this destination key\r\n";
+        }
+    }
+
+    // Create the compaction rule
+    const rule = try CompactionRule.init(storage.allocator, dest_key, aggregation, bucket_duration_ms);
+    errdefer rule.deinit();
+
+    try source_ts.info.rules.append(storage.allocator, rule);
+
+    return "+OK\r\n";
+}
+
+/// TS.DELETERULE sourceKey destKey
+///
+/// Delete a compaction rule from source to destination time series.
+///
+/// Returns: OK on success, error if source key doesn't exist or rule not found
+///
+/// Example:
+/// TS.DELETERULE sensor:temp:raw sensor:temp:avg
+pub fn cmdTsDeleterule(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    _ = arena; // Not needed for this command
+
+    if (args.len != 3) {
+        return "ERR wrong number of arguments for 'TS.DELETERULE' command\r\n";
+    }
+
+    const source_key = args[1];
+    const dest_key = args[2];
+
+    // Validate that source key exists and is a time series
+    const source_entry = storage.data.getPtr(source_key) orelse {
+        return "ERR source key does not exist\r\n";
+    };
+    if (source_entry.* != .timeseries) {
+        return "ERR source key is not a time series\r\n";
+    }
+
+    var source_ts = &source_entry.timeseries;
+
+    // Find and remove the rule
+    var found_index: ?usize = null;
+    for (source_ts.info.rules.items, 0..) |*rule, i| {
+        if (std.mem.eql(u8, rule.dest_key, dest_key)) {
+            found_index = i;
+            break;
+        }
+    }
+
+    if (found_index == null) {
+        return "ERR compaction rule not found\r\n";
+    }
+
+    // Remove the rule and clean up
+    var removed_rule = source_ts.info.rules.orderedRemove(found_index.?);
+    removed_rule.deinit();
+
+    return "+OK\r\n";
+}
+
 //
 // Unit tests
 //
@@ -2528,4 +2759,392 @@ test "TS.GET WRONGTYPE error" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGTYPE"));
+}
+
+test "TS.QUERYINDEX basic single filter" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:temp:room1", "LABELS", "type", "temp", "room", "room1" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    const create2 = [_][]const u8{ "TS.CREATE", "sensor:temp:room2", "LABELS", "type", "temp", "room", "room2" };
+    _ = try cmdTsCreate(&storage, &create2, allocator);
+
+    const create3 = [_][]const u8{ "TS.CREATE", "sensor:humidity:room1", "LABELS", "type", "humidity", "room", "room1" };
+    _ = try cmdTsCreate(&storage, &create3, allocator);
+
+    // Query for type=temp
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "type=temp" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return 2 keys: sensor:temp:room1 and sensor:temp:room2
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:temp:room1"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:temp:room2"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:humidity:room1"));
+}
+
+test "TS.QUERYINDEX multiple filters AND logic" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:1", "LABELS", "type", "temp", "room", "kitchen" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    const create2 = [_][]const u8{ "TS.CREATE", "sensor:2", "LABELS", "type", "temp", "room", "living" };
+    _ = try cmdTsCreate(&storage, &create2, allocator);
+
+    const create3 = [_][]const u8{ "TS.CREATE", "sensor:3", "LABELS", "type", "humidity", "room", "kitchen" };
+    _ = try cmdTsCreate(&storage, &create3, allocator);
+
+    // Query for type=temp AND room=kitchen
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "type=temp", "room=kitchen" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return only sensor:1 (matches both filters)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:1"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:2"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:3"));
+}
+
+test "TS.QUERYINDEX list filter" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:1", "LABELS", "room", "kitchen" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    const create2 = [_][]const u8{ "TS.CREATE", "sensor:2", "LABELS", "room", "living" };
+    _ = try cmdTsCreate(&storage, &create2, allocator);
+
+    const create3 = [_][]const u8{ "TS.CREATE", "sensor:3", "LABELS", "room", "basement" };
+    _ = try cmdTsCreate(&storage, &create3, allocator);
+
+    // Query for room in (kitchen, living)
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "room=(kitchen,living)" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return sensor:1 and sensor:2
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:1"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:2"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:3"));
+}
+
+test "TS.QUERYINDEX negative filter" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:1", "LABELS", "type", "temp", "room", "basement" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    const create2 = [_][]const u8{ "TS.CREATE", "sensor:2", "LABELS", "type", "temp", "room", "kitchen" };
+    _ = try cmdTsCreate(&storage, &create2, allocator);
+
+    const create3 = [_][]const u8{ "TS.CREATE", "sensor:3", "LABELS", "type", "humidity", "room", "kitchen" };
+    _ = try cmdTsCreate(&storage, &create3, allocator);
+
+    // Query for type=temp AND room!=basement
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "type=temp", "room!=basement" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return only sensor:2
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:2"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:1"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:3"));
+}
+
+test "TS.QUERYINDEX exists filter" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with different labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:1", "LABELS", "type", "temp", "location", "room1" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    const create2 = [_][]const u8{ "TS.CREATE", "sensor:2", "LABELS", "type", "humidity" };
+    _ = try cmdTsCreate(&storage, &create2, allocator);
+
+    const create3 = [_][]const u8{ "TS.CREATE", "sensor:3", "LABELS", "type", "pressure", "location", "room2" };
+    _ = try cmdTsCreate(&storage, &create3, allocator);
+
+    // Query for keys that have location label (exists)
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "location=" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return sensor:1 and sensor:3 (have location label)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:1"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:3"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:2"));
+}
+
+test "TS.QUERYINDEX not_exists filter" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with different labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:1", "LABELS", "type", "temp", "location", "room1" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    const create2 = [_][]const u8{ "TS.CREATE", "sensor:2", "LABELS", "type", "humidity" };
+    _ = try cmdTsCreate(&storage, &create2, allocator);
+
+    const create3 = [_][]const u8{ "TS.CREATE", "sensor:3", "LABELS", "type", "pressure", "location", "room2" };
+    _ = try cmdTsCreate(&storage, &create3, allocator);
+
+    // Query for keys that don't have location label (not_exists)
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "location!=" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return sensor:2 (doesn't have location label)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "sensor:2"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:1"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, result, 1, "sensor:3"));
+}
+
+test "TS.QUERYINDEX empty result set" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Create time series with labels
+    const create1 = [_][]const u8{ "TS.CREATE", "sensor:1", "LABELS", "type", "temp" };
+    _ = try cmdTsCreate(&storage, &create1, allocator);
+
+    // Query for type=humidity (doesn't exist)
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "type=humidity" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return empty array
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "TS.QUERYINDEX no positive filter error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Query with only negative filter (no positive filter)
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "type!=temp" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result, 1, "positive filter"));
+}
+
+test "TS.QUERYINDEX invalid filter syntax error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Query with invalid filter syntax (no = or !=)
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX", "invalidfilter" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR invalid FILTER"));
+}
+
+test "TS.QUERYINDEX arity error" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    // Query with no filters
+    const query_cmd = [_][]const u8{ "TS.QUERYINDEX" };
+    const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
+    defer allocator.free(result);
+
+    // Should return arity error
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR wrong number"));
+}
+
+test "TS.CREATERULE basic" {
+    const allocator = std.testing.allocator;
+
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    // Create source and destination time series
+    const create_args = [_][]const u8{ "TS.CREATE", "sensor:temp:raw" };
+    _ = try cmdTsCreate(&storage, &create_args, arena);
+
+    const create_dest_args = [_][]const u8{ "TS.CREATE", "sensor:temp:avg" };
+    _ = try cmdTsCreate(&storage, &create_dest_args, arena);
+
+    // Create compaction rule
+    const args = [_][]const u8{ "TS.CREATERULE", "sensor:temp:raw", "sensor:temp:avg", "AGGREGATION", "avg", "60000" };
+    const result = try cmdTsCreaterule(&storage, &args, arena);
+
+    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
+
+    // Verify rule was added
+    const entry = storage.data.get("sensor:temp:raw").?;
+    try std.testing.expectEqual(@as(usize, 1), entry.timeseries.info.rules.items.len);
+    const rule = &entry.timeseries.info.rules.items[0];
+    try std.testing.expect(std.mem.eql(u8, rule.dest_key, "sensor:temp:avg"));
+    try std.testing.expectEqual(AggregationType.avg, rule.aggregation);
+    try std.testing.expectEqual(@as(i64, 60000), rule.bucket_duration_ms);
+}
+
+test "TS.CREATERULE source key not exists" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const args = [_][]const u8{ "TS.CREATERULE", "nonexistent", "dest", "AGGREGATION", "avg", "60000" };
+    const result = try cmdTsCreaterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR source key does not exist"));
+}
+
+test "TS.CREATERULE dest key not exists" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const create_args = [_][]const u8{ "TS.CREATE", "source" };
+    _ = try cmdTsCreate(&storage, &create_args, arena);
+    const args = [_][]const u8{ "TS.CREATERULE", "source", "nonexistent", "AGGREGATION", "avg", "60000" };
+    const result = try cmdTsCreaterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR destination key does not exist"));
+}
+
+test "TS.CREATERULE source not time series" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const set_args = [_][]const u8{ "SET", "source", "value" };
+    _ = try @import("strings.zig").cmdSet(&storage, &set_args, arena);
+    const create_dest_args = [_][]const u8{ "TS.CREATE", "dest" };
+    _ = try cmdTsCreate(&storage, &create_dest_args, arena);
+    const args = [_][]const u8{ "TS.CREATERULE", "source", "dest", "AGGREGATION", "avg", "60000" };
+    const result = try cmdTsCreaterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR source key is not a time series"));
+}
+
+test "TS.CREATERULE duplicate rule" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const create_args = [_][]const u8{ "TS.CREATE", "source" };
+    _ = try cmdTsCreate(&storage, &create_args, arena);
+    const create_dest_args = [_][]const u8{ "TS.CREATE", "dest" };
+    _ = try cmdTsCreate(&storage, &create_dest_args, arena);
+    const args = [_][]const u8{ "TS.CREATERULE", "source", "dest", "AGGREGATION", "avg", "60000" };
+    _ = try cmdTsCreaterule(&storage, &args, arena);
+    const result = try cmdTsCreaterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR compaction rule already exists"));
+}
+
+test "TS.DELETERULE basic" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const create_args = [_][]const u8{ "TS.CREATE", "source" };
+    _ = try cmdTsCreate(&storage, &create_args, arena);
+    const create_dest_args = [_][]const u8{ "TS.CREATE", "dest" };
+    _ = try cmdTsCreate(&storage, &create_dest_args, arena);
+    const create_rule_args = [_][]const u8{ "TS.CREATERULE", "source", "dest", "AGGREGATION", "avg", "60000" };
+    _ = try cmdTsCreaterule(&storage, &create_rule_args, arena);
+    const args = [_][]const u8{ "TS.DELETERULE", "source", "dest" };
+    const result = try cmdTsDeleterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
+    const entry = storage.data.get("source").?;
+    try std.testing.expectEqual(@as(usize, 0), entry.timeseries.info.rules.items.len);
+}
+
+test "TS.DELETERULE source not exists" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const args = [_][]const u8{ "TS.DELETERULE", "nonexistent", "dest" };
+    const result = try cmdTsDeleterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR source key does not exist"));
+}
+
+test "TS.DELETERULE rule not found" {
+    const allocator = std.testing.allocator;
+    var config = @import("../storage/memory.zig").Config.default();
+    var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
+    defer storage.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const create_args = [_][]const u8{ "TS.CREATE", "source" };
+    _ = try cmdTsCreate(&storage, &create_args, arena);
+    const args = [_][]const u8{ "TS.DELETERULE", "source", "nonexistent" };
+    const result = try cmdTsDeleterule(&storage, &args, arena);
+    try std.testing.expect(std.mem.startsWith(u8, result, "ERR compaction rule not found"));
 }

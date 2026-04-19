@@ -178,6 +178,80 @@ pub const Encoding = enum {
     }
 };
 
+/// Aggregation type for compaction rules
+pub const AggregationType = enum {
+    avg, // Average
+    sum, // Sum
+    min, // Minimum
+    max, // Maximum
+    range, // max - min
+    count, // Count
+    first, // First value
+    last, // Last value
+    std_p, // Population standard deviation
+    std_s, // Sample standard deviation
+    var_p, // Population variance
+    var_s, // Sample variance
+    twa, // Time-weighted average
+
+    pub fn fromString(s: []const u8) ?AggregationType {
+        if (std.ascii.eqlIgnoreCase(s, "AVG")) return .avg;
+        if (std.ascii.eqlIgnoreCase(s, "SUM")) return .sum;
+        if (std.ascii.eqlIgnoreCase(s, "MIN")) return .min;
+        if (std.ascii.eqlIgnoreCase(s, "MAX")) return .max;
+        if (std.ascii.eqlIgnoreCase(s, "RANGE")) return .range;
+        if (std.ascii.eqlIgnoreCase(s, "COUNT")) return .count;
+        if (std.ascii.eqlIgnoreCase(s, "FIRST")) return .first;
+        if (std.ascii.eqlIgnoreCase(s, "LAST")) return .last;
+        if (std.ascii.eqlIgnoreCase(s, "STD.P")) return .std_p;
+        if (std.ascii.eqlIgnoreCase(s, "STD.S")) return .std_s;
+        if (std.ascii.eqlIgnoreCase(s, "VAR.P")) return .var_p;
+        if (std.ascii.eqlIgnoreCase(s, "VAR.S")) return .var_s;
+        if (std.ascii.eqlIgnoreCase(s, "TWA")) return .twa;
+        return null;
+    }
+
+    pub fn toString(self: AggregationType) []const u8 {
+        return switch (self) {
+            .avg => "AVG",
+            .sum => "SUM",
+            .min => "MIN",
+            .max => "MAX",
+            .range => "RANGE",
+            .count => "COUNT",
+            .first => "FIRST",
+            .last => "LAST",
+            .std_p => "STD.P",
+            .std_s => "STD.S",
+            .var_p => "VAR.P",
+            .var_s => "VAR.S",
+            .twa => "TWA",
+        };
+    }
+};
+
+/// Compaction rule for downsampling time series
+pub const CompactionRule = struct {
+    dest_key: []const u8, // Destination time series key
+    aggregation: AggregationType, // Aggregation function
+    bucket_duration_ms: i64, // Time bucket size in milliseconds
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, dest_key: []const u8, aggregation: AggregationType, bucket_duration_ms: i64) !CompactionRule {
+        const owned_dest = try allocator.dupe(u8, dest_key);
+        return CompactionRule{
+            .dest_key = owned_dest,
+            .aggregation = aggregation,
+            .bucket_duration_ms = bucket_duration_ms,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *CompactionRule) void {
+        self.allocator.free(self.dest_key);
+    }
+};
+
 /// Time series metadata and configuration
 pub const TimeSeriesInfo = struct {
     retention_ms: i64, // Retention period in milliseconds, 0 = infinite
@@ -189,8 +263,10 @@ pub const TimeSeriesInfo = struct {
     memory_bytes: u64, // Approximate memory usage (stub)
     first_timestamp: ?i64, // Timestamp of oldest sample
     last_timestamp: ?i64, // Timestamp of newest sample
+    rules: std.ArrayList(CompactionRule), // Compaction rules for downsampling
 
     pub fn init(allocator: std.mem.Allocator) !TimeSeriesInfo {
+        const rules_list = try std.ArrayList(CompactionRule).initCapacity(allocator, 0);
         return TimeSeriesInfo{
             .retention_ms = 0,
             .duplicate_policy = .last,
@@ -201,6 +277,7 @@ pub const TimeSeriesInfo = struct {
             .memory_bytes = 0,
             .first_timestamp = null,
             .last_timestamp = null,
+            .rules = rules_list,
         };
     }
 
@@ -212,6 +289,12 @@ pub const TimeSeriesInfo = struct {
             allocator.free(entry.value_ptr.*);
         }
         self.labels.deinit();
+
+        // Free compaction rules
+        for (self.rules.items) |*rule| {
+            rule.deinit();
+        }
+        self.rules.deinit(allocator);
     }
 
     /// Add or update a label

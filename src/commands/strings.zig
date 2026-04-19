@@ -143,7 +143,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
         "PFCOUNT",
         "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
-        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE",
+        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE", "TS.QUERYINDEX", "TS.INFO",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -169,7 +169,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "SETBIT", "BITOP", "BITFIELD",
         "GEOADD", "PFADD", "PFMERGE",
         "RESTORE", "SORT", "DELEX", "MIGRATE",
-        "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER",
+        "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -2185,6 +2185,12 @@ pub fn executeCommand(
                 break :blk try timeseries_cmds.cmdTsMrange(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.MREVRANGE")) {
                 break :blk try timeseries_cmds.cmdTsMrevrange(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.QUERYINDEX")) {
+                break :blk try timeseries_cmds.cmdTsQueryindex(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.CREATERULE")) {
+                break :blk try timeseries_cmds.cmdTsCreaterule(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.DELETERULE")) {
+                break :blk try timeseries_cmds.cmdTsDeleterule(storage, args, allocator);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
