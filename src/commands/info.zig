@@ -352,6 +352,13 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
             break :blk 256; // Rough JSON tree estimate
         },
         .timeseries => |ts| ts.samples.items.len * 16, // 8 bytes timestamp + 8 bytes value
+        .bloom => |bf| blk: {
+            var total: usize = 0;
+            for (bf.filters.items) |filter| {
+                total += filter.bits.len;
+            }
+            break :blk total;
+        },
     };
 }
 

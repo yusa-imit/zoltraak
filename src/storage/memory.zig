@@ -11,6 +11,7 @@ const functions_mod = @import("functions.zig");
 const json_value_mod = @import("json_value.zig");
 const search_mod = @import("search.zig");
 const timeseries_mod = @import("timeseries.zig");
+const bloom_mod = @import("bloom.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -25,6 +26,7 @@ pub const SentinelState = sentinel_mod.SentinelState;
 pub const FunctionStore = functions_mod.FunctionStore;
 pub const SearchStore = search_mod.SearchStore;
 pub const TimeSeriesValue = timeseries_mod.TimeSeriesValue;
+pub const BloomFilterValue = bloom_mod.BloomFilterValue;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -44,6 +46,7 @@ pub const ValueType = enum {
     hyperloglog,
     json,
     timeseries,
+    bloom,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -58,6 +61,7 @@ pub const Value = union(ValueType) {
     hyperloglog: HyperLogLogValue,
     json: JsonValue,
     timeseries: TimeSeriesValue,
+    bloom: BloomFilterValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -393,6 +397,7 @@ pub const Value = union(ValueType) {
             .hyperloglog => |*hll| hll.deinit(allocator),
             .json => |*j| j.deinit(allocator),
             .timeseries => |*ts| ts.deinit(),
+            .bloom => |*b| b.deinit(),
         }
     }
 
@@ -408,6 +413,7 @@ pub const Value = union(ValueType) {
             .hyperloglog => |hll| hll.expires_at,
             .json => |j| j.expires_at,
             .timeseries => |ts| ts.expires_at,
+            .bloom => |b| b.expires_at,
         };
     }
 
@@ -754,6 +760,7 @@ pub const Storage = struct {
                             .hyperloglog => |hll| hll.expires_at,
                             .json => |j| j.expires_at,
                             .timeseries => |ts| ts.expires_at,
+                            .bloom => |b| b.expires_at,
                         };
                     }
                 }
@@ -4088,6 +4095,7 @@ pub const Storage = struct {
             .hyperloglog => |*v| v.expires_at = expires_at,
             .json => |*v| v.expires_at = expires_at,
             .timeseries => |*v| v.expires_at = expires_at,
+            .bloom => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -4435,10 +4443,11 @@ pub const Storage = struct {
             .set => 0x02, // RDB_TYPE_SET
             .hash => 0x04, // RDB_TYPE_HASH
             .sorted_set => 0x03, // RDB_TYPE_SORTED_SET
-            .stream => 0xFE, // Stream type
-            .hyperloglog => 0xFD, // HyperLogLog type
+            .stream => 0xFF, // Stream type
+            .hyperloglog => 0xFE, // HyperLogLog type
             .json => 0x0F, // JSON type
-            .timeseries => 0xFC, // Time Series type
+            .timeseries => 0xFD, // Time Series type
+            .bloom => 0xFC, // Bloom Filter type
         };
         try w.writeByte(type_byte);
 
@@ -4505,6 +4514,10 @@ pub const Storage = struct {
             },
             .timeseries => {
                 // Time series not yet implemented in dump
+                try w.writeInt(u32, 0, .little);
+            },
+            .bloom => {
+                // Bloom filter not yet implemented in dump
                 try w.writeInt(u32, 0, .little);
             },
         }
@@ -4919,6 +4932,11 @@ pub const Storage = struct {
                 // Time series deep copy not yet implemented
                 // For now, return the original (stub for COPY command)
                 break :blk Value{ .timeseries = ts };
+            },
+            .bloom => |b| blk: {
+                // Bloom filter deep copy not yet implemented
+                // For now, return the original (stub for COPY command)
+                break :blk Value{ .bloom = b };
             },
         };
     }

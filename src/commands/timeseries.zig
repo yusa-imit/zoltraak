@@ -2517,7 +2517,7 @@ pub fn cmdTsCreaterule(
     }
 
     // Create the compaction rule
-    const rule = try CompactionRule.init(storage.allocator, dest_key, aggregation, bucket_duration_ms);
+    var rule = try CompactionRule.init(storage.allocator, dest_key, aggregation, bucket_duration_ms);
     errdefer rule.deinit();
 
     try source_ts.info.rules.append(storage.allocator, rule);

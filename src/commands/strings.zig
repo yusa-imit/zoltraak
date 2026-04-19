@@ -37,6 +37,7 @@ const json_cmds = @import("json.zig");
 const search_cmds = @import("search.zig");
 const search_agg_cmds = @import("search_aggregate.zig");
 const timeseries_cmds = @import("timeseries.zig");
+const bloom_cmds = @import("bloom.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -580,6 +581,7 @@ pub fn executeCommand(
                 "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
                 "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
+                "BF.ADD",     "BF.RESERVE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -650,6 +652,7 @@ pub fn executeCommand(
             "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
             "XACK",       "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
+            "BF.ADD",     "BF.RESERVE",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -2199,6 +2202,37 @@ pub fn executeCommand(
                 break :blk try w.writeError(err_msg);
             }
         }
+        // Bloom Filter (BF.*) commands
+        else if (std.mem.startsWith(u8, cmd_upper, "BF.")) {
+            // Extract command args (skip command name)
+            const args = try allocator.alloc(RespValue, array.len - 1);
+            defer allocator.free(args);
+            @memcpy(args, array[1..]);
+
+            if (std.mem.eql(u8, cmd_upper, "BF.RESERVE")) {
+                const result = try bloom_cmds.cmdBfReserve(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.ADD")) {
+                const result = try bloom_cmds.cmdBfAdd(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.EXISTS")) {
+                const result = try bloom_cmds.cmdBfExists(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_upper});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+
         // ACL commands
         else if (std.mem.eql(u8, cmd_upper, "ACL")) {
             if (array.len < 2) {

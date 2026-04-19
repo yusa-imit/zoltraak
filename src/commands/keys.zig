@@ -182,6 +182,7 @@ pub fn cmdType(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         .hyperloglog => "string",
         .json => "ReJSON-RL",
         .timeseries => "TSDB-TYPE",
+        .bloom => "BloomFilter",
     } else "none";
 
     return w.writeSimpleString(type_str);
@@ -819,6 +820,7 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
                 .hyperloglog => "string",
                 .json => "ReJSON-RL",
                 .timeseries => "TSDB-TYPE",
+                .bloom => "BloomFilter",
             } else "none";
             const tf_lower = try std.ascii.allocLowerString(allocator, tf);
             defer allocator.free(tf_lower);
@@ -1623,6 +1625,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .hyperloglog => "hyperloglog",
             .json => "json",
             .timeseries => "timeseries",
+            .bloom => "bloom",
         };
         return w.writeSimpleString(encoding);
     } else {

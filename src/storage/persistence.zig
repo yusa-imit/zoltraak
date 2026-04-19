@@ -100,6 +100,7 @@ pub const Persistence = struct {
                     .hyperloglog => 0xFE, // HyperLogLog type
                     .json => 0x0F, // JSON type
                     .timeseries => 0xFD, // Time Series type
+                    .bloom => 0xFC, // Bloom Filter type
                 };
                 try w.writeByte(type_byte);
 
@@ -163,6 +164,10 @@ pub const Persistence = struct {
                     },
                     .timeseries => {
                         // Time series not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .bloom => {
+                        // Bloom filter not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
@@ -589,6 +594,7 @@ pub const Persistence = struct {
                     .hyperloglog => 0xFE, // HyperLogLog
                     .json => 0x0F, // JSON type
                     .timeseries => 0xFD, // Time Series type
+                    .bloom => 0xFC, // Bloom Filter type
                 };
                 try w.writeByte(type_byte);
 
@@ -644,6 +650,10 @@ pub const Persistence = struct {
                     },
                     .timeseries => {
                         // Time series not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .bloom => {
+                        // Bloom filter not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }

@@ -93,6 +93,13 @@ pub fn cmdMemoryUsage(
             .hyperloglog => 12304, // 16384 registers
             .json => |j| blk2: { _ = j; break :blk2 512; }, // JSON tree * 6 bits
             .timeseries => |ts| ts.samples.items.len * 16 + 512, // DataPoint + metadata
+            .bloom => |bf| blk2: {
+                var total: usize = 256; // Bloom struct overhead
+                for (bf.filters.items) |filter| {
+                    total += filter.bits.len;
+                }
+                break :blk2 total;
+            },
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };

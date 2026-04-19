@@ -271,6 +271,10 @@ pub const Aof = struct {
                     // Time series values handled by TS.* commands in AOF replay
                     // The commands will be replayed from AOF log
                 },
+                .bloom => {
+                    // Bloom filter values handled by BF.* commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 
