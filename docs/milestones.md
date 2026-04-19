@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 205 (300+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 209 (310+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 14 (Time Series) — 47% complete (8/17 commands)
-- **Next milestone**: Phase 14 (Time Series TS.MGET/TS.RANGE/TS.REVRANGE)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 0% complete (0/49 commands)
+- **Next milestone**: Phase 15.1 (Bloom Filter BF.RESERVE/BF.ADD/BF.EXISTS)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -66,7 +66,7 @@
 
 **All 30 Phase 13 commands complete**: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER, FT.SEARCH, FT.AGGREGATE, FT.EXPLAIN, FT.EXPLAINCLI, FT.PROFILE, FT.SPELLCHECK, FT.CURSOR READ, FT.CURSOR DEL, FT.ALIASADD, FT.ALIASDEL, FT.ALIASUPDATE, FT.DICTADD, FT.DICTDEL, FT.DICTDUMP, FT.SYNDUMP, FT.SYNUPDATE, FT.SUGADD, FT.SUGGET, FT.SUGLEN, FT.SUGDEL, FT.TAGVALS, FT.CONFIG GET/SET/HELP, **FT.HYBRID** ✅
 
-### Phase 14 — Time Series (47% complete) 🚧
+### Phase 14 — Time Series (100% complete) ✅
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -74,8 +74,12 @@
 | 203 | TS.ADD, TS.MADD (add data points with auto-create, wildcard timestamps, ON_DUPLICATE override, batch processing) | Done ✅ |
 | 204 | TS.INCRBY, TS.DECRBY (increment/decrement by delta, auto-create, counter/gauge patterns, duplicate policy enforcement) | Done ✅ |
 | 205 | TS.DEL, TS.GET (delete time range, get latest sample with deleteRange() storage method, [timestamp,value] array response) | Done ✅ |
+| 206 | TS.ALTER, TS.MGET (modify config, multi-get with label filtering — TimeSeriesFilter abstraction) | Done ✅ |
+| 207 | TS.RANGE, TS.REVRANGE (range queries with FILTER_BY_TS, FILTER_BY_VALUE, COUNT, special timestamps "-"/"+") | Done ✅ |
+| 208 | TS.MRANGE, TS.MREVRANGE (multi-key range queries combining label filtering with time ranges, WITHLABELS support) | Done ✅ |
+| 209 | TS.QUERYINDEX (label-based key discovery), TS.CREATERULE, TS.DELETERULE (compaction rule management with 13 aggregation types) | Done ✅ |
 
-**8/17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET
+**All 17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET, TS.ALTER, TS.MGET, TS.RANGE, TS.REVRANGE, TS.MRANGE, TS.MREVRANGE, TS.QUERYINDEX, TS.CREATERULE, TS.DELETERULE
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
