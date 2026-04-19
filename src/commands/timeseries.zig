@@ -1895,6 +1895,457 @@ pub fn cmdTsRevrange(
     return try buf.toOwnedSlice(arena);
 }
 
+/// TS.MRANGE fromTimestamp toTimestamp [LATEST] [FILTER_BY_TS ts [ts ...]] [FILTER_BY_VALUE min max] [COUNT count] [WITHLABELS | SELECTED_LABELS label [label ...]] FILTER filterExpr [filterExpr ...]
+///
+/// Query a range across multiple time series using label-based filtering.
+/// Combines label filtering (like TS.MGET) with range query logic (like TS.RANGE).
+///
+/// Example:
+/// TS.MRANGE 1000 3000 WITHLABELS FILTER sensor=temp
+/// TS.MRANGE - + COUNT 10 FILTER location=room1
+pub fn cmdTsMrange(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    if (args.len < 5) {
+        return "ERR wrong number of arguments for 'TS.MRANGE' command\r\n";
+    }
+
+    const TimeSeriesFilter = timeseries_mod.TimeSeriesFilter;
+
+    // Parse fromTimestamp (support "-" for earliest)
+    const from_ts = if (std.mem.eql(u8, args[1], "-"))
+        std.math.minInt(i64)
+    else
+        parseTimestamp(args[1]) catch {
+            return "ERR invalid fromTimestamp\r\n";
+        };
+
+    // Parse toTimestamp (support "+" for latest)
+    const to_ts = if (std.mem.eql(u8, args[2], "+"))
+        std.math.maxInt(i64)
+    else
+        parseTimestamp(args[2]) catch {
+            return "ERR invalid toTimestamp\r\n";
+        };
+
+    // Validate timestamp range
+    if (from_ts > to_ts) {
+        return "ERR fromTimestamp must be <= toTimestamp\r\n";
+    }
+
+    // Parse optional arguments
+    var with_latest = false;
+    var with_labels = false;
+    var selected_labels = try std.ArrayList([]const u8).initCapacity(arena, 8);
+    defer selected_labels.deinit(arena);
+
+    var filter_by_ts = try std.ArrayList(i64).initCapacity(arena, 4);
+    defer filter_by_ts.deinit(arena);
+
+    var filter_by_value: ?struct { min: f64, max: f64 } = null;
+    var count_limit: ?usize = null;
+
+    var filters = try std.ArrayList(TimeSeriesFilter).initCapacity(arena, 8);
+    defer {
+        for (filters.items) |*f| {
+            f.deinit();
+        }
+        filters.deinit(arena);
+    }
+
+    var has_positive_filter = false;
+
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const option = args[i];
+
+        if (std.ascii.eqlIgnoreCase(option, "LATEST")) {
+            with_latest = true;
+        } else if (std.ascii.eqlIgnoreCase(option, "WITHLABELS")) {
+            with_labels = true;
+        } else if (std.ascii.eqlIgnoreCase(option, "SELECTED_LABELS")) {
+            i += 1;
+            // Parse label names until next flag
+            while (i < args.len) : (i += 1) {
+                const next = args[i];
+                if (std.ascii.eqlIgnoreCase(next, "FILTER") or
+                    std.ascii.eqlIgnoreCase(next, "FILTER_BY_TS") or
+                    std.ascii.eqlIgnoreCase(next, "FILTER_BY_VALUE") or
+                    std.ascii.eqlIgnoreCase(next, "COUNT") or
+                    std.ascii.eqlIgnoreCase(next, "LATEST") or
+                    std.ascii.eqlIgnoreCase(next, "WITHLABELS"))
+                {
+                    i -= 1;
+                    break;
+                }
+                try selected_labels.append(arena, next);
+            }
+        } else if (std.ascii.eqlIgnoreCase(option, "FILTER_BY_TS")) {
+            i += 1;
+            // Parse all following timestamps until next option or end
+            while (i < args.len) : (i += 1) {
+                const next = args[i];
+                if (std.ascii.eqlIgnoreCase(next, "FILTER_BY_VALUE") or
+                    std.ascii.eqlIgnoreCase(next, "COUNT") or
+                    std.ascii.eqlIgnoreCase(next, "FILTER") or
+                    std.ascii.eqlIgnoreCase(next, "LATEST") or
+                    std.ascii.eqlIgnoreCase(next, "WITHLABELS") or
+                    std.ascii.eqlIgnoreCase(next, "SELECTED_LABELS"))
+                {
+                    i -= 1;
+                    break;
+                }
+
+                const ts_val = parseTimestamp(next) catch {
+                    return "ERR invalid timestamp in FILTER_BY_TS\r\n";
+                };
+                try filter_by_ts.append(arena, ts_val);
+            }
+        } else if (std.ascii.eqlIgnoreCase(option, "FILTER_BY_VALUE")) {
+            i += 1;
+            if (i + 1 >= args.len) {
+                return "ERR FILTER_BY_VALUE requires min and max values\r\n";
+            }
+
+            const min = parseValue(args[i]) catch {
+                return "ERR invalid min value for FILTER_BY_VALUE\r\n";
+            };
+            i += 1;
+            const max = parseValue(args[i]) catch {
+                return "ERR invalid max value for FILTER_BY_VALUE\r\n";
+            };
+
+            if (min > max) {
+                return "ERR min must be <= max for FILTER_BY_VALUE\r\n";
+            }
+
+            filter_by_value = .{ .min = min, .max = max };
+        } else if (std.ascii.eqlIgnoreCase(option, "COUNT")) {
+            i += 1;
+            if (i >= args.len) {
+                return "ERR COUNT requires a value\r\n";
+            }
+
+            count_limit = std.fmt.parseInt(usize, args[i], 10) catch {
+                return "ERR invalid COUNT value\r\n";
+            };
+        } else if (std.ascii.eqlIgnoreCase(option, "FILTER")) {
+            i += 1;
+            if (i >= args.len) return "ERR FILTER requires an expression\r\n";
+
+            const filter_expr = args[i];
+            const filter_opt = try TimeSeriesFilter.parse(filter_expr, arena);
+
+            if (filter_opt) |filter| {
+                // Check if this is a positive filter
+                if (filter.filter_type == .equals or filter.filter_type == .in_list) {
+                    has_positive_filter = true;
+                }
+                try filters.append(arena, filter);
+            } else {
+                return "ERR invalid FILTER expression\r\n";
+            }
+        } else {
+            return "ERR unknown option for TS.MRANGE\r\n";
+        }
+    }
+
+    // Validate: at least one positive filter is required
+    if (!has_positive_filter) {
+        return "ERR MRANGE requires at least one positive filter (label=value or label=(v1,v2))\r\n";
+    }
+
+    // Validate: at least one filter is required
+    if (filters.items.len == 0) {
+        return "ERR MRANGE requires at least one FILTER\r\n";
+    }
+
+    // Scan storage for all timeseries keys matching all filters
+    var results = try std.ArrayList(struct { key: []const u8, ts: *TimeSeriesValue }).initCapacity(arena, 16);
+    defer results.deinit(arena);
+
+    var iter = storage.data.iterator();
+    while (iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const val = entry.value_ptr;
+
+        if (val.* != .timeseries) continue;
+
+        var ts = &val.timeseries;
+
+        // Check all filters - all must match
+        var all_match = true;
+        for (filters.items) |*filter| {
+            if (!filter.matches(&ts.info)) {
+                all_match = false;
+                break;
+            }
+        }
+
+        if (all_match) {
+            try results.append(arena, .{ .key = key, .ts = ts });
+        }
+    }
+
+    // Build RESP response
+    var buf = try std.ArrayList(u8).initCapacity(arena, 2048);
+    defer buf.deinit(arena);
+
+    const writer = buf.writer(arena);
+
+    // Array of results
+    try writer.print("*{d}\r\n", .{results.items.len});
+
+    for (results.items) |result| {
+        const key = result.key;
+        var ts = result.ts;
+
+        // Get samples in range
+        const samples = ts.getRange(from_ts, to_ts);
+
+        // Apply filters in order: FILTER_BY_TS → FILTER_BY_VALUE → COUNT limit
+        var filtered_samples = try std.ArrayList(timeseries_mod.DataPoint).initCapacity(arena, 64);
+        defer filtered_samples.deinit(arena);
+
+        for (samples) |sample| {
+            // Apply FILTER_BY_TS (exact match check)
+            if (filter_by_ts.items.len > 0) {
+                var found = false;
+                for (filter_by_ts.items) |ts_filter| {
+                    if (sample.timestamp == ts_filter) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) continue;
+            }
+
+            // Apply FILTER_BY_VALUE (range check)
+            if (filter_by_value) |fbv| {
+                if (sample.value < fbv.min or sample.value > fbv.max) {
+                    continue;
+                }
+            }
+
+            try filtered_samples.append(arena, sample);
+
+            // Apply COUNT limit
+            if (count_limit) |limit| {
+                if (filtered_samples.items.len >= limit) {
+                    break;
+                }
+            }
+        }
+
+        // For each match, format: [key, labels, [[timestamp, value], ...]]
+        try writer.writeAll("*3\r\n");
+
+        // Key
+        try writer.print("${d}\r\n{s}\r\n", .{ key.len, key });
+
+        // Labels array
+        if (with_labels or selected_labels.items.len > 0) {
+            if (selected_labels.items.len > 0) {
+                // SELECTED_LABELS: return only specified labels
+                var label_count: usize = 0;
+                for (selected_labels.items) |label_name| {
+                    if (ts.info.labels.get(label_name)) |_| {
+                        label_count += 1;
+                    }
+                }
+
+                try writer.print("*{d}\r\n", .{label_count * 2});
+
+                for (selected_labels.items) |label_name| {
+                    if (ts.info.labels.get(label_name)) |label_value| {
+                        try writer.print("${d}\r\n{s}\r\n", .{ label_name.len, label_name });
+                        try writer.print("${d}\r\n{s}\r\n", .{ label_value.len, label_value });
+                    }
+                }
+            } else {
+                // WITHLABELS: return all labels
+                const label_count = ts.info.labels.count();
+                try writer.print("*{d}\r\n", .{label_count * 2});
+
+                var label_iter = ts.info.labels.iterator();
+                while (label_iter.next()) |entry| {
+                    const label_key = entry.key_ptr.*;
+                    const label_value = entry.value_ptr.*;
+
+                    try writer.print("${d}\r\n{s}\r\n", .{ label_key.len, label_key });
+                    try writer.print("${d}\r\n{s}\r\n", .{ label_value.len, label_value });
+                }
+            }
+        } else {
+            // No labels
+            try writer.writeAll("*0\r\n");
+        }
+
+        // Samples array [[timestamp, value], ...]
+        try writer.print("*{d}\r\n", .{filtered_samples.items.len});
+
+        for (filtered_samples.items) |sample| {
+            try writer.writeAll("*2\r\n");
+            try writer.print(":{d}\r\n", .{sample.timestamp});
+            try writer.print("+{d}\r\n", .{sample.value});
+        }
+    }
+
+    return try buf.toOwnedSlice(arena);
+}
+
+/// TS.MREVRANGE fromTimestamp toTimestamp [LATEST] [FILTER_BY_TS ts [ts ...]] [FILTER_BY_VALUE min max] [COUNT count] [WITHLABELS | SELECTED_LABELS label [label ...]] FILTER filterExpr [filterExpr ...]
+///
+/// Query a range across multiple time series in reverse order using label-based filtering.
+/// Same syntax and behavior as TS.MRANGE, but results within each time series are returned in descending timestamp order.
+///
+/// Example:
+/// TS.MREVRANGE 1000 3000 WITHLABELS FILTER sensor=temp
+/// TS.MREVRANGE - + COUNT 10 FILTER location=room1
+pub fn cmdTsMrevrange(
+    storage: *Storage,
+    args: []const []const u8,
+    arena: std.mem.Allocator,
+) ![]const u8 {
+    // Call TS.MRANGE to get the results
+    const result = try cmdTsMrange(storage, args, arena);
+
+    // Check if it's an error (starts with - or +ERR)
+    if (std.mem.startsWith(u8, result, "-") or std.mem.startsWith(u8, result, "+ERR")) {
+        return result;
+    }
+
+    // Parse the RESP result and reverse the samples within each time series
+    // Expected format: *N\r\n followed by [key, labels, [[ts, val], ...]] entries
+
+    if (result.len == 0) {
+        return result;
+    }
+
+    // Parse the array count from first line
+    const first_crlf_pos = std.mem.indexOf(u8, result, "\r\n") orelse return result;
+    const count_str = result[1..first_crlf_pos];
+    const num_series = std.fmt.parseInt(usize, count_str, 10) catch return result;
+
+    if (num_series == 0) {
+        return result; // Empty array, nothing to reverse
+    }
+
+    // We need to parse each series and reverse its samples
+    // This is complex because we need to:
+    // 1. Parse the entire RESP structure
+    // 2. Reverse samples within each series
+    // 3. Re-serialize to RESP
+
+    // For simplicity, we'll build a new response
+    var buf = try std.ArrayList(u8).initCapacity(arena, result.len);
+    defer buf.deinit(arena);
+
+    const writer = buf.writer(arena);
+
+    // Start parsing
+    var pos: usize = first_crlf_pos + 2; // Skip "*N\r\n"
+
+    try writer.print("*{d}\r\n", .{num_series});
+
+    for (0..num_series) |_| {
+        // Each series is: *3\r\n $key\r\nKEY\r\n *labels\r\n... *samples\r\n...
+
+        // Skip "*3\r\n"
+        while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+        pos += 2;
+
+        try writer.writeAll("*3\r\n");
+
+        // Copy key (bulk string)
+        const key_marker_pos = pos;
+        while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+        const key_len_str = result[key_marker_pos + 1 .. pos];
+        const key_len = std.fmt.parseInt(usize, key_len_str, 10) catch continue;
+        pos += 2; // Skip "\r\n"
+
+        // Copy key data
+        try writer.print("${d}\r\n", .{key_len});
+        try writer.writeAll(result[pos .. pos + key_len]);
+        try writer.writeAll("\r\n");
+        pos += key_len + 2;
+
+        // Copy labels array (entire array as-is)
+        const labels_array_start = pos;
+        while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+        const labels_count_str = result[labels_array_start + 1 .. pos];
+        const labels_count = std.fmt.parseInt(usize, labels_count_str, 10) catch continue;
+        pos += 2;
+
+        try writer.print("*{d}\r\n", .{labels_count});
+
+        // Copy all label elements
+        for (0..labels_count) |_| {
+            // Each label is a bulk string
+            const label_marker_pos = pos;
+            while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+            const label_len_str = result[label_marker_pos + 1 .. pos];
+            const label_len = std.fmt.parseInt(usize, label_len_str, 10) catch continue;
+            pos += 2;
+
+            try writer.print("${d}\r\n", .{label_len});
+            try writer.writeAll(result[pos .. pos + label_len]);
+            try writer.writeAll("\r\n");
+            pos += label_len + 2;
+        }
+
+        // Parse samples array and reverse
+        const samples_array_start = pos;
+        while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+        const samples_count_str = result[samples_array_start + 1 .. pos];
+        const samples_count = std.fmt.parseInt(usize, samples_count_str, 10) catch continue;
+        pos += 2;
+
+        // Store samples
+        const DataPoint = struct { timestamp: i64, value: f64 };
+        var samples = try std.ArrayList(DataPoint).initCapacity(arena, samples_count);
+        defer samples.deinit(arena);
+
+        for (0..samples_count) |_| {
+            // Skip "*2\r\n"
+            while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+            pos += 2;
+
+            // Parse timestamp ":TS\r\n"
+            const ts_start = pos + 1;
+            while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+            const ts_str = result[ts_start..pos];
+            const timestamp = std.fmt.parseInt(i64, ts_str, 10) catch continue;
+            pos += 2;
+
+            // Parse value "+VAL\r\n"
+            const val_start = pos + 1;
+            while (pos < result.len and result[pos] != '\r') : (pos += 1) {}
+            const val_str = result[val_start..pos];
+            const value = std.fmt.parseFloat(f64, val_str) catch continue;
+            pos += 2;
+
+            try samples.append(arena, .{ .timestamp = timestamp, .value = value });
+        }
+
+        // Reverse samples
+        std.mem.reverse(DataPoint, samples.items);
+
+        // Write reversed samples
+        try writer.print("*{d}\r\n", .{samples.items.len});
+
+        for (samples.items) |sample| {
+            try writer.writeAll("*2\r\n");
+            try writer.print(":{d}\r\n", .{sample.timestamp});
+            try writer.print("+{d}\r\n", .{sample.value});
+        }
+    }
+
+    return try buf.toOwnedSlice(arena);
+}
+
 //
 // Unit tests
 //

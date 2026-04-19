@@ -143,7 +143,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
         "PFCOUNT",
         "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
-        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE",
+        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -2181,6 +2181,10 @@ pub fn executeCommand(
                 break :blk try timeseries_cmds.cmdTsRange(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.REVRANGE")) {
                 break :blk try timeseries_cmds.cmdTsRevrange(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.MRANGE")) {
+                break :blk try timeseries_cmds.cmdTsMrange(storage, args, allocator);
+            } else if (std.mem.eql(u8, cmd_upper, "TS.MREVRANGE")) {
+                break :blk try timeseries_cmds.cmdTsMrevrange(storage, args, allocator);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
