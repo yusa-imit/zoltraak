@@ -203,3 +203,139 @@ pub fn cmdBfExists(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return RespValue{ .integer = 0 };
     }
 }
+
+/// BF.MADD key item [item ...]
+/// Add one or more items to the Bloom filter, creating it with defaults if it doesn't exist
+/// Returns an array of integers (1 for new, 0 for duplicate)
+pub fn cmdBfMadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.madd' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Allocate result array
+    const num_items = args.len - 1;
+    const results = try allocator.alloc(RespValue, num_items);
+    errdefer allocator.free(results);
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a bloom filter
+        switch (entry.value_ptr.*) {
+            .bloom => |*bf| {
+                // Add each item and collect results
+                for (args[1..], 0..) |arg, i| {
+                    const item = switch (arg) {
+                        .bulk_string => |s| s,
+                        else => {
+                            allocator.free(results);
+                            return RespValue{ .error_string = "ERR invalid item" };
+                        },
+                    };
+                    const result = try bf.add(item);
+                    results[i] = RespValue{ .integer = @intCast(result) };
+                }
+            },
+            else => {
+                allocator.free(results);
+                return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+            },
+        }
+    } else {
+        // Create with defaults: error_rate=0.01, capacity=100, expansion=2, nonscaling=false
+        var bf = BloomFilterValue.init(allocator, 0.01, 100, 2, false) catch {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR failed to create bloom filter" };
+        };
+        errdefer bf.deinit();
+
+        const owned_key = allocator.dupe(u8, key) catch {
+            bf.deinit();
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        errdefer allocator.free(owned_key);
+
+        // Add each item and collect results
+        for (args[1..], 0..) |arg, i| {
+            const item = switch (arg) {
+                .bulk_string => |s| s,
+                else => {
+                    bf.deinit();
+                    allocator.free(owned_key);
+                    allocator.free(results);
+                    return RespValue{ .error_string = "ERR invalid item" };
+                },
+            };
+            const result = try bf.add(item);
+            results[i] = RespValue{ .integer = @intCast(result) };
+        }
+
+        try storage.data.put(owned_key, storage_mod.Value{ .bloom = bf });
+    }
+
+    return RespValue{ .array = results };
+}
+
+/// BF.MEXISTS key item [item ...]
+/// Check if one or more items exist in the Bloom filter
+/// Returns an array of integers (1 for exists, 0 for not exists)
+pub fn cmdBfMexists(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.mexists' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Allocate result array
+    const num_items = args.len - 1;
+    const results = try allocator.alloc(RespValue, num_items);
+    errdefer allocator.free(results);
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a bloom filter
+        switch (entry.value_ptr.*) {
+            .bloom => |bf| {
+                // Check each item and collect results
+                for (args[1..], 0..) |arg, i| {
+                    const item = switch (arg) {
+                        .bulk_string => |s| s,
+                        else => {
+                            allocator.free(results);
+                            return RespValue{ .error_string = "ERR invalid item" };
+                        },
+                    };
+                    const exists = bf.exists(item);
+                    results[i] = RespValue{ .integer = if (exists) 1 else 0 };
+                }
+            },
+            else => {
+                allocator.free(results);
+                return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+            },
+        }
+    } else {
+        // Key doesn't exist - all items return 0
+        for (0..num_items) |i| {
+            results[i] = RespValue{ .integer = 0 };
+        }
+    }
+
+    return RespValue{ .array = results };
+}

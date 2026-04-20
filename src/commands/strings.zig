@@ -581,7 +581,7 @@ pub fn executeCommand(
                 "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
                 "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
-                "BF.ADD",     "BF.RESERVE",
+                "BF.ADD",     "BF.RESERVE", "BF.MADD",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -652,7 +652,7 @@ pub fn executeCommand(
             "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
             "XACK",       "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
-            "BF.ADD",     "BF.RESERVE",
+            "BF.ADD",     "BF.RESERVE", "BF.MADD",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -2221,6 +2221,16 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "BF.EXISTS")) {
                 const result = try bloom_cmds.cmdBfExists(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.MADD")) {
+                const result = try bloom_cmds.cmdBfMadd(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.MEXISTS")) {
+                const result = try bloom_cmds.cmdBfMexists(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
