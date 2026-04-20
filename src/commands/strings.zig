@@ -581,7 +581,7 @@ pub fn executeCommand(
                 "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
                 "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
-                "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",
+                "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -2236,6 +2236,11 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "BF.INSERT")) {
                 const result = try bloom_cmds.cmdBfInsert(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.INFO")) {
+                const result = try bloom_cmds.cmdBfInfo(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

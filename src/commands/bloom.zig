@@ -532,3 +532,106 @@ pub fn cmdBfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     return RespValue{ .array = results };
 }
+
+/// BF.INFO key [CAPACITY | SIZE | FILTERS | ITEMS | EXPANSION]
+/// Return information about a Bloom filter
+pub fn cmdBfInfo(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 1 or args.len > 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.info' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse optional field argument
+    const field_arg = if (args.len == 2) switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid field" },
+    } else null;
+
+    // Normalize field to lowercase
+    const field = if (field_arg) |f| blk: {
+        var buf: [32]u8 = undefined;
+        const len = @min(f.len, buf.len);
+        @memcpy(buf[0..len], f[0..len]);
+        for (0..len) |j| {
+            buf[j] = std.ascii.toLower(buf[j]);
+        }
+        break :blk buf[0..len];
+    } else null;
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    const entry = storage.data.getEntry(key) orelse {
+        return RespValue{ .error_string = "ERR not found" };
+    };
+
+    // Verify it's a bloom filter
+    const bf = switch (entry.value_ptr.*) {
+        .bloom => |*filter| filter,
+        else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+    };
+
+    // Calculate total size in bytes
+    var total_size: u64 = 0;
+    for (bf.filters.items) |filter| {
+        total_size += filter.bits.len;
+    }
+
+    // If specific field requested, return just that value
+    if (field) |f| {
+        if (std.mem.eql(u8, f, "capacity")) {
+            return RespValue{ .integer = @intCast(bf.capacity) };
+        } else if (std.mem.eql(u8, f, "size")) {
+            return RespValue{ .integer = @intCast(total_size) };
+        } else if (std.mem.eql(u8, f, "filters")) {
+            return RespValue{ .integer = @intCast(bf.filters.items.len) };
+        } else if (std.mem.eql(u8, f, "items")) {
+            return RespValue{ .integer = @intCast(bf.total_items_added) };
+        } else if (std.mem.eql(u8, f, "expansion")) {
+            // Return expansion as integer, or null if NONSCALING
+            if (bf.nonscaling) {
+                return RespValue{ .null_bulk_string = {} };
+            } else {
+                return RespValue{ .integer = @intCast(bf.expansion) };
+            }
+        } else {
+            return RespValue{ .error_string = "ERR unknown field" };
+        }
+    }
+
+    // Return all fields as array of key-value pairs
+    const info_fields = try allocator.alloc(RespValue, 10);
+    errdefer allocator.free(info_fields);
+
+    // Capacity
+    info_fields[0] = RespValue{ .bulk_string = "Capacity" };
+    info_fields[1] = RespValue{ .integer = @intCast(bf.capacity) };
+
+    // Size
+    info_fields[2] = RespValue{ .bulk_string = "Size" };
+    info_fields[3] = RespValue{ .integer = @intCast(total_size) };
+
+    // Number of filters
+    info_fields[4] = RespValue{ .bulk_string = "Number of filters" };
+    info_fields[5] = RespValue{ .integer = @intCast(bf.filters.items.len) };
+
+    // Number of items inserted
+    info_fields[6] = RespValue{ .bulk_string = "Number of items inserted" };
+    info_fields[7] = RespValue{ .integer = @intCast(bf.total_items_added) };
+
+    // Expansion rate
+    info_fields[8] = RespValue{ .bulk_string = "Expansion rate" };
+    if (bf.nonscaling) {
+        info_fields[9] = RespValue{ .null_bulk_string = {} };
+    } else {
+        info_fields[9] = RespValue{ .integer = @intCast(bf.expansion) };
+    }
+
+    return RespValue{ .array = info_fields };
+}

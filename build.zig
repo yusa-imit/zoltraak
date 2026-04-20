@@ -113,6 +113,18 @@ pub fn build(b: *std.Build) void {
     // Add extended tests to main integration test step
     integration_test_step.dependOn(&run_config_extended_tests.step);
 
+    // BF.INFO tests
+    const bf_info_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_bf_info.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_bf_info_tests = b.addRunArtifact(bf_info_tests);
+    integration_test_step.dependOn(&run_bf_info_tests.step);
+
     // GEOSEARCH BYBOX integration tests
     const geosearch_bybox_tests = b.addTest(.{
         .root_module = b.createModule(.{
