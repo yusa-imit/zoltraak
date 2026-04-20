@@ -339,3 +339,196 @@ pub fn cmdBfMexists(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     return RespValue{ .array = results };
 }
+
+/// BF.INSERT key [CAPACITY capacity] [ERROR error_rate] [EXPANSION expansion] [NOCREATE] [NONSCALING] ITEMS item [item ...]
+/// Add one or more items to the Bloom filter with full parameter control
+/// - Auto-creates filter with custom parameters if it doesn't exist (unless NOCREATE is set)
+/// - NOCREATE: Only insert if filter exists, error otherwise (mutually exclusive with CAPACITY/ERROR)
+/// - CAPACITY: Initial capacity for auto-created filter (default: 100)
+/// - ERROR: False positive error rate for auto-created filter (default: 0.01)
+/// - EXPANSION: Sub-filter expansion factor for scaling (default: 2)
+/// - NONSCALING: Disable auto-scaling, return error on capacity overflow
+/// Returns an array of integers (1 for new, 0 for duplicate)
+pub fn cmdBfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.insert' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse optional parameters
+    var capacity: u64 = 100; // Default capacity
+    var error_rate: f64 = 0.01; // Default error rate
+    var expansion: u16 = 2; // Default expansion
+    var nocreate = false;
+    var nonscaling = false;
+    var items_start_idx: ?usize = null;
+    var has_capacity = false;
+    var has_error = false;
+
+    var i: usize = 1;
+    while (i < args.len) {
+        const arg_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid argument" },
+        };
+
+        // Case-insensitive keyword matching
+        const upper = std.ascii.allocUpperString(allocator, arg_str) catch {
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        defer allocator.free(upper);
+
+        if (std.mem.eql(u8, upper, "CAPACITY")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR syntax error: CAPACITY requires a value" };
+            }
+            has_capacity = true;
+            i += 1;
+            const cap_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return RespValue{ .error_string = "ERR invalid capacity" },
+            };
+            capacity = std.fmt.parseInt(u64, cap_str, 10) catch {
+                return RespValue{ .error_string = "ERR capacity must be a valid positive integer" };
+            };
+            if (capacity == 0) {
+                return RespValue{ .error_string = "ERR capacity must be greater than 0" };
+            }
+        } else if (std.mem.eql(u8, upper, "ERROR")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR syntax error: ERROR requires a value" };
+            }
+            has_error = true;
+            i += 1;
+            const err_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return RespValue{ .error_string = "ERR invalid error rate" },
+            };
+            error_rate = std.fmt.parseFloat(f64, err_str) catch {
+                return RespValue{ .error_string = "ERR error rate must be a valid float" };
+            };
+            if (error_rate <= 0.0 or error_rate >= 1.0) {
+                return RespValue{ .error_string = "ERR error rate must be between 0 and 1" };
+            }
+        } else if (std.mem.eql(u8, upper, "EXPANSION")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR syntax error: EXPANSION requires a value" };
+            }
+            i += 1;
+            const exp_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return RespValue{ .error_string = "ERR invalid expansion" },
+            };
+            const exp_val = std.fmt.parseInt(u16, exp_str, 10) catch {
+                return RespValue{ .error_string = "ERR expansion must be a valid positive integer" };
+            };
+            if (exp_val == 0) {
+                return RespValue{ .error_string = "ERR expansion must be greater than 0" };
+            }
+            expansion = exp_val;
+        } else if (std.mem.eql(u8, upper, "NOCREATE")) {
+            nocreate = true;
+        } else if (std.mem.eql(u8, upper, "NONSCALING")) {
+            nonscaling = true;
+        } else if (std.mem.eql(u8, upper, "ITEMS")) {
+            items_start_idx = i + 1;
+            break;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error: unknown option or missing ITEMS keyword" };
+        }
+
+        i += 1;
+    }
+
+    // Validate ITEMS keyword was found
+    if (items_start_idx == null) {
+        return RespValue{ .error_string = "ERR syntax error: ITEMS keyword required" };
+    }
+
+    const items_idx = items_start_idx.?;
+    if (items_idx >= args.len) {
+        return RespValue{ .error_string = "ERR syntax error: at least one item required after ITEMS" };
+    }
+
+    // Validate NOCREATE mutual exclusion with CAPACITY/ERROR
+    if (nocreate and (has_capacity or has_error)) {
+        return RespValue{ .error_string = "ERR NOCREATE cannot be used with CAPACITY or ERROR" };
+    }
+
+    // Allocate result array
+    const num_items = args.len - items_idx;
+    const results = try allocator.alloc(RespValue, num_items);
+    errdefer allocator.free(results);
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a bloom filter
+        switch (entry.value_ptr.*) {
+            .bloom => |*bf| {
+                // Add each item and collect results
+                for (args[items_idx..], 0..) |arg, idx| {
+                    const item = switch (arg) {
+                        .bulk_string => |s| s,
+                        else => {
+                            allocator.free(results);
+                            return RespValue{ .error_string = "ERR invalid item" };
+                        },
+                    };
+                    const result = try bf.add(item);
+                    results[idx] = RespValue{ .integer = @intCast(result) };
+                }
+            },
+            else => {
+                allocator.free(results);
+                return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+            },
+        }
+    } else {
+        // Key doesn't exist
+        if (nocreate) {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR not found" };
+        }
+
+        // Create filter with specified parameters
+        var bf = BloomFilterValue.init(allocator, error_rate, capacity, expansion, nonscaling) catch {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR failed to create bloom filter" };
+        };
+        errdefer bf.deinit();
+
+        const owned_key = allocator.dupe(u8, key) catch {
+            bf.deinit();
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        errdefer allocator.free(owned_key);
+
+        // Add each item and collect results
+        for (args[items_idx..], 0..) |arg, idx| {
+            const item = switch (arg) {
+                .bulk_string => |s| s,
+                else => {
+                    bf.deinit();
+                    allocator.free(owned_key);
+                    allocator.free(results);
+                    return RespValue{ .error_string = "ERR invalid item" };
+                },
+            };
+            const result = try bf.add(item);
+            results[idx] = RespValue{ .integer = @intCast(result) };
+        }
+
+        try storage.data.put(owned_key, storage_mod.Value{ .bloom = bf });
+    }
+
+    return RespValue{ .array = results };
+}

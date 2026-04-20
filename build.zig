@@ -668,6 +668,17 @@ pub fn build(b: *std.Build) void {
     const run_bf_batch_tests = b.addRunArtifact(bf_batch_tests);
     integration_test_step.dependOn(&run_bf_batch_tests.step);
 
+    // Bloom Filter BF.INSERT integration tests (Iteration 212)
+    const bf_insert_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_bf_insert.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_bf_insert_tests = b.addRunArtifact(bf_insert_tests);
+    integration_test_step.dependOn(&run_bf_insert_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{
