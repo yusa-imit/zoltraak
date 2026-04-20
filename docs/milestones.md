@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 212 (316+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 213 (317+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 15 (Probabilistic Data Structures) — 12% complete (6/49 commands)
-- **Next milestone**: Phase 15.4 (Bloom Filter BF.INFO)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 14% complete (7/49 commands)
+- **Next milestone**: Phase 15.5 (Bloom Filter BF.CARD)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -81,15 +81,16 @@
 
 **All 17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET, TS.ALTER, TS.MGET, TS.RANGE, TS.REVRANGE, TS.MRANGE, TS.MREVRANGE, TS.QUERYINDEX, TS.CREATERULE, TS.DELETERULE
 
-### Phase 15 — Probabilistic Data Structures (12% complete) 🚧
+### Phase 15 — Probabilistic Data Structures (14% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
 | 210 | Bloom Filter foundation (BF.RESERVE, BF.ADD, BF.EXISTS with MurmurHash3 double hashing, auto-scaling) | Done ✅ |
 | 211 | BF.MADD, BF.MEXISTS (batch add/exists, array return values, auto-create support) | Done ✅ |
 | 212 | BF.INSERT (batch insert with full parameter control: CAPACITY, ERROR, EXPANSION, NOCREATE, NONSCALING, auto-create support) | Done ✅ |
+| 213 | BF.INFO (Bloom filter introspection: capacity, size, filters, items, expansion, dual-mode operation with optional field parameter) | Done ✅ |
 
-**6/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT
+**7/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
