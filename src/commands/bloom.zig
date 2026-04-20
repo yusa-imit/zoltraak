@@ -635,3 +635,38 @@ pub fn cmdBfInfo(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     return RespValue{ .array = info_fields };
 }
+
+/// BF.CARD key
+/// Returns the cardinality of a Bloom filter (number of items added)
+pub fn cmdBfCard(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    _ = allocator;
+
+    // Validate arity
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.card' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get the value
+    const value = storage.data.get(key) orelse {
+        // Key doesn't exist, return 0
+        return RespValue{ .integer = 0 };
+    };
+
+    // Check type
+    const bf = switch (value) {
+        .bloom => |*bf_ptr| bf_ptr,
+        else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+    };
+
+    // Return the cardinality (total_items_added)
+    return RespValue{ .integer = @intCast(bf.total_items_added) };
+}
