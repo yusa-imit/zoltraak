@@ -449,3 +449,706 @@ test "CF.ADDNX returns 0 for existing item" {
         }
     }
 }
+
+/// CF.INSERT key [CAPACITY capacity] [NOCREATE] ITEMS item [item ...]
+/// Batch insert items into Cuckoo filter with options for auto-creation and capacity override
+/// Returns array of 1/-1 indicating success/failure per item
+pub fn cmdCfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.insert' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse options
+    var capacity_override: ?u64 = null;
+    var nocreate = false;
+    var items_start_idx: ?usize = null;
+
+    var i: usize = 1;
+    while (i < args.len) {
+        const arg_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid argument" },
+        };
+
+        // Case-insensitive keyword matching
+        const upper = std.ascii.allocUpperString(allocator, arg_str) catch {
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        defer allocator.free(upper);
+
+        if (std.mem.eql(u8, upper, "CAPACITY")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR CAPACITY requires an argument" };
+            }
+            i += 1;
+            const cap_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return RespValue{ .error_string = "ERR invalid capacity value" },
+            };
+            capacity_override = std.fmt.parseInt(u64, cap_str, 10) catch {
+                return RespValue{ .error_string = "ERR capacity must be a valid integer" };
+            };
+            if (capacity_override.? == 0) {
+                return RespValue{ .error_string = "ERR capacity must be greater than 0" };
+            }
+        } else if (std.mem.eql(u8, upper, "NOCREATE")) {
+            nocreate = true;
+        } else if (std.mem.eql(u8, upper, "ITEMS")) {
+            items_start_idx = i + 1;
+            break;
+        } else {
+            return RespValue{ .error_string = "ERR unknown option" };
+        }
+
+        i += 1;
+    }
+
+    // Validate ITEMS keyword was found
+    if (items_start_idx == null) {
+        return RespValue{ .error_string = "ERR ITEMS keyword required" };
+    }
+
+    const items_idx = items_start_idx.?;
+    if (items_idx >= args.len) {
+        return RespValue{ .error_string = "ERR ITEMS requires at least one item" };
+    }
+
+    // Allocate result array
+    const num_items = args.len - items_idx;
+    const results = try allocator.alloc(RespValue, num_items);
+    errdefer allocator.free(results);
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a Cuckoo filter
+        switch (entry.value_ptr.*) {
+            .cuckoo => |*cf| {
+                // Add each item and collect results
+                for (args[items_idx..], 0..) |arg, idx| {
+                    const item = switch (arg) {
+                        .bulk_string => |s| s,
+                        else => {
+                            allocator.free(results);
+                            return RespValue{ .error_string = "ERR invalid item" };
+                        },
+                    };
+                    cf.add(item) catch |err| {
+                        const result: i64 = switch (err) {
+                            cuckoo_mod.CuckooError.FilterFull => -1,
+                            else => -1,
+                        };
+                        results[idx] = RespValue{ .integer = result };
+                        continue;
+                    };
+                    results[idx] = RespValue{ .integer = 1 };
+                }
+            },
+            else => {
+                allocator.free(results);
+                return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+            },
+        }
+    } else {
+        // Key doesn't exist
+        if (nocreate) {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR not found" };
+        }
+
+        // Create filter with specified parameters
+        var cf = CuckooFilterValue.init(allocator, capacity_override orelse 1000, 2, 20, 1) catch {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR failed to create cuckoo filter" };
+        };
+        errdefer cf.deinit();
+
+        const owned_key = allocator.dupe(u8, key) catch {
+            cf.deinit();
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        errdefer allocator.free(owned_key);
+
+        // Add each item and collect results
+        for (args[items_idx..], 0..) |arg, idx| {
+            const item = switch (arg) {
+                .bulk_string => |s| s,
+                else => {
+                    cf.deinit();
+                    allocator.free(owned_key);
+                    allocator.free(results);
+                    return RespValue{ .error_string = "ERR invalid item" };
+                },
+            };
+            cf.add(item) catch |err| {
+                const result: i64 = switch (err) {
+                    cuckoo_mod.CuckooError.FilterFull => -1,
+                    else => -1,
+                };
+                results[idx] = RespValue{ .integer = result };
+                continue;
+            };
+            results[idx] = RespValue{ .integer = 1 };
+        }
+
+        try storage.data.put(owned_key, storage_mod.Value{ .cuckoo = cf });
+    }
+
+    return RespValue{ .array = results };
+}
+
+/// CF.INSERTNX key [CAPACITY capacity] [NOCREATE] ITEMS item [item ...]
+/// Batch insert items only if they don't already exist
+/// Returns array of 1 (added)/0 (existed)/-1 (failed) per item
+pub fn cmdCfInsertnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.insertnx' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse options
+    var capacity_override: ?u64 = null;
+    var nocreate = false;
+    var items_start_idx: ?usize = null;
+
+    var i: usize = 1;
+    while (i < args.len) {
+        const arg_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid argument" },
+        };
+
+        // Case-insensitive keyword matching
+        const upper = std.ascii.allocUpperString(allocator, arg_str) catch {
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        defer allocator.free(upper);
+
+        if (std.mem.eql(u8, upper, "CAPACITY")) {
+            if (i + 1 >= args.len) {
+                return RespValue{ .error_string = "ERR CAPACITY requires an argument" };
+            }
+            i += 1;
+            const cap_str = switch (args[i]) {
+                .bulk_string => |s| s,
+                else => return RespValue{ .error_string = "ERR invalid capacity value" },
+            };
+            capacity_override = std.fmt.parseInt(u64, cap_str, 10) catch {
+                return RespValue{ .error_string = "ERR capacity must be a valid integer" };
+            };
+            if (capacity_override.? == 0) {
+                return RespValue{ .error_string = "ERR capacity must be greater than 0" };
+            }
+        } else if (std.mem.eql(u8, upper, "NOCREATE")) {
+            nocreate = true;
+        } else if (std.mem.eql(u8, upper, "ITEMS")) {
+            items_start_idx = i + 1;
+            break;
+        } else {
+            return RespValue{ .error_string = "ERR unknown option" };
+        }
+
+        i += 1;
+    }
+
+    // Validate ITEMS keyword was found
+    if (items_start_idx == null) {
+        return RespValue{ .error_string = "ERR ITEMS keyword required" };
+    }
+
+    const items_idx = items_start_idx.?;
+    if (items_idx >= args.len) {
+        return RespValue{ .error_string = "ERR ITEMS requires at least one item" };
+    }
+
+    // Allocate result array
+    const num_items = args.len - items_idx;
+    const results = try allocator.alloc(RespValue, num_items);
+    errdefer allocator.free(results);
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a Cuckoo filter
+        switch (entry.value_ptr.*) {
+            .cuckoo => |*cf| {
+                // Add each item and collect results
+                for (args[items_idx..], 0..) |arg, idx| {
+                    const item = switch (arg) {
+                        .bulk_string => |s| s,
+                        else => {
+                            allocator.free(results);
+                            return RespValue{ .error_string = "ERR invalid item" };
+                        },
+                    };
+                    const was_added = cf.addnx(item) catch |err| {
+                        const result: i64 = switch (err) {
+                            cuckoo_mod.CuckooError.FilterFull => -1,
+                            else => -1,
+                        };
+                        results[idx] = RespValue{ .integer = result };
+                        continue;
+                    };
+                    results[idx] = RespValue{ .integer = if (was_added) @as(i64, 1) else @as(i64, 0) };
+                }
+            },
+            else => {
+                allocator.free(results);
+                return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+            },
+        }
+    } else {
+        // Key doesn't exist
+        if (nocreate) {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR not found" };
+        }
+
+        // Create filter with specified parameters
+        var cf = CuckooFilterValue.init(allocator, capacity_override orelse 1000, 2, 20, 1) catch {
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR failed to create cuckoo filter" };
+        };
+        errdefer cf.deinit();
+
+        const owned_key = allocator.dupe(u8, key) catch {
+            cf.deinit();
+            allocator.free(results);
+            return RespValue{ .error_string = "ERR out of memory" };
+        };
+        errdefer allocator.free(owned_key);
+
+        // Add each item and collect results
+        for (args[items_idx..], 0..) |arg, idx| {
+            const item = switch (arg) {
+                .bulk_string => |s| s,
+                else => {
+                    cf.deinit();
+                    allocator.free(owned_key);
+                    allocator.free(results);
+                    return RespValue{ .error_string = "ERR invalid item" };
+                },
+            };
+            const was_added = cf.addnx(item) catch |err| {
+                const result: i64 = switch (err) {
+                    cuckoo_mod.CuckooError.FilterFull => -1,
+                    else => -1,
+                };
+                results[idx] = RespValue{ .integer = result };
+                continue;
+            };
+            results[idx] = RespValue{ .integer = if (was_added) @as(i64, 1) else @as(i64, 0) };
+        }
+
+        try storage.data.put(owned_key, storage_mod.Value{ .cuckoo = cf });
+    }
+
+    return RespValue{ .array = results };
+}
+
+/// CF.MEXISTS key item [item ...]
+/// Batch check if items exist in the Cuckoo filter
+/// Returns array of 1/0 indicating existence per item
+pub fn cmdCfMexists(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.mexists' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Remaining arguments are items
+    const items = args[1..];
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Pre-allocate result array
+    var results = try std.ArrayList(RespValue).initCapacity(allocator, items.len);
+    errdefer results.deinit(allocator);
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a Cuckoo filter
+        switch (entry.value_ptr.*) {
+            .cuckoo => |*cf| {
+                // Check each item
+                for (items) |item_val| {
+                    const item = switch (item_val) {
+                        .bulk_string => |s| s,
+                        else => {
+                            try results.append(allocator, RespValue{ .integer = 0 });
+                            continue;
+                        },
+                    };
+
+                    const exists = cf.exists(item);
+                    try results.append(allocator, RespValue{ .integer = if (exists) @as(i64, 1) else @as(i64, 0) });
+                }
+
+                const owned_results = try results.toOwnedSlice(allocator);
+                return RespValue{ .array = owned_results };
+            },
+            else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+        }
+    } else {
+        // Key doesn't exist - all items return 0
+        for (items) |_| {
+            try results.append(allocator, RespValue{ .integer = 0 });
+        }
+
+        const owned_results = try results.toOwnedSlice(allocator);
+        return RespValue{ .array = owned_results };
+    }
+}
+
+// Additional unit tests for new commands
+
+test "CF.INSERT basic batch insert" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const items_arr = [_]RespValue{
+        RespValue{ .bulk_string = "item1" },
+        RespValue{ .bulk_string = "item2" },
+        RespValue{ .bulk_string = "item3" },
+    };
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "myfilter" },
+        RespValue{ .bulk_string = "ITEMS" },
+        items_arr[0],
+        items_arr[1],
+        items_arr[2],
+    };
+
+    const result = try cmdCfInsert(allocator, &storage, &args);
+
+    switch (result) {
+        .array => |arr| {
+            try std.testing.expectEqual(@as(usize, 3), arr.len);
+            for (arr) |val| {
+                switch (val) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+                    else => try std.testing.expect(false),
+                }
+            }
+            allocator.free(arr);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.INSERT with CAPACITY option" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const items_arr = [_]RespValue{
+        RespValue{ .bulk_string = "item1" },
+    };
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "myfilter" },
+        RespValue{ .bulk_string = "CAPACITY" },
+        RespValue{ .bulk_string = "500" },
+        RespValue{ .bulk_string = "ITEMS" },
+        items_arr[0],
+    };
+
+    const result = try cmdCfInsert(allocator, &storage, &args);
+
+    switch (result) {
+        .array => |arr| {
+            try std.testing.expectEqual(@as(usize, 1), arr.len);
+            allocator.free(arr);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.INSERT returns error with NOCREATE on nonexistent key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const items_arr = [_]RespValue{
+        RespValue{ .bulk_string = "item1" },
+    };
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "NOCREATE" },
+        RespValue{ .bulk_string = "ITEMS" },
+        items_arr[0],
+    };
+
+    const result = try cmdCfInsert(allocator, &storage, &args);
+
+    switch (result) {
+        .error_string => |s| try std.testing.expectEqualStrings("ERR not found", s),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.INSERT on existing filter adds to it" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "myfilter";
+
+    // First insert
+    {
+        const items_arr = [_]RespValue{
+            RespValue{ .bulk_string = "item1" },
+        };
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = key },
+            RespValue{ .bulk_string = "ITEMS" },
+            items_arr[0],
+        };
+        _ = try cmdCfInsert(allocator, &storage, &args);
+    }
+
+    // Second insert - should succeed because we're adding to existing filter
+    {
+        const items_arr = [_]RespValue{
+            RespValue{ .bulk_string = "item2" },
+        };
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = key },
+            RespValue{ .bulk_string = "ITEMS" },
+            items_arr[0],
+        };
+        const result = try cmdCfInsert(allocator, &storage, &args);
+
+        switch (result) {
+            .array => |arr| {
+                try std.testing.expectEqual(@as(usize, 1), arr.len);
+                allocator.free(arr);
+            },
+            else => try std.testing.expect(false),
+        }
+    }
+}
+
+test "CF.INSERTNX returns 1/0 array correctly" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "myfilter";
+
+    // First INSERTNX with two items
+    {
+        const items_arr = [_]RespValue{
+            RespValue{ .bulk_string = "item1" },
+            RespValue{ .bulk_string = "item2" },
+        };
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = key },
+            RespValue{ .bulk_string = "ITEMS" },
+            items_arr[0],
+            items_arr[1],
+        };
+        _ = try cmdCfInsertnx(allocator, &storage, &args);
+    }
+
+    // Second INSERTNX with one existing and one new item
+    {
+        const items_arr = [_]RespValue{
+            RespValue{ .bulk_string = "item1" },
+            RespValue{ .bulk_string = "item3" },
+        };
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = key },
+            RespValue{ .bulk_string = "ITEMS" },
+            items_arr[0],
+            items_arr[1],
+        };
+        const result = try cmdCfInsertnx(allocator, &storage, &args);
+
+        switch (result) {
+            .array => |arr| {
+                try std.testing.expectEqual(@as(usize, 2), arr.len);
+                // First should be 0 (already exists)
+                switch (arr[0]) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+                    else => try std.testing.expect(false),
+                }
+                // Second should be 1 (newly added)
+                switch (arr[1]) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+                    else => try std.testing.expect(false),
+                }
+                allocator.free(arr);
+            },
+            else => try std.testing.expect(false),
+        }
+    }
+}
+
+test "CF.INSERTNX NOCREATE error on nonexistent key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const items_arr = [_]RespValue{
+        RespValue{ .bulk_string = "item1" },
+    };
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "NOCREATE" },
+        RespValue{ .bulk_string = "ITEMS" },
+        items_arr[0],
+    };
+
+    const result = try cmdCfInsertnx(allocator, &storage, &args);
+
+    switch (result) {
+        .error_string => |s| try std.testing.expectEqualStrings("ERR not found", s),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.MEXISTS batch check" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "myfilter";
+
+    // Add some items first
+    {
+        const items_arr = [_]RespValue{
+            RespValue{ .bulk_string = "item1" },
+            RespValue{ .bulk_string = "item2" },
+        };
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = key },
+            RespValue{ .bulk_string = "ITEMS" },
+            items_arr[0],
+            items_arr[1],
+        };
+        _ = try cmdCfInsert(allocator, &storage, &args);
+    }
+
+    // Check multiple items
+    {
+        const items_arr = [_]RespValue{
+            RespValue{ .bulk_string = "item1" },
+            RespValue{ .bulk_string = "nonexistent" },
+            RespValue{ .bulk_string = "item2" },
+        };
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = key },
+            items_arr[0],
+            items_arr[1],
+            items_arr[2],
+        };
+
+        const result = try cmdCfMexists(allocator, &storage, &args);
+
+        switch (result) {
+            .array => |arr| {
+                try std.testing.expectEqual(@as(usize, 3), arr.len);
+
+                // First should exist
+                switch (arr[0]) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+                    else => try std.testing.expect(false),
+                }
+
+                // Second should not exist
+                switch (arr[1]) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+                    else => try std.testing.expect(false),
+                }
+
+                // Third should exist
+                switch (arr[2]) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+                    else => try std.testing.expect(false),
+                }
+
+                allocator.free(arr);
+            },
+            else => try std.testing.expect(false),
+        }
+    }
+}
+
+test "CF.MEXISTS on nonexistent key returns all zeros" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const items_arr = [_]RespValue{
+        RespValue{ .bulk_string = "item1" },
+        RespValue{ .bulk_string = "item2" },
+    };
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "nonexistent" },
+        items_arr[0],
+        items_arr[1],
+    };
+
+    const result = try cmdCfMexists(allocator, &storage, &args);
+
+    switch (result) {
+        .array => |arr| {
+            try std.testing.expectEqual(@as(usize, 2), arr.len);
+            for (arr) |val| {
+                switch (val) {
+                    .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+                    else => try std.testing.expect(false),
+                }
+            }
+            allocator.free(arr);
+        },
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.MEXISTS WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "mystring";
+    const owned_key = try allocator.dupe(u8, key);
+    try storage.data.put(owned_key, storage_mod.Value{ .string = "value" });
+
+    const items_arr = [_]RespValue{
+        RespValue{ .bulk_string = "item1" },
+    };
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        items_arr[0],
+    };
+
+    const result = try cmdCfMexists(allocator, &storage, &args);
+
+    switch (result) {
+        .error_string => |s| try std.testing.expect(std.mem.startsWith(u8, s, "WRONGTYPE")),
+        else => try std.testing.expect(false),
+    }
+}

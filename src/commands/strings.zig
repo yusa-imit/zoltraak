@@ -583,7 +583,7 @@ pub fn executeCommand(
                 "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
                 "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
-                "CF.ADD",     "CF.RESERVE", "CF.ADDNX",
+                "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -655,7 +655,7 @@ pub fn executeCommand(
             "XACK",       "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
             "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.LOADCHUNK",
-            "CF.ADD",     "CF.RESERVE", "CF.ADDNX",
+            "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -2295,6 +2295,21 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CF.EXISTS")) {
                 const result = try cuckoo_cmds.cmdCfExists(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.INSERT")) {
+                const result = try cuckoo_cmds.cmdCfInsert(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.INSERTNX")) {
+                const result = try cuckoo_cmds.cmdCfInsertnx(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.MEXISTS")) {
+                const result = try cuckoo_cmds.cmdCfMexists(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

@@ -714,6 +714,17 @@ pub fn build(b: *std.Build) void {
     const run_bf_insert_tests = b.addRunArtifact(bf_insert_tests);
     integration_test_step.dependOn(&run_bf_insert_tests.step);
 
+    // Cuckoo Filter batch commands integration tests (Iteration 216)
+    const cuckoo_batch_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_cuckoo_batch.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_cuckoo_batch_tests = b.addRunArtifact(cuckoo_batch_tests);
+    integration_test_step.dependOn(&run_cuckoo_batch_tests.step);
+
     // Function DUMP/RESTORE integration tests
     const function_dump_restore_tests = b.addTest(.{
         .root_module = b.createModule(.{
