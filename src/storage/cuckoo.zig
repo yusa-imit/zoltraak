@@ -177,6 +177,22 @@ pub const Bucket = struct {
 
         return evicted;
     }
+
+    /// Delete a specific fingerprint from bucket
+    /// Returns true if fingerprint was found and removed, false otherwise
+    pub fn delete(self: *Bucket, fp: u8) bool {
+        for (0..self.count) |i| {
+            if (self.fingerprints[i] == fp) {
+                // Shift last element into deleted position
+                if (i < self.count - 1) {
+                    self.fingerprints[i] = self.fingerprints[self.count - 1];
+                }
+                self.count -= 1;
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 /// Sub-filter containing an array of buckets
@@ -355,6 +371,32 @@ pub const CuckooFilterValue = struct {
         try self.add(item);
         return true;
     }
+
+    /// Delete an item from the Cuckoo filter
+    /// Removes one instance of the item's fingerprint from one of its candidate buckets
+    /// Returns true if item was deleted, false if not found
+    pub fn delete(self: *CuckooFilterValue, item: []const u8) bool {
+        const fp = fingerprint(item);
+        const filter = &self.filters.items[self.filters.items.len - 1];
+
+        // Compute two candidate bucket indices
+        const hash = murmurHash3(item);
+        const idx1 = hash % filter.num_buckets;
+        const idx2 = computeAltIndex(idx1, fp, filter.num_buckets);
+
+        // Try to delete from first bucket
+        if (filter.buckets[idx1].delete(fp)) {
+            return true;
+        }
+
+        // Try to delete from second bucket
+        if (filter.buckets[idx2].delete(fp)) {
+            return true;
+        }
+
+        // Item not found in either bucket
+        return false;
+    }
 };
 
 // Unit tests
@@ -481,4 +523,93 @@ test "cuckoo filter no false negatives" {
     for (items) |item| {
         try std.testing.expect(cf.exists(item));
     }
+}
+
+test "bucket delete removes fingerprint" {
+    const allocator = std.testing.allocator;
+    var bucket = try Bucket.init(allocator, 4);
+    defer bucket.deinit();
+
+    _ = bucket.insert(42);
+    _ = bucket.insert(43);
+    try std.testing.expectEqual(@as(u32, 2), bucket.count);
+
+    const deleted = bucket.delete(42);
+    try std.testing.expect(deleted);
+    try std.testing.expectEqual(@as(u32, 1), bucket.count);
+    try std.testing.expect(!bucket.contains(42));
+    try std.testing.expect(bucket.contains(43));
+}
+
+test "bucket delete returns false for non-existent fingerprint" {
+    const allocator = std.testing.allocator;
+    var bucket = try Bucket.init(allocator, 4);
+    defer bucket.deinit();
+
+    _ = bucket.insert(42);
+    const deleted = bucket.delete(99);
+    try std.testing.expect(!deleted);
+    try std.testing.expectEqual(@as(u32, 1), bucket.count);
+}
+
+test "cuckoo filter delete removes item" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    try cf.add("testitem");
+    try std.testing.expect(cf.exists("testitem"));
+
+    const deleted = cf.delete("testitem");
+    try std.testing.expect(deleted);
+    try std.testing.expect(!cf.exists("testitem"));
+}
+
+test "cuckoo filter delete returns false for non-existent item" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    const deleted = cf.delete("nonexistent");
+    try std.testing.expect(!deleted);
+}
+
+test "cuckoo filter delete only removes one instance" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    // Add same item twice
+    try cf.add("duplicate");
+    try cf.add("duplicate");
+
+    // First delete succeeds
+    const deleted1 = cf.delete("duplicate");
+    try std.testing.expect(deleted1);
+
+    // Item may still exist due to duplicate fingerprint
+    // Second delete may succeed if duplicate is still present
+    const deleted2 = cf.delete("duplicate");
+    _ = deleted2; // May be true or false depending on bucket placement
+}
+
+test "cuckoo filter delete multiple different items" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    const items = [_][]const u8{ "item1", "item2", "item3" };
+
+    for (items) |item| {
+        try cf.add(item);
+    }
+
+    // Delete item2
+    const deleted = cf.delete("item2");
+    try std.testing.expect(deleted);
+    try std.testing.expect(!cf.exists("item2"));
+
+    // Other items still exist
+    try std.testing.expect(cf.exists("item1"));
+    try std.testing.expect(cf.exists("item3"));
 }

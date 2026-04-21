@@ -942,3 +942,302 @@ test "CF.MEXISTS - items added via CF.INSERTNX are found" {
         }
     }
 }
+
+// CF.DEL Tests (10 tests)
+
+test "CF.DEL - delete existing item returns 1" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Add item first
+    const add_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("testitem"),
+    };
+    _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+
+    // Delete it
+    const del_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("testitem"),
+    };
+    const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - delete non-existent item returns 0" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Create filter with one item
+    const add_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("item1"),
+    };
+    _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+
+    // Try to delete non-existent item
+    const del_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("nonexistent"),
+    };
+    const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - item no longer exists after deletion" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Add item
+    const add_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("testitem"),
+    };
+    _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+
+    // Verify exists
+    const exists_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("testitem"),
+    };
+    const exists_before = try cuckoo_cmd.cmdCfExists(std.testing.allocator, &storage, &exists_args);
+    switch (exists_before) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+
+    // Delete
+    const del_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("testitem"),
+    };
+    _ = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+
+    // Verify no longer exists
+    const exists_after = try cuckoo_cmd.cmdCfExists(std.testing.allocator, &storage, &exists_args);
+    switch (exists_after) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - delete from non-existent key returns 0" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        createBulkString("nonexistent"),
+        createBulkString("item"),
+    };
+    const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - WRONGTYPE error for non-cuckoo key" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Add a string value
+    const key = "stringkey";
+    const owned_key = try std.testing.allocator.dupe(u8, key);
+    const str_value = try std.testing.allocator.dupe(u8, "value");
+    try storage.data.put(owned_key, storage_mod.Value{ .string = str_value });
+
+    const args = [_]RespValue{
+        createBulkString(key),
+        createBulkString("item"),
+    };
+    const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &args);
+
+    switch (result) {
+        .error_string => |s| try std.testing.expect(std.mem.startsWith(u8, s, "WRONGTYPE")),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - wrong number of arguments error" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        createBulkString("key"),
+    };
+    const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &args);
+
+    switch (result) {
+        .error_string => |s| try std.testing.expect(std.mem.startsWith(u8, s, "ERR wrong number")),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - delete multiple different items" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Add three items
+    const items = [_][]const u8{ "item1", "item2", "item3" };
+    for (items) |item| {
+        const add_args = [_]RespValue{
+            createBulkString("myfilter"),
+            createBulkString(item),
+        };
+        _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+    }
+
+    // Delete item2
+    const del_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("item2"),
+    };
+    const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+
+    // Verify item2 no longer exists
+    const exists_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("item2"),
+    };
+    const exists_result = try cuckoo_cmd.cmdCfExists(std.testing.allocator, &storage, &exists_args);
+    switch (exists_result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+        else => try std.testing.expect(false),
+    }
+
+    // Verify item1 and item3 still exist
+    const check_items = [_][]const u8{ "item1", "item3" };
+    for (check_items) |item| {
+        const check_args = [_]RespValue{
+            createBulkString("myfilter"),
+            createBulkString(item),
+        };
+        const check_result = try cuckoo_cmd.cmdCfExists(std.testing.allocator, &storage, &check_args);
+        switch (check_result) {
+            .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+            else => try std.testing.expect(false),
+        }
+    }
+}
+
+test "CF.DEL - delete all items from filter" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Add three items
+    const items = [_][]const u8{ "item1", "item2", "item3" };
+    for (items) |item| {
+        const add_args = [_]RespValue{
+            createBulkString("myfilter"),
+            createBulkString(item),
+        };
+        _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+    }
+
+    // Delete all items
+    for (items) |item| {
+        const del_args = [_]RespValue{
+            createBulkString("myfilter"),
+            createBulkString(item),
+        };
+        const result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+        switch (result) {
+            .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+            else => try std.testing.expect(false),
+        }
+    }
+
+    // Verify all items no longer exist
+    for (items) |item| {
+        const exists_args = [_]RespValue{
+            createBulkString("myfilter"),
+            createBulkString(item),
+        };
+        const exists_result = try cuckoo_cmd.cmdCfExists(std.testing.allocator, &storage, &exists_args);
+        switch (exists_result) {
+            .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+            else => try std.testing.expect(false),
+        }
+    }
+}
+
+test "CF.DEL - add delete add cycle" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    const key = "myfilter";
+    const item = "testitem";
+
+    // Add item
+    const add_args = [_]RespValue{
+        createBulkString(key),
+        createBulkString(item),
+    };
+    _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+
+    // Delete item
+    const del_args = [_]RespValue{
+        createBulkString(key),
+        createBulkString(item),
+    };
+    _ = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+
+    // Add same item again
+    _ = try cuckoo_cmd.cmdCfAdd(std.testing.allocator, &storage, &add_args);
+
+    // Verify exists
+    const exists_args = [_]RespValue{
+        createBulkString(key),
+        createBulkString(item),
+    };
+    const exists_result = try cuckoo_cmd.cmdCfExists(std.testing.allocator, &storage, &exists_args);
+    switch (exists_result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.DEL - delete item that was added with CF.INSERT" {
+    var storage = try Storage.init(std.testing.allocator);
+    defer storage.deinit();
+
+    // Add item using CF.INSERT
+    const insert_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("ITEMS"),
+        createBulkString("testitem"),
+    };
+    const insert_result = try cuckoo_cmd.cmdCfInsert(std.testing.allocator, &storage, &insert_args);
+    switch (insert_result) {
+        .array => |arr| {
+            try std.testing.expectEqual(@as(usize, 1), arr.len);
+            std.testing.allocator.free(arr);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    // Delete using CF.DEL
+    const del_args = [_]RespValue{
+        createBulkString("myfilter"),
+        createBulkString("testitem"),
+    };
+    const del_result = try cuckoo_cmd.cmdCfDel(std.testing.allocator, &storage, &del_args);
+    switch (del_result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+}
