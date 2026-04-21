@@ -762,12 +762,28 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
     // Note: We need to track load context per key - using a simple approach here
 
     // Get or create filter
-    const value = storage.data.get(key);
     var bf: *BloomFilterValue = undefined;
     var context: *BloomFilterValue.LoadContext = undefined;
     var is_new = false;
 
-    if (value == null) {
+    if (storage.data.getPtr(key)) |entry| {
+        // Get existing filter
+        bf = switch (entry.*) {
+            .bloom => |*bf_ptr| bf_ptr,
+            else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+        };
+
+        // Create context for existing filter
+        const ctx = try allocator.create(BloomFilterValue.LoadContext);
+        errdefer allocator.destroy(ctx);
+        const buf = try std.ArrayList(u8).initCapacity(allocator, 8192);
+        ctx.* = .{
+            .allocator = allocator,
+            .buffer = buf,
+            .expected_iterator = iterator,
+        };
+        context = ctx;
+    } else {
         // Create new filter
         var new_bf = try BloomFilterValue.init(allocator, 0.01, 10, 2, false);
         errdefer new_bf.deinit();
@@ -782,30 +798,17 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         // Create context
         const ctx = try allocator.create(BloomFilterValue.LoadContext);
         errdefer allocator.destroy(ctx);
+        const buf = try std.ArrayList(u8).initCapacity(allocator, 8192);
         ctx.* = .{
-            .buffer = std.ArrayList(u8).init(allocator),
+            .allocator = allocator,
+            .buffer = buf,
             .expected_iterator = 0,
         };
-        
+
         // TODO: Store context in a map keyed by key for multi-chunk loads
         // For now, simplified implementation assumes sequential single-key loads
         context = ctx;
         is_new = true;
-    } else {
-        // Get existing filter
-        bf = switch (value.?) {
-            .bloom => |*bf_ptr| bf_ptr,
-            else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
-        };
-
-        // Create context (simplified - should be persisted)
-        const ctx = try allocator.create(BloomFilterValue.LoadContext);
-        errdefer allocator.destroy(ctx);
-        ctx.* = .{
-            .buffer = std.ArrayList(u8).init(allocator),
-            .expected_iterator = iterator,
-        };
-        context = ctx;
     }
 
     defer {

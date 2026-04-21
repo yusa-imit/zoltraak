@@ -12,6 +12,7 @@ const json_value_mod = @import("json_value.zig");
 const search_mod = @import("search.zig");
 const timeseries_mod = @import("timeseries.zig");
 const bloom_mod = @import("bloom.zig");
+const cuckoo_mod = @import("cuckoo.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -27,6 +28,7 @@ pub const FunctionStore = functions_mod.FunctionStore;
 pub const SearchStore = search_mod.SearchStore;
 pub const TimeSeriesValue = timeseries_mod.TimeSeriesValue;
 pub const BloomFilterValue = bloom_mod.BloomFilterValue;
+pub const CuckooFilterValue = cuckoo_mod.CuckooFilterValue;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -47,6 +49,7 @@ pub const ValueType = enum {
     json,
     timeseries,
     bloom,
+    cuckoo,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -62,6 +65,7 @@ pub const Value = union(ValueType) {
     json: JsonValue,
     timeseries: TimeSeriesValue,
     bloom: BloomFilterValue,
+    cuckoo: CuckooFilterValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -398,6 +402,7 @@ pub const Value = union(ValueType) {
             .json => |*j| j.deinit(allocator),
             .timeseries => |*ts| ts.deinit(),
             .bloom => |*b| b.deinit(),
+            .cuckoo => |*c| c.deinit(),
         }
     }
 
@@ -414,6 +419,7 @@ pub const Value = union(ValueType) {
             .json => |j| j.expires_at,
             .timeseries => |ts| ts.expires_at,
             .bloom => |b| b.expires_at,
+            .cuckoo => |c| c.expires_at,
         };
     }
 
@@ -761,6 +767,7 @@ pub const Storage = struct {
                             .json => |j| j.expires_at,
                             .timeseries => |ts| ts.expires_at,
                             .bloom => |b| b.expires_at,
+                            .cuckoo => |c| c.expires_at,
                         };
                     }
                 }
@@ -4096,6 +4103,7 @@ pub const Storage = struct {
             .json => |*v| v.expires_at = expires_at,
             .timeseries => |*v| v.expires_at = expires_at,
             .bloom => |*v| v.expires_at = expires_at,
+            .cuckoo => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -4448,6 +4456,7 @@ pub const Storage = struct {
             .json => 0x0F, // JSON type
             .timeseries => 0xFD, // Time Series type
             .bloom => 0xFC, // Bloom Filter type
+            .cuckoo => 0xFB, // Cuckoo Filter type
         };
         try w.writeByte(type_byte);
 
@@ -4518,6 +4527,10 @@ pub const Storage = struct {
             },
             .bloom => {
                 // Bloom filter not yet implemented in dump
+                try w.writeInt(u32, 0, .little);
+            },
+            .cuckoo => {
+                // Cuckoo filter not yet implemented in dump
                 try w.writeInt(u32, 0, .little);
             },
         }
@@ -4937,6 +4950,11 @@ pub const Storage = struct {
                 // Bloom filter deep copy not yet implemented
                 // For now, return the original (stub for COPY command)
                 break :blk Value{ .bloom = b };
+            },
+            .cuckoo => |c| blk: {
+                // Cuckoo filter deep copy not yet implemented
+                // For now, return the original (stub for COPY command)
+                break :blk Value{ .cuckoo = c };
             },
         };
     }

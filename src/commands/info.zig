@@ -359,6 +359,15 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
             }
             break :blk total;
         },
+        .cuckoo => |cf| blk: {
+            var total: usize = 0;
+            for (cf.filters.items) |filter| {
+                for (filter.buckets) |bucket| {
+                    total += bucket.fingerprints.len;
+                }
+            }
+            break :blk total;
+        },
     };
 }
 

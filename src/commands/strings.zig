@@ -38,6 +38,7 @@ const search_cmds = @import("search.zig");
 const search_agg_cmds = @import("search_aggregate.zig");
 const timeseries_cmds = @import("timeseries.zig");
 const bloom_cmds = @import("bloom.zig");
+const cuckoo_cmds = @import("cuckoo.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -582,6 +583,7 @@ pub fn executeCommand(
                 "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
                 "GEOADD",     "PFADD",      "PFMERGE",
                 "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
+                "CF.ADD",     "CF.RESERVE", "CF.ADDNX",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -653,6 +655,7 @@ pub fn executeCommand(
             "XACK",       "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
             "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.LOADCHUNK",
+            "CF.ADD",     "CF.RESERVE", "CF.ADDNX",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -2256,6 +2259,42 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "BF.LOADCHUNK")) {
                 const result = try bloom_cmds.cmdBfLoadchunk(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_upper});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+
+        // Cuckoo Filter (CF.*) commands
+        else if (std.mem.startsWith(u8, cmd_upper, "CF.")) {
+            // Extract command args (skip command name)
+            const args = try allocator.alloc(RespValue, array.len - 1);
+            defer allocator.free(args);
+            @memcpy(args, array[1..]);
+
+            if (std.mem.eql(u8, cmd_upper, "CF.RESERVE")) {
+                const result = try cuckoo_cmds.cmdCfReserve(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.ADD")) {
+                const result = try cuckoo_cmds.cmdCfAdd(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.ADDNX")) {
+                const result = try cuckoo_cmds.cmdCfAddnx(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.EXISTS")) {
+                const result = try cuckoo_cmds.cmdCfExists(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

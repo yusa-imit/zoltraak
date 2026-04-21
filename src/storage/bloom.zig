@@ -412,11 +412,12 @@ pub const BloomFilterValue = struct {
 
     /// Load context for chunked deserialization
     pub const LoadContext = struct {
+        allocator: std.mem.Allocator,
         buffer: std.ArrayList(u8),
         expected_iterator: u64,
 
         pub fn deinit(self: *LoadContext) void {
-            self.buffer.deinit(self.buffer.allocator);
+            self.buffer.deinit(self.allocator);
         }
     };
 

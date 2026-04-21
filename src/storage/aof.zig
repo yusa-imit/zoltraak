@@ -275,6 +275,10 @@ pub const Aof = struct {
                     // Bloom filter values handled by BF.* commands in AOF replay
                     // The commands will be replayed from AOF log
                 },
+                .cuckoo => {
+                    // Cuckoo filter values handled by CF.* commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 

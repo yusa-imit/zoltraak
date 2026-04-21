@@ -101,6 +101,7 @@ pub const Persistence = struct {
                     .json => 0x0F, // JSON type
                     .timeseries => 0xFD, // Time Series type
                     .bloom => 0xFC, // Bloom Filter type
+                    .cuckoo => 0xFB, // Cuckoo Filter type
                 };
                 try w.writeByte(type_byte);
 
@@ -168,6 +169,10 @@ pub const Persistence = struct {
                     },
                     .bloom => {
                         // Bloom filter not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .cuckoo => {
+                        // Cuckoo filter not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
@@ -595,6 +600,7 @@ pub const Persistence = struct {
                     .json => 0x0F, // JSON type
                     .timeseries => 0xFD, // Time Series type
                     .bloom => 0xFC, // Bloom Filter type
+                    .cuckoo => 0xFB, // Cuckoo Filter type
                 };
                 try w.writeByte(type_byte);
 
@@ -654,6 +660,10 @@ pub const Persistence = struct {
                     },
                     .bloom => {
                         // Bloom filter not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .cuckoo => {
+                        // Cuckoo filter not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }

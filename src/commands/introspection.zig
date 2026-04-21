@@ -100,6 +100,15 @@ pub fn cmdMemoryUsage(
                 }
                 break :blk2 total;
             },
+            .cuckoo => |cf| blk2: {
+                var total: usize = 256; // Cuckoo struct overhead
+                for (cf.filters.items) |filter| {
+                    for (filter.buckets) |bucket| {
+                        total += bucket.fingerprints.len;
+                    }
+                }
+                break :blk2 total;
+            },
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };
