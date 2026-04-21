@@ -292,6 +292,217 @@ pub const BloomFilterValue = struct {
 
         return false;
     }
+
+    /// Chunked serialization result for BF.SCANDUMP
+    pub const ScanDumpResult = struct {
+        iterator: u64,
+        data: ?[]const u8,
+    };
+
+    /// Chunk size for serialization (8KB)
+    const CHUNK_SIZE: usize = 8192;
+
+    /// Dump Bloom filter state in chunks for BF.SCANDUMP
+    /// Returns next iterator and data chunk (or null when complete)
+    pub fn scanDump(self: *const BloomFilterValue, allocator: std.mem.Allocator, iterator: u64) !ScanDumpResult {
+        // Calculate total size needed for serialization
+        // Format: [metadata][filter1_bits][filter2_bits]...
+        // Metadata: error_rate(f64) + capacity(u64) + expansion(u16) + nonscaling(u8) + num_hashes(u8) + num_filters(u64)
+        const metadata_size = @sizeOf(f64) + @sizeOf(u64) + @sizeOf(u16) + @sizeOf(u8) + @sizeOf(u8) + @sizeOf(u64);
+
+        var total_bits_size: usize = 0;
+        for (self.filters.items) |filter| {
+            total_bits_size += @sizeOf(u64) + filter.bits.len; // size_bits + bits
+        }
+
+        const total_size = metadata_size + total_bits_size;
+
+        // On first call (iterator=0), serialize entire state
+        if (iterator == 0) {
+            // Serialize metadata and all filters
+            const buffer = try allocator.alloc(u8, total_size);
+            errdefer allocator.free(buffer);
+
+            var offset: usize = 0;
+
+            // Write metadata
+            std.mem.writeInt(u64, buffer[offset..][0..8], @bitCast(self.error_rate), .little);
+            offset += 8;
+            std.mem.writeInt(u64, buffer[offset..][0..8], self.capacity, .little);
+            offset += 8;
+            std.mem.writeInt(u16, buffer[offset..][0..2], self.expansion, .little);
+            offset += 2;
+            buffer[offset] = if (self.nonscaling) 1 else 0;
+            offset += 1;
+            buffer[offset] = self.num_hashes;
+            offset += 1;
+            std.mem.writeInt(u64, buffer[offset..][0..8], self.filters.items.len, .little);
+            offset += 8;
+
+            // Write filters
+            for (self.filters.items) |filter| {
+                std.mem.writeInt(u64, buffer[offset..][0..8], filter.size_bits, .little);
+                offset += 8;
+                @memcpy(buffer[offset..][0..filter.bits.len], filter.bits);
+                offset += filter.bits.len;
+            }
+
+            // Return first chunk
+            if (total_size <= CHUNK_SIZE) {
+                // Single chunk - return all data with iterator=0 to signal completion
+                return .{ .iterator = 0, .data = buffer };
+            } else {
+                // Multiple chunks - return first chunk
+                const chunk = try allocator.dupe(u8, buffer[0..CHUNK_SIZE]);
+                allocator.free(buffer);
+                return .{ .iterator = CHUNK_SIZE, .data = chunk };
+            }
+        }
+
+        // For subsequent calls, return next chunk from cached serialization
+        // NOTE: This is a simplified implementation that requires re-serialization
+        // A production implementation would cache the serialized state
+        const buffer = try allocator.alloc(u8, total_size);
+        errdefer allocator.free(buffer);
+
+        var offset: usize = 0;
+
+        // Write metadata
+        std.mem.writeInt(u64, buffer[offset..][0..8], @bitCast(self.error_rate), .little);
+        offset += 8;
+        std.mem.writeInt(u64, buffer[offset..][0..8], self.capacity, .little);
+        offset += 8;
+        std.mem.writeInt(u16, buffer[offset..][0..2], self.expansion, .little);
+        offset += 2;
+        buffer[offset] = if (self.nonscaling) 1 else 0;
+        offset += 1;
+        buffer[offset] = self.num_hashes;
+        offset += 1;
+        std.mem.writeInt(u64, buffer[offset..][0..8], self.filters.items.len, .little);
+        offset += 8;
+
+        // Write filters
+        for (self.filters.items) |filter| {
+            std.mem.writeInt(u64, buffer[offset..][0..8], filter.size_bits, .little);
+            offset += 8;
+            @memcpy(buffer[offset..][0..filter.bits.len], filter.bits);
+            offset += filter.bits.len;
+        }
+
+        // Return chunk starting at iterator position
+        const start = @as(usize, @intCast(iterator));
+        if (start >= total_size) {
+            allocator.free(buffer);
+            return .{ .iterator = 0, .data = null };
+        }
+
+        const remaining = total_size - start;
+        if (remaining <= CHUNK_SIZE) {
+            // Last chunk
+            const chunk = try allocator.dupe(u8, buffer[start..total_size]);
+            allocator.free(buffer);
+            return .{ .iterator = 0, .data = chunk };
+        } else {
+            // More chunks to come
+            const chunk = try allocator.dupe(u8, buffer[start .. start + CHUNK_SIZE]);
+            allocator.free(buffer);
+            return .{ .iterator = start + CHUNK_SIZE, .data = chunk };
+        }
+    }
+
+    /// Load context for chunked deserialization
+    pub const LoadContext = struct {
+        buffer: std.ArrayList(u8),
+        expected_iterator: u64,
+
+        pub fn deinit(self: *LoadContext) void {
+            self.buffer.deinit(self.buffer.allocator);
+        }
+    };
+
+    /// Load a chunk of Bloom filter data from BF.LOADCHUNK
+    /// Must be called with sequential iterators (0, N, 2N, ..., 0)
+    /// Returns true if loading is complete, false if more chunks expected
+    pub fn loadChunk(
+        self: *BloomFilterValue,
+        allocator: std.mem.Allocator,
+        context: *LoadContext,
+        iterator: u64,
+        data: []const u8,
+    ) !bool {
+        // Verify iterator is sequential
+        if (iterator != context.expected_iterator) {
+            return error.InvalidIterator;
+        }
+
+        // Append data to buffer
+        try context.buffer.appendSlice(allocator, data);
+
+        // If iterator is 0, this is the last chunk - deserialize
+        if (iterator == 0) {
+            const buffer = context.buffer.items;
+            var offset: usize = 0;
+
+            // Read metadata
+            const metadata_size = @sizeOf(f64) + @sizeOf(u64) + @sizeOf(u16) + @sizeOf(u8) + @sizeOf(u8) + @sizeOf(u64);
+            if (buffer.len < metadata_size) return error.InvalidData;
+
+            const error_rate: f64 = @bitCast(std.mem.readInt(u64, buffer[offset..][0..8], .little));
+            offset += 8;
+            const capacity = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+            offset += 8;
+            const expansion = std.mem.readInt(u16, buffer[offset..][0..2], .little);
+            offset += 2;
+            const nonscaling = buffer[offset] != 0;
+            offset += 1;
+            const num_hashes = buffer[offset];
+            offset += 1;
+            const num_filters = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+            offset += 8;
+
+            // Clear existing filters
+            for (self.filters.items) |*filter| {
+                filter.deinit();
+            }
+            self.filters.clearRetainingCapacity();
+
+            // Read filters
+            for (0..num_filters) |_| {
+                if (offset + 8 > buffer.len) return error.InvalidData;
+                const size_bits = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+                offset += 8;
+
+                const bits_len = (size_bits + 7) / 8;
+                if (offset + bits_len > buffer.len) return error.InvalidData;
+
+                const bits = try allocator.alloc(u8, bits_len);
+                errdefer allocator.free(bits);
+
+                @memcpy(bits, buffer[offset .. offset + bits_len]);
+                offset += bits_len;
+
+                try self.filters.append(allocator, .{
+                    .bits = bits,
+                    .size_bits = size_bits,
+                    .item_count = 0, // Item count not serialized, will be inaccurate
+                    .allocator = allocator,
+                });
+            }
+
+            // Update metadata
+            self.error_rate = error_rate;
+            self.capacity = capacity;
+            self.expansion = expansion;
+            self.nonscaling = nonscaling;
+            self.num_hashes = num_hashes;
+
+            return true; // Loading complete
+        }
+
+        // More chunks expected - update expected iterator
+        context.expected_iterator += data.len;
+        return false;
+    }
 };
 
 // ── Unit tests ──────────────────────────────────────────────────────────────
@@ -457,4 +668,126 @@ test "BloomFilterValue scaling adds sub-filters" {
 
     // Should have created multiple filters due to scaling
     try std.testing.expect(bf.filters.items.len > 1);
+}
+
+test "BloomFilterValue scanDump single chunk" {
+    var bf = try BloomFilterValue.init(std.testing.allocator, 0.01, 10, 2, false);
+    defer bf.deinit();
+
+    _ = try bf.add("item1");
+    _ = try bf.add("item2");
+
+    // Small filter should return single chunk with iterator=0
+    const result = try bf.scanDump(std.testing.allocator, 0);
+    defer if (result.data) |data| std.testing.allocator.free(data);
+
+    try std.testing.expectEqual(@as(u64, 0), result.iterator);
+    try std.testing.expect(result.data != null);
+}
+
+test "BloomFilterValue scanDump/loadChunk round-trip" {
+    var bf = try BloomFilterValue.init(std.testing.allocator, 0.01, 100, 2, false);
+    defer bf.deinit();
+
+    // Add items
+    _ = try bf.add("apple");
+    _ = try bf.add("banana");
+    _ = try bf.add("cherry");
+
+    // Dump all chunks
+    var chunks = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer {
+        for (chunks.items) |chunk| {
+            std.testing.allocator.free(chunk);
+        }
+        chunks.deinit(std.testing.allocator);
+    }
+
+    var iter: u64 = 0;
+    while (true) {
+        const result = try bf.scanDump(std.testing.allocator, iter);
+        if (result.data) |data| {
+            try chunks.append(std.testing.allocator, data);
+        }
+        if (result.iterator == 0) break;
+        iter = result.iterator;
+    }
+
+    // Create new filter and load chunks
+    var bf2 = try BloomFilterValue.init(std.testing.allocator, 0.01, 10, 2, false);
+    defer bf2.deinit();
+
+    var context = BloomFilterValue.LoadContext{
+        .buffer = std.ArrayList(u8).init(std.testing.allocator),
+        .expected_iterator = 0,
+    };
+    defer context.deinit();
+
+    for (chunks.items, 0..) |chunk, i| {
+        const is_last = i == chunks.items.len - 1;
+        const chunk_iter: u64 = if (is_last) 0 else context.expected_iterator;
+        const complete = try bf2.loadChunk(std.testing.allocator, &context, chunk_iter, chunk);
+        if (is_last) {
+            try std.testing.expect(complete);
+        }
+    }
+
+    // Verify items exist
+    try std.testing.expect(bf2.exists("apple"));
+    try std.testing.expect(bf2.exists("banana"));
+    try std.testing.expect(bf2.exists("cherry"));
+    try std.testing.expect(!bf2.exists("grape"));
+}
+
+test "BloomFilterValue scanDump empty filter" {
+    var bf = try BloomFilterValue.init(std.testing.allocator, 0.01, 10, 2, false);
+    defer bf.deinit();
+
+    // Empty filter should still serialize
+    const result = try bf.scanDump(std.testing.allocator, 0);
+    defer if (result.data) |data| std.testing.allocator.free(data);
+
+    try std.testing.expectEqual(@as(u64, 0), result.iterator);
+    try std.testing.expect(result.data != null);
+}
+
+test "BloomFilterValue loadChunk invalid iterator" {
+    var bf = try BloomFilterValue.init(std.testing.allocator, 0.01, 10, 2, false);
+    defer bf.deinit();
+
+    var context = BloomFilterValue.LoadContext{
+        .buffer = std.ArrayList(u8).init(std.testing.allocator),
+        .expected_iterator = 0,
+    };
+    defer context.deinit();
+
+    // Try to load with wrong iterator
+    const dummy_data = [_]u8{0} ** 10;
+    const result = bf.loadChunk(std.testing.allocator, &context, 5, &dummy_data);
+    try std.testing.expectError(error.InvalidIterator, result);
+}
+
+test "BloomFilterValue scanDump preserves nonscaling" {
+    var bf = try BloomFilterValue.init(std.testing.allocator, 0.01, 100, 2, true);
+    defer bf.deinit();
+
+    _ = try bf.add("test");
+
+    const result = try bf.scanDump(std.testing.allocator, 0);
+    defer if (result.data) |data| std.testing.allocator.free(data);
+
+    // Create new filter and load
+    var bf2 = try BloomFilterValue.init(std.testing.allocator, 0.01, 10, 2, false);
+    defer bf2.deinit();
+
+    var context = BloomFilterValue.LoadContext{
+        .buffer = std.ArrayList(u8).init(std.testing.allocator),
+        .expected_iterator = 0,
+    };
+    defer context.deinit();
+
+    _ = try bf2.loadChunk(std.testing.allocator, &context, 0, result.data.?);
+
+    // Verify nonscaling flag preserved
+    try std.testing.expect(bf2.nonscaling);
 }

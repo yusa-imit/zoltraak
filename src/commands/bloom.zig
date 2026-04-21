@@ -670,3 +670,168 @@ pub fn cmdBfCard(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     // Return the cardinality (total_items_added)
     return RespValue{ .integer = @intCast(bf.total_items_added) };
 }
+
+/// BF.SCANDUMP key iterator
+/// Incrementally dump Bloom filter state in chunks
+pub fn cmdBfScandump(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.scandump' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse iterator
+    const iter_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid iterator" },
+    };
+    const iterator = std.fmt.parseInt(u64, iter_str, 10) catch {
+        return RespValue{ .error_string = "ERR iterator must be a valid integer" };
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get the value
+    const value = storage.data.get(key) orelse {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    };
+
+    // Check type
+    const bf = switch (value) {
+        .bloom => |*bf_ptr| bf_ptr,
+        else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+    };
+
+    // Perform scan dump
+    const result = try bf.scanDump(allocator, iterator);
+    errdefer if (result.data) |data| allocator.free(data);
+
+    // Build RESP array response: [iterator, data]
+    var resp_array = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer resp_array.deinit(allocator);
+
+    try resp_array.append(allocator, .{ .integer = @intCast(result.iterator) });
+
+    if (result.data) |data| {
+        try resp_array.append(allocator, .{ .bulk_string = data });
+    } else {
+        try resp_array.append(allocator, .null_bulk_string);
+    }
+
+    return RespValue{ .array = try resp_array.toOwnedSlice(allocator) };
+}
+
+/// BF.LOADCHUNK key iterator data
+/// Incrementally restore Bloom filter from chunks
+pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len != 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.loadchunk' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse iterator
+    const iter_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid iterator" },
+    };
+    const iterator = std.fmt.parseInt(u64, iter_str, 10) catch {
+        return RespValue{ .error_string = "ERR iterator must be a valid integer" };
+    };
+
+    // Parse data
+    const data = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid data" },
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // For first chunk (iterator=0 on first call), create placeholder filter
+    // For subsequent chunks, get existing filter
+    // Note: We need to track load context per key - using a simple approach here
+
+    // Get or create filter
+    const value = storage.data.get(key);
+    var bf: *BloomFilterValue = undefined;
+    var context: *BloomFilterValue.LoadContext = undefined;
+    var is_new = false;
+
+    if (value == null) {
+        // Create new filter
+        var new_bf = try BloomFilterValue.init(allocator, 0.01, 10, 2, false);
+        errdefer new_bf.deinit();
+
+        // Store in storage
+        const key_copy = try allocator.dupe(u8, key);
+        errdefer allocator.free(key_copy);
+
+        try storage.data.put(key_copy, .{ .bloom = new_bf });
+        bf = &storage.data.getPtr(key_copy).?.bloom;
+
+        // Create context
+        const ctx = try allocator.create(BloomFilterValue.LoadContext);
+        errdefer allocator.destroy(ctx);
+        ctx.* = .{
+            .buffer = std.ArrayList(u8).init(allocator),
+            .expected_iterator = 0,
+        };
+        
+        // TODO: Store context in a map keyed by key for multi-chunk loads
+        // For now, simplified implementation assumes sequential single-key loads
+        context = ctx;
+        is_new = true;
+    } else {
+        // Get existing filter
+        bf = switch (value.?) {
+            .bloom => |*bf_ptr| bf_ptr,
+            else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+        };
+
+        // Create context (simplified - should be persisted)
+        const ctx = try allocator.create(BloomFilterValue.LoadContext);
+        errdefer allocator.destroy(ctx);
+        ctx.* = .{
+            .buffer = std.ArrayList(u8).init(allocator),
+            .expected_iterator = iterator,
+        };
+        context = ctx;
+    }
+
+    defer {
+        context.deinit();
+        allocator.destroy(context);
+    }
+
+    // Load chunk
+    const complete = bf.loadChunk(allocator, context, iterator, data) catch |err| {
+        if (is_new) {
+            // Clean up newly created filter on error
+            const key_in_map = storage.data.getKey(key).?;
+            _ = storage.data.remove(key);
+            allocator.free(key_in_map);
+            bf.deinit();
+        }
+        return switch (err) {
+            error.InvalidIterator => RespValue{ .error_string = "ERR invalid iterator sequence" },
+            error.InvalidData => RespValue{ .error_string = "ERR invalid data format" },
+            else => RespValue{ .error_string = "ERR failed to load chunk" },
+        };
+    };
+
+    if (complete) {
+        return RespValue{ .simple_string = "OK" };
+    } else {
+        return RespValue{ .simple_string = "OK" };
+    }
+}

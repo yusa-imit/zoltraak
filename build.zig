@@ -137,6 +137,17 @@ pub fn build(b: *std.Build) void {
     const run_bf_card_tests = b.addRunArtifact(bf_card_tests);
     integration_test_step.dependOn(&run_bf_card_tests.step);
 
+    // Bloom Filter SCANDUMP/LOADCHUNK integration tests (Iteration 215)
+    const bf_scandump_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_bloom_scandump.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_bf_scandump_tests = b.addRunArtifact(bf_scandump_tests);
+    integration_test_step.dependOn(&run_bf_scandump_tests.step);
+
     // GEOSEARCH BYBOX integration tests
     const geosearch_bybox_tests = b.addTest(.{
         .root_module = b.createModule(.{

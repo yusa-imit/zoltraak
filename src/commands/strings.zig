@@ -652,7 +652,7 @@ pub fn executeCommand(
             "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
             "XACK",       "XCLAIM",     "XAUTOCLAIM",
             "GEOADD",     "PFADD",      "PFMERGE",
-            "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",
+            "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.LOADCHUNK",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -2246,6 +2246,16 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "BF.CARD")) {
                 const result = try bloom_cmds.cmdBfCard(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.SCANDUMP")) {
+                const result = try bloom_cmds.cmdBfScandump(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "BF.LOADCHUNK")) {
+                const result = try bloom_cmds.cmdBfLoadchunk(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
