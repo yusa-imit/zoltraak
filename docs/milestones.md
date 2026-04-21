@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 217 (326+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 218 (327+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 15 (Probabilistic Data Structures) — 35% complete (17/49 commands)
-- **Next milestone**: Phase 15.9 (Cuckoo Filter CF.DEL/CF.COUNT/CF.INFO/CF.SCANDUMP/CF.LOADCHUNK)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 37% complete (18/49 commands)
+- **Next milestone**: Phase 15.9 (Cuckoo Filter CF.COUNT/CF.INFO/CF.SCANDUMP/CF.LOADCHUNK)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -81,7 +81,7 @@
 
 **All 17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET, TS.ALTER, TS.MGET, TS.RANGE, TS.REVRANGE, TS.MRANGE, TS.MREVRANGE, TS.QUERYINDEX, TS.CREATERULE, TS.DELETERULE
 
-### Phase 15 — Probabilistic Data Structures (35% complete) 🚧
+### Phase 15 — Probabilistic Data Structures (37% complete) 🚧
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -93,8 +93,9 @@
 | 215 | BF.SCANDUMP, BF.LOADCHUNK (chunked serialization for large filters with 8KB chunks, iterator-based incremental dump/restore, binary format with metadata) | Done ✅ |
 | 216 | Cuckoo Filter foundation (CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS with two-choice hashing, XOR-symmetric alternate bucket computation, cuckoo eviction with max_iterations, 8-bit MurmurHash3 fingerprinting, auto-scaling) | Done ✅ |
 | 217 | CF.INSERT, CF.INSERTNX, CF.MEXISTS (batch insert with CAPACITY/NOCREATE options, batch insert-if-not-exists, batch exists check, 30 integration tests, fixed critical memory leak in error path) | Done ✅ |
+| 218 | CF.DEL (delete item from Cuckoo filter, checks both candidate buckets, returns 1 if deleted / 0 if not found, 27 comprehensive tests) | Done ✅ |
 
-**17/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS
+**18/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
