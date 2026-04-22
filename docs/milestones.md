@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 222 (335+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 223 (337+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 15 (Probabilistic Data Structures) — 53% complete (26/49 commands)
-- **Next milestone**: Phase 15.13 (Count-Min Sketch CMS.MERGE/CMS.INFO)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 57% complete (28/49 commands)
+- **Next milestone**: Phase 15.14 (Top-K foundation with TOPK.RESERVE/ADD/QUERY/COUNT)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -98,8 +98,9 @@
 | 220 | CF.INFO, CF.SCANDUMP, CF.LOADCHUNK (Cuckoo filter introspection with 7 metadata fields, chunked serialization with 8KB chunks, iterator-based incremental dump/restore, binary format preserving buckets and fingerprints, 6 storage unit tests + 11 integration tests) | Done ✅ |
 | 221 | CMS.INITBYDIM, CMS.INITBYPROB (Count-Min Sketch foundation with 2D counter array, initByDim for explicit dimensions, initByProb for automatic calculation width=ceil(e/ε) depth=ceil(ln(1/δ)), MurmurHash3 pairwise-independent hashing h_i(x)=(h1(x)+i*h2(x)) mod width, 8 storage + 14 command + 15 integration tests) | Done ✅ |
 | 222 | CMS.INCRBY, CMS.QUERY (increment item counters with overflow/underflow detection using @addWithOverflow/@subWithOverflow, query estimated counts with min-count guarantee, supports negative increments for decrement, 15 storage unit tests + 18 integration tests) | Done ✅ |
+| 223 | CMS.MERGE, CMS.INFO (merge multiple sketches with element-wise counter addition and dimension validation, metadata introspection with width/depth/count, 8 storage unit tests + 13 integration tests) | Done ✅ |
 
-**26/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY
+**28/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
