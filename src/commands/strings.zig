@@ -2303,6 +2303,11 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.COUNT")) {
+                const result = try cuckoo_cmds.cmdCfCount(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CF.INSERT")) {
                 const result = try cuckoo_cmds.cmdCfInsert(allocator, storage, args);
                 var w = Writer.init(allocator);

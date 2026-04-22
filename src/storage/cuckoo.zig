@@ -193,6 +193,18 @@ pub const Bucket = struct {
         }
         return false;
     }
+
+    /// Count how many times a fingerprint appears in this bucket
+    /// Returns the count of matching fingerprints (0 if none found)
+    pub fn countFingerprint(self: *const Bucket, fp: u8) u32 {
+        var count: u32 = 0;
+        for (0..self.count) |i| {
+            if (self.fingerprints[i] == fp) {
+                count += 1;
+            }
+        }
+        return count;
+    }
 };
 
 /// Sub-filter containing an array of buckets
@@ -396,6 +408,25 @@ pub const CuckooFilterValue = struct {
 
         // Item not found in either bucket
         return false;
+    }
+
+    /// Count how many times an item was added to the filter
+    /// Returns sum of fingerprint counts from both candidate buckets
+    /// Note: This may overestimate due to hash collisions, but never underestimates
+    pub fn count(self: *const CuckooFilterValue, item: []const u8) u64 {
+        const fp = fingerprint(item);
+        const filter = &self.filters.items[self.filters.items.len - 1];
+
+        // Compute two candidate bucket indices
+        const hash = murmurHash3(item);
+        const idx1 = hash % filter.num_buckets;
+        const idx2 = computeAltIndex(idx1, fp, filter.num_buckets);
+
+        // Count occurrences in both buckets
+        const count1 = filter.buckets[idx1].countFingerprint(fp);
+        const count2 = filter.buckets[idx2].countFingerprint(fp);
+
+        return @as(u64, count1) + @as(u64, count2);
     }
 };
 
@@ -612,4 +643,103 @@ test "cuckoo filter delete multiple different items" {
     // Other items still exist
     try std.testing.expect(cf.exists("item1"));
     try std.testing.expect(cf.exists("item3"));
+}
+
+test "bucket count fingerprint returns 0 for non-existent fingerprint" {
+    const allocator = std.testing.allocator;
+    var bucket = try Bucket.init(allocator, 4);
+    defer bucket.deinit();
+
+    const count = bucket.countFingerprint(42);
+    try std.testing.expectEqual(@as(u32, 0), count);
+}
+
+test "bucket count fingerprint returns 1 for single occurrence" {
+    const allocator = std.testing.allocator;
+    var bucket = try Bucket.init(allocator, 4);
+    defer bucket.deinit();
+
+    _ = bucket.insert(42);
+    const count = bucket.countFingerprint(42);
+    try std.testing.expectEqual(@as(u32, 1), count);
+}
+
+test "bucket count fingerprint returns correct count for duplicates" {
+    const allocator = std.testing.allocator;
+    var bucket = try Bucket.init(allocator, 4);
+    defer bucket.deinit();
+
+    // Insert same fingerprint 3 times
+    _ = bucket.insert(42);
+    _ = bucket.insert(42);
+    _ = bucket.insert(42);
+
+    const count = bucket.countFingerprint(42);
+    try std.testing.expectEqual(@as(u32, 3), count);
+}
+
+test "cuckoo filter count returns 0 for non-existent item" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    const count = cf.count("nonexistent");
+    try std.testing.expectEqual(@as(u64, 0), count);
+}
+
+test "cuckoo filter count returns 1 for single add" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    try cf.add("item");
+    const count = cf.count("item");
+    try std.testing.expectEqual(@as(u64, 1), count);
+}
+
+test "cuckoo filter count returns correct count for multiple adds" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    // Add same item 3 times
+    try cf.add("duplicate");
+    try cf.add("duplicate");
+    try cf.add("duplicate");
+
+    const count = cf.count("duplicate");
+    try std.testing.expectEqual(@as(u64, 3), count);
+}
+
+test "cuckoo filter count decreases after delete" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    // Add same item twice
+    try cf.add("item");
+    try cf.add("item");
+
+    const count_before = cf.count("item");
+    try std.testing.expectEqual(@as(u64, 2), count_before);
+
+    // Delete one instance
+    const deleted = cf.delete("item");
+    try std.testing.expect(deleted);
+
+    const count_after = cf.count("item");
+    try std.testing.expectEqual(@as(u64, 1), count_after);
+}
+
+test "cuckoo filter count different items independently" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    defer cf.deinit();
+
+    try cf.add("item1");
+    try cf.add("item2");
+    try cf.add("item2");
+
+    try std.testing.expectEqual(@as(u64, 1), cf.count("item1"));
+    try std.testing.expectEqual(@as(u64, 2), cf.count("item2"));
 }

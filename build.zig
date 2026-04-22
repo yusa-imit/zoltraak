@@ -148,6 +148,17 @@ pub fn build(b: *std.Build) void {
     const run_bf_scandump_tests = b.addRunArtifact(bf_scandump_tests);
     integration_test_step.dependOn(&run_bf_scandump_tests.step);
 
+    // Cuckoo Filter CF.COUNT integration tests (Iteration 219)
+    const cf_count_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_cf_count.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_cf_count_tests = b.addRunArtifact(cf_count_tests);
+    integration_test_step.dependOn(&run_cf_count_tests.step);
+
     // GEOSEARCH BYBOX integration tests
     const geosearch_bybox_tests = b.addTest(.{
         .root_module = b.createModule(.{

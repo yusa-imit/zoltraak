@@ -360,6 +360,46 @@ pub fn cmdCfDel(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     }
 }
 
+/// CF.COUNT key item
+/// Returns the number of times an item was added to the Cuckoo filter
+/// Returns 0 if key doesn't exist or item was not added
+pub fn cmdCfCount(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    _ = allocator; // Not needed for this operation
+
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.count' command" };
+    }
+
+    // Parse key and item
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    const item = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid item" },
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    if (storage.data.getEntry(key)) |entry| {
+        // Key exists - verify it's a Cuckoo filter
+        switch (entry.value_ptr.*) {
+            .cuckoo => |cf| {
+                const count = cf.count(item);
+                return RespValue{ .integer = @as(i64, @intCast(count)) };
+            },
+            else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+        }
+    } else {
+        // Key doesn't exist, return 0
+        return RespValue{ .integer = 0 };
+    }
+}
+
 // Unit tests
 test "CF.RESERVE with valid parameters" {
     const allocator = std.testing.allocator;
@@ -1381,4 +1421,277 @@ test "CF.DEL only removes one instance of duplicate item" {
 
     // May still exist depending on bucket placement
     // This is expected behavior for Cuckoo filters
+}
+
+test "CF.COUNT returns 0 for non-existent key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "item" },
+    };
+
+    const result = try cmdCfCount(allocator, &storage, &args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT returns 0 for non-existent item" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "cf";
+
+    // Reserve filter
+    const reserve_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "100" },
+    };
+    _ = try cmdCfReserve(allocator, &storage, &reserve_args);
+
+    // Count non-existent item
+    const count_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "nonexistent" },
+    };
+
+    const result = try cmdCfCount(allocator, &storage, &count_args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 0), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT returns 1 for single add" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "cf";
+    const item = "item1";
+
+    // Reserve filter
+    const reserve_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "100" },
+    };
+    _ = try cmdCfReserve(allocator, &storage, &reserve_args);
+
+    // Add item
+    const add_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+    _ = try cmdCfAdd(allocator, &storage, &add_args);
+
+    // Count
+    const count_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+
+    const result = try cmdCfCount(allocator, &storage, &count_args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT returns correct count for multiple adds" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "cf";
+    const item = "duplicate";
+
+    // Reserve filter
+    const reserve_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "100" },
+    };
+    _ = try cmdCfReserve(allocator, &storage, &reserve_args);
+
+    // Add same item 3 times
+    const add_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+    _ = try cmdCfAdd(allocator, &storage, &add_args);
+    _ = try cmdCfAdd(allocator, &storage, &add_args);
+    _ = try cmdCfAdd(allocator, &storage, &add_args);
+
+    // Count
+    const count_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+
+    const result = try cmdCfCount(allocator, &storage, &count_args);
+
+    switch (result) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 3), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT decreases after delete" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "cf";
+    const item = "item";
+
+    // Reserve and add twice
+    const reserve_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "100" },
+    };
+    _ = try cmdCfReserve(allocator, &storage, &reserve_args);
+
+    const add_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+    _ = try cmdCfAdd(allocator, &storage, &add_args);
+    _ = try cmdCfAdd(allocator, &storage, &add_args);
+
+    // Count before delete
+    const count_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+    const before = try cmdCfCount(allocator, &storage, &count_args);
+    switch (before) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 2), i),
+        else => try std.testing.expect(false),
+    }
+
+    // Delete one instance
+    const del_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = item },
+    };
+    _ = try cmdCfDel(allocator, &storage, &del_args);
+
+    // Count after delete
+    const after = try cmdCfCount(allocator, &storage, &count_args);
+    switch (after) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT different items independently" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "cf";
+
+    // Reserve
+    const reserve_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "100" },
+    };
+    _ = try cmdCfReserve(allocator, &storage, &reserve_args);
+
+    // Add item1 once
+    const add1_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "item1" },
+    };
+    _ = try cmdCfAdd(allocator, &storage, &add1_args);
+
+    // Add item2 twice
+    const add2_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "item2" },
+    };
+    _ = try cmdCfAdd(allocator, &storage, &add2_args);
+    _ = try cmdCfAdd(allocator, &storage, &add2_args);
+
+    // Count item1
+    const count1_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "item1" },
+    };
+    const result1 = try cmdCfCount(allocator, &storage, &count1_args);
+    switch (result1) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 1), i),
+        else => try std.testing.expect(false),
+    }
+
+    // Count item2
+    const count2_args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "item2" },
+    };
+    const result2 = try cmdCfCount(allocator, &storage, &count2_args);
+    switch (result2) {
+        .integer => |i| try std.testing.expectEqual(@as(i64, 2), i),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT returns WRONGTYPE for non-cuckoo key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key = "stringkey";
+
+    // Add a string value
+    const owned_key = try allocator.dupe(u8, key);
+    const str_value = try allocator.dupe(u8, "value");
+    try storage.data.put(owned_key, storage_mod.Value{ .string = str_value });
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = key },
+        RespValue{ .bulk_string = "item" },
+    };
+
+    const result = try cmdCfCount(allocator, &storage, &args);
+
+    switch (result) {
+        .error_string => |s| try std.testing.expect(std.mem.startsWith(u8, s, "WRONGTYPE")),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "CF.COUNT requires exactly 2 arguments" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Test with 1 argument
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "key" },
+    };
+    const result1 = try cmdCfCount(allocator, &storage, &args1);
+    switch (result1) {
+        .error_string => |s| try std.testing.expect(std.mem.startsWith(u8, s, "ERR wrong number")),
+        else => try std.testing.expect(false),
+    }
+
+    // Test with 3 arguments
+    const args3 = [_]RespValue{
+        RespValue{ .bulk_string = "key" },
+        RespValue{ .bulk_string = "item" },
+        RespValue{ .bulk_string = "extra" },
+    };
+    const result3 = try cmdCfCount(allocator, &storage, &args3);
+    switch (result3) {
+        .error_string => |s| try std.testing.expect(std.mem.startsWith(u8, s, "ERR wrong number")),
+        else => try std.testing.expect(false),
+    }
 }
