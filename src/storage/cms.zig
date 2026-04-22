@@ -155,6 +155,63 @@ pub const CountMinSketchValue = struct {
         return min_count;
     }
 
+    /// Merge multiple Count-Min Sketches into this sketch.
+    /// All sketches must have identical dimensions (width and depth).
+    /// Performs element-wise addition of all counters.
+    /// Returns error.DimensionMismatch if any source sketch has different dimensions.
+    /// Returns error.CounterOverflow if addition would overflow u64.
+    pub fn merge(self: *CountMinSketchValue, sources: []const *const CountMinSketchValue) !void {
+        // Validate all sources have matching dimensions
+        for (sources) |source| {
+            if (source.width != self.width or source.depth != self.depth) {
+                return error.DimensionMismatch;
+            }
+        }
+
+        // Element-wise addition of all counters
+        for (0..self.depth) |i| {
+            for (0..self.width) |j| {
+                var sum = self.counters[i][j];
+
+                // Add each source's counter value
+                for (sources) |source| {
+                    const overflow_result = @addWithOverflow(sum, source.counters[i][j]);
+                    if (overflow_result[1] != 0) {
+                        return error.CounterOverflow;
+                    }
+                    sum = overflow_result[0];
+                }
+
+                self.counters[i][j] = sum;
+            }
+        }
+    }
+
+    /// Get metadata information about this Count-Min Sketch.
+    /// Returns a struct with width, depth, and total count.
+    pub const SketchInfo = struct {
+        width: u32,
+        depth: u32,
+        count: u64, // Total number of increments (sum of all counters)
+    };
+
+    pub fn getInfo(self: *const CountMinSketchValue) SketchInfo {
+        var total_count: u64 = 0;
+
+        // Sum all counters
+        for (self.counters) |row| {
+            for (row) |counter| {
+                total_count +%= counter; // Wrapping add to prevent overflow
+            }
+        }
+
+        return SketchInfo{
+            .width = self.width,
+            .depth = self.depth,
+            .count = total_count,
+        };
+    }
+
     /// Compute hash for item at given hash function index.
     /// Uses MurmurHash3-inspired pairwise-independent hash family:
     /// h_i(x) = (h1(x) + i * h2(x)) mod width
@@ -429,4 +486,166 @@ test "CountMinSketch: hash produces uniform distribution" {
 
     // With uniform hash, expect < 5% empty buckets
     try std.testing.expect(empty_count < 5);
+}
+
+test "CountMinSketch: merge combines two sketches" {
+    const allocator = std.testing.allocator;
+
+    var cms1 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms1.deinit();
+
+    var cms2 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms2.deinit();
+
+    // Increment different items in each sketch
+    _ = try cms1.incrBy("apple", 10);
+    _ = try cms2.incrBy("apple", 20);
+
+    // Merge cms2 into cms1
+    const sources = [_]*const CountMinSketchValue{&cms2};
+    try cms1.merge(&sources);
+
+    // Query should return sum
+    const count = cms1.query("apple");
+    try std.testing.expectEqual(@as(u64, 30), count);
+}
+
+test "CountMinSketch: merge handles multiple sources" {
+    const allocator = std.testing.allocator;
+
+    var dest = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer dest.deinit();
+
+    var src1 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer src1.deinit();
+
+    var src2 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer src2.deinit();
+
+    var src3 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer src3.deinit();
+
+    // Add counts to each sketch
+    _ = try dest.incrBy("apple", 5);
+    _ = try src1.incrBy("apple", 10);
+    _ = try src2.incrBy("apple", 15);
+    _ = try src3.incrBy("apple", 20);
+
+    // Merge all sources into dest
+    const sources = [_]*const CountMinSketchValue{ &src1, &src2, &src3 };
+    try dest.merge(&sources);
+
+    // Query should return sum: 5 + 10 + 15 + 20 = 50
+    const count = dest.query("apple");
+    try std.testing.expectEqual(@as(u64, 50), count);
+}
+
+test "CountMinSketch: merge rejects dimension mismatch" {
+    const allocator = std.testing.allocator;
+
+    var cms1 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms1.deinit();
+
+    var cms2 = try CountMinSketchValue.initByDim(allocator, 200, 5);
+    defer cms2.deinit();
+
+    const sources = [_]*const CountMinSketchValue{&cms2};
+    try std.testing.expectError(error.DimensionMismatch, cms1.merge(&sources));
+}
+
+test "CountMinSketch: merge rejects depth mismatch" {
+    const allocator = std.testing.allocator;
+
+    var cms1 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms1.deinit();
+
+    var cms2 = try CountMinSketchValue.initByDim(allocator, 100, 7);
+    defer cms2.deinit();
+
+    const sources = [_]*const CountMinSketchValue{&cms2};
+    try std.testing.expectError(error.DimensionMismatch, cms1.merge(&sources));
+}
+
+test "CountMinSketch: merge detects overflow" {
+    const allocator = std.testing.allocator;
+
+    var cms1 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms1.deinit();
+
+    var cms2 = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms2.deinit();
+
+    // Set counters to near-max
+    const max_val = std.math.maxInt(u64) - 10;
+    cms1.counters[0][0] = max_val;
+    cms2.counters[0][0] = 20; // Would overflow when added
+
+    const sources = [_]*const CountMinSketchValue{&cms2};
+    try std.testing.expectError(error.CounterOverflow, cms1.merge(&sources));
+}
+
+test "CountMinSketch: merge preserves independent counts" {
+    const allocator = std.testing.allocator;
+
+    var cms1 = try CountMinSketchValue.initByDim(allocator, 1000, 7);
+    defer cms1.deinit();
+
+    var cms2 = try CountMinSketchValue.initByDim(allocator, 1000, 7);
+    defer cms2.deinit();
+
+    // Add different items to each sketch
+    _ = try cms1.incrBy("apple", 10);
+    _ = try cms1.incrBy("banana", 20);
+    _ = try cms2.incrBy("apple", 15);
+    _ = try cms2.incrBy("cherry", 30);
+
+    // Merge cms2 into cms1
+    const sources = [_]*const CountMinSketchValue{&cms2};
+    try cms1.merge(&sources);
+
+    // With large sketch, counts should be exact or very close
+    const apple_count = cms1.query("apple");
+    const banana_count = cms1.query("banana");
+    const cherry_count = cms1.query("cherry");
+
+    try std.testing.expect(apple_count >= 25); // 10 + 15
+    try std.testing.expect(banana_count >= 20);
+    try std.testing.expect(cherry_count >= 30);
+}
+
+test "CountMinSketch: getInfo returns correct metadata" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Initially, count should be 0
+    var info = cms.getInfo();
+    try std.testing.expectEqual(@as(u32, 100), info.width);
+    try std.testing.expectEqual(@as(u32, 5), info.depth);
+    try std.testing.expectEqual(@as(u64, 0), info.count);
+
+    // Add some items
+    _ = try cms.incrBy("apple", 10);
+    _ = try cms.incrBy("banana", 20);
+
+    // Count should reflect increments (10 + 20) * depth = (10 + 20) * 5 = 150
+    // But due to hash collisions, actual sum might differ
+    info = cms.getInfo();
+    try std.testing.expectEqual(@as(u32, 100), info.width);
+    try std.testing.expectEqual(@as(u32, 5), info.depth);
+    // Total count should be at least (10 + 20) * 5 = 150 (each item increments depth counters)
+    try std.testing.expect(info.count >= 150);
+}
+
+test "CountMinSketch: getInfo handles empty sketch" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 50, 3);
+    defer cms.deinit();
+
+    const info = cms.getInfo();
+    try std.testing.expectEqual(@as(u32, 50), info.width);
+    try std.testing.expectEqual(@as(u32, 3), info.depth);
+    try std.testing.expectEqual(@as(u64, 0), info.count);
 }

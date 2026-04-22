@@ -319,6 +319,148 @@ pub fn cmdCmsInitByProb(
     return RespValue{ .simple_string = "OK" };
 }
 
+/// CMS.MERGE destination source [source ...]
+/// Merge multiple Count-Min Sketches into destination sketch.
+/// All sketches must have identical dimensions (width and depth).
+///
+/// Returns: +OK\r\n
+/// Errors:
+/// - ERR destination key not found
+/// - ERR source key not found
+/// - WRONGTYPE if any key is not CMS
+/// - ERR dimension mismatch if sketches have different dimensions
+/// - ERR counter overflow if merge would overflow
+pub fn cmdCmsMerge(
+    _: Allocator,
+    storage: *Storage,
+    args: []const RespValue,
+) !RespValue {
+    // Validate arity: dest + at least one source
+    if (args.len < 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'CMS.MERGE' command" };
+    }
+
+    // Parse destination key
+    const dest_key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid destination key" },
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Look up destination
+    const dest_entry = storage.data.getEntry(dest_key) orelse {
+        return RespValue{ .error_string = "ERR destination key not found" };
+    };
+
+    // Verify destination is CMS
+    if (dest_entry.value_ptr.* != .count_min_sketch) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    var dest_cms = &dest_entry.value_ptr.count_min_sketch;
+
+    // Calculate number of sources
+    const num_sources = args.len - 1;
+
+    // Allocate array of source pointers (stack allocation for reasonable sizes)
+    // Use dynamic allocation for > 256 sources
+    var sources_buf: [256]*const CountMinSketchValue = undefined;
+    var sources_dyn: []* const CountMinSketchValue = undefined;
+    var use_dyn = false;
+
+    const sources: []*const CountMinSketchValue = if (num_sources <= 256) blk: {
+        break :blk sources_buf[0..num_sources];
+    } else blk: {
+        sources_dyn = try storage.allocator.alloc(*const CountMinSketchValue, num_sources);
+        use_dyn = true;
+        break :blk sources_dyn;
+    };
+    defer if (use_dyn) storage.allocator.free(sources_dyn);
+
+    // Collect all source sketches
+    for (args[1..], 0..) |arg, i| {
+        const src_key = switch (arg) {
+            .bulk_string => |s| s,
+            else => return RespValue{ .error_string = "ERR invalid source key" },
+        };
+
+        // Look up source
+        const src_entry = storage.data.getEntry(src_key) orelse {
+            return RespValue{ .error_string = "ERR source key not found" };
+        };
+
+        // Verify source is CMS
+        if (src_entry.value_ptr.* != .count_min_sketch) {
+            return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+        }
+
+        sources[i] = &src_entry.value_ptr.count_min_sketch;
+    }
+
+    // Perform merge
+    dest_cms.merge(sources) catch |err| {
+        return switch (err) {
+            error.DimensionMismatch => RespValue{ .error_string = "ERR dimension mismatch: all sketches must have identical width and depth" },
+            error.CounterOverflow => RespValue{ .error_string = "ERR counter overflow during merge" },
+        };
+    };
+
+    return RespValue{ .simple_string = "OK" };
+}
+
+/// CMS.INFO key
+/// Get metadata information about a Count-Min Sketch.
+///
+/// Returns: Array of key-value pairs: [width, <N>, depth, <M>, count, <C>]
+/// Errors:
+/// - ERR key not found
+/// - WRONGTYPE if key is not CMS
+pub fn cmdCmsInfo(
+    allocator: Allocator,
+    storage: *Storage,
+    args: []const RespValue,
+) !RespValue {
+    if (args.len != 1) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'CMS.INFO' command" };
+    }
+
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Look up key
+    const entry = storage.data.getEntry(key) orelse {
+        return RespValue{ .error_string = "ERR key not found" };
+    };
+
+    // Verify it's a CMS
+    if (entry.value_ptr.* != .count_min_sketch) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const cms = &entry.value_ptr.count_min_sketch;
+    const info = cms.getInfo();
+
+    // Build response: array of 6 elements [width, <N>, depth, <M>, count, <C>]
+    const result = try allocator.alloc(RespValue, 6);
+    errdefer allocator.free(result);
+
+    result[0] = RespValue{ .bulk_string = "width" };
+    result[1] = RespValue{ .integer = @intCast(info.width) };
+    result[2] = RespValue{ .bulk_string = "depth" };
+    result[3] = RespValue{ .integer = @intCast(info.depth) };
+    result[4] = RespValue{ .bulk_string = "count" };
+    result[5] = RespValue{ .integer = @intCast(@min(info.count, std.math.maxInt(i64))) };
+
+    return RespValue{ .array = result };
+}
+
 // ============================================================================
 // Unit Tests
 // ============================================================================

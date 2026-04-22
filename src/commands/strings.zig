@@ -585,7 +585,7 @@ pub fn executeCommand(
                 "GEOADD",     "PFADD",      "PFMERGE",
                 "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
                 "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
-                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY",
+                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY", "CMS.MERGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -2373,6 +2373,16 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CMS.QUERY")) {
                 const result = try cms_cmds.cmdCmsQuery(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CMS.MERGE")) {
+                const result = try cms_cmds.cmdCmsMerge(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CMS.INFO")) {
+                const result = try cms_cmds.cmdCmsInfo(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
