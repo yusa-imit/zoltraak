@@ -1695,3 +1695,280 @@ test "CF.COUNT requires exactly 2 arguments" {
         else => try std.testing.expect(false),
     }
 }
+
+/// CF.INFO key [field]
+/// Returns information about a Cuckoo filter
+/// If field is specified, returns only that field value
+/// Otherwise returns array of key-value pairs
+pub fn cmdCfInfo(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len < 1 or args.len > 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.info' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse optional field argument
+    const field_arg = if (args.len == 2) switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid field" },
+    } else null;
+
+    // Normalize field to lowercase
+    const field = if (field_arg) |f| blk: {
+        var buf: [32]u8 = undefined;
+        const len = @min(f.len, buf.len);
+        @memcpy(buf[0..len], f[0..len]);
+        for (0..len) |j| {
+            buf[j] = std.ascii.toLower(buf[j]);
+        }
+        break :blk buf[0..len];
+    } else null;
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Check if key exists
+    const entry = storage.data.getEntry(key) orelse {
+        return RespValue{ .error_string = "ERR not found" };
+    };
+
+    // Verify it's a cuckoo filter
+    const cf = switch (entry.value_ptr.*) {
+        .cuckoo => |*filter| filter,
+        else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+    };
+
+    // Calculate size and items
+    const total_size = cf.getTotalSize();
+    const total_items = cf.getTotalItems();
+
+    // If specific field requested, return just that value
+    if (field) |f| {
+        if (std.mem.eql(u8, f, "size")) {
+            return RespValue{ .integer = @intCast(total_size) };
+        } else if (std.mem.eql(u8, f, "bucketsize")) {
+            return RespValue{ .integer = @intCast(cf.bucketsize) };
+        } else if (std.mem.eql(u8, f, "numberofbuckets")) {
+            const filter = &cf.filters.items[cf.filters.items.len - 1];
+            return RespValue{ .integer = @intCast(filter.num_buckets) };
+        } else if (std.mem.eql(u8, f, "numberoffilters")) {
+            return RespValue{ .integer = @intCast(cf.filters.items.len) };
+        } else if (std.mem.eql(u8, f, "numberofitemsinserted")) {
+            return RespValue{ .integer = @intCast(total_items) };
+        } else if (std.mem.eql(u8, f, "expansionrate")) {
+            return RespValue{ .integer = @intCast(cf.expansion) };
+        } else if (std.mem.eql(u8, f, "maxiterations")) {
+            return RespValue{ .integer = @intCast(cf.max_iterations) };
+        } else {
+            return RespValue{ .error_string = "ERR unknown field" };
+        }
+    }
+
+    // Return all fields as array of key-value pairs
+    const info_fields = try allocator.alloc(RespValue, 14);
+    errdefer allocator.free(info_fields);
+
+    const filter = &cf.filters.items[cf.filters.items.len - 1];
+
+    // Size
+    info_fields[0] = RespValue{ .bulk_string = "Size" };
+    info_fields[1] = RespValue{ .integer = @intCast(total_size) };
+
+    // Bucket size
+    info_fields[2] = RespValue{ .bulk_string = "Number of buckets" };
+    info_fields[3] = RespValue{ .integer = @intCast(filter.num_buckets) };
+
+    // Number of filters
+    info_fields[4] = RespValue{ .bulk_string = "Number of filters" };
+    info_fields[5] = RespValue{ .integer = @intCast(cf.filters.items.len) };
+
+    // Number of items inserted
+    info_fields[6] = RespValue{ .bulk_string = "Number of items inserted" };
+    info_fields[7] = RespValue{ .integer = @intCast(total_items) };
+
+    // Bucket size
+    info_fields[8] = RespValue{ .bulk_string = "Bucket size" };
+    info_fields[9] = RespValue{ .integer = @intCast(cf.bucketsize) };
+
+    // Expansion rate
+    info_fields[10] = RespValue{ .bulk_string = "Expansion rate" };
+    info_fields[11] = RespValue{ .integer = @intCast(cf.expansion) };
+
+    // Max iterations
+    info_fields[12] = RespValue{ .bulk_string = "Max iterations" };
+    info_fields[13] = RespValue{ .integer = @intCast(cf.max_iterations) };
+
+    return RespValue{ .array = info_fields };
+}
+
+/// CF.SCANDUMP key iterator
+/// Incrementally dump Cuckoo filter state in chunks
+pub fn cmdCfScandump(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len != 2) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.scandump' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse iterator
+    const iter_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid iterator" },
+    };
+    const iterator = std.fmt.parseInt(u64, iter_str, 10) catch {
+        return RespValue{ .error_string = "ERR iterator must be a valid integer" };
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get the value
+    const value = storage.data.get(key) orelse {
+        return RespValue{ .error_string = "ERR key does not exist" };
+    };
+
+    // Check type
+    const cf = switch (value) {
+        .cuckoo => |*cf_ptr| cf_ptr,
+        else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+    };
+
+    // Perform scan dump
+    const result = try cf.scanDump(allocator, iterator);
+    errdefer if (result.data) |data| allocator.free(data);
+
+    // Build RESP array response: [iterator, data]
+    var resp_array = try std.ArrayList(RespValue).initCapacity(allocator, 2);
+    errdefer resp_array.deinit(allocator);
+
+    try resp_array.append(allocator, .{ .integer = @intCast(result.iterator) });
+
+    if (result.data) |data| {
+        try resp_array.append(allocator, .{ .bulk_string = data });
+    } else {
+        try resp_array.append(allocator, .null_bulk_string);
+    }
+
+    return RespValue{ .array = try resp_array.toOwnedSlice(allocator) };
+}
+
+/// CF.LOADCHUNK key iterator data
+/// Incrementally restore Cuckoo filter from chunks
+pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    if (args.len != 3) {
+        return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.loadchunk' command" };
+    }
+
+    // Parse key
+    const key = switch (args[0]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Parse iterator
+    const iter_str = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid iterator" },
+    };
+    const iterator = std.fmt.parseInt(u64, iter_str, 10) catch {
+        return RespValue{ .error_string = "ERR iterator must be a valid integer" };
+    };
+
+    // Parse data
+    const data = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return RespValue{ .error_string = "ERR invalid data" },
+    };
+
+    storage.mutex.lock();
+    defer storage.mutex.unlock();
+
+    // Get or create filter
+    var cf: *CuckooFilterValue = undefined;
+    var context: *CuckooFilterValue.LoadContext = undefined;
+    var is_new = false;
+
+    if (storage.data.getPtr(key)) |entry| {
+        // Get existing filter
+        cf = switch (entry.*) {
+            .cuckoo => |*cf_ptr| cf_ptr,
+            else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
+        };
+
+        // Get or create load context
+        if (storage.cuckoo_load_contexts.getPtr(key)) |ctx| {
+            context = ctx;
+        } else {
+            const new_ctx = try allocator.create(CuckooFilterValue.LoadContext);
+            errdefer allocator.destroy(new_ctx);
+            new_ctx.* = .{
+                .allocator = allocator,
+                .buffer = try std.ArrayList(u8).initCapacity(allocator, 8192),
+                .expected_iterator = 0,
+            };
+            try storage.cuckoo_load_contexts.put(key, new_ctx);
+            context = new_ctx;
+        }
+    } else {
+        // Create placeholder filter (will be populated by loadChunk)
+        const new_cf = try CuckooFilterValue.init(allocator, 1, 2, 10, 1);
+        errdefer new_cf.deinit();
+
+        const key_copy = try allocator.dupe(u8, key);
+        errdefer allocator.free(key_copy);
+
+        try storage.data.put(key_copy, .{ .cuckoo = new_cf });
+        is_new = true;
+
+        cf = switch (storage.data.getPtr(key).?.*) {
+            .cuckoo => |*cf_ptr| cf_ptr,
+            else => unreachable,
+        };
+
+        // Create load context
+        const new_ctx = try allocator.create(CuckooFilterValue.LoadContext);
+        errdefer allocator.destroy(new_ctx);
+        new_ctx.* = .{
+            .allocator = allocator,
+            .buffer = try std.ArrayList(u8).initCapacity(allocator, 8192),
+            .expected_iterator = 0,
+        };
+        try storage.cuckoo_load_contexts.put(key_copy, new_ctx);
+        context = new_ctx;
+    }
+
+    // Load chunk
+    const complete = cf.loadChunk(allocator, context, iterator, data) catch |err| {
+        // On error, clean up if this was a new filter
+        if (is_new) {
+            _ = storage.data.remove(key);
+        }
+        if (storage.cuckoo_load_contexts.fetchRemove(key)) |kv| {
+            kv.value.deinit();
+            allocator.destroy(kv.value);
+        }
+        return switch (err) {
+            error.InvalidIterator => RespValue{ .error_string = "ERR invalid iterator" },
+            error.InvalidData => RespValue{ .error_string = "ERR invalid data" },
+            else => err,
+        };
+    };
+
+    // If loading is complete, clean up context
+    if (complete) {
+        if (storage.cuckoo_load_contexts.fetchRemove(key)) |kv| {
+            kv.value.deinit();
+            allocator.destroy(kv.value);
+        }
+    }
+
+    return RespValue{ .simple_string = "OK" };
+}

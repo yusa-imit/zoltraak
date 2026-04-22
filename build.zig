@@ -159,6 +159,17 @@ pub fn build(b: *std.Build) void {
     const run_cf_count_tests = b.addRunArtifact(cf_count_tests);
     integration_test_step.dependOn(&run_cf_count_tests.step);
 
+    // CF.INFO/SCANDUMP/LOADCHUNK integration tests (Iteration 220)
+    const cf_info_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_cf_info_scandump_loadchunk.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_cf_info_tests = b.addRunArtifact(cf_info_tests);
+    integration_test_step.dependOn(&run_cf_info_tests.step);
+
     // GEOSEARCH BYBOX integration tests
     const geosearch_bybox_tests = b.addTest(.{
         .root_module = b.createModule(.{

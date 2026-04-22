@@ -502,6 +502,7 @@ pub const Storage = struct {
     sentinel_config_path: []const u8, // Path to sentinel.conf Sentinel config file
     functions: FunctionStore, // Redis Functions library storage
     search: SearchStore, // Search index storage
+    cuckoo_load_contexts: std.StringHashMap(*cuckoo_mod.CuckooFilterValue.LoadContext), // Load contexts for CF.LOADCHUNK
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -591,6 +592,7 @@ pub const Storage = struct {
             .sentinel_config_path = "sentinel.conf", // Default sentinel config file
             .functions = function_store,
             .search = search_store,
+            .cuckoo_load_contexts = std.StringHashMap(*cuckoo_mod.CuckooFilterValue.LoadContext).init(allocator),
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
@@ -624,6 +626,14 @@ pub const Storage = struct {
 
         // Free search store
         self.search.deinit();
+
+        // Free cuckoo load contexts
+        var ctx_it = self.cuckoo_load_contexts.iterator();
+        while (ctx_it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.cuckoo_load_contexts.deinit();
 
         // Free all keys and values
         var it = self.data.iterator();

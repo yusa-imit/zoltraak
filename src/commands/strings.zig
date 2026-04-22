@@ -2308,6 +2308,21 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.INFO")) {
+                const result = try cuckoo_cmds.cmdCfInfo(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.SCANDUMP")) {
+                const result = try cuckoo_cmds.cmdCfScandump(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CF.LOADCHUNK")) {
+                const result = try cuckoo_cmds.cmdCfLoadchunk(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CF.INSERT")) {
                 const result = try cuckoo_cmds.cmdCfInsert(allocator, storage, args);
                 var w = Writer.init(allocator);

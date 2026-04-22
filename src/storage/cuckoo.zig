@@ -428,6 +428,259 @@ pub const CuckooFilterValue = struct {
 
         return @as(u64, count1) + @as(u64, count2);
     }
+
+    /// Calculate total number of items in the filter
+    /// Sums all fingerprint counts across all buckets in the latest sub-filter
+    pub fn getTotalItems(self: *const CuckooFilterValue) u64 {
+        const filter = &self.filters.items[self.filters.items.len - 1];
+        var total: u64 = 0;
+        for (filter.buckets) |bucket| {
+            total += bucket.count;
+        }
+        return total;
+    }
+
+    /// Calculate total memory size in bytes (buckets + fingerprints)
+    pub fn getTotalSize(self: *const CuckooFilterValue) u64 {
+        var total: u64 = 0;
+        for (self.filters.items) |filter| {
+            // Each bucket has a fingerprints array
+            total += filter.num_buckets * self.bucketsize;
+        }
+        return total;
+    }
+
+    /// Result structure for scanDump operation
+    pub const ScanDumpResult = struct {
+        iterator: u64,
+        data: ?[]const u8,
+    };
+
+    /// Chunk size for serialization (8KB)
+    const CHUNK_SIZE: usize = 8192;
+
+    /// Dump Cuckoo filter state in chunks for CF.SCANDUMP
+    /// Returns next iterator and data chunk (or null when complete)
+    pub fn scanDump(self: *const CuckooFilterValue, allocator: std.mem.Allocator, iterator: u64) !ScanDumpResult {
+        // Calculate total size needed for serialization
+        // Format: [metadata][filter1_data][filter2_data]...
+        // Metadata: capacity(u64) + bucketsize(u32) + max_iterations(u16) + expansion(u16) + num_filters(u64)
+        const metadata_size = @sizeOf(u64) + @sizeOf(u32) + @sizeOf(u16) + @sizeOf(u16) + @sizeOf(u64);
+
+        var total_filter_size: usize = 0;
+        for (self.filters.items) |filter| {
+            // Per filter: num_buckets(u64) + bucketsize(u32) + bucket_count(u32) * num_buckets + fingerprints
+            total_filter_size += @sizeOf(u64) + @sizeOf(u32);
+            for (filter.buckets) |bucket| {
+                total_filter_size += @sizeOf(u32); // bucket.count
+                total_filter_size += bucket.count; // fingerprints
+            }
+        }
+
+        const total_size = metadata_size + total_filter_size;
+
+        // On first call (iterator=0), serialize entire state
+        if (iterator == 0) {
+            const buffer = try allocator.alloc(u8, total_size);
+            errdefer allocator.free(buffer);
+
+            var offset: usize = 0;
+
+            // Write metadata
+            std.mem.writeInt(u64, buffer[offset..][0..8], self.capacity, .little);
+            offset += 8;
+            std.mem.writeInt(u32, buffer[offset..][0..4], self.bucketsize, .little);
+            offset += 4;
+            std.mem.writeInt(u16, buffer[offset..][0..2], self.max_iterations, .little);
+            offset += 2;
+            std.mem.writeInt(u16, buffer[offset..][0..2], self.expansion, .little);
+            offset += 2;
+            std.mem.writeInt(u64, buffer[offset..][0..8], self.filters.items.len, .little);
+            offset += 8;
+
+            // Write filters
+            for (self.filters.items) |filter| {
+                std.mem.writeInt(u64, buffer[offset..][0..8], filter.num_buckets, .little);
+                offset += 8;
+                std.mem.writeInt(u32, buffer[offset..][0..4], self.bucketsize, .little);
+                offset += 4;
+
+                // Write buckets
+                for (filter.buckets) |bucket| {
+                    std.mem.writeInt(u32, buffer[offset..][0..4], bucket.count, .little);
+                    offset += 4;
+                    @memcpy(buffer[offset..][0..bucket.count], bucket.fingerprints[0..bucket.count]);
+                    offset += bucket.count;
+                }
+            }
+
+            // Return first chunk
+            if (total_size <= CHUNK_SIZE) {
+                // Single chunk - return all data with iterator=0 to signal completion
+                return .{ .iterator = 0, .data = buffer };
+            } else {
+                // Multiple chunks - return first chunk
+                const chunk = try allocator.dupe(u8, buffer[0..CHUNK_SIZE]);
+                allocator.free(buffer);
+                return .{ .iterator = CHUNK_SIZE, .data = chunk };
+            }
+        }
+
+        // For subsequent calls, re-serialize and return next chunk
+        const buffer = try allocator.alloc(u8, total_size);
+        errdefer allocator.free(buffer);
+
+        var offset: usize = 0;
+
+        // Write metadata
+        std.mem.writeInt(u64, buffer[offset..][0..8], self.capacity, .little);
+        offset += 8;
+        std.mem.writeInt(u32, buffer[offset..][0..4], self.bucketsize, .little);
+        offset += 4;
+        std.mem.writeInt(u16, buffer[offset..][0..2], self.max_iterations, .little);
+        offset += 2;
+        std.mem.writeInt(u16, buffer[offset..][0..2], self.expansion, .little);
+        offset += 2;
+        std.mem.writeInt(u64, buffer[offset..][0..8], self.filters.items.len, .little);
+        offset += 8;
+
+        // Write filters
+        for (self.filters.items) |filter| {
+            std.mem.writeInt(u64, buffer[offset..][0..8], filter.num_buckets, .little);
+            offset += 8;
+            std.mem.writeInt(u32, buffer[offset..][0..4], self.bucketsize, .little);
+            offset += 4;
+
+            for (filter.buckets) |bucket| {
+                std.mem.writeInt(u32, buffer[offset..][0..4], bucket.count, .little);
+                offset += 4;
+                @memcpy(buffer[offset..][0..bucket.count], bucket.fingerprints[0..bucket.count]);
+                offset += bucket.count;
+            }
+        }
+
+        // Return chunk starting at iterator position
+        const start = @as(usize, @intCast(iterator));
+        if (start >= total_size) {
+            allocator.free(buffer);
+            return .{ .iterator = 0, .data = null };
+        }
+
+        const remaining = total_size - start;
+        if (remaining <= CHUNK_SIZE) {
+            // Last chunk
+            const chunk = try allocator.dupe(u8, buffer[start..total_size]);
+            allocator.free(buffer);
+            return .{ .iterator = 0, .data = chunk };
+        } else {
+            // More chunks to come
+            const chunk = try allocator.dupe(u8, buffer[start .. start + CHUNK_SIZE]);
+            allocator.free(buffer);
+            return .{ .iterator = start + CHUNK_SIZE, .data = chunk };
+        }
+    }
+
+    /// Load context for chunked deserialization
+    pub const LoadContext = struct {
+        allocator: std.mem.Allocator,
+        buffer: std.ArrayList(u8),
+        expected_iterator: u64,
+
+        pub fn deinit(self: *LoadContext) void {
+            self.buffer.deinit(self.allocator);
+        }
+    };
+
+    /// Load a chunk of Cuckoo filter data from CF.LOADCHUNK
+    /// Must be called with sequential iterators (0, N, 2N, ..., 0)
+    /// Returns true if loading is complete, false if more chunks expected
+    pub fn loadChunk(
+        self: *CuckooFilterValue,
+        allocator: std.mem.Allocator,
+        context: *LoadContext,
+        iterator: u64,
+        data: []const u8,
+    ) !bool {
+        // Verify iterator is sequential
+        if (iterator != context.expected_iterator) {
+            return error.InvalidIterator;
+        }
+
+        // Append data to buffer
+        try context.buffer.appendSlice(allocator, data);
+
+        // If iterator is 0, this is the last chunk - deserialize
+        if (iterator == 0) {
+            const buffer = context.buffer.items;
+            var offset: usize = 0;
+
+            // Read metadata
+            const metadata_size = @sizeOf(u64) + @sizeOf(u32) + @sizeOf(u16) + @sizeOf(u16) + @sizeOf(u64);
+            if (buffer.len < metadata_size) return error.InvalidData;
+
+            const capacity = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+            offset += 8;
+            const bucketsize = std.mem.readInt(u32, buffer[offset..][0..4], .little);
+            offset += 4;
+            const max_iterations = std.mem.readInt(u16, buffer[offset..][0..2], .little);
+            offset += 2;
+            const expansion = std.mem.readInt(u16, buffer[offset..][0..2], .little);
+            offset += 2;
+            const num_filters = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+            offset += 8;
+
+            // Clear existing filters
+            for (self.filters.items) |*filter| {
+                filter.deinit();
+            }
+            self.filters.clearRetainingCapacity();
+
+            // Read filters
+            for (0..num_filters) |_| {
+                if (offset + 8 > buffer.len) return error.InvalidData;
+                const num_buckets = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+                offset += 8;
+
+                if (offset + 4 > buffer.len) return error.InvalidData;
+                const bucket_size = std.mem.readInt(u32, buffer[offset..][0..4], .little);
+                offset += 4;
+
+                // Create sub-filter
+                var sub = try SubFilter.init(allocator, num_buckets, bucket_size);
+                errdefer sub.deinit();
+
+                // Read buckets
+                for (sub.buckets) |*bucket| {
+                    if (offset + 4 > buffer.len) return error.InvalidData;
+                    const bucket_count = std.mem.readInt(u32, buffer[offset..][0..4], .little);
+                    offset += 4;
+
+                    if (bucket_count > bucket.capacity) return error.InvalidData;
+                    if (offset + bucket_count > buffer.len) return error.InvalidData;
+
+                    @memcpy(bucket.fingerprints[0..bucket_count], buffer[offset .. offset + bucket_count]);
+                    bucket.count = bucket_count;
+                    offset += bucket_count;
+                }
+
+                try self.filters.append(allocator, sub);
+            }
+
+            // Update metadata
+            self.capacity = capacity;
+            self.bucketsize = bucketsize;
+            self.max_iterations = max_iterations;
+            self.expansion = expansion;
+
+            // Update expected iterator for next chunk (complete)
+            context.expected_iterator = 0;
+            return true; // Loading complete
+        } else {
+            // More chunks expected - update expected iterator
+            context.expected_iterator = iterator + CHUNK_SIZE;
+            return false;
+        }
+    }
 };
 
 // Unit tests
@@ -742,4 +995,131 @@ test "cuckoo filter count different items independently" {
 
     try std.testing.expectEqual(@as(u64, 1), cf.count("item1"));
     try std.testing.expectEqual(@as(u64, 2), cf.count("item2"));
+}
+
+test "getTotalItems returns sum of all fingerprints" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 4, 20, 2);
+    defer cf.deinit();
+
+    try cf.add("item1");
+    try cf.add("item2");
+    try cf.add("item3");
+
+    const total = cf.getTotalItems();
+    try std.testing.expectEqual(@as(u64, 3), total);
+}
+
+test "getTotalSize calculates memory usage" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 4, 20, 2);
+    defer cf.deinit();
+
+    const size = cf.getTotalSize();
+    // With capacity=100, bucketsize=4, num_buckets rounds up to 128 (next power of 2)
+    // Total size = 128 buckets * 4 bytes/bucket = 512 bytes
+    try std.testing.expectEqual(@as(u64, 512), size);
+}
+
+test "scanDump returns single chunk for small filter" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 10, 2, 20, 2);
+    defer cf.deinit();
+
+    try cf.add("test");
+
+    const result = try cf.scanDump(allocator, 0);
+    defer if (result.data) |data| allocator.free(data);
+
+    // Should return iterator=0 (complete)
+    try std.testing.expectEqual(@as(u64, 0), result.iterator);
+    try std.testing.expect(result.data != null);
+}
+
+test "scanDump serializes metadata correctly" {
+    const allocator = std.testing.allocator;
+    var cf = try CuckooFilterValue.init(allocator, 100, 4, 20, 2);
+    defer cf.deinit();
+
+    const result = try cf.scanDump(allocator, 0);
+    defer if (result.data) |data| allocator.free(data);
+
+    try std.testing.expect(result.data != null);
+    const buffer = result.data.?;
+
+    // Verify metadata
+    var offset: usize = 0;
+    const capacity = std.mem.readInt(u64, buffer[offset..][0..8], .little);
+    offset += 8;
+    const bucketsize = std.mem.readInt(u32, buffer[offset..][0..4], .little);
+    offset += 4;
+    const max_iterations = std.mem.readInt(u16, buffer[offset..][0..2], .little);
+    offset += 2;
+    const expansion = std.mem.readInt(u16, buffer[offset..][0..2], .little);
+
+    try std.testing.expectEqual(@as(u64, 100), capacity);
+    try std.testing.expectEqual(@as(u32, 4), bucketsize);
+    try std.testing.expectEqual(@as(u16, 20), max_iterations);
+    try std.testing.expectEqual(@as(u16, 2), expansion);
+}
+
+test "loadChunk restores filter from serialized data" {
+    const allocator = std.testing.allocator;
+
+    // Create original filter and add items
+    var original = try CuckooFilterValue.init(allocator, 100, 4, 20, 2);
+    defer original.deinit();
+
+    try original.add("item1");
+    try original.add("item2");
+    try original.add("item3");
+
+    // Dump filter
+    const dump_result = try original.scanDump(allocator, 0);
+    defer if (dump_result.data) |data| allocator.free(data);
+
+    // Create new filter and load context
+    var restored = try CuckooFilterValue.init(allocator, 10, 2, 10, 1);
+    defer restored.deinit();
+
+    var context = CuckooFilterValue.LoadContext{
+        .allocator = allocator,
+        .buffer = try std.ArrayList(u8).initCapacity(allocator, 1024),
+        .expected_iterator = 0,
+    };
+    defer context.deinit();
+
+    // Load chunk
+    const complete = try restored.loadChunk(allocator, &context, 0, dump_result.data.?);
+    try std.testing.expect(complete);
+
+    // Verify restored filter has same metadata
+    try std.testing.expectEqual(original.capacity, restored.capacity);
+    try std.testing.expectEqual(original.bucketsize, restored.bucketsize);
+    try std.testing.expectEqual(original.max_iterations, restored.max_iterations);
+    try std.testing.expectEqual(original.expansion, restored.expansion);
+
+    // Verify items exist
+    try std.testing.expect(restored.exists("item1"));
+    try std.testing.expect(restored.exists("item2"));
+    try std.testing.expect(restored.exists("item3"));
+}
+
+test "loadChunk validates sequential iterators" {
+    const allocator = std.testing.allocator;
+
+    var cf = try CuckooFilterValue.init(allocator, 100, 4, 20, 2);
+    defer cf.deinit();
+
+    var context = CuckooFilterValue.LoadContext{
+        .allocator = allocator,
+        .buffer = try std.ArrayList(u8).initCapacity(allocator, 1024),
+        .expected_iterator = 0,
+    };
+    defer context.deinit();
+
+    // Try to load with wrong iterator
+    const data = "dummy data";
+    const result = cf.loadChunk(allocator, &context, 100, data);
+    try std.testing.expectError(error.InvalidIterator, result);
 }
