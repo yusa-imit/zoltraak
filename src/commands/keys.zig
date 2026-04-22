@@ -185,6 +185,7 @@ pub fn cmdType(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         .bloom => "BloomFilter",
         .cuckoo => "CuckooFilter",
         .count_min_sketch => "CMSSketch",
+        .top_k => "TopK",
     } else "none";
 
     return w.writeSimpleString(type_str);
@@ -825,6 +826,7 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
                 .bloom => "BloomFilter",
                 .cuckoo => "CuckooFilter",
                 .count_min_sketch => "CountMinSketch",
+                .top_k => "TopK",
             } else "none";
             const tf_lower = try std.ascii.allocLowerString(allocator, tf);
             defer allocator.free(tf_lower);
@@ -1632,6 +1634,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .bloom => "bloom",
             .cuckoo => "cuckoo",
             .count_min_sketch => "countminsketch",
+            .top_k => "topk",
         };
         return w.writeSimpleString(encoding);
     } else {

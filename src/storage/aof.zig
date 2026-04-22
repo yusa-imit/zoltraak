@@ -283,6 +283,10 @@ pub const Aof = struct {
                     // Count-Min Sketch values handled by CMS.* commands in AOF replay
                     // The commands will be replayed from AOF log
                 },
+                .top_k => {
+                    // Top-K values handled by TOPK.* commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 

@@ -373,6 +373,14 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
             const total = cms.depth * cms.width * @sizeOf(u64);
             break :blk total;
         },
+        .top_k => |tk| blk: {
+            // Top-K memory: hash table + heap
+            // Hash table: depth * width * (1 + 8) bytes per cell
+            // Heap: k items * (ptr + count + fingerprint)
+            const hash_table_size = tk.depth * tk.width * (@sizeOf(u8) + @sizeOf(u64));
+            const heap_size = tk.k * (@sizeOf([]u8) + @sizeOf(u64) + @sizeOf(u8));
+            break :blk hash_table_size + heap_size;
+        },
     };
 }
 

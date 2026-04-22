@@ -103,6 +103,7 @@ pub const Persistence = struct {
                     .bloom => 0xFC, // Bloom Filter type
                     .cuckoo => 0xFB, // Cuckoo Filter type
                     .count_min_sketch => 0xFA, // Count-Min Sketch type
+                    .top_k => 0xF9, // Top-K type
                 };
                 try w.writeByte(type_byte);
 
@@ -178,6 +179,10 @@ pub const Persistence = struct {
                     },
                     .count_min_sketch => {
                         // Count-Min Sketch not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .top_k => {
+                        // Top-K not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
@@ -607,6 +612,7 @@ pub const Persistence = struct {
                     .bloom => 0xFC, // Bloom Filter type
                     .cuckoo => 0xFB, // Cuckoo Filter type
                     .count_min_sketch => 0xFA, // Count-Min Sketch type
+                    .top_k => 0xF9, // Top-K type
                 };
                 try w.writeByte(type_byte);
 
@@ -674,6 +680,10 @@ pub const Persistence = struct {
                     },
                     .count_min_sketch => {
                         // Count-Min Sketch not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .top_k => {
+                        // Top-K not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }

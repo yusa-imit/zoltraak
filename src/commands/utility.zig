@@ -368,6 +368,7 @@ pub fn cmdDebug(
                 .bloom => "BloomFilter",
                 .cuckoo => "CuckooFilter",
                 .count_min_sketch => "CountMinSketch",
+                .top_k => "TopK",
             };
 
             try buf_writer.print("Value at:{s} refcount:1 encoding:raw serializedlength:0 lru:0 lru_seconds_idle:0", .{type_str});

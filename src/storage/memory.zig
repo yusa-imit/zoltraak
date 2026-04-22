@@ -14,6 +14,7 @@ const timeseries_mod = @import("timeseries.zig");
 const bloom_mod = @import("bloom.zig");
 const cuckoo_mod = @import("cuckoo.zig");
 const cms_mod = @import("cms.zig");
+const topk_mod = @import("topk.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -31,6 +32,7 @@ pub const TimeSeriesValue = timeseries_mod.TimeSeriesValue;
 pub const BloomFilterValue = bloom_mod.BloomFilterValue;
 pub const CuckooFilterValue = cuckoo_mod.CuckooFilterValue;
 pub const CountMinSketchValue = cms_mod.CountMinSketchValue;
+pub const TopKValue = topk_mod.TopKValue;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -53,6 +55,7 @@ pub const ValueType = enum {
     bloom,
     cuckoo,
     count_min_sketch,
+    top_k,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -70,6 +73,7 @@ pub const Value = union(ValueType) {
     bloom: BloomFilterValue,
     cuckoo: CuckooFilterValue,
     count_min_sketch: CountMinSketchValue,
+    top_k: TopKValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -408,6 +412,7 @@ pub const Value = union(ValueType) {
             .bloom => |*b| b.deinit(),
             .cuckoo => |*c| c.deinit(),
             .count_min_sketch => |*cms| cms.deinit(),
+            .top_k => |*tk| tk.deinit(),
         }
     }
 
@@ -426,6 +431,7 @@ pub const Value = union(ValueType) {
             .bloom => |b| b.expires_at,
             .cuckoo => |c| c.expires_at,
             .count_min_sketch => null, // CMS doesn't support expiration
+            .top_k => |tk| tk.expires_at,
         };
     }
 
@@ -785,6 +791,7 @@ pub const Storage = struct {
                             .bloom => |b| b.expires_at,
                             .cuckoo => |c| c.expires_at,
                             .count_min_sketch => null, // CMS doesn't support expiration
+                            .top_k => |tk| tk.expires_at,
                         };
                     }
                 }
@@ -4122,6 +4129,7 @@ pub const Storage = struct {
             .bloom => |*v| v.expires_at = expires_at,
             .cuckoo => |*v| v.expires_at = expires_at,
             .count_min_sketch => {}, // CMS doesn't support expiration - no-op
+            .top_k => |*v| v.expires_at = expires_at,
         }
         return true;
     }
@@ -4476,6 +4484,7 @@ pub const Storage = struct {
             .bloom => 0xFC, // Bloom Filter type
             .cuckoo => 0xFB, // Cuckoo Filter type
             .count_min_sketch => 0xFA, // Count-Min Sketch type
+            .top_k => 0xF9, // Top-K type
         };
         try w.writeByte(type_byte);
 
@@ -4554,6 +4563,10 @@ pub const Storage = struct {
             },
             .count_min_sketch => {
                 // Count-Min Sketch not yet implemented in dump
+                try w.writeInt(u32, 0, .little);
+            },
+            .top_k => {
+                // Top-K not yet implemented in dump
                 try w.writeInt(u32, 0, .little);
             },
         }
@@ -4983,6 +4996,11 @@ pub const Storage = struct {
                 // Count-Min Sketch deep copy not yet implemented
                 // For now, return the original (stub for COPY command)
                 break :blk Value{ .count_min_sketch = cms };
+            },
+            .top_k => |tk| blk: {
+                // Top-K deep copy not yet implemented
+                // For now, return the original (stub for COPY command)
+                break :blk Value{ .top_k = tk };
             },
         };
     }

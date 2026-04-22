@@ -40,6 +40,7 @@ const timeseries_cmds = @import("timeseries.zig");
 const bloom_cmds = @import("bloom.zig");
 const cuckoo_cmds = @import("cuckoo.zig");
 const cms_cmds = @import("cms.zig");
+const topk_cmds = @import("topk.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -586,6 +587,7 @@ pub fn executeCommand(
                 "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
                 "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
                 "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY", "CMS.MERGE",
+                "TOPK.RESERVE", "TOPK.ADD",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -2383,6 +2385,27 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CMS.INFO")) {
                 const result = try cms_cmds.cmdCmsInfo(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.RESERVE")) {
+                const result = try topk_cmds.cmdTopkReserve(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.ADD")) {
+                const result = try topk_cmds.cmdTopkAdd(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.QUERY")) {
+                const protocol_version = getClientProtocol(client_registry, client_id);
+                const result = try topk_cmds.cmdTopkQuery(allocator, storage, args, protocol_version);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.COUNT")) {
+                const result = try topk_cmds.cmdTopkCount(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
