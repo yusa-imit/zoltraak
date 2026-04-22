@@ -379,3 +379,433 @@ test "CMS.INITBYPROB: calculates dimensions correctly for different params" {
     // depth = ceil(ln(1000)) = 7
     try std.testing.expectEqual(@as(u32, 7), value.count_min_sketch.depth);
 }
+
+// ============================================================================
+// CMS.INCRBY Integration Tests
+// ============================================================================
+
+test "CMS.INCRBY: increments single item" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Increment item
+    const cmd = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$1\r\n5\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    // Expected: *1\r\n:5\r\n
+    try std.testing.expect(std.mem.startsWith(u8, response, "*1\r\n:5\r\n"));
+}
+
+test "CMS.INCRBY: increments multiple items" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Increment multiple items
+    const cmd = "*8\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$2\r\n10\r\n$6\r\nbanana\r\n$2\r\n20\r\n$6\r\ncherry\r\n$2\r\n30\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    // Expected: *3\r\n:10\r\n:20\r\n:30\r\n
+    try std.testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, ":10\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, ":20\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, ":30\r\n") != null);
+}
+
+test "CMS.INCRBY: accumulates increments" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // First increment
+    const cmd1 = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$1\r\n5\r\n";
+    const result1 = try parser.parse(cmd1);
+    const response1 = try server.handleCommand(result1.array);
+    defer allocator.free(response1);
+
+    // Second increment
+    const cmd2 = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$1\r\n3\r\n";
+    const result2 = try parser.parse(cmd2);
+    const response2 = try server.handleCommand(result2.array);
+    defer allocator.free(response2);
+
+    // Should accumulate: 5 + 3 = 8
+    try std.testing.expect(std.mem.indexOf(u8, response2, ":8\r\n") != null);
+}
+
+test "CMS.INCRBY: handles negative increments" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Increment
+    const cmd1 = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$2\r\n10\r\n";
+    const result1 = try parser.parse(cmd1);
+    const response1 = try server.handleCommand(result1.array);
+    defer allocator.free(response1);
+
+    // Decrement
+    const cmd2 = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$2\r\n-3\r\n";
+    const result2 = try parser.parse(cmd2);
+    const response2 = try server.handleCommand(result2.array);
+    defer allocator.free(response2);
+
+    // Should be: 10 - 3 = 7
+    try std.testing.expect(std.mem.indexOf(u8, response2, ":7\r\n") != null);
+}
+
+test "CMS.INCRBY: returns error for nonexistent key" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    const cmd = "*4\r\n$11\r\nCMS.INCRBY\r\n$11\r\nnonexistent\r\n$5\r\napple\r\n$1\r\n5\r\n";
+    const result = try parser.parse(cmd);
+    defer parser.reset();
+
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "not found") != null);
+}
+
+test "CMS.INCRBY: returns WRONGTYPE for non-CMS key" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    // Create string value
+    try storage.set("mykey", .{ .string = .{ .data = try allocator.dupe(u8, "hello"), .expires_at = null } });
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    const cmd = "*4\r\n$11\r\nCMS.INCRBY\r\n$5\r\nmykey\r\n$5\r\napple\r\n$1\r\n5\r\n";
+    const result = try parser.parse(cmd);
+    defer parser.reset();
+
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
+}
+
+test "CMS.INCRBY: rejects invalid increment format" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    const cmd = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$3\r\nabc\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "increment") != null);
+}
+
+test "CMS.INCRBY: rejects odd number of item-increment pairs" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Missing increment for second item
+    const cmd = "*5\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$1\r\n5\r\n$6\r\nbanana\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "pairs") != null);
+}
+
+// ============================================================================
+// CMS.QUERY Integration Tests
+// ============================================================================
+
+test "CMS.QUERY: queries single item" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Increment item
+    const incr_cmd = "*4\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$2\r\n42\r\n";
+    const incr_result = try parser.parse(incr_cmd);
+    const incr_response = try server.handleCommand(incr_result.array);
+    defer allocator.free(incr_response);
+
+    // Query item
+    const cmd = "*3\r\n$9\r\nCMS.QUERY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    // Expected: *1\r\n:42\r\n
+    try std.testing.expect(std.mem.startsWith(u8, response, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, ":42\r\n") != null);
+}
+
+test "CMS.QUERY: queries multiple items" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS with larger dimensions for accuracy
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$4\r\n1000\r\n$1\r\n7\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Increment multiple items
+    const incr_cmd = "*8\r\n$11\r\nCMS.INCRBY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$2\r\n10\r\n$6\r\nbanana\r\n$2\r\n20\r\n$6\r\ncherry\r\n$2\r\n30\r\n";
+    const incr_result = try parser.parse(incr_cmd);
+    const incr_response = try server.handleCommand(incr_result.array);
+    defer allocator.free(incr_response);
+
+    // Query multiple items
+    const cmd = "*5\r\n$9\r\nCMS.QUERY\r\n$8\r\nmysketch\r\n$5\r\napple\r\n$6\r\nbanana\r\n$6\r\ncherry\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    // Expected: *3\r\n:10\r\n:20\r\n:30\r\n (or higher due to collisions)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+}
+
+test "CMS.QUERY: returns zero for nonexistent items" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Query nonexistent item
+    const cmd = "*3\r\n$9\r\nCMS.QUERY\r\n$8\r\nmysketch\r\n$11\r\nnonexistent\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    // Expected: *1\r\n:0\r\n
+    try std.testing.expect(std.mem.indexOf(u8, response, ":0\r\n") != null);
+}
+
+test "CMS.QUERY: returns error for nonexistent key" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    const cmd = "*3\r\n$9\r\nCMS.QUERY\r\n$11\r\nnonexistent\r\n$5\r\napple\r\n";
+    const result = try parser.parse(cmd);
+    defer parser.reset();
+
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "not found") != null);
+}
+
+test "CMS.QUERY: returns WRONGTYPE for non-CMS key" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    // Create string value
+    try storage.set("mykey", .{ .string = .{ .data = try allocator.dupe(u8, "hello"), .expires_at = null } });
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    const cmd = "*3\r\n$9\r\nCMS.QUERY\r\n$5\r\nmykey\r\n$5\r\napple\r\n";
+    const result = try parser.parse(cmd);
+    defer parser.reset();
+
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
+}
+
+test "CMS.QUERY: requires at least one item" {
+    const allocator = std.testing.allocator;
+
+    var config = Config.default();
+    var storage = try Storage.init(allocator, &config, null);
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, &config, @constCast(&[_]Storage{storage}), 1);
+    defer server.deinit();
+
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    // Create CMS
+    const init_cmd = "*4\r\n$13\r\nCMS.INITBYDIM\r\n$8\r\nmysketch\r\n$3\r\n100\r\n$1\r\n5\r\n";
+    const init_result = try parser.parse(init_cmd);
+    defer parser.reset();
+    const init_response = try server.handleCommand(init_result.array);
+    defer allocator.free(init_response);
+
+    // Query with no items
+    const cmd = "*2\r\n$9\r\nCMS.QUERY\r\n$8\r\nmysketch\r\n";
+    const result = try parser.parse(cmd);
+    const response = try server.handleCommand(result.array);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "wrong number") != null);
+}

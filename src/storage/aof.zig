@@ -279,6 +279,10 @@ pub const Aof = struct {
                     // Cuckoo filter values handled by CF.* commands in AOF replay
                     // The commands will be replayed from AOF log
                 },
+                .count_min_sketch => {
+                    // Count-Min Sketch values handled by CMS.* commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 

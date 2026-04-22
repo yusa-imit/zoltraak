@@ -368,6 +368,11 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
             }
             break :blk total;
         },
+        .count_min_sketch => |cms| blk: {
+            // Count-Min Sketch memory: depth * width * sizeof(u64)
+            const total = cms.depth * cms.width * @sizeOf(u64);
+            break :blk total;
+        },
     };
 }
 

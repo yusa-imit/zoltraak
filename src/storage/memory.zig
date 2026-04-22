@@ -4475,6 +4475,7 @@ pub const Storage = struct {
             .timeseries => 0xFD, // Time Series type
             .bloom => 0xFC, // Bloom Filter type
             .cuckoo => 0xFB, // Cuckoo Filter type
+            .count_min_sketch => 0xFA, // Count-Min Sketch type
         };
         try w.writeByte(type_byte);
 
@@ -4549,6 +4550,10 @@ pub const Storage = struct {
             },
             .cuckoo => {
                 // Cuckoo filter not yet implemented in dump
+                try w.writeInt(u32, 0, .little);
+            },
+            .count_min_sketch => {
+                // Count-Min Sketch not yet implemented in dump
                 try w.writeInt(u32, 0, .little);
             },
         }
@@ -4973,6 +4978,11 @@ pub const Storage = struct {
                 // Cuckoo filter deep copy not yet implemented
                 // For now, return the original (stub for COPY command)
                 break :blk Value{ .cuckoo = c };
+            },
+            .count_min_sketch => |cms| blk: {
+                // Count-Min Sketch deep copy not yet implemented
+                // For now, return the original (stub for COPY command)
+                break :blk Value{ .count_min_sketch = cms };
             },
         };
     }

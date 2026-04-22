@@ -606,6 +606,7 @@ pub const Persistence = struct {
                     .timeseries => 0xFD, // Time Series type
                     .bloom => 0xFC, // Bloom Filter type
                     .cuckoo => 0xFB, // Cuckoo Filter type
+                    .count_min_sketch => 0xFA, // Count-Min Sketch type
                 };
                 try w.writeByte(type_byte);
 

@@ -1904,8 +1904,8 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         };
 
         // Get or create load context
-        if (storage.cuckoo_load_contexts.getPtr(key)) |ctx| {
-            context = ctx;
+        if (storage.cuckoo_load_contexts.getPtr(key)) |ctx_ptr| {
+            context = ctx_ptr.*;
         } else {
             const new_ctx = try allocator.create(CuckooFilterValue.LoadContext);
             errdefer allocator.destroy(new_ctx);
@@ -1919,7 +1919,7 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         }
     } else {
         // Create placeholder filter (will be populated by loadChunk)
-        const new_cf = try CuckooFilterValue.init(allocator, 1, 2, 10, 1);
+        var new_cf = try CuckooFilterValue.init(allocator, 1, 2, 10, 1);
         errdefer new_cf.deinit();
 
         const key_copy = try allocator.dupe(u8, key);
@@ -1928,7 +1928,8 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         try storage.data.put(key_copy, .{ .cuckoo = new_cf });
         is_new = true;
 
-        cf = switch (storage.data.getPtr(key).?.*) {
+        const entry_ptr = storage.data.getPtr(key).?;
+        cf = switch (entry_ptr.*) {
             .cuckoo => |*cf_ptr| cf_ptr,
             else => unreachable,
         };

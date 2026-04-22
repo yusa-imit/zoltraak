@@ -367,6 +367,7 @@ pub fn cmdDebug(
                 .timeseries => "TSDB-TYPE",
                 .bloom => "BloomFilter",
                 .cuckoo => "CuckooFilter",
+                .count_min_sketch => "CountMinSketch",
             };
 
             try buf_writer.print("Value at:{s} refcount:1 encoding:raw serializedlength:0 lru:0 lru_seconds_idle:0", .{type_str});

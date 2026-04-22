@@ -109,6 +109,10 @@ pub fn cmdMemoryUsage(
                 }
                 break :blk2 total;
             },
+            .count_min_sketch => |cms| blk2: {
+                const total: usize = 256 + (cms.depth * cms.width * @sizeOf(u64)); // struct overhead + counters
+                break :blk2 total;
+            },
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };

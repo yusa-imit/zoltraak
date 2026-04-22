@@ -92,6 +92,73 @@ pub const CountMinSketchValue = struct {
         return new_cms;
     }
 
+    /// Increment counter for an item by a delta value.
+    /// Returns the new estimated count after increment.
+    /// Errors:
+    /// - error.CounterOverflow if increment would overflow u64
+    /// - error.CounterUnderflow if negative increment would underflow below 0
+    pub fn incrBy(self: *CountMinSketchValue, item: []const u8, delta: i64) !u64 {
+        var min_count: u64 = std.math.maxInt(u64);
+
+        // For each hash function, increment the counter at the hashed position
+        var i: u32 = 0;
+        while (i < self.depth) : (i += 1) {
+            const pos = self.hash(item, i);
+            const old_count = self.counters[i][pos];
+
+            // Handle positive increments
+            if (delta >= 0) {
+                const unsigned_delta = @as(u64, @intCast(delta));
+                const overflow_result = @addWithOverflow(old_count, unsigned_delta);
+                if (overflow_result[1] != 0) {
+                    return error.CounterOverflow;
+                }
+                self.counters[i][pos] = overflow_result[0];
+            } else {
+                // Handle negative increments (decrement)
+                const unsigned_delta = @as(u64, @intCast(-delta));
+                if (old_count < unsigned_delta) {
+                    return error.CounterUnderflow;
+                }
+                self.counters[i][pos] = old_count - unsigned_delta;
+            }
+
+            // Track minimum count
+            if (self.counters[i][pos] < min_count) {
+                min_count = self.counters[i][pos];
+            }
+        }
+
+        return min_count;
+    }
+
+    /// Query the estimated count for an item.
+    /// Returns the minimum count across all hash functions (Count-Min Sketch property).
+    /// Returns 0 for items that have never been incremented.
+    pub fn query(self: *const CountMinSketchValue, item: []const u8) u64 {
+        var min_count: u64 = std.math.maxInt(u64);
+
+        // For each hash function, get the counter at the hashed position
+        var i: u32 = 0;
+        while (i < self.depth) : (i += 1) {
+            const pos = self.hash(item, i);
+            const count = self.counters[i][pos];
+
+            // Track minimum count
+            if (count < min_count) {
+                min_count = count;
+            }
+        }
+
+        // If min_count is still maxInt, the sketch was empty (all zeros),
+        // so return 0 for non-existent items
+        if (min_count == std.math.maxInt(u64)) {
+            return 0;
+        }
+
+        return min_count;
+    }
+
     /// Compute hash for item at given hash function index.
     /// Uses MurmurHash3-inspired pairwise-independent hash family:
     /// h_i(x) = (h1(x) + i * h2(x)) mod width
@@ -221,6 +288,124 @@ test "CountMinSketch: hash produces consistent values" {
         const h = cms.hash(item, @as(u32, @intCast(i)));
         try std.testing.expect(h < cms.width);
     }
+}
+
+test "CountMinSketch: incrBy increments item count" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Increment "apple" by 3
+    const count = try cms.incrBy("apple", 3);
+    try std.testing.expectEqual(@as(u64, 3), count);
+
+    // Query should return same count
+    const query_count = cms.query("apple");
+    try std.testing.expectEqual(@as(u64, 3), query_count);
+}
+
+test "CountMinSketch: incrBy accumulates multiple increments" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Multiple increments to same item
+    _ = try cms.incrBy("apple", 5);
+    _ = try cms.incrBy("apple", 3);
+    const count = try cms.incrBy("apple", 2);
+
+    // Should accumulate: 5 + 3 + 2 = 10
+    try std.testing.expectEqual(@as(u64, 10), count);
+}
+
+test "CountMinSketch: incrBy handles negative increments" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Increment then decrement
+    _ = try cms.incrBy("apple", 10);
+    const count = try cms.incrBy("apple", -3);
+
+    // Should be: 10 - 3 = 7
+    try std.testing.expectEqual(@as(u64, 7), count);
+}
+
+test "CountMinSketch: incrBy detects overflow" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Set counter to near-max
+    const item = "overflow_test";
+    _ = try cms.incrBy(item, std.math.maxInt(i64));
+
+    // Incrementing again should overflow
+    try std.testing.expectError(error.CounterOverflow, cms.incrBy(item, 1));
+}
+
+test "CountMinSketch: incrBy detects underflow" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Decrementing from zero should underflow
+    try std.testing.expectError(error.CounterUnderflow, cms.incrBy("apple", -1));
+}
+
+test "CountMinSketch: query returns zero for non-existent items" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    const count = cms.query("nonexistent");
+    try std.testing.expectEqual(@as(u64, 0), count);
+}
+
+test "CountMinSketch: query returns minimum across all hash functions" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    // Add multiple items
+    _ = try cms.incrBy("apple", 100);
+    _ = try cms.incrBy("banana", 50);
+    _ = try cms.incrBy("cherry", 25);
+
+    // Query should return estimate (likely slightly higher due to collisions)
+    const count = cms.query("apple");
+
+    // Count should be >= actual (100) due to Count-Min Sketch properties
+    try std.testing.expect(count >= 100);
+}
+
+test "CountMinSketch: multiple items maintain independent counts" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 1000, 7);
+    defer cms.deinit();
+
+    // Add different counts to different items
+    _ = try cms.incrBy("apple", 10);
+    _ = try cms.incrBy("banana", 20);
+    _ = try cms.incrBy("cherry", 30);
+
+    // Queries should return estimates close to actual
+    const apple_count = cms.query("apple");
+    const banana_count = cms.query("banana");
+    const cherry_count = cms.query("cherry");
+
+    // With large sketch, counts should be exact or very close
+    try std.testing.expect(apple_count >= 10);
+    try std.testing.expect(banana_count >= 20);
+    try std.testing.expect(cherry_count >= 30);
 }
 
 test "CountMinSketch: hash produces uniform distribution" {

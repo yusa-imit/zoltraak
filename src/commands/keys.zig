@@ -824,6 +824,7 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
                 .timeseries => "TSDB-TYPE",
                 .bloom => "BloomFilter",
                 .cuckoo => "CuckooFilter",
+                .count_min_sketch => "CountMinSketch",
             } else "none";
             const tf_lower = try std.ascii.allocLowerString(allocator, tf);
             defer allocator.free(tf_lower);
@@ -1630,6 +1631,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .timeseries => "timeseries",
             .bloom => "bloom",
             .cuckoo => "cuckoo",
+            .count_min_sketch => "countminsketch",
         };
         return w.writeSimpleString(encoding);
     } else {
