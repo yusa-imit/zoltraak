@@ -102,6 +102,7 @@ pub const Persistence = struct {
                     .timeseries => 0xFD, // Time Series type
                     .bloom => 0xFC, // Bloom Filter type
                     .cuckoo => 0xFB, // Cuckoo Filter type
+                    .count_min_sketch => 0xFA, // Count-Min Sketch type
                 };
                 try w.writeByte(type_byte);
 
@@ -173,6 +174,10 @@ pub const Persistence = struct {
                     },
                     .cuckoo => {
                         // Cuckoo filter not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .count_min_sketch => {
+                        // Count-Min Sketch not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
@@ -664,6 +669,10 @@ pub const Persistence = struct {
                     },
                     .cuckoo => {
                         // Cuckoo filter not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .count_min_sketch => {
+                        // Count-Min Sketch not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }

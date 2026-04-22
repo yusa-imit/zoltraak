@@ -184,6 +184,7 @@ pub fn cmdType(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         .timeseries => "TSDB-TYPE",
         .bloom => "BloomFilter",
         .cuckoo => "CuckooFilter",
+        .count_min_sketch => "CMSSketch",
     } else "none";
 
     return w.writeSimpleString(type_str);

@@ -13,6 +13,7 @@ const search_mod = @import("search.zig");
 const timeseries_mod = @import("timeseries.zig");
 const bloom_mod = @import("bloom.zig");
 const cuckoo_mod = @import("cuckoo.zig");
+const cms_mod = @import("cms.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -29,6 +30,7 @@ pub const SearchStore = search_mod.SearchStore;
 pub const TimeSeriesValue = timeseries_mod.TimeSeriesValue;
 pub const BloomFilterValue = bloom_mod.BloomFilterValue;
 pub const CuckooFilterValue = cuckoo_mod.CuckooFilterValue;
+pub const CountMinSketchValue = cms_mod.CountMinSketchValue;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -50,6 +52,7 @@ pub const ValueType = enum {
     timeseries,
     bloom,
     cuckoo,
+    count_min_sketch,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -66,6 +69,7 @@ pub const Value = union(ValueType) {
     timeseries: TimeSeriesValue,
     bloom: BloomFilterValue,
     cuckoo: CuckooFilterValue,
+    count_min_sketch: CountMinSketchValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -403,6 +407,7 @@ pub const Value = union(ValueType) {
             .timeseries => |*ts| ts.deinit(),
             .bloom => |*b| b.deinit(),
             .cuckoo => |*c| c.deinit(),
+            .count_min_sketch => |*cms| cms.deinit(),
         }
     }
 
@@ -420,6 +425,7 @@ pub const Value = union(ValueType) {
             .timeseries => |ts| ts.expires_at,
             .bloom => |b| b.expires_at,
             .cuckoo => |c| c.expires_at,
+            .count_min_sketch => null, // CMS doesn't support expiration
         };
     }
 
@@ -778,6 +784,7 @@ pub const Storage = struct {
                             .timeseries => |ts| ts.expires_at,
                             .bloom => |b| b.expires_at,
                             .cuckoo => |c| c.expires_at,
+                            .count_min_sketch => null, // CMS doesn't support expiration
                         };
                     }
                 }
@@ -4114,6 +4121,7 @@ pub const Storage = struct {
             .timeseries => |*v| v.expires_at = expires_at,
             .bloom => |*v| v.expires_at = expires_at,
             .cuckoo => |*v| v.expires_at = expires_at,
+            .count_min_sketch => {}, // CMS doesn't support expiration - no-op
         }
         return true;
     }

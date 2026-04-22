@@ -39,6 +39,7 @@ const search_agg_cmds = @import("search_aggregate.zig");
 const timeseries_cmds = @import("timeseries.zig");
 const bloom_cmds = @import("bloom.zig");
 const cuckoo_cmds = @import("cuckoo.zig");
+const cms_cmds = @import("cms.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -584,6 +585,7 @@ pub fn executeCommand(
                 "GEOADD",     "PFADD",      "PFMERGE",
                 "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
                 "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
+                "CMS.INITBYDIM", "CMS.INITBYPROB",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -2335,6 +2337,32 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CF.MEXISTS")) {
                 const result = try cuckoo_cmds.cmdCfMexists(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_upper});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+
+        // Count-Min Sketch (CMS.*) commands
+        else if (std.mem.startsWith(u8, cmd_upper, "CMS.")) {
+            // Extract command args (skip command name)
+            const args = try allocator.alloc(RespValue, array.len - 1);
+            defer allocator.free(args);
+            @memcpy(args, array[1..]);
+
+            if (std.mem.eql(u8, cmd_upper, "CMS.INITBYDIM")) {
+                const result = try cms_cmds.cmdCmsInitByDim(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "CMS.INITBYPROB")) {
+                const result = try cms_cmds.cmdCmsInitByProb(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
