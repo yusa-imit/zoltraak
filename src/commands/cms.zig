@@ -97,7 +97,8 @@ pub fn cmdCmsIncrBy(
     args: []const RespValue,
 ) !RespValue {
     // Validate arity: key + at least one item-increment pair
-    if (args.len < 4 or (args.len - 2) % 2 != 0) {
+    // args = [key, item1, incr1, item2, incr2, ...] so args.len must be odd (1 + 2n)
+    if (args.len < 3 or (args.len - 1) % 2 != 0) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'CMS.INCRBY' command (expected key item increment pairs)" };
     }
 

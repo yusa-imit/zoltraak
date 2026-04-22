@@ -117,10 +117,11 @@ pub const CountMinSketchValue = struct {
             } else {
                 // Handle negative increments (decrement)
                 const unsigned_delta = @as(u64, @intCast(-delta));
-                if (old_count < unsigned_delta) {
+                const underflow_result = @subWithOverflow(old_count, unsigned_delta);
+                if (underflow_result[1] != 0) {
                     return error.CounterUnderflow;
                 }
-                self.counters[i][pos] = old_count - unsigned_delta;
+                self.counters[i][pos] = underflow_result[0];
             }
 
             // Track minimum count
@@ -150,12 +151,7 @@ pub const CountMinSketchValue = struct {
             }
         }
 
-        // If min_count is still maxInt, the sketch was empty (all zeros),
-        // so return 0 for non-existent items
-        if (min_count == std.math.maxInt(u64)) {
-            return 0;
-        }
-
+        // Return the minimum count (will be 0 for non-existent items in zero-initialized sketch)
         return min_count;
     }
 
@@ -418,7 +414,7 @@ test "CountMinSketch: hash produces uniform distribution" {
     var buckets = [_]u32{0} ** 100;
     var i: u32 = 0;
     while (i < 1000) : (i += 1) {
-        var buf: [16]u8 = undefined;
+        var buf: [32]u8 = undefined; // Plenty of room for "item_NNNN"
         const item = try std.fmt.bufPrint(&buf, "item_{d}", .{i});
         const h = cms.hash(item, 0);
         buckets[h] += 1;
