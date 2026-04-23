@@ -384,6 +384,110 @@ pub const TopKValue = struct {
 
         return min_count;
     }
+
+    /// Increment an item's count by a specified increment
+    /// Returns the expelled item (if any) when heap is full and minimum is replaced
+    /// Uses HeavyKeeper algorithm with exponential decay
+    pub fn incrBy(self: *TopKValue, item: []const u8, increment: u64) !?[]const u8 {
+        if (increment == 0) return null;
+
+        const hashes = murmurHash3(item);
+        const fingerprint: u8 = @truncate(hashes.h1 % 256);
+
+        // Update counters in hash table using double hashing
+        var min_count: u64 = std.math.maxInt(u64);
+        for (0..self.depth) |d| {
+            const h1 = hashes.h1 % self.width;
+            const h2 = hashes.h2 % self.width;
+            const bucket_idx = (h1 +% (@as(u64, @intCast(d)) *% h2)) % self.width;
+
+            var cell = &self.hash_table[d][bucket_idx];
+
+            if (cell.counter == 0) {
+                // Empty cell, claim it with increment
+                cell.fingerprint = fingerprint;
+                cell.counter = increment;
+                min_count = @min(min_count, increment);
+            } else if (cell.fingerprint == fingerprint) {
+                // Same fingerprint, add increment
+                cell.counter += increment;
+                min_count = @min(min_count, cell.counter);
+            } else {
+                // Different fingerprint, probabilistic decay
+                const decay_prob = std.math.pow(f64, self.decay, @as(f64, @floatFromInt(cell.counter)));
+                const rand_val = self.prng.random().float(f64);
+
+                if (rand_val < decay_prob) {
+                    // Decrement counter (saturate at 0)
+                    if (cell.counter > increment) {
+                        cell.counter -= increment;
+                        min_count = @min(min_count, cell.counter);
+                    } else {
+                        // Cell freed, claim it with remaining increment
+                        const remaining = increment - cell.counter;
+                        cell.fingerprint = fingerprint;
+                        cell.counter = remaining;
+                        min_count = @min(min_count, remaining);
+                    }
+                } else {
+                    min_count = @min(min_count, cell.counter);
+                }
+            }
+        }
+
+        // Update heap
+        return try self.updateHeap(item, min_count, fingerprint);
+    }
+
+    /// Result item for list() method
+    pub const TopKItem = struct {
+        item: []const u8,
+        count: u64,
+    };
+
+    /// Get the list of top-k items sorted by count (descending)
+    /// Caller owns the returned slice and must free it
+    /// Items are sorted from highest count to lowest count
+    pub fn list(self: *TopKValue, allocator: std.mem.Allocator) ![]TopKItem {
+        // Copy heap items to a temporary array for sorting
+        var items = try std.ArrayList(TopKItem).initCapacity(allocator, self.heap.items.len);
+        errdefer items.deinit(allocator);
+
+        for (self.heap.items) |heap_item| {
+            try items.append(allocator, .{
+                .item = heap_item.item,
+                .count = heap_item.count,
+            });
+        }
+
+        // Sort by count descending
+        const SortContext = struct {
+            pub fn lessThan(_: void, a: TopKItem, b: TopKItem) bool {
+                return a.count > b.count; // Descending order
+            }
+        };
+        std.mem.sort(TopKItem, items.items, {}, SortContext.lessThan);
+
+        return try items.toOwnedSlice(allocator);
+    }
+
+    /// Info metadata about the Top-K filter
+    pub const TopKInfo = struct {
+        k: u32,
+        width: u32,
+        depth: u32,
+        decay: f64,
+    };
+
+    /// Get metadata about this Top-K filter
+    pub fn info(self: *TopKValue) TopKInfo {
+        return .{
+            .k = self.k,
+            .width = self.width,
+            .depth = self.depth,
+            .decay = self.decay,
+        };
+    }
 };
 
 // ============================================================================
@@ -532,4 +636,81 @@ test "MurmurHash3: different inputs produce different hashes" {
     const h1 = murmurHash3("test1");
     const h2 = murmurHash3("test2");
     try std.testing.expect(h1.h1 != h2.h1 or h1.h2 != h2.h2);
+}
+
+test "TopKValue: incrBy increments item count" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 3, 8, 7, 0.9);
+    defer topk.deinit();
+
+    _ = try topk.incrBy("apple", 5);
+    const count = topk.count("apple");
+    try std.testing.expect(count >= 5);
+    try std.testing.expect(topk.query("apple"));
+}
+
+test "TopKValue: incrBy zero increment is no-op" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 3, 8, 7, 0.9);
+    defer topk.deinit();
+
+    const expelled = try topk.incrBy("apple", 0);
+    try std.testing.expectEqual(@as(?[]const u8, null), expelled);
+    try std.testing.expectEqual(@as(usize, 0), topk.heap.items.len);
+}
+
+test "TopKValue: incrBy multiple times accumulates count" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 3, 8, 7, 0.9);
+    defer topk.deinit();
+
+    _ = try topk.incrBy("apple", 3);
+    const count1 = topk.count("apple");
+    _ = try topk.incrBy("apple", 2);
+    const count2 = topk.count("apple");
+
+    try std.testing.expect(count2 >= count1);
+    try std.testing.expectEqual(@as(usize, 1), topk.heap.items.len);
+}
+
+test "TopKValue: list returns empty for empty Top-K" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 3, 8, 7, 0.9);
+    defer topk.deinit();
+
+    const items = try topk.list(allocator);
+    defer allocator.free(items);
+
+    try std.testing.expectEqual(@as(usize, 0), items.len);
+}
+
+test "TopKValue: list returns sorted items descending by count" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 3, 8, 7, 0.9);
+    defer topk.deinit();
+
+    // Add items with different frequencies
+    for (0..10) |_| _ = try topk.add("frequent");
+    for (0..5) |_| _ = try topk.add("medium");
+    for (0..2) |_| _ = try topk.add("rare");
+
+    const items = try topk.list(allocator);
+    defer allocator.free(items);
+
+    try std.testing.expectEqual(@as(usize, 3), items.len);
+    // Verify descending order
+    try std.testing.expect(items[0].count >= items[1].count);
+    try std.testing.expect(items[1].count >= items[2].count);
+}
+
+test "TopKValue: info returns correct metadata" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 5, 16, 9, 0.85);
+    defer topk.deinit();
+
+    const metadata = topk.info();
+    try std.testing.expectEqual(@as(u32, 5), metadata.k);
+    try std.testing.expectEqual(@as(u32, 16), metadata.width);
+    try std.testing.expectEqual(@as(u32, 9), metadata.depth);
+    try std.testing.expectEqual(@as(f64, 0.85), metadata.decay);
 }

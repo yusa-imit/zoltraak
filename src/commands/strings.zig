@@ -174,6 +174,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "GEOADD", "PFADD", "PFMERGE",
         "RESTORE", "SORT", "DELEX", "MIGRATE",
         "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
+        "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -2406,6 +2407,21 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.COUNT")) {
                 const result = try topk_cmds.cmdTopkCount(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.INCRBY")) {
+                const result = try topk_cmds.cmdTopkIncrby(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.LIST")) {
+                const result = try topk_cmds.cmdTopkList(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TOPK.INFO")) {
+                const result = try topk_cmds.cmdTopkInfo(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
