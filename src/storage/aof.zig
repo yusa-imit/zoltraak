@@ -287,6 +287,10 @@ pub const Aof = struct {
                     // Top-K values handled by TOPK.* commands in AOF replay
                     // The commands will be replayed from AOF log
                 },
+                .t_digest => {
+                    // T-Digest values handled by TDIGEST.* commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 

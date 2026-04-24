@@ -117,6 +117,10 @@ pub fn cmdMemoryUsage(
                 const total: usize = 256 + (tk.depth * tk.width * (@sizeOf(u8) + @sizeOf(u64))) + (tk.k * 64); // struct + hash table + heap
                 break :blk2 total;
             },
+            .t_digest => |td| blk2: {
+                const total: usize = 256 + (td.centroids.items.len * (@sizeOf(f64) + @sizeOf(u64))); // struct + centroids
+                break :blk2 total;
+            },
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };

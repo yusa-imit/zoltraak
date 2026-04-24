@@ -381,6 +381,11 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
             const heap_size = tk.k * (@sizeOf([]u8) + @sizeOf(u64) + @sizeOf(u8));
             break :blk hash_table_size + heap_size;
         },
+        .t_digest => |td| blk: {
+            // T-Digest memory: centroids array
+            const centroid_size = td.centroids.items.len * (@sizeOf(f64) + @sizeOf(u64));
+            break :blk centroid_size;
+        },
     };
 }
 

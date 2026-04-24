@@ -104,6 +104,7 @@ pub const Persistence = struct {
                     .cuckoo => 0xFB, // Cuckoo Filter type
                     .count_min_sketch => 0xFA, // Count-Min Sketch type
                     .top_k => 0xF9, // Top-K type
+                    .t_digest => 0xF8, // T-Digest type
                 };
                 try w.writeByte(type_byte);
 
@@ -183,6 +184,10 @@ pub const Persistence = struct {
                     },
                     .top_k => {
                         // Top-K not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .t_digest => {
+                        // T-Digest not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
@@ -613,6 +618,7 @@ pub const Persistence = struct {
                     .cuckoo => 0xFB, // Cuckoo Filter type
                     .count_min_sketch => 0xFA, // Count-Min Sketch type
                     .top_k => 0xF9, // Top-K type
+                    .t_digest => 0xF8, // T-Digest type
                 };
                 try w.writeByte(type_byte);
 
@@ -684,6 +690,10 @@ pub const Persistence = struct {
                     },
                     .top_k => {
                         // Top-K not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .t_digest => {
+                        // T-Digest not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
