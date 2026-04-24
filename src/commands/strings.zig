@@ -176,7 +176,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "RESTORE", "SORT", "DELEX", "MIGRATE",
         "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
         "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
-        "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET",
+        "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -591,7 +591,7 @@ pub fn executeCommand(
                 "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
                 "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY", "CMS.MERGE",
                 "TOPK.RESERVE", "TOPK.ADD",
-                "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET",
+                "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -2440,6 +2440,11 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.RESET")) {
                 const result = try tdigest_cmds.cmdTdigestReset(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.MERGE")) {
+                const result = try tdigest_cmds.cmdTdigestMerge(allocator, storage, args);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

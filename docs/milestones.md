@@ -5,8 +5,8 @@
 - **Latest release**: v0.1.0
 - **Iterations complete**: 226 (347+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 15 (Probabilistic Data Structures) — 78% complete (38/49 commands)
-- **Next milestone**: Phase 15.17 (T-Digest query commands: TDIGEST.QUANTILE, TDIGEST.CDF)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 80% complete (39/49 commands)
+- **Next milestone**: Phase 15.18 (T-Digest query commands: TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -102,8 +102,9 @@
 | 224 | Top-K foundation (TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT with HeavyKeeper algorithm, 2D hash table with exponential decay, min heap for Top-K maintenance, MurmurHash3 8-bit fingerprinting, configurable parameters k/width/depth/decay, 17 storage unit tests + 25 integration tests) | Done ✅ |
 | 225 | TOPK.INCRBY, TOPK.LIST, TOPK.INFO (increment by delta with auto-create, sorted list retrieval with WITHCOUNT flag, metadata introspection returning k/width/depth/decay, 7 storage unit tests + 16 integration tests) | Done ✅ |
 | 226 | T-Digest foundation (TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET with Centroid struct, compression parameter, simplified add without merging, NaN validation, CRITICAL: TDIGEST.ADD does NOT auto-create — compression parameter requires explicit user decision, 14 storage unit tests + 11 command tests) | Done ✅ |
+| 227 | TDIGEST.MERGE (merge multiple sketches with centroid concatenation, COMPRESSION override, OVERRIDE flag for replacing existing destination, atomic create-before-remove for safety, min/max/total_count aggregation, 14 storage unit tests + 13 command tests + 16 integration tests) | Done ✅ |
 
-**35/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO
+**36/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO, TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET, TDIGEST.MERGE
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 

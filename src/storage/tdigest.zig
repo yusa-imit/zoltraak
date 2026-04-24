@@ -98,6 +98,63 @@ pub const TDigestValue = struct {
         self.max = -std.math.inf(f64);
         self.total_count = 0;
     }
+
+    /// Merge multiple T-Digest sketches into this one.
+    ///
+    /// Combines all centroids from source sketches into the destination sketch.
+    /// This is a simplified merge implementation that concatenates centroids
+    /// without full compression (deferred to future iterations).
+    ///
+    /// Parameters:
+    ///   - sources: Slice of pointers to source TDigestValue sketches
+    ///   - compression_override: Optional compression parameter to apply to dest
+    ///
+    /// Behavior:
+    ///   - Clears existing dest centroids before merge
+    ///   - Copies all centroids from all non-empty sources
+    ///   - Aggregates total_count (sum of all source counts)
+    ///   - Tracks min/max across all sources
+    ///   - Empty sources (total_count == 0) are skipped
+    ///   - If compression_override is provided, updates dest compression
+    ///
+    /// Ownership: Sources remain unmodified. Dest is modified in place.
+    pub fn merge(self: *TDigestValue, sources: []const *TDigestValue, compression_override: ?u32) !void {
+        // Apply compression override if provided
+        if (compression_override) |new_compression| {
+            self.compression = new_compression;
+        }
+
+        // Clear existing centroids
+        self.centroids.clearRetainingCapacity();
+        self.min = std.math.inf(f64);
+        self.max = -std.math.inf(f64);
+        self.total_count = 0;
+
+        // Merge all sources
+        for (sources) |source| {
+            // Skip empty sources
+            if (source.total_count == 0) {
+                continue;
+            }
+
+            // Copy all centroids from this source
+            for (source.centroids.items) |centroid| {
+                try self.centroids.append(self.allocator, centroid);
+            }
+
+            // Update min/max
+            if (self.total_count == 0) {
+                self.min = source.min;
+                self.max = source.max;
+            } else {
+                self.min = @min(self.min, source.min);
+                self.max = @max(self.max, source.max);
+            }
+
+            // Aggregate total count
+            self.total_count += source.total_count;
+        }
+    }
 };
 
 // ============================================================================
@@ -264,4 +321,296 @@ test "TDigestValue.add rejects NaN" {
 
     try std.testing.expectError(error.InvalidValue, result);
     try std.testing.expectEqual(0, td.total_count);
+}
+
+// ============================================================================
+// TDIGEST.MERGE Tests (Iteration 227)
+// ============================================================================
+
+test "TDigestValue.merge two sketches" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(10.0);
+    try source1.add(20.0);
+    try source1.add(30.0);
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+    try source2.add(40.0);
+    try source2.add(50.0);
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    // Should combine all values from both sources
+    try std.testing.expectEqual(5, dest.total_count);
+    try std.testing.expectEqual(10.0, dest.min);
+    try std.testing.expectEqual(50.0, dest.max);
+    try std.testing.expectEqual(5, dest.centroids.items.len);
+}
+
+test "TDigestValue.merge three sketches" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(1.0);
+    try source1.add(2.0);
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+    try source2.add(3.0);
+    try source2.add(4.0);
+
+    var source3 = try TDigestValue.init(allocator, 100);
+    defer source3.deinit();
+    try source3.add(5.0);
+    try source3.add(6.0);
+
+    const sources = [_]*TDigestValue{ &source1, &source2, &source3 };
+    try dest.merge(&sources, null);
+
+    try std.testing.expectEqual(6, dest.total_count);
+    try std.testing.expectEqual(1.0, dest.min);
+    try std.testing.expectEqual(6.0, dest.max);
+}
+
+test "TDigestValue.merge with min/max across sources" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(-100.0);
+    try source1.add(0.0);
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+    try source2.add(50.0);
+    try source2.add(200.0);
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    // Min should be from source1, max from source2
+    try std.testing.expectEqual(-100.0, dest.min);
+    try std.testing.expectEqual(200.0, dest.max);
+    try std.testing.expectEqual(4, dest.total_count);
+}
+
+test "TDigestValue.merge with total_count aggregation" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(1.0);
+    try source1.add(2.0);
+    try source1.add(3.0);
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+    try source2.add(4.0);
+    try source2.add(5.0);
+    try source2.add(6.0);
+    try source2.add(7.0);
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    // Should sum both source counts: 3 + 4 = 7
+    try std.testing.expectEqual(7, dest.total_count);
+}
+
+test "TDigestValue.merge empty source sketch" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(10.0);
+    try source1.add(20.0);
+
+    // source2 is empty (no values added)
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    // Should only contain values from source1
+    try std.testing.expectEqual(2, dest.total_count);
+    try std.testing.expectEqual(10.0, dest.min);
+    try std.testing.expectEqual(20.0, dest.max);
+}
+
+test "TDigestValue.merge all empty sources" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    // Dest should remain empty
+    try std.testing.expectEqual(0, dest.total_count);
+    try std.testing.expectEqual(std.math.inf(f64), dest.min);
+    try std.testing.expectEqual(-std.math.inf(f64), dest.max);
+}
+
+test "TDigestValue.merge with compression override" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 50);
+    defer source1.deinit();
+    try source1.add(10.0);
+
+    var source2 = try TDigestValue.init(allocator, 200);
+    defer source2.deinit();
+    try source2.add(20.0);
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    const override_compression: u32 = 150;
+    try dest.merge(&sources, override_compression);
+
+    // Dest compression should be overridden to 150
+    try std.testing.expectEqual(150, dest.compression);
+    try std.testing.expectEqual(2, dest.total_count);
+}
+
+test "TDigestValue.merge without compression override uses dest compression" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 50);
+    defer source1.deinit();
+    try source1.add(10.0);
+
+    const sources = [_]*TDigestValue{ &source1 };
+    try dest.merge(&sources, null);
+
+    // Dest compression should remain unchanged
+    try std.testing.expectEqual(100, dest.compression);
+}
+
+test "TDigestValue.merge single source" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source = try TDigestValue.init(allocator, 100);
+    defer source.deinit();
+    try source.add(42.0);
+
+    const sources = [_]*TDigestValue{ &source };
+    try dest.merge(&sources, null);
+
+    try std.testing.expectEqual(1, dest.total_count);
+    try std.testing.expectEqual(42.0, dest.min);
+    try std.testing.expectEqual(42.0, dest.max);
+}
+
+test "TDigestValue.merge preserves centroids from all sources" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(1.0);
+    try source1.add(2.0);
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+    try source2.add(3.0);
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    // All centroids should be copied
+    try std.testing.expectEqual(3, dest.centroids.items.len);
+
+    // Verify values are present (order may vary)
+    var found_1 = false;
+    var found_2 = false;
+    var found_3 = false;
+    for (dest.centroids.items) |c| {
+        if (c.mean == 1.0) found_1 = true;
+        if (c.mean == 2.0) found_2 = true;
+        if (c.mean == 3.0) found_3 = true;
+    }
+    try std.testing.expect(found_1);
+    try std.testing.expect(found_2);
+    try std.testing.expect(found_3);
+}
+
+test "TDigestValue.merge with infinity values" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+
+    var source1 = try TDigestValue.init(allocator, 100);
+    defer source1.deinit();
+    try source1.add(std.math.inf(f64));
+
+    var source2 = try TDigestValue.init(allocator, 100);
+    defer source2.deinit();
+    try source2.add(-std.math.inf(f64));
+
+    const sources = [_]*TDigestValue{ &source1, &source2 };
+    try dest.merge(&sources, null);
+
+    try std.testing.expectEqual(2, dest.total_count);
+    try std.testing.expectEqual(-std.math.inf(f64), dest.min);
+    try std.testing.expectEqual(std.math.inf(f64), dest.max);
+}
+
+test "TDigestValue.merge into non-empty dest with existing data" {
+    const allocator = std.testing.allocator;
+
+    var dest = try TDigestValue.init(allocator, 100);
+    defer dest.deinit();
+    try dest.add(100.0);
+    try dest.add(200.0);
+
+    var source = try TDigestValue.init(allocator, 100);
+    defer source.deinit();
+    try source.add(300.0);
+
+    const sources = [_]*TDigestValue{ &source };
+    try dest.merge(&sources, null);
+
+    // Should combine existing dest data with source data
+    try std.testing.expectEqual(3, dest.total_count);
+    try std.testing.expectEqual(100.0, dest.min);
+    try std.testing.expectEqual(300.0, dest.max);
 }
