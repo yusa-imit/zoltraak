@@ -286,6 +286,243 @@ pub fn cmdTdigestMerge(allocator: std.mem.Allocator, storage: *Storage, args: []
     return protocol.RespValue{ .simple_string = "OK" };
 }
 
+/// TDIGEST.QUANTILE key quantile [quantile ...]
+/// Get estimated values at given quantiles (0.0-1.0)
+pub fn cmdTdigestQuantile(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len < 3) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.QUANTILE' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse quantiles and compute results
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, args.len - 2);
+    errdefer {
+        for (results.items) |item| {
+            protocol.deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const quantile_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => {
+                for (results.items) |item| {
+                    protocol.deinitRespValue(item, allocator);
+                }
+                results.deinit(allocator);
+                return protocol.RespValue{ .error_string = "ERR quantile must be a number" };
+            },
+        };
+
+        const q = std.fmt.parseFloat(f64, quantile_str) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR quantile must be a valid float" };
+        };
+
+        const result_value = td.quantile(q) catch |err| {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return switch (err) {
+                error.InvalidQuantile => protocol.RespValue{ .error_string = "ERR quantile must be in range [0.0, 1.0]" },
+                error.EmptySketch => protocol.RespValue{ .error_string = "ERR sketch is empty" },
+                else => protocol.RespValue{ .error_string = "ERR failed to compute quantile" },
+            };
+        };
+
+        // Format as bulk string
+        const buf = try allocator.alloc(u8, 32);
+        errdefer allocator.free(buf);
+        const formatted = try std.fmt.bufPrint(buf, "{d}", .{result_value});
+        const owned = try allocator.dupe(u8, formatted);
+        allocator.free(buf);
+
+        try results.append(allocator, protocol.RespValue{ .bulk_string = owned });
+    }
+
+    return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+}
+
+/// TDIGEST.CDF key value [value ...]
+/// Get cumulative distribution function values
+pub fn cmdTdigestCdf(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len < 3) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.CDF' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse values and compute CDF results
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, args.len - 2);
+    errdefer {
+        for (results.items) |item| {
+            protocol.deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const value_str = switch (args[i]) {
+            .bulk_string => |s| s,
+            else => {
+                for (results.items) |item| {
+                    protocol.deinitRespValue(item, allocator);
+                }
+                results.deinit(allocator);
+                return protocol.RespValue{ .error_string = "ERR value must be a number" };
+            },
+        };
+
+        const value = std.fmt.parseFloat(f64, value_str) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR value must be a valid float" };
+        };
+
+        const cdf_value = td.cdf(value) catch |err| {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return switch (err) {
+                error.EmptySketch => protocol.RespValue{ .error_string = "ERR sketch is empty" },
+                else => protocol.RespValue{ .error_string = "ERR failed to compute CDF" },
+            };
+        };
+
+        // Format as bulk string
+        const buf = try allocator.alloc(u8, 32);
+        errdefer allocator.free(buf);
+        const formatted = try std.fmt.bufPrint(buf, "{d}", .{cdf_value});
+        const owned = try allocator.dupe(u8, formatted);
+        allocator.free(buf);
+
+        try results.append(allocator, protocol.RespValue{ .bulk_string = owned });
+    }
+
+    return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+}
+
+/// TDIGEST.MIN key
+/// Get minimum value in sketch
+pub fn cmdTdigestMin(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    _ = allocator;
+
+    if (args.len != 2) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.MIN' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Empty sketch
+    if (td.total_count == 0) {
+        return protocol.RespValue{ .error_string = "ERR sketch is empty" };
+    }
+
+    // Format min value as bulk string
+    var buf: [32]u8 = undefined;
+    const formatted = try std.fmt.bufPrint(&buf, "{d}", .{td.min});
+    const allocator_for_resp = storage.allocator;
+    const owned = try allocator_for_resp.dupe(u8, formatted);
+
+    return protocol.RespValue{ .bulk_string = owned };
+}
+
+/// TDIGEST.MAX key
+/// Get maximum value in sketch
+pub fn cmdTdigestMax(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    _ = allocator;
+
+    if (args.len != 2) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.MAX' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Empty sketch
+    if (td.total_count == 0) {
+        return protocol.RespValue{ .error_string = "ERR sketch is empty" };
+    }
+
+    // Format max value as bulk string
+    var buf: [32]u8 = undefined;
+    const formatted = try std.fmt.bufPrint(&buf, "{d}", .{td.max});
+    const allocator_for_resp = storage.allocator;
+    const owned = try allocator_for_resp.dupe(u8, formatted);
+
+    return protocol.RespValue{ .bulk_string = owned };
+}
+
 // ============================================================================
 // Unit Tests
 // ============================================================================
@@ -896,6 +1133,299 @@ test "cmdTdigestMerge too few arguments" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.error_string, result);
+}
+
+// ============================================================================
+// TDIGEST.QUANTILE/CDF/MIN/MAX Tests (Iteration 228)
+// ============================================================================
+
+test "cmdTdigestQuantile single quantile" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create and populate
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "10.0" },
+        protocol.RespValue{ .bulk_string = "20.0" },
+        protocol.RespValue{ .bulk_string = "30.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    // Query quantile
+    const quantile_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.QUANTILE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "0.5" },
+    };
+
+    const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.array, result);
+    try std.testing.expectEqual(1, result.array.len);
+}
+
+test "cmdTdigestQuantile multiple quantiles" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "10.0" },
+        protocol.RespValue{ .bulk_string = "20.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    const quantile_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.QUANTILE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "0.0" },
+        protocol.RespValue{ .bulk_string = "0.5" },
+        protocol.RespValue{ .bulk_string = "1.0" },
+    };
+
+    const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.array, result);
+    try std.testing.expectEqual(3, result.array.len);
+}
+
+test "cmdTdigestQuantile nonexistent key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const quantile_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.QUANTILE" },
+        protocol.RespValue{ .bulk_string = "nonexistent" },
+        protocol.RespValue{ .bulk_string = "0.5" },
+    };
+
+    const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.error_string, result);
+}
+
+test "cmdTdigestQuantile invalid quantile" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "42.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    const quantile_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.QUANTILE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "1.5" },
+    };
+
+    const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.error_string, result);
+}
+
+test "cmdTdigestCdf single value" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "10.0" },
+        protocol.RespValue{ .bulk_string = "20.0" },
+        protocol.RespValue{ .bulk_string = "30.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    const cdf_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CDF" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "20.0" },
+    };
+
+    const result = try cmdTdigestCdf(allocator, &storage, &cdf_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.array, result);
+    try std.testing.expectEqual(1, result.array.len);
+}
+
+test "cmdTdigestCdf multiple values" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "10.0" },
+        protocol.RespValue{ .bulk_string = "50.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    const cdf_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CDF" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "5.0" },
+        protocol.RespValue{ .bulk_string = "30.0" },
+        protocol.RespValue{ .bulk_string = "100.0" },
+    };
+
+    const result = try cmdTdigestCdf(allocator, &storage, &cdf_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.array, result);
+    try std.testing.expectEqual(3, result.array.len);
+}
+
+test "cmdTdigestMin basic" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "10.0" },
+        protocol.RespValue{ .bulk_string = "20.0" },
+        protocol.RespValue{ .bulk_string = "5.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    const min_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.MIN" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+
+    const result = try cmdTdigestMin(allocator, &storage, &min_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.bulk_string, result);
+}
+
+test "cmdTdigestMax basic" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const add_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.ADD" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+        protocol.RespValue{ .bulk_string = "10.0" },
+        protocol.RespValue{ .bulk_string = "20.0" },
+        protocol.RespValue{ .bulk_string = "50.0" },
+    };
+    _ = try cmdTdigestAdd(allocator, &storage, &add_args);
+
+    const max_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.MAX" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+
+    const result = try cmdTdigestMax(allocator, &storage, &max_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.bulk_string, result);
+}
+
+test "cmdTdigestMin empty sketch" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const create_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.CREATE" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+    _ = try cmdTdigestCreate(allocator, &storage, &create_args);
+
+    const min_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.MIN" },
+        protocol.RespValue{ .bulk_string = "mydigest" },
+    };
+
+    const result = try cmdTdigestMin(allocator, &storage, &min_args);
+    defer protocol.deinitRespValue(result, allocator);
+
+    try std.testing.expectEqual(protocol.RespValueType.error_string, result);
+}
+
+test "cmdTdigestMax wrong type" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const key_copy = try allocator.dupe(u8, "notdigest");
+    try storage.data.put(key_copy, Value{ .string = .{
+        .data = try allocator.dupe(u8, "hello"),
+        .expires_at = null,
+    } });
+
+    const max_args = [_]protocol.RespValue{
+        protocol.RespValue{ .bulk_string = "TDIGEST.MAX" },
+        protocol.RespValue{ .bulk_string = "notdigest" },
+    };
+
+    const result = try cmdTdigestMax(allocator, &storage, &max_args);
     defer protocol.deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);

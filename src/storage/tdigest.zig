@@ -13,6 +13,8 @@ const std = @import("std");
 pub const TDigestError = error{
     InvalidCompression,
     InvalidValue,
+    InvalidQuantile,
+    EmptySketch,
     OutOfMemory,
 };
 
@@ -154,6 +156,117 @@ pub const TDigestValue = struct {
             // Aggregate total count
             self.total_count += source.total_count;
         }
+    }
+
+    /// Estimate quantile value at given quantile (0.0 to 1.0).
+    ///
+    /// This is a simplified implementation that sorts centroids by mean value
+    /// and interpolates. Full T-Digest quantile estimation (weighted interpolation
+    /// with compression) deferred to future iterations.
+    ///
+    /// Parameters:
+    ///   - q: Quantile in range [0.0, 1.0], where 0.0 = min, 1.0 = max, 0.5 = median
+    ///
+    /// Returns: Estimated value at the given quantile
+    ///
+    /// Errors:
+    ///   - InvalidQuantile: q < 0.0 or q > 1.0
+    ///   - EmptySketch: No values in sketch
+    pub fn quantile(self: *const TDigestValue, q: f64) TDigestError!f64 {
+        // Validate quantile range
+        if (q < 0.0 or q > 1.0) {
+            return TDigestError.InvalidQuantile;
+        }
+
+        // Empty sketch
+        if (self.total_count == 0) {
+            return TDigestError.EmptySketch;
+        }
+
+        // Edge cases
+        if (q == 0.0) return self.min;
+        if (q == 1.0) return self.max;
+
+        // Single value
+        if (self.total_count == 1) {
+            return self.centroids.items[0].mean;
+        }
+
+        // Sort centroids by mean (simplified - full algorithm uses weighted sums)
+        const items = self.centroids.items;
+        var sorted = try self.allocator.alloc(Centroid, items.len);
+        defer self.allocator.free(sorted);
+        @memcpy(sorted, items);
+
+        // Bubble sort (simple, O(n^2) - acceptable for now, optimize later if needed)
+        var i: usize = 0;
+        while (i < sorted.len) : (i += 1) {
+            var j: usize = 0;
+            while (j < sorted.len - 1 - i) : (j += 1) {
+                if (sorted[j].mean > sorted[j + 1].mean) {
+                    const tmp = sorted[j];
+                    sorted[j] = sorted[j + 1];
+                    sorted[j + 1] = tmp;
+                }
+            }
+        }
+
+        // Linear interpolation based on rank
+        const rank = q * @as(f64, @floatFromInt(self.total_count - 1));
+        const idx = @as(usize, @intFromFloat(@floor(rank)));
+        const frac = rank - @floor(rank);
+
+        if (idx >= sorted.len - 1) {
+            return sorted[sorted.len - 1].mean;
+        }
+
+        // Interpolate between idx and idx+1
+        const v1 = sorted[idx].mean;
+        const v2 = sorted[idx + 1].mean;
+        return v1 + frac * (v2 - v1);
+    }
+
+    /// Compute cumulative distribution function (CDF) at given value.
+    ///
+    /// Returns the estimated probability that a random value from the distribution
+    /// is less than or equal to the given value.
+    ///
+    /// This is a simplified implementation. Full T-Digest CDF (weighted centroids)
+    /// deferred to future iterations.
+    ///
+    /// Parameters:
+    ///   - value: Value to compute CDF for
+    ///
+    /// Returns: CDF in range [0.0, 1.0]
+    ///
+    /// Errors:
+    ///   - EmptySketch: No values in sketch
+    pub fn cdf(self: *const TDigestValue, value: f64) TDigestError!f64 {
+        // Empty sketch
+        if (self.total_count == 0) {
+            return TDigestError.EmptySketch;
+        }
+
+        // Values below min have CDF = 0
+        if (value < self.min) {
+            return 0.0;
+        }
+
+        // Values above max have CDF = 1
+        if (value >= self.max) {
+            return 1.0;
+        }
+
+        // Count values <= given value
+        var count: u64 = 0;
+        for (self.centroids.items) |centroid| {
+            if (centroid.mean <= value) {
+                count += centroid.count;
+            }
+        }
+
+        // Return proportion
+        return @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(self.total_count));
     }
 };
 
@@ -613,4 +726,158 @@ test "TDigestValue.merge into non-empty dest with existing data" {
     try std.testing.expectEqual(3, dest.total_count);
     try std.testing.expectEqual(100.0, dest.min);
     try std.testing.expectEqual(300.0, dest.max);
+}
+
+// ============================================================================
+// TDIGEST.QUANTILE/CDF/MIN/MAX Tests (Iteration 228)
+// ============================================================================
+
+test "TDigestValue.quantile with single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.5);
+
+    // All quantiles should return the same value
+    const q0 = try td.quantile(0.0);
+    const q05 = try td.quantile(0.5);
+    const q1 = try td.quantile(1.0);
+
+    try std.testing.expectEqual(42.5, q0);
+    try std.testing.expectEqual(42.5, q05);
+    try std.testing.expectEqual(42.5, q1);
+}
+
+test "TDigestValue.quantile with multiple values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // 0.0 = min
+    const q0 = try td.quantile(0.0);
+    try std.testing.expectEqual(10.0, q0);
+
+    // 1.0 = max
+    const q1 = try td.quantile(1.0);
+    try std.testing.expectEqual(50.0, q1);
+
+    // 0.5 = median (should be around 30.0)
+    const q05 = try td.quantile(0.5);
+    try std.testing.expectApproxEqRel(30.0, q05, 0.1);
+}
+
+test "TDigestValue.quantile empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.quantile(0.5);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.quantile invalid range returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    const result_low = td.quantile(-0.1);
+    try std.testing.expectError(error.InvalidQuantile, result_low);
+
+    const result_high = td.quantile(1.1);
+    try std.testing.expectError(error.InvalidQuantile, result_high);
+}
+
+test "TDigestValue.quantile boundary values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(0.0);
+    try td.add(100.0);
+
+    const q0 = try td.quantile(0.0);
+    try std.testing.expectEqual(0.0, q0);
+
+    const q1 = try td.quantile(1.0);
+    try std.testing.expectEqual(100.0, q1);
+}
+
+test "TDigestValue.cdf with single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.5);
+
+    // Values below should have CDF = 0
+    const cdf_low = try td.cdf(0.0);
+    try std.testing.expectEqual(0.0, cdf_low);
+
+    // Value at point should have CDF = 0.5 (simplified)
+    const cdf_at = try td.cdf(42.5);
+    try std.testing.expectApproxEqRel(0.5, cdf_at, 0.1);
+
+    // Values above should have CDF = 1
+    const cdf_high = try td.cdf(100.0);
+    try std.testing.expectEqual(1.0, cdf_high);
+}
+
+test "TDigestValue.cdf with multiple values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Values < min should have CDF = 0
+    const cdf_low = try td.cdf(5.0);
+    try std.testing.expectEqual(0.0, cdf_low);
+
+    // Values > max should have CDF = 1
+    const cdf_high = try td.cdf(100.0);
+    try std.testing.expectEqual(1.0, cdf_high);
+
+    // Median value should be around 0.5
+    const cdf_mid = try td.cdf(30.0);
+    try std.testing.expectApproxEqRel(0.5, cdf_mid, 0.15);
+}
+
+test "TDigestValue.cdf empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.cdf(42.0);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.cdf monotonic increasing" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+
+    const cdf1 = try td.cdf(15.0);
+    const cdf2 = try td.cdf(25.0);
+    const cdf3 = try td.cdf(35.0);
+
+    // CDF should be monotonic increasing
+    try std.testing.expect(cdf1 <= cdf2);
+    try std.testing.expect(cdf2 <= cdf3);
 }
