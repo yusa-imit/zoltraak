@@ -5,6 +5,24 @@ const Value = @import("../storage/memory.zig").Value;
 const TDigestValue = @import("../storage/tdigest.zig").TDigestValue;
 const RespProtocol = @import("client.zig").RespProtocol;
 
+const RespValue = protocol.RespValue;
+
+/// Helper to recursively free RespValue
+fn deinitRespValue(value: *const RespValue, allocator: std.mem.Allocator) void {
+    switch (value.*) {
+        .array => |arr| {
+            for (arr) |item| {
+                deinitRespValue(&item, allocator);
+            }
+            allocator.free(@constCast(arr));
+        },
+        .bulk_string => |s| allocator.free(@constCast(s)),
+        .simple_string => |s| allocator.free(@constCast(s)),
+        .error_string => |s| allocator.free(@constCast(s)),
+        else => {},
+    }
+}
+
 /// TDIGEST.CREATE key [COMPRESSION compression]
 /// Create an empty T-Digest with specified compression parameter
 /// Default compression: 100
@@ -54,6 +72,8 @@ pub fn cmdTdigestCreate(allocator: std.mem.Allocator, storage: *Storage, args: [
         return switch (err) {
             error.InvalidCompression => protocol.RespValue{ .error_string = "ERR compression must be greater than 0" },
             error.InvalidValue => protocol.RespValue{ .error_string = "ERR invalid value" }, // Never returned by init, but required for exhaustive switch
+            error.InvalidQuantile => protocol.RespValue{ .error_string = "ERR internal error" }, // Never returned by init
+            error.EmptySketch => protocol.RespValue{ .error_string = "ERR internal error" }, // Never returned by init
             error.OutOfMemory => protocol.RespValue{ .error_string = "ERR out of memory" },
         };
     };
@@ -314,7 +334,7 @@ pub fn cmdTdigestQuantile(allocator: std.mem.Allocator, storage: *Storage, args:
     var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, args.len - 2);
     errdefer {
         for (results.items) |item| {
-            protocol.deinitRespValue(item, allocator);
+            deinitRespValue(&item, allocator);
         }
         results.deinit(allocator);
     }
@@ -325,7 +345,7 @@ pub fn cmdTdigestQuantile(allocator: std.mem.Allocator, storage: *Storage, args:
             .bulk_string => |s| s,
             else => {
                 for (results.items) |item| {
-                    protocol.deinitRespValue(item, allocator);
+                    deinitRespValue(&item, allocator);
                 }
                 results.deinit(allocator);
                 return protocol.RespValue{ .error_string = "ERR quantile must be a number" };
@@ -334,7 +354,7 @@ pub fn cmdTdigestQuantile(allocator: std.mem.Allocator, storage: *Storage, args:
 
         const q = std.fmt.parseFloat(f64, quantile_str) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR quantile must be a valid float" };
@@ -342,7 +362,7 @@ pub fn cmdTdigestQuantile(allocator: std.mem.Allocator, storage: *Storage, args:
 
         const result_value = td.quantile(q) catch |err| {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return switch (err) {
@@ -393,7 +413,7 @@ pub fn cmdTdigestCdf(allocator: std.mem.Allocator, storage: *Storage, args: []pr
     var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, args.len - 2);
     errdefer {
         for (results.items) |item| {
-            protocol.deinitRespValue(item, allocator);
+            deinitRespValue(&item, allocator);
         }
         results.deinit(allocator);
     }
@@ -404,7 +424,7 @@ pub fn cmdTdigestCdf(allocator: std.mem.Allocator, storage: *Storage, args: []pr
             .bulk_string => |s| s,
             else => {
                 for (results.items) |item| {
-                    protocol.deinitRespValue(item, allocator);
+                    deinitRespValue(&item, allocator);
                 }
                 results.deinit(allocator);
                 return protocol.RespValue{ .error_string = "ERR value must be a number" };
@@ -413,7 +433,7 @@ pub fn cmdTdigestCdf(allocator: std.mem.Allocator, storage: *Storage, args: []pr
 
         const value = std.fmt.parseFloat(f64, value_str) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR value must be a valid float" };
@@ -421,7 +441,7 @@ pub fn cmdTdigestCdf(allocator: std.mem.Allocator, storage: *Storage, args: []pr
 
         const cdf_value = td.cdf(value) catch |err| {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return switch (err) {
@@ -553,7 +573,7 @@ pub fn cmdTdigestRank(allocator: std.mem.Allocator, storage: *Storage, args: []p
     var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_values);
     errdefer {
         for (results.items) |item| {
-            protocol.deinitRespValue(item, allocator);
+            deinitRespValue(&item, allocator);
         }
         results.deinit(allocator);
     }
@@ -563,7 +583,7 @@ pub fn cmdTdigestRank(allocator: std.mem.Allocator, storage: *Storage, args: []p
             .bulk_string => |s| s,
             else => {
                 for (results.items) |item| {
-                    protocol.deinitRespValue(item, allocator);
+                    deinitRespValue(&item, allocator);
                 }
                 results.deinit(allocator);
                 return protocol.RespValue{ .error_string = "ERR invalid value" };
@@ -572,7 +592,7 @@ pub fn cmdTdigestRank(allocator: std.mem.Allocator, storage: *Storage, args: []p
 
         const value = std.fmt.parseFloat(f64, value_str) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR value is not a valid float" };
@@ -580,7 +600,7 @@ pub fn cmdTdigestRank(allocator: std.mem.Allocator, storage: *Storage, args: []p
 
         const rank_value = td.rank(value) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR sketch is empty" };
@@ -629,7 +649,7 @@ pub fn cmdTdigestRevrank(allocator: std.mem.Allocator, storage: *Storage, args: 
     var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_values);
     errdefer {
         for (results.items) |item| {
-            protocol.deinitRespValue(item, allocator);
+            deinitRespValue(&item, allocator);
         }
         results.deinit(allocator);
     }
@@ -639,7 +659,7 @@ pub fn cmdTdigestRevrank(allocator: std.mem.Allocator, storage: *Storage, args: 
             .bulk_string => |s| s,
             else => {
                 for (results.items) |item| {
-                    protocol.deinitRespValue(item, allocator);
+                    deinitRespValue(&item, allocator);
                 }
                 results.deinit(allocator);
                 return protocol.RespValue{ .error_string = "ERR invalid value" };
@@ -648,7 +668,7 @@ pub fn cmdTdigestRevrank(allocator: std.mem.Allocator, storage: *Storage, args: 
 
         const value = std.fmt.parseFloat(f64, value_str) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR value is not a valid float" };
@@ -656,7 +676,7 @@ pub fn cmdTdigestRevrank(allocator: std.mem.Allocator, storage: *Storage, args: 
 
         const revrank_value = td.revrank(value) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR sketch is empty" };
@@ -705,7 +725,7 @@ pub fn cmdTdigestByrank(allocator: std.mem.Allocator, storage: *Storage, args: [
     var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_ranks);
     errdefer {
         for (results.items) |item| {
-            protocol.deinitRespValue(item, allocator);
+            deinitRespValue(&item, allocator);
         }
         results.deinit(allocator);
     }
@@ -715,7 +735,7 @@ pub fn cmdTdigestByrank(allocator: std.mem.Allocator, storage: *Storage, args: [
             .bulk_string => |s| s,
             else => {
                 for (results.items) |item| {
-                    protocol.deinitRespValue(item, allocator);
+                    deinitRespValue(&item, allocator);
                 }
                 results.deinit(allocator);
                 return protocol.RespValue{ .error_string = "ERR invalid rank" };
@@ -724,7 +744,7 @@ pub fn cmdTdigestByrank(allocator: std.mem.Allocator, storage: *Storage, args: [
 
         const rank_pos = std.fmt.parseInt(i64, rank_str, 10) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR rank must be an integer" };
@@ -732,7 +752,7 @@ pub fn cmdTdigestByrank(allocator: std.mem.Allocator, storage: *Storage, args: [
 
         const value = td.byrank(rank_pos) catch |err| {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             if (err == error.EmptySketch) {
@@ -791,7 +811,7 @@ pub fn cmdTdigestByrevrank(allocator: std.mem.Allocator, storage: *Storage, args
     var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_ranks);
     errdefer {
         for (results.items) |item| {
-            protocol.deinitRespValue(item, allocator);
+            deinitRespValue(&item, allocator);
         }
         results.deinit(allocator);
     }
@@ -801,7 +821,7 @@ pub fn cmdTdigestByrevrank(allocator: std.mem.Allocator, storage: *Storage, args
             .bulk_string => |s| s,
             else => {
                 for (results.items) |item| {
-                    protocol.deinitRespValue(item, allocator);
+                    deinitRespValue(&item, allocator);
                 }
                 results.deinit(allocator);
                 return protocol.RespValue{ .error_string = "ERR invalid rank" };
@@ -810,7 +830,7 @@ pub fn cmdTdigestByrevrank(allocator: std.mem.Allocator, storage: *Storage, args
 
         const revrank_pos = std.fmt.parseInt(i64, revrank_str, 10) catch {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             return protocol.RespValue{ .error_string = "ERR rank must be an integer" };
@@ -818,7 +838,7 @@ pub fn cmdTdigestByrevrank(allocator: std.mem.Allocator, storage: *Storage, args
 
         const value = td.byrevrank(revrank_pos) catch |err| {
             for (results.items) |item| {
-                protocol.deinitRespValue(item, allocator);
+                deinitRespValue(&item, allocator);
             }
             results.deinit(allocator);
             if (err == error.EmptySketch) {
@@ -862,7 +882,7 @@ test "cmdTdigestCreate basic" {
     };
 
     const result = try cmdTdigestCreate(allocator, &storage, &args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
     try std.testing.expectEqualStrings("OK", result.simple_string);
@@ -886,7 +906,7 @@ test "cmdTdigestCreate with compression parameter" {
     };
 
     const result = try cmdTdigestCreate(allocator, &storage, &args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
 
@@ -913,7 +933,7 @@ test "cmdTdigestCreate rejects duplicate key" {
     };
 
     const result = try cmdTdigestCreate(allocator, &storage, &args2);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -931,7 +951,7 @@ test "cmdTdigestCreate invalid compression" {
     };
 
     const result = try cmdTdigestCreate(allocator, &storage, &args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -956,7 +976,7 @@ test "cmdTdigestAdd single value" {
     };
 
     const result = try cmdTdigestAdd(allocator, &storage, &add_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
     try std.testing.expectEqualStrings("OK", result.simple_string);
@@ -985,7 +1005,7 @@ test "cmdTdigestAdd multiple values" {
     };
 
     const result = try cmdTdigestAdd(allocator, &storage, &add_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
 
@@ -1005,7 +1025,7 @@ test "cmdTdigestAdd no auto-create" {
     };
 
     const result = try cmdTdigestAdd(allocator, &storage, &add_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1029,7 +1049,7 @@ test "cmdTdigestAdd wrong type" {
     };
 
     const result = try cmdTdigestAdd(allocator, &storage, &add_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1067,7 +1087,7 @@ test "cmdTdigestReset" {
     };
 
     const result = try cmdTdigestReset(allocator, &storage, &reset_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
 
@@ -1087,7 +1107,7 @@ test "cmdTdigestReset nonexistent key" {
     };
 
     const result = try cmdTdigestReset(allocator, &storage, &reset_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1140,7 +1160,7 @@ test "cmdTdigestMerge basic two sources" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
     try std.testing.expectEqualStrings("OK", result.simple_string);
@@ -1180,7 +1200,7 @@ test "cmdTdigestMerge with COMPRESSION override" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
 
@@ -1230,7 +1250,7 @@ test "cmdTdigestMerge with OVERRIDE flag" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
 
@@ -1267,7 +1287,7 @@ test "cmdTdigestMerge error when dest exists without OVERRIDE" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1292,7 +1312,7 @@ test "cmdTdigestMerge numkeys mismatch" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1309,7 +1329,7 @@ test "cmdTdigestMerge invalid numkeys" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1326,7 +1346,7 @@ test "cmdTdigestMerge zero numkeys" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1344,7 +1364,7 @@ test "cmdTdigestMerge nonexistent source key" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1369,7 +1389,7 @@ test "cmdTdigestMerge source wrong type" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1395,7 +1415,7 @@ test "cmdTdigestMerge invalid compression value" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1438,7 +1458,7 @@ test "cmdTdigestMerge three sources" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.simple_string, result);
 
@@ -1457,7 +1477,7 @@ test "cmdTdigestMerge too few arguments" {
     };
 
     const result = try cmdTdigestMerge(allocator, &storage, &merge_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1495,7 +1515,7 @@ test "cmdTdigestQuantile single quantile" {
     };
 
     const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.array, result);
     try std.testing.expectEqual(1, result.array.len);
@@ -1529,7 +1549,7 @@ test "cmdTdigestQuantile multiple quantiles" {
     };
 
     const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.array, result);
     try std.testing.expectEqual(3, result.array.len);
@@ -1547,7 +1567,7 @@ test "cmdTdigestQuantile nonexistent key" {
     };
 
     const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1577,7 +1597,7 @@ test "cmdTdigestQuantile invalid quantile" {
     };
 
     const result = try cmdTdigestQuantile(allocator, &storage, &quantile_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1609,7 +1629,7 @@ test "cmdTdigestCdf single value" {
     };
 
     const result = try cmdTdigestCdf(allocator, &storage, &cdf_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.array, result);
     try std.testing.expectEqual(1, result.array.len);
@@ -1643,7 +1663,7 @@ test "cmdTdigestCdf multiple values" {
     };
 
     const result = try cmdTdigestCdf(allocator, &storage, &cdf_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.array, result);
     try std.testing.expectEqual(3, result.array.len);
@@ -1675,7 +1695,7 @@ test "cmdTdigestMin basic" {
     };
 
     const result = try cmdTdigestMin(allocator, &storage, &min_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.bulk_string, result);
 }
@@ -1706,7 +1726,7 @@ test "cmdTdigestMax basic" {
     };
 
     const result = try cmdTdigestMax(allocator, &storage, &max_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.bulk_string, result);
 }
@@ -1728,7 +1748,7 @@ test "cmdTdigestMin empty sketch" {
     };
 
     const result = try cmdTdigestMin(allocator, &storage, &min_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
 }
@@ -1750,7 +1770,145 @@ test "cmdTdigestMax wrong type" {
     };
 
     const result = try cmdTdigestMax(allocator, &storage, &max_args);
-    defer protocol.deinitRespValue(result, allocator);
+    defer deinitRespValue(result, allocator);
 
     try std.testing.expectEqual(protocol.RespValueType.error_string, result);
+}
+
+// ============================================================================
+// TDIGEST.INFO & TDIGEST.TRIMMED_MEAN (Iteration 230)
+// ============================================================================
+
+/// TDIGEST.INFO key
+/// Returns information about the T-Digest sketch including compression, capacity, nodes, weight, memory usage.
+pub fn cmdTdigestInfo(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len != 2) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.INFO' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+    const info = td.getInfo();
+
+    // Build RESP2 array response: alternating field names and values
+    // [Compression, 100, Capacity, 610, Merged nodes, 0, Unmerged nodes, 5, ...]
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, 18);
+    errdefer results.deinit(allocator);
+
+    // Compression
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Compression") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.compression)) });
+
+    // Capacity
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Capacity") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.capacity)) });
+
+    // Merged nodes
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Merged nodes") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.merged_nodes)) });
+
+    // Unmerged nodes
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Unmerged nodes") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.unmerged_nodes)) });
+
+    // Merged weight
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Merged weight") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.merged_weight)) });
+
+    // Unmerged weight
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Unmerged weight") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.unmerged_weight)) });
+
+    // Observations (same as unmerged_weight in simplified implementation)
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Observations") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.unmerged_weight)) });
+
+    // Total compressions
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Total compressions") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.total_compressions)) });
+
+    // Memory usage
+    try results.append(allocator, protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "Memory usage") });
+    try results.append(allocator, protocol.RespValue{ .integer = @as(i64, @intCast(info.memory_usage)) });
+
+    return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+}
+
+/// TDIGEST.TRIMMED_MEAN key low_cut_quantile high_cut_quantile
+/// Returns the mean value excluding observations outside the specified quantile range.
+pub fn cmdTdigestTrimmedMean(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len != 4) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.TRIMMED_MEAN' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse low_cut_quantile
+    const low_cut_str = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid low_cut_quantile" },
+    };
+
+    const low_cut = std.fmt.parseFloat(f64, low_cut_str) catch {
+        return protocol.RespValue{ .error_string = "ERR low_cut_quantile must be a valid float" };
+    };
+
+    // Parse high_cut_quantile
+    const high_cut_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid high_cut_quantile" },
+    };
+
+    const high_cut = std.fmt.parseFloat(f64, high_cut_str) catch {
+        return protocol.RespValue{ .error_string = "ERR high_cut_quantile must be a valid float" };
+    };
+
+    // Calculate trimmed mean
+    const mean = td.trimmedMean(low_cut, high_cut) catch |err| {
+        return switch (err) {
+            error.EmptySketch => protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "nan") },
+            error.InvalidQuantile => protocol.RespValue{ .error_string = "ERR quantiles must be in range [0, 1] and low_cut < high_cut" },
+            error.InvalidCompression, error.InvalidValue => protocol.RespValue{ .error_string = "ERR internal error" },
+            error.OutOfMemory => protocol.RespValue{ .error_string = "ERR out of memory" },
+        };
+    };
+
+    // Return as bulk string (Redis spec for TRIMMED_MEAN)
+    // Handle NaN case (all values trimmed)
+    if (std.math.isNan(mean)) {
+        return protocol.RespValue{ .bulk_string = try allocator.dupe(u8, "nan") };
+    }
+
+    var buf: [64]u8 = undefined;
+    const mean_str = try std.fmt.bufPrint(&buf, "{d}", .{mean});
+    return protocol.RespValue{ .bulk_string = try allocator.dupe(u8, mean_str) };
 }

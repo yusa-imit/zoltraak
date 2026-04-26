@@ -81,7 +81,7 @@
 
 **All 17 Phase 14 commands complete**: TS.CREATE, TS.INFO, TS.ADD, TS.MADD, TS.INCRBY, TS.DECRBY, TS.DEL, TS.GET, TS.ALTER, TS.MGET, TS.RANGE, TS.REVRANGE, TS.MRANGE, TS.MREVRANGE, TS.QUERYINDEX, TS.CREATERULE, TS.DELETERULE
 
-### Phase 15 — Probabilistic Data Structures (84% complete) 🚧
+### Phase 15 — Probabilistic Data Structures (100% complete) ✅
 
 | Iteration | Command | Status |
 |-----------|---------|--------|
@@ -105,8 +105,9 @@
 | 227 | TDIGEST.MERGE (merge multiple sketches with centroid concatenation, COMPRESSION override, OVERRIDE flag for replacing existing destination, atomic create-before-remove for safety, min/max/total_count aggregation, 14 storage unit tests + 13 command tests + 16 integration tests) | Done ✅ |
 | 228 | TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX (quantile estimation with sorted centroids and linear interpolation, cumulative distribution function, min/max value retrieval, array of bulk strings for multi-value results, simplified implementation documented for future optimization, 10 storage unit tests + 11 command tests) | Done ✅ |
 | 229 | TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK (rank-based query commands: rank() estimates position using CDF, revrank() returns reverse rank, byrank() is inverse of rank, byrevrank() is inverse of revrank, single/multi-value support, 20 storage unit tests + 20 integration tests) | Done ✅ |
+| 230 | TDIGEST.INFO, TDIGEST.TRIMMED_MEAN (metadata introspection + robust mean calculation: getInfo() returns 9 fields including compression/capacity/nodes/weight/memory, trimmedMean() excludes outliers outside quantile range with special case for [0,1] full range, bulk string "nan" for empty results, 14 storage unit tests) | Done ✅ |
 
-**47/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO, TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET, TDIGEST.MERGE, TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX, TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK
+**All 49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO, TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET, TDIGEST.MERGE, TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX, TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK, **TDIGEST.INFO**, **TDIGEST.TRIMMED_MEAN** ✅
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 

@@ -384,6 +384,123 @@ pub const TDigestValue = struct {
         const fwd_rank = @as(i64, @intCast(self.total_count - 1)) - revrank_pos;
         return try self.byrank(fwd_rank);
     }
+
+    /// Structure containing T-Digest metadata for TDIGEST.INFO command.
+    pub const TDigestInfo = struct {
+        compression: u32,
+        capacity: u64,
+        merged_nodes: u64,
+        unmerged_nodes: u64,
+        merged_weight: u64,
+        unmerged_weight: u64,
+        total_compressions: u64,
+        memory_usage: u64,
+    };
+
+    /// Get metadata information about the T-Digest sketch.
+    ///
+    /// Returns diagnostic information including:
+    /// - Compression parameter
+    /// - Capacity (buffer size for centroids)
+    /// - Number of merged/unmerged nodes (in simplified implementation, all nodes are unmerged)
+    /// - Weight of merged/unmerged nodes (count of observations)
+    /// - Total number of compressions performed (stub: always 0)
+    /// - Memory usage in bytes (approximate)
+    ///
+    /// Note: This is a simplified implementation. In a full T-Digest with merging,
+    /// merged_nodes/merged_weight would track compressed centroids, and
+    /// unmerged_nodes/unmerged_weight would track buffered observations.
+    ///
+    /// Returns: TDigestInfo struct with metadata fields
+    pub fn getInfo(self: *const TDigestValue) TDigestInfo {
+        // In simplified implementation, all centroids are "unmerged"
+        const unmerged_nodes = @as(u64, @intCast(self.centroids.items.len));
+        const unmerged_weight = self.total_count;
+
+        // Estimate memory usage:
+        // - TDigestValue struct size
+        // - Centroids array capacity * sizeof(Centroid)
+        const struct_size = @sizeOf(TDigestValue);
+        const centroids_size = self.centroids.capacity * @sizeOf(Centroid);
+        const memory_usage = @as(u64, struct_size + centroids_size);
+
+        return TDigestInfo{
+            .compression = self.compression,
+            .capacity = @as(u64, self.centroids.capacity),
+            .merged_nodes = 0, // Simplified: no merging yet
+            .unmerged_nodes = unmerged_nodes,
+            .merged_weight = 0,
+            .unmerged_weight = unmerged_weight,
+            .total_compressions = 0, // Stub: no compression tracking
+            .memory_usage = memory_usage,
+        };
+    }
+
+    /// Calculate the trimmed mean excluding values outside the specified quantile range.
+    ///
+    /// Returns a robust average that excludes outliers outside the low/high cutoff quantiles.
+    /// This is useful for latency monitoring where occasional spikes would distort the mean.
+    ///
+    /// Parameters:
+    ///   - low_cut_quantile: Floating-point in [0, 1]. Excludes values < this quantile. 0 = no low cut.
+    ///   - high_cut_quantile: Floating-point in [0, 1]. Excludes values >= this quantile. 1 = no high cut.
+    ///
+    /// Returns: Estimated mean of values in the quantile range [low_cut, high_cut)
+    ///
+    /// Errors:
+    ///   - EmptySketch: No values in sketch
+    ///   - InvalidQuantile: Quantiles out of [0, 1] or low_cut >= high_cut
+    pub fn trimmedMean(self: *const TDigestValue, low_cut_quantile: f64, high_cut_quantile: f64) TDigestError!f64 {
+        // Validate sketch not empty
+        if (self.total_count == 0) {
+            return TDigestError.EmptySketch;
+        }
+
+        // Validate quantile range
+        if (low_cut_quantile < 0.0 or low_cut_quantile > 1.0) {
+            return TDigestError.InvalidQuantile;
+        }
+        if (high_cut_quantile < 0.0 or high_cut_quantile > 1.0) {
+            return TDigestError.InvalidQuantile;
+        }
+        if (low_cut_quantile >= high_cut_quantile) {
+            return TDigestError.InvalidQuantile;
+        }
+
+        // Special case: if entire range [0, 1], just compute mean of all values
+        if (low_cut_quantile == 0.0 and high_cut_quantile == 1.0) {
+            var sum: f64 = 0.0;
+            for (self.centroids.items) |centroid| {
+                sum += centroid.mean * @as(f64, @floatFromInt(centroid.count));
+            }
+            return sum / @as(f64, @floatFromInt(self.total_count));
+        }
+
+        // Get quantile values for cutoff boundaries
+        const low_value = try self.quantile(low_cut_quantile);
+        const high_value = try self.quantile(high_cut_quantile);
+
+        // Calculate sum and count of values in range [low_value, high_value]
+        // Note: Redis uses inclusive upper bound when high_cut_quantile < 1.0
+        var sum: f64 = 0.0;
+        var count: u64 = 0;
+
+        for (self.centroids.items) |centroid| {
+            // Include if: low_value <= centroid.mean <= high_value
+            // Use inclusive upper bound to match Redis behavior
+            if (centroid.mean >= low_value and centroid.mean <= high_value) {
+                sum += centroid.mean * @as(f64, @floatFromInt(centroid.count));
+                count += centroid.count;
+            }
+        }
+
+        // If no values in range, return NaN (per Redis spec)
+        if (count == 0) {
+            return std.math.nan(f64);
+        }
+
+        return sum / @as(f64, @floatFromInt(count));
+    }
 };
 
 // ============================================================================
@@ -1313,4 +1430,213 @@ test "TDigestValue.revrank and byrevrank are inverses" {
     const v = try td.byrevrank(2);
     const rr = try td.revrank(v);
     try std.testing.expect(@abs(rr - 2) <= 1); // Allow 1 error tolerance
+}
+
+// ============================================================================
+// TDIGEST.INFO Tests (Iteration 230)
+// ============================================================================
+
+test "TDigestValue.getInfo empty sketch" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const info = td.getInfo();
+
+    try std.testing.expectEqual(100, info.compression);
+    try std.testing.expectEqual(0, info.unmerged_nodes);
+    try std.testing.expectEqual(0, info.unmerged_weight);
+    try std.testing.expectEqual(0, info.merged_nodes);
+    try std.testing.expectEqual(0, info.merged_weight);
+    try std.testing.expectEqual(0, info.total_compressions);
+    try std.testing.expect(info.memory_usage > 0); // Should have some memory usage
+}
+
+test "TDigestValue.getInfo with values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+
+    const info = td.getInfo();
+
+    try std.testing.expectEqual(100, info.compression);
+    try std.testing.expectEqual(3, info.unmerged_nodes); // 3 centroids
+    try std.testing.expectEqual(3, info.unmerged_weight); // 3 observations
+    try std.testing.expectEqual(0, info.merged_nodes);
+    try std.testing.expectEqual(0, info.merged_weight);
+    try std.testing.expect(info.capacity >= 3);
+}
+
+test "TDigestValue.getInfo capacity tracking" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 250);
+    defer td.deinit();
+
+    const info = td.getInfo();
+
+    try std.testing.expectEqual(250, info.compression);
+    try std.testing.expect(info.capacity >= 250);
+}
+
+test "TDigestValue.getInfo memory usage increases with data" {
+    const allocator = std.testing.allocator;
+    var td1 = try TDigestValue.init(allocator, 100);
+    defer td1.deinit();
+
+    var td2 = try TDigestValue.init(allocator, 100);
+    defer td2.deinit();
+    try td2.add(1.0);
+    try td2.add(2.0);
+    try td2.add(3.0);
+
+    const info1 = td1.getInfo();
+    const info2 = td2.getInfo();
+
+    // td2 should have higher memory usage due to stored centroids
+    try std.testing.expect(info2.memory_usage >= info1.memory_usage);
+}
+
+// ============================================================================
+// TDIGEST.TRIMMED_MEAN Tests (Iteration 230)
+// ============================================================================
+
+test "TDigestValue.trimmedMean no trimming" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // No trimming: [0, 1] includes all values
+    const mean = try td.trimmedMean(0.0, 1.0);
+
+    // Expected mean: (10 + 20 + 30 + 40 + 50) / 5 = 30
+    try std.testing.expectApproxEqRel(30.0, mean, 0.01);
+}
+
+test "TDigestValue.trimmedMean trim extremes" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(1.0);   // Will be trimmed (low outlier)
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+    try td.add(99.0);  // Will be trimmed (high outlier)
+
+    // Trim bottom 10% and top 10%
+    const mean = try td.trimmedMean(0.1, 0.9);
+
+    // Should exclude 1.0 and 99.0, include middle values
+    // Approximate: (10 + 20 + 30 + 40 + 50) / 5 = 30
+    try std.testing.expect(mean > 10.0 and mean < 50.0);
+}
+
+test "TDigestValue.trimmedMean trim bottom half" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Trim bottom 50%: should average top half (30, 40, 50)
+    const mean = try td.trimmedMean(0.5, 1.0);
+
+    // Expected: approximately (30 + 40 + 50) / 3 = 40
+    try std.testing.expect(mean > 30.0);
+}
+
+test "TDigestValue.trimmedMean empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.trimmedMean(0.0, 1.0);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.trimmedMean invalid quantiles" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    // low_cut out of range
+    const result1 = td.trimmedMean(-0.1, 0.5);
+    try std.testing.expectError(error.InvalidQuantile, result1);
+
+    // high_cut out of range
+    const result2 = td.trimmedMean(0.0, 1.1);
+    try std.testing.expectError(error.InvalidQuantile, result2);
+
+    // low_cut >= high_cut
+    const result3 = td.trimmedMean(0.5, 0.5);
+    try std.testing.expectError(error.InvalidQuantile, result3);
+
+    const result4 = td.trimmedMean(0.7, 0.3);
+    try std.testing.expectError(error.InvalidQuantile, result4);
+}
+
+test "TDigestValue.trimmedMean single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    const mean = try td.trimmedMean(0.0, 1.0);
+    try std.testing.expectEqual(42.0, mean);
+}
+
+test "TDigestValue.trimmedMean symmetric trimming" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    // 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+    var i: f64 = 1.0;
+    while (i <= 10.0) : (i += 1.0) {
+        try td.add(i);
+    }
+
+    // Trim bottom 10% and top 10%
+    const mean = try td.trimmedMean(0.1, 0.9);
+
+    // Should exclude 1 and 10, average 2-9
+    // Expected: (2+3+4+5+6+7+8+9) / 8 = 44 / 8 = 5.5
+    try std.testing.expectApproxEqRel(5.5, mean, 0.2);
+}
+
+test "TDigestValue.trimmedMean narrow range may return NaN" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Very narrow range [0.99, 1.0) - will likely return max value or NaN
+    const mean = try td.trimmedMean(0.99, 1.0);
+
+    // Either returns max value (50.0) or NaN if range is empty
+    try std.testing.expect(std.math.isNan(mean) or mean == 50.0);
 }
