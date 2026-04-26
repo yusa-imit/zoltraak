@@ -5,7 +5,7 @@
 - **Latest release**: v0.1.0
 - **Iterations complete**: 228 (351+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 15 (Probabilistic Data Structures) — 84% complete (43/49 commands)
+- **Current phase**: Phase 15 (Probabilistic Data Structures) — 88% complete (47/49 commands)
 - **Next milestone**: Phase 15.19 (T-Digest remaining commands: TDIGEST.INFO, TDIGEST.TRIMMED_MEAN, TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
@@ -104,8 +104,9 @@
 | 226 | T-Digest foundation (TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET with Centroid struct, compression parameter, simplified add without merging, NaN validation, CRITICAL: TDIGEST.ADD does NOT auto-create — compression parameter requires explicit user decision, 14 storage unit tests + 11 command tests) | Done ✅ |
 | 227 | TDIGEST.MERGE (merge multiple sketches with centroid concatenation, COMPRESSION override, OVERRIDE flag for replacing existing destination, atomic create-before-remove for safety, min/max/total_count aggregation, 14 storage unit tests + 13 command tests + 16 integration tests) | Done ✅ |
 | 228 | TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX (quantile estimation with sorted centroids and linear interpolation, cumulative distribution function, min/max value retrieval, array of bulk strings for multi-value results, simplified implementation documented for future optimization, 10 storage unit tests + 11 command tests) | Done ✅ |
+| 229 | TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK (rank-based query commands: rank() estimates position using CDF, revrank() returns reverse rank, byrank() is inverse of rank, byrevrank() is inverse of revrank, single/multi-value support, 20 storage unit tests + 20 integration tests) | Done ✅ |
 
-**43/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO, TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET, TDIGEST.MERGE, TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX
+**47/49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO, TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET, TDIGEST.MERGE, TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX, TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
