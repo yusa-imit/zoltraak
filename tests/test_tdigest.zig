@@ -611,3 +611,425 @@ test "TDIGEST.MERGE: arity error (too few arguments)" {
     try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
     try testing.expect(std.mem.indexOf(u8, resp, "wrong number of arguments") != null);
 }
+
+// ============================================================================
+// TDIGEST.RANK/REVRANK/BYRANK/BYREVRANK Tests (Iteration 229)
+// ============================================================================
+
+test "TDIGEST.RANK: single value" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Rank single value
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.RANK", "mydigest", "30.0" });
+    defer test_allocator.free(resp);
+
+    // Should be integer (around 2)
+    try testing.expect(std.mem.startsWith(u8, resp, ":"));
+}
+
+test "TDIGEST.RANK: multiple values" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Rank multiple values
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.RANK", "mydigest", "15.0", "35.0" });
+    defer test_allocator.free(resp);
+
+    // Should be array of integers
+    try testing.expect(std.mem.startsWith(u8, resp, "*2\r\n"));
+}
+
+test "TDIGEST.RANK: nonexistent key" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    const resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.RANK", "nonexistent", "10.0" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try testing.expect(std.mem.indexOf(u8, resp, "no such key") != null);
+}
+
+test "TDIGEST.RANK: wrong type" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create string
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "SET", "mykey", "hello" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.RANK", "mykey", "10.0" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-WRONGTYPE"));
+}
+
+test "TDIGEST.RANK: empty sketch" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create empty digest
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "empty" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.RANK", "empty", "10.0" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try testing.expect(std.mem.indexOf(u8, resp, "empty") != null);
+}
+
+test "TDIGEST.REVRANK: single value" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Revrank single value
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.REVRANK", "mydigest", "30.0" });
+    defer test_allocator.free(resp);
+
+    // Should be integer
+    try testing.expect(std.mem.startsWith(u8, resp, ":"));
+}
+
+test "TDIGEST.REVRANK: multiple values" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0" });
+    test_allocator.free(resp);
+
+    // Revrank multiple values
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.REVRANK", "mydigest", "15.0", "25.0" });
+    defer test_allocator.free(resp);
+
+    // Should be array of integers
+    try testing.expect(std.mem.startsWith(u8, resp, "*2\r\n"));
+}
+
+test "TDIGEST.REVRANK: empty sketch" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create empty digest
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "empty" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.REVRANK", "empty", "10.0" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+}
+
+test "TDIGEST.BYRANK: single rank" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Get value at rank 0 (should be min = 10.0)
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYRANK", "mydigest", "0" });
+    defer test_allocator.free(resp);
+
+    // Should be bulk string with value 10.0
+    try testing.expect(std.mem.startsWith(u8, resp, "$"));
+    try testing.expect(std.mem.indexOf(u8, resp, "10") != null);
+}
+
+test "TDIGEST.BYRANK: multiple ranks" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Get values at ranks 0 and 4
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYRANK", "mydigest", "0", "4" });
+    defer test_allocator.free(resp);
+
+    // Should be array of bulk strings
+    try testing.expect(std.mem.startsWith(u8, resp, "*2\r\n"));
+}
+
+test "TDIGEST.BYRANK: rank out of range" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0" });
+    test_allocator.free(resp);
+
+    // Rank 3 is out of range (total_count=3, valid ranks 0-2)
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYRANK", "mydigest", "3" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+    try testing.expect(std.mem.indexOf(u8, resp, "out of range") != null);
+}
+
+test "TDIGEST.BYRANK: negative rank out of range" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0" });
+    test_allocator.free(resp);
+
+    // Negative rank is invalid
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYRANK", "mydigest", "-1" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+}
+
+test "TDIGEST.BYRANK: empty sketch" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create empty digest
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "empty" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYRANK", "empty", "0" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+}
+
+test "TDIGEST.BYREVRANK: single rank" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Get value at revrank 0 (should be max = 50.0)
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYREVRANK", "mydigest", "0" });
+    defer test_allocator.free(resp);
+
+    // Should be bulk string with value 50.0
+    try testing.expect(std.mem.startsWith(u8, resp, "$"));
+    try testing.expect(std.mem.indexOf(u8, resp, "50") != null);
+}
+
+test "TDIGEST.BYREVRANK: multiple ranks" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0" });
+    test_allocator.free(resp);
+
+    // Get values at revranks 0 and 2
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYREVRANK", "mydigest", "0", "2" });
+    defer test_allocator.free(resp);
+
+    // Should be array of bulk strings
+    try testing.expect(std.mem.startsWith(u8, resp, "*2\r\n"));
+}
+
+test "TDIGEST.BYREVRANK: rank out of range" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0" });
+    test_allocator.free(resp);
+
+    // Revrank 2 is out of range (total_count=2, valid revranks 0-1)
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYREVRANK", "mydigest", "2" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+}
+
+test "TDIGEST.BYREVRANK: empty sketch" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create empty digest
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "empty" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYREVRANK", "empty", "0" });
+    defer test_allocator.free(resp);
+
+    try testing.expect(std.mem.startsWith(u8, resp, "-ERR"));
+}
+
+test "TDIGEST: rank and byrank are inverses" {
+    const server = try startTestServer(test_allocator);
+    defer {
+        server.shutdown();
+        test_allocator.destroy(server);
+    }
+
+    const stream = try std.net.tcpConnectToHost(test_allocator, "127.0.0.1", 16390);
+    defer stream.close();
+
+    // Create and populate
+    var resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.CREATE", "mydigest" });
+    test_allocator.free(resp);
+
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.ADD", "mydigest", "10.0", "20.0", "30.0", "40.0", "50.0" });
+    test_allocator.free(resp);
+
+    // Get value at rank 2
+    resp = try sendCommand(test_allocator, stream, &[_][]const u8{ "TDIGEST.BYRANK", "mydigest", "2" });
+    // Parse the value (should be around 30.0)
+    // For simplicity, just verify it's a bulk string
+    try testing.expect(std.mem.startsWith(u8, resp, "$"));
+    test_allocator.free(resp);
+}

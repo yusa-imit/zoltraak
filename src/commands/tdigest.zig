@@ -523,6 +523,330 @@ pub fn cmdTdigestMax(allocator: std.mem.Allocator, storage: *Storage, args: []pr
     return protocol.RespValue{ .bulk_string = owned };
 }
 
+/// TDIGEST.RANK key value [value ...]
+/// Returns the estimated rank (number of values less than the given value) for each value.
+/// Rank is in range [0, total_count-1].
+pub fn cmdTdigestRank(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len < 3) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.RANK' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse all values and compute ranks
+    const num_values = args.len - 2;
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_values);
+    errdefer {
+        for (results.items) |item| {
+            protocol.deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    for (args[2..]) |arg| {
+        const value_str = switch (arg) {
+            .bulk_string => |s| s,
+            else => {
+                for (results.items) |item| {
+                    protocol.deinitRespValue(item, allocator);
+                }
+                results.deinit(allocator);
+                return protocol.RespValue{ .error_string = "ERR invalid value" };
+            },
+        };
+
+        const value = std.fmt.parseFloat(f64, value_str) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR value is not a valid float" };
+        };
+
+        const rank_value = td.rank(value) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR sketch is empty" };
+        };
+
+        try results.append(allocator, protocol.RespValue{ .integer = rank_value });
+    }
+
+    // Single result returns integer directly, multiple results return array
+    if (num_values == 1) {
+        const result = results.items[0];
+        results.deinit(allocator);
+        return result;
+    } else {
+        return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+    }
+}
+
+/// TDIGEST.REVRANK key value [value ...]
+/// Returns the estimated reverse rank (number of values greater than the given value) for each value.
+/// Reverse rank is in range [0, total_count-1].
+pub fn cmdTdigestRevrank(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len < 3) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.REVRANK' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse all values and compute revranks
+    const num_values = args.len - 2;
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_values);
+    errdefer {
+        for (results.items) |item| {
+            protocol.deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    for (args[2..]) |arg| {
+        const value_str = switch (arg) {
+            .bulk_string => |s| s,
+            else => {
+                for (results.items) |item| {
+                    protocol.deinitRespValue(item, allocator);
+                }
+                results.deinit(allocator);
+                return protocol.RespValue{ .error_string = "ERR invalid value" };
+            },
+        };
+
+        const value = std.fmt.parseFloat(f64, value_str) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR value is not a valid float" };
+        };
+
+        const revrank_value = td.revrank(value) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR sketch is empty" };
+        };
+
+        try results.append(allocator, protocol.RespValue{ .integer = revrank_value });
+    }
+
+    // Single result returns integer directly, multiple results return array
+    if (num_values == 1) {
+        const result = results.items[0];
+        results.deinit(allocator);
+        return result;
+    } else {
+        return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+    }
+}
+
+/// TDIGEST.BYRANK key rank [rank ...]
+/// Returns the estimated value at the given rank position for each rank.
+/// Rank must be in range [0, total_count-1].
+pub fn cmdTdigestByrank(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len < 3) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.BYRANK' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse all rank positions and get values
+    const num_ranks = args.len - 2;
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_ranks);
+    errdefer {
+        for (results.items) |item| {
+            protocol.deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    for (args[2..]) |arg| {
+        const rank_str = switch (arg) {
+            .bulk_string => |s| s,
+            else => {
+                for (results.items) |item| {
+                    protocol.deinitRespValue(item, allocator);
+                }
+                results.deinit(allocator);
+                return protocol.RespValue{ .error_string = "ERR invalid rank" };
+            },
+        };
+
+        const rank_pos = std.fmt.parseInt(i64, rank_str, 10) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR rank must be an integer" };
+        };
+
+        const value = td.byrank(rank_pos) catch |err| {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            if (err == error.EmptySketch) {
+                return protocol.RespValue{ .error_string = "ERR sketch is empty" };
+            } else {
+                return protocol.RespValue{ .error_string = "ERR rank out of range" };
+            }
+        };
+
+        // Format as bulk string
+        var buf: [32]u8 = undefined;
+        const formatted = try std.fmt.bufPrint(&buf, "{d}", .{value});
+        const owned = try allocator.dupe(u8, formatted);
+        errdefer allocator.free(owned);
+
+        try results.append(allocator, protocol.RespValue{ .bulk_string = owned });
+    }
+
+    // Single result returns bulk string directly, multiple results return array
+    if (num_ranks == 1) {
+        const result = results.items[0];
+        results.deinit(allocator);
+        return result;
+    } else {
+        return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+    }
+}
+
+/// TDIGEST.BYREVRANK key rank [rank ...]
+/// Returns the estimated value at the given reverse rank position for each rank.
+/// Reverse rank must be in range [0, total_count-1].
+pub fn cmdTdigestByrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    if (args.len < 3) {
+        return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.BYREVRANK' command" };
+    }
+
+    const key = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return protocol.RespValue{ .error_string = "ERR invalid key" },
+    };
+
+    // Look up key
+    const value_ptr = storage.data.getPtr(key) orelse {
+        return protocol.RespValue{ .error_string = "ERR no such key" };
+    };
+
+    // Validate type
+    if (value_ptr.* != .t_digest) {
+        return protocol.RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const td = &value_ptr.t_digest;
+
+    // Parse all reverse rank positions and get values
+    const num_ranks = args.len - 2;
+    var results = try std.ArrayList(protocol.RespValue).initCapacity(allocator, num_ranks);
+    errdefer {
+        for (results.items) |item| {
+            protocol.deinitRespValue(item, allocator);
+        }
+        results.deinit(allocator);
+    }
+
+    for (args[2..]) |arg| {
+        const revrank_str = switch (arg) {
+            .bulk_string => |s| s,
+            else => {
+                for (results.items) |item| {
+                    protocol.deinitRespValue(item, allocator);
+                }
+                results.deinit(allocator);
+                return protocol.RespValue{ .error_string = "ERR invalid rank" };
+            },
+        };
+
+        const revrank_pos = std.fmt.parseInt(i64, revrank_str, 10) catch {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            return protocol.RespValue{ .error_string = "ERR rank must be an integer" };
+        };
+
+        const value = td.byrevrank(revrank_pos) catch |err| {
+            for (results.items) |item| {
+                protocol.deinitRespValue(item, allocator);
+            }
+            results.deinit(allocator);
+            if (err == error.EmptySketch) {
+                return protocol.RespValue{ .error_string = "ERR sketch is empty" };
+            } else {
+                return protocol.RespValue{ .error_string = "ERR rank out of range" };
+            }
+        };
+
+        // Format as bulk string
+        var buf: [32]u8 = undefined;
+        const formatted = try std.fmt.bufPrint(&buf, "{d}", .{value});
+        const owned = try allocator.dupe(u8, formatted);
+        errdefer allocator.free(owned);
+
+        try results.append(allocator, protocol.RespValue{ .bulk_string = owned });
+    }
+
+    // Single result returns bulk string directly, multiple results return array
+    if (num_ranks == 1) {
+        const result = results.items[0];
+        results.deinit(allocator);
+        return result;
+    } else {
+        return protocol.RespValue{ .array = try results.toOwnedSlice(allocator) };
+    }
+}
+
 // ============================================================================
 // Unit Tests
 // ============================================================================

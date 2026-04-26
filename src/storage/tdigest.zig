@@ -211,10 +211,10 @@ pub const TDigestValue = struct {
             }
         }
 
-        // Linear interpolation based on rank
-        const rank = q * @as(f64, @floatFromInt(self.total_count - 1));
-        const idx = @as(usize, @intFromFloat(@floor(rank)));
-        const frac = rank - @floor(rank);
+        // Linear interpolation based on rank position
+        const rank_pos = q * @as(f64, @floatFromInt(self.total_count - 1));
+        const idx = @as(usize, @intFromFloat(@floor(rank_pos)));
+        const frac = rank_pos - @floor(rank_pos);
 
         if (idx >= sorted.len - 1) {
             return sorted[sorted.len - 1].mean;
@@ -267,6 +267,122 @@ pub const TDigestValue = struct {
 
         // Return proportion
         return @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(self.total_count));
+    }
+
+    /// Estimate the rank of a given value in the distribution.
+    ///
+    /// Returns the estimated number of values less than the given value.
+    /// Rank is in range [0, total_count-1].
+    ///
+    /// This is a simplified implementation based on CDF.
+    /// rank(value) ≈ cdf(value) * (total_count - 1)
+    ///
+    /// Parameters:
+    ///   - value: Value to compute rank for
+    ///
+    /// Returns: Estimated rank as i64 (rounded)
+    ///
+    /// Errors:
+    ///   - EmptySketch: No values in sketch
+    pub fn rank(self: *const TDigestValue, value: f64) TDigestError!i64 {
+        if (self.total_count == 0) {
+            return TDigestError.EmptySketch;
+        }
+
+        // Values below min have rank = 0
+        if (value < self.min) {
+            return 0;
+        }
+
+        // Values >= max have rank = total_count - 1
+        if (value >= self.max) {
+            return @as(i64, @intCast(self.total_count - 1));
+        }
+
+        // Use CDF to estimate rank
+        const cdf_value = try self.cdf(value);
+        const rank_f64 = cdf_value * @as(f64, @floatFromInt(self.total_count - 1));
+        return @as(i64, @intFromFloat(@round(rank_f64)));
+    }
+
+    /// Estimate the reverse rank of a given value in the distribution.
+    ///
+    /// Returns the estimated number of values greater than the given value.
+    /// Reverse rank is in range [0, total_count-1].
+    ///
+    /// revrank(value) = (total_count - 1) - rank(value)
+    ///
+    /// Parameters:
+    ///   - value: Value to compute reverse rank for
+    ///
+    /// Returns: Estimated reverse rank as i64
+    ///
+    /// Errors:
+    ///   - EmptySketch: No values in sketch
+    pub fn revrank(self: *const TDigestValue, value: f64) TDigestError!i64 {
+        const fwd_rank = try self.rank(value);
+        return @as(i64, @intCast(self.total_count - 1)) - fwd_rank;
+    }
+
+    /// Get the value at a given rank position.
+    ///
+    /// Returns the value such that approximately `rank_pos` values are less than it.
+    /// This is the inverse of rank().
+    ///
+    /// byrank(r) ≈ quantile(r / (total_count - 1))
+    ///
+    /// Parameters:
+    ///   - rank_pos: Rank position in range [0, total_count-1]
+    ///
+    /// Returns: Estimated value at the given rank
+    ///
+    /// Errors:
+    ///   - EmptySketch: No values in sketch
+    ///   - InvalidQuantile: rank_pos out of range [0, total_count-1]
+    pub fn byrank(self: *const TDigestValue, rank_pos: i64) TDigestError!f64 {
+        if (self.total_count == 0) {
+            return TDigestError.EmptySketch;
+        }
+
+        if (rank_pos < 0 or rank_pos >= self.total_count) {
+            return TDigestError.InvalidQuantile;
+        }
+
+        // Convert rank to quantile
+        if (self.total_count == 1) {
+            return self.centroids.items[0].mean;
+        }
+
+        const q = @as(f64, @floatFromInt(rank_pos)) / @as(f64, @floatFromInt(self.total_count - 1));
+        return try self.quantile(q);
+    }
+
+    /// Get the value at a given reverse rank position.
+    ///
+    /// Returns the value such that approximately `revrank_pos` values are greater than it.
+    /// This is the inverse of revrank().
+    ///
+    /// byrevrank(r) = byrank((total_count - 1) - r)
+    ///
+    /// Parameters:
+    ///   - revrank_pos: Reverse rank position in range [0, total_count-1]
+    ///
+    /// Returns: Estimated value at the given reverse rank
+    ///
+    /// Errors:
+    ///   - EmptySketch: No values in sketch
+    ///   - InvalidQuantile: revrank_pos out of range [0, total_count-1]
+    pub fn byrevrank(self: *const TDigestValue, revrank_pos: i64) TDigestError!f64 {
+        if (self.total_count == 0) {
+            return TDigestError.EmptySketch;
+        }
+
+        if (revrank_pos < 0 or revrank_pos >= self.total_count) {
+            return TDigestError.InvalidQuantile;
+        }
+
+        const fwd_rank = @as(i64, @intCast(self.total_count - 1)) - revrank_pos;
+        return try self.byrank(fwd_rank);
     }
 };
 
@@ -880,4 +996,321 @@ test "TDigestValue.cdf monotonic increasing" {
     // CDF should be monotonic increasing
     try std.testing.expect(cdf1 <= cdf2);
     try std.testing.expect(cdf2 <= cdf3);
+}
+
+// ============================================================================
+// TDIGEST.RANK/REVRANK/BYRANK/BYREVRANK Tests (Iteration 229)
+// ============================================================================
+
+test "TDigestValue.rank with single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    // Single value always has rank 0
+    const r = try td.rank(42.0);
+    try std.testing.expectEqual(0, r);
+}
+
+test "TDigestValue.rank with multiple values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Value below min has rank 0
+    const r1 = try td.rank(5.0);
+    try std.testing.expectEqual(0, r1);
+
+    // Value >= max has rank total_count - 1 = 4
+    const r2 = try td.rank(100.0);
+    try std.testing.expectEqual(4, r2);
+
+    // Median value should have rank around 2
+    const r3 = try td.rank(30.0);
+    try std.testing.expect(r3 >= 1 and r3 <= 3);
+}
+
+test "TDigestValue.rank empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.rank(42.0);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.rank monotonic increasing" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+
+    const r1 = try td.rank(15.0);
+    const r2 = try td.rank(25.0);
+    const r3 = try td.rank(35.0);
+
+    // Ranks should be monotonic increasing
+    try std.testing.expect(r1 <= r2);
+    try std.testing.expect(r2 <= r3);
+}
+
+test "TDigestValue.revrank with single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    // Single value: revrank = (1 - 1) - rank(42) = 0 - 0 = 0
+    const rr = try td.revrank(42.0);
+    try std.testing.expectEqual(0, rr);
+}
+
+test "TDigestValue.revrank with multiple values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Value below min: rank=0 → revrank=4-0=4
+    const rr1 = try td.revrank(5.0);
+    try std.testing.expectEqual(4, rr1);
+
+    // Value >= max: rank=4 → revrank=4-4=0
+    const rr2 = try td.revrank(100.0);
+    try std.testing.expectEqual(0, rr2);
+}
+
+test "TDigestValue.revrank empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.revrank(42.0);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.revrank monotonic decreasing" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+
+    const rr1 = try td.revrank(15.0);
+    const rr2 = try td.revrank(25.0);
+    const rr3 = try td.revrank(35.0);
+
+    // Revranks should be monotonic decreasing
+    try std.testing.expect(rr1 >= rr2);
+    try std.testing.expect(rr2 >= rr3);
+}
+
+test "TDigestValue.byrank with single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    // Single value always at rank 0
+    const v = try td.byrank(0);
+    try std.testing.expectEqual(42.0, v);
+}
+
+test "TDigestValue.byrank with multiple values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Rank 0 should return min
+    const v0 = try td.byrank(0);
+    try std.testing.expectEqual(10.0, v0);
+
+    // Rank 4 should return max
+    const v4 = try td.byrank(4);
+    try std.testing.expectEqual(50.0, v4);
+
+    // Rank 2 should be around median
+    const v2 = try td.byrank(2);
+    try std.testing.expectApproxEqRel(30.0, v2, 0.2);
+}
+
+test "TDigestValue.byrank empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.byrank(0);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.byrank out of range returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+
+    const result_low = td.byrank(-1);
+    try std.testing.expectError(error.InvalidQuantile, result_low);
+
+    const result_high = td.byrank(3);
+    try std.testing.expectError(error.InvalidQuantile, result_high);
+}
+
+test "TDigestValue.byrank monotonic increasing" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    const v0 = try td.byrank(0);
+    const v2 = try td.byrank(2);
+    const v4 = try td.byrank(4);
+
+    // Values should be monotonic increasing
+    try std.testing.expect(v0 <= v2);
+    try std.testing.expect(v2 <= v4);
+}
+
+test "TDigestValue.byrevrank with single value" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(42.0);
+
+    // Single value: revrank 0 → rank 0 → value
+    const v = try td.byrevrank(0);
+    try std.testing.expectEqual(42.0, v);
+}
+
+test "TDigestValue.byrevrank with multiple values" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // Revrank 0 should return max
+    const v0 = try td.byrevrank(0);
+    try std.testing.expectEqual(50.0, v0);
+
+    // Revrank 4 should return min
+    const v4 = try td.byrevrank(4);
+    try std.testing.expectEqual(10.0, v4);
+}
+
+test "TDigestValue.byrevrank empty sketch returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    const result = td.byrevrank(0);
+    try std.testing.expectError(error.EmptySketch, result);
+}
+
+test "TDigestValue.byrevrank out of range returns error" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+
+    const result_low = td.byrevrank(-1);
+    try std.testing.expectError(error.InvalidQuantile, result_low);
+
+    const result_high = td.byrevrank(2);
+    try std.testing.expectError(error.InvalidQuantile, result_high);
+}
+
+test "TDigestValue.byrevrank monotonic decreasing" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    const v0 = try td.byrevrank(0);
+    const v2 = try td.byrevrank(2);
+    const v4 = try td.byrevrank(4);
+
+    // Values should be monotonic decreasing
+    try std.testing.expect(v0 >= v2);
+    try std.testing.expect(v2 >= v4);
+}
+
+test "TDigestValue.rank and byrank are inverses" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // rank(byrank(r)) ≈ r
+    const v = try td.byrank(2);
+    const r = try td.rank(v);
+    try std.testing.expect(@abs(r - 2) <= 1); // Allow 1 error tolerance
+}
+
+test "TDigestValue.revrank and byrevrank are inverses" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    try td.add(10.0);
+    try td.add(20.0);
+    try td.add(30.0);
+    try td.add(40.0);
+    try td.add(50.0);
+
+    // revrank(byrevrank(r)) ≈ r
+    const v = try td.byrevrank(2);
+    const rr = try td.revrank(v);
+    try std.testing.expect(@abs(rr - 2) <= 1); // Allow 1 error tolerance
 }
