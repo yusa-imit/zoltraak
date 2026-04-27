@@ -2520,6 +2520,21 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VREM")) {
+                const result = try vector_cmds.cmdVrem(allocator, storage, args, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VISMEMBER")) {
+                const result = try vector_cmds.cmdVismember(allocator, storage, args, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VRANDMEMBER")) {
+                const result = try vector_cmds.cmdVrandmember(allocator, storage, args, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
