@@ -386,6 +386,11 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
             const centroid_size = td.centroids.items.len * (@sizeOf(f64) + @sizeOf(u64));
             break :blk centroid_size;
         },
+        .vector_set => |vs| blk: {
+            // Vector set memory: vectors * dimensionality * sizeof(f32) + attributes
+            const vectors_size = vs.vectors.count() * vs.dimensionality * @sizeOf(f32);
+            break :blk vectors_size;
+        },
     };
 }
 

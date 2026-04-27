@@ -16,6 +16,7 @@ const cuckoo_mod = @import("cuckoo.zig");
 const cms_mod = @import("cms.zig");
 const topk_mod = @import("topk.zig");
 const tdigest_mod = @import("tdigest.zig");
+const vector_mod = @import("vector.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -35,6 +36,7 @@ pub const CuckooFilterValue = cuckoo_mod.CuckooFilterValue;
 pub const CountMinSketchValue = cms_mod.CountMinSketchValue;
 pub const TopKValue = topk_mod.TopKValue;
 pub const TDigestValue = tdigest_mod.TDigestValue;
+pub const VectorSetValue = vector_mod.VectorSetValue;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -59,6 +61,7 @@ pub const ValueType = enum {
     count_min_sketch,
     top_k,
     t_digest,
+    vector_set,
 };
 
 /// Value stored in the key-value store with optional expiration
@@ -78,6 +81,7 @@ pub const Value = union(ValueType) {
     count_min_sketch: CountMinSketchValue,
     top_k: TopKValue,
     t_digest: TDigestValue,
+    vector_set: VectorSetValue,
 
     /// String value with optional expiration
     pub const StringValue = struct {
@@ -418,6 +422,7 @@ pub const Value = union(ValueType) {
             .count_min_sketch => |*cms| cms.deinit(),
             .top_k => |*tk| tk.deinit(),
             .t_digest => |*td| td.deinit(),
+            .vector_set => |*vs| vs.deinit(),
         }
     }
 
@@ -438,6 +443,7 @@ pub const Value = union(ValueType) {
             .count_min_sketch => null, // CMS doesn't support expiration
             .top_k => |tk| tk.expires_at,
             .t_digest => null, // T-Digest doesn't support expiration yet
+            .vector_set => null, // Vector sets don't support expiration yet
         };
     }
 
@@ -799,6 +805,7 @@ pub const Storage = struct {
                             .count_min_sketch => null, // CMS doesn't support expiration
                             .top_k => |tk| tk.expires_at,
                             .t_digest => null, // T-Digest doesn't support expiration yet
+                            .vector_set => null, // Vector sets don't support expiration yet
                         };
                     }
                 }
@@ -4138,6 +4145,7 @@ pub const Storage = struct {
             .count_min_sketch => {}, // CMS doesn't support expiration - no-op
             .top_k => |*v| v.expires_at = expires_at,
             .t_digest => {}, // T-Digest doesn't support expiration yet - no-op
+            .vector_set => {}, // Vector sets don't support expiration yet - no-op
         }
         return true;
     }
@@ -4494,6 +4502,7 @@ pub const Storage = struct {
             .count_min_sketch => 0xFA, // Count-Min Sketch type
             .top_k => 0xF9, // Top-K type
             .t_digest => 0xF8, // T-Digest type
+            .vector_set => 0xF7, // Vector Set type
         };
         try w.writeByte(type_byte);
 
@@ -4580,6 +4589,10 @@ pub const Storage = struct {
             },
             .t_digest => {
                 // T-Digest not yet implemented in dump
+                try w.writeInt(u32, 0, .little);
+            },
+            .vector_set => {
+                // Vector set not yet implemented in dump
                 try w.writeInt(u32, 0, .little);
             },
         }
@@ -5019,6 +5032,11 @@ pub const Storage = struct {
                 // T-Digest deep copy not yet implemented
                 // For now, return the original (stub for COPY command)
                 break :blk Value{ .t_digest = td };
+            },
+            .vector_set => |vs| blk: {
+                // Vector set deep copy not yet implemented
+                // For now, return the original (stub for COPY command)
+                break :blk Value{ .vector_set = vs };
             },
         };
     }

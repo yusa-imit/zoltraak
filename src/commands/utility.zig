@@ -370,6 +370,7 @@ pub fn cmdDebug(
                 .count_min_sketch => "CountMinSketch",
                 .top_k => "TopK",
                 .t_digest => "TDigest",
+                .vector_set => "VectorSet",
             };
 
             try buf_writer.print("Value at:{s} refcount:1 encoding:raw serializedlength:0 lru:0 lru_seconds_idle:0", .{type_str});

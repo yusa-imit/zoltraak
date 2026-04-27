@@ -121,6 +121,10 @@ pub fn cmdMemoryUsage(
                 const total: usize = 256 + (td.centroids.items.len * (@sizeOf(f64) + @sizeOf(u64))); // struct + centroids
                 break :blk2 total;
             },
+            .vector_set => |vs| blk2: {
+                const total: usize = 256 + (vs.vectors.count() * vs.dimensionality * @sizeOf(f32)); // struct + vectors
+                break :blk2 total;
+            },
         };
         break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
     };

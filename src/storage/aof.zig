@@ -291,6 +291,10 @@ pub const Aof = struct {
                     // T-Digest values handled by TDIGEST.* commands in AOF replay
                     // The commands will be replayed from AOF log
                 },
+                .vector_set => {
+                    // Vector set values handled by VADD/VSETATTR commands in AOF replay
+                    // The commands will be replayed from AOF log
+                },
             }
         }
 

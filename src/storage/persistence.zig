@@ -105,6 +105,7 @@ pub const Persistence = struct {
                     .count_min_sketch => 0xFA, // Count-Min Sketch type
                     .top_k => 0xF9, // Top-K type
                     .t_digest => 0xF8, // T-Digest type
+                    .vector_set => 0xF7, // Vector Set type
                 };
                 try w.writeByte(type_byte);
 
@@ -188,6 +189,10 @@ pub const Persistence = struct {
                     },
                     .t_digest => {
                         // T-Digest not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .vector_set => {
+                        // Vector set not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
@@ -619,6 +624,7 @@ pub const Persistence = struct {
                     .count_min_sketch => 0xFA, // Count-Min Sketch type
                     .top_k => 0xF9, // Top-K type
                     .t_digest => 0xF8, // T-Digest type
+                    .vector_set => 0xF7, // Vector Set type
                 };
                 try w.writeByte(type_byte);
 
@@ -694,6 +700,10 @@ pub const Persistence = struct {
                     },
                     .t_digest => {
                         // T-Digest not yet implemented in persistence
+                        try w.writeInt(u32, 0, .little);
+                    },
+                    .vector_set => {
+                        // Vector set not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
                 }
