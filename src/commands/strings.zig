@@ -42,6 +42,7 @@ const cuckoo_cmds = @import("cuckoo.zig");
 const cms_cmds = @import("cms.zig");
 const topk_cmds = @import("topk.zig");
 const tdigest_cmds = @import("tdigest.zig");
+const vector_cmds = @import("vectors.zig");
 const utility_cmds = @import("utility.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
@@ -177,6 +178,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
         "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
         "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
+        "VADD", "VREM", "VSETATTR",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -2495,6 +2497,26 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.TRIMMED_MEAN")) {
                 const result = try tdigest_cmds.cmdTdigestTrimmedMean(allocator, storage, args);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VADD")) {
+                const result = try vector_cmds.cmdVadd(allocator, storage, args, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VCARD")) {
+                const result = try vector_cmds.cmdVcard(allocator, storage, args, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VDIM")) {
+                const result = try vector_cmds.cmdVdim(allocator, storage, args, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VEMB")) {
+                const result = try vector_cmds.cmdVemb(allocator, storage, args, client_id);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

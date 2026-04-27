@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 230 (400+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 232 (400+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 16 (Vector Sets) — 0% complete (0/13 commands)
-- **Next milestone**: Phase 16.1 (Vector Sets foundation: VADD, VCARD, VDIM, VEMB)
+- **Current phase**: Phase 16 (Vector Sets) — 31% complete (4/13 commands)
+- **Next milestone**: Phase 16.2 (Vector Sets operations: VREM, VISMEMBER, VRANDMEMBER, VGETATTR, VSETATTR)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -108,6 +108,17 @@
 | 230 | TDIGEST.INFO, TDIGEST.TRIMMED_MEAN (metadata introspection + robust mean calculation: getInfo() returns 9 fields including compression/capacity/nodes/weight/memory, trimmedMean() excludes outliers outside quantile range with special case for [0,1] full range, bulk string "nan" for empty results, 14 storage unit tests) | Done ✅ |
 
 **All 49 Phase 15 commands complete**: BF.RESERVE, BF.ADD, BF.EXISTS, BF.MADD, BF.MEXISTS, BF.INSERT, BF.INFO, BF.CARD, BF.SCANDUMP, BF.LOADCHUNK, CF.RESERVE, CF.ADD, CF.ADDNX, CF.EXISTS, CF.INSERT, CF.INSERTNX, CF.MEXISTS, CF.DEL, CF.COUNT, CF.INFO, CF.SCANDUMP, CF.LOADCHUNK, CMS.INITBYDIM, CMS.INITBYPROB, CMS.INCRBY, CMS.QUERY, CMS.MERGE, CMS.INFO, TOPK.RESERVE, TOPK.ADD, TOPK.QUERY, TOPK.COUNT, TOPK.INCRBY, TOPK.LIST, TOPK.INFO, TDIGEST.CREATE, TDIGEST.ADD, TDIGEST.RESET, TDIGEST.MERGE, TDIGEST.QUANTILE, TDIGEST.CDF, TDIGEST.MIN, TDIGEST.MAX, TDIGEST.RANK, TDIGEST.REVRANK, TDIGEST.BYRANK, TDIGEST.BYREVRANK, **TDIGEST.INFO**, **TDIGEST.TRIMMED_MEAN** ✅
+
+### Phase 16 — Vector Sets (31% complete) 🚧
+
+| Iteration | Command | Status |
+|-----------|---------|--------|
+| 231 | Foundation (VectorSetValue, VectorEntry, DistanceMetric, QuantizationType, distance metrics: L2/IP/COSINE) | Done ✅ |
+| 232 | VADD, VCARD, VDIM, VEMB (add vectors with auto-create, get cardinality, get dimensionality, get embedding as float array) | Done ✅ |
+
+**4/13 Phase 16 commands complete**: VADD, VCARD, VDIM, VEMB
+
+**Remaining**: VREM, VISMEMBER, VRANDMEMBER, VGETATTR, VSETATTR, VINFO, VLINKS, VRANGE, VSIM (9 commands)
 
 ### Phase 11 — Redis Functions (100% complete) ✅
 
