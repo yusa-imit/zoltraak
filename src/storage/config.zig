@@ -104,6 +104,9 @@ pub const Config = struct {
 
             // Lua scripting
             .{ .name = "lua-time-limit", .value = .{ .int = 5000 }, .read_only = false }, // milliseconds, 5s default
+
+            // Keyspace notifications
+            .{ .name = "notify-keyspace-events", .value = .{ .string = "" }, .read_only = false }, // disabled by default
         };
 
         for (defaults) |def| {

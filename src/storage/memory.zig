@@ -17,6 +17,7 @@ const cms_mod = @import("cms.zig");
 const topk_mod = @import("topk.zig");
 const tdigest_mod = @import("tdigest.zig");
 const vector_mod = @import("vector.zig");
+const notifications_mod = @import("notifications.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -534,6 +535,7 @@ pub const Storage = struct {
     latency_monitor: LatencyMonitor, // Latency event tracking
     memory_tracker: MemoryTracker, // Memory usage tracking
     active_expire_enabled: bool, // Whether active expiration is enabled (default: true)
+    notification_flags: std.atomic.Value(u16), // Keyspace notification flags (from notify-keyspace-events config)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -624,9 +626,22 @@ pub const Storage = struct {
             .latency_monitor = latency_mon,
             .memory_tracker = mem_tracker,
             .active_expire_enabled = true, // Active expiration enabled by default
+            .notification_flags = std.atomic.Value(u16).init(0), // Notifications disabled by default
         };
 
         return storage;
+    }
+
+    /// Update notification flags from config string (e.g., "KEg", "KEA", "")
+    /// This is called when CONFIG SET notify-keyspace-events is invoked
+    pub fn updateNotificationFlags(self: *Storage, config_str: []const u8) void {
+        const flags = notifications_mod.parseNotificationFlags(config_str);
+        self.notification_flags.store(flags, .release);
+    }
+
+    /// Get current notification flags
+    pub fn getNotificationFlags(self: *Storage) u16 {
+        return self.notification_flags.load(.acquire);
     }
 
     /// Deinitialize storage and free all keys and values

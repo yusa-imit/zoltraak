@@ -969,6 +969,16 @@ pub fn build(b: *std.Build) void {
     const run_vector_ops_tests = b.addRunArtifact(vector_ops_tests);
     integration_test_step.dependOn(&run_vector_ops_tests.step);
 
+    const keyspace_notif_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_keyspace_notifications.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_keyspace_notif_tests = b.addRunArtifact(keyspace_notif_tests);
+    integration_test_step.dependOn(&run_keyspace_notif_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.
