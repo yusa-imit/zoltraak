@@ -2500,47 +2500,90 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VADD")) {
-                const result = try vector_cmds.cmdVadd(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VCARD")) {
-                const result = try vector_cmds.cmdVcard(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VDIM")) {
-                const result = try vector_cmds.cmdVdim(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VEMB")) {
-                const result = try vector_cmds.cmdVemb(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VREM")) {
-                const result = try vector_cmds.cmdVrem(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VISMEMBER")) {
-                const result = try vector_cmds.cmdVismember(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
-            } else if (std.mem.eql(u8, cmd_upper, "VRANDMEMBER")) {
-                const result = try vector_cmds.cmdVrandmember(allocator, storage, args, client_id);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown command '{s}'", .{cmd_upper});
                 break :blk try w.writeError(err_msg);
+            }
+        }
+
+        // Vector Set (V*) commands
+        else if (std.mem.eql(u8, cmd_upper, "VADD") or
+            std.mem.eql(u8, cmd_upper, "VCARD") or
+            std.mem.eql(u8, cmd_upper, "VDIM") or
+            std.mem.eql(u8, cmd_upper, "VEMB") or
+            std.mem.eql(u8, cmd_upper, "VREM") or
+            std.mem.eql(u8, cmd_upper, "VISMEMBER") or
+            std.mem.eql(u8, cmd_upper, "VRANDMEMBER") or
+            std.mem.eql(u8, cmd_upper, "VGETATTR") or
+            std.mem.eql(u8, cmd_upper, "VSETATTR") or
+            std.mem.eql(u8, cmd_upper, "VINFO"))
+        {
+            // Convert RespValue array to string args
+            var vargs = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(vargs);
+            vargs[0] = cmd_upper;
+            for (array[1..], 1..) |val, i| {
+                vargs[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+
+            if (std.mem.eql(u8, cmd_upper, "VADD")) {
+                const result = try vector_cmds.cmdVadd(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VCARD")) {
+                const result = try vector_cmds.cmdVcard(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VDIM")) {
+                const result = try vector_cmds.cmdVdim(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VEMB")) {
+                const result = try vector_cmds.cmdVemb(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VREM")) {
+                const result = try vector_cmds.cmdVrem(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VISMEMBER")) {
+                const result = try vector_cmds.cmdVismember(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VRANDMEMBER")) {
+                const result = try vector_cmds.cmdVrandmember(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VGETATTR")) {
+                const result = try vector_cmds.cmdVgetattr(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VSETATTR")) {
+                const result = try vector_cmds.cmdVsetattr(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VINFO")) {
+                const result = try vector_cmds.cmdVinfo(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else {
+                unreachable;
             }
         }
 

@@ -35,6 +35,15 @@ pub const QuantizationType = enum {
         if (std.ascii.eqlIgnoreCase(s, "int8")) return .int8;
         return error.InvalidQuantization;
     }
+
+    /// Returns the uppercase string representation of the quantization type
+    pub fn toString(self: QuantizationType) []const u8 {
+        return switch (self) {
+            .fp32 => "FP32",
+            .fp16 => "FP16",
+            .int8 => "INT8",
+        };
+    }
 };
 
 /// Vector entry with embedding and optional attributes

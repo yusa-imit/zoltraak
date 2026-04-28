@@ -352,3 +352,322 @@ test "Integration: VADD, VCARD, VDIM, VEMB workflow" {
         try std.testing.expect(std.mem.startsWith(u8, request, "*4\r\n"));
     }
 }
+
+// ============================================================================
+// VGETATTR integration tests
+// ============================================================================
+
+test "VGETATTR: RESP format for command" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myvec", "v1", "category" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    // Verifies RESP serialization of the VGETATTR command
+    try std.testing.expect(std.mem.startsWith(u8, request, "*4\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, request, "VGETATTR") != null);
+}
+
+test "VGETATTR: arity too few args" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myvec" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    // Verifies RESP serialization with 2 args
+    try std.testing.expect(std.mem.startsWith(u8, request, "*2\r\n"));
+}
+
+test "VGETATTR: arity too many args" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myvec", "v1", "attr", "extra" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*5\r\n"));
+}
+
+test "VGETATTR: command with all args" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myset", "member1", "color" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "myset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "member1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "color") != null);
+}
+
+test "VGETATTR: nonexistent key serialization" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "no_such_key", "v1", "attr1" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*4\r\n"));
+}
+
+test "VGETATTR: empty attribute name" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myvec", "v1", "" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    // Empty string should be serialized as $0\r\n\r\n
+    try std.testing.expect(std.mem.indexOf(u8, request, "$0\r\n\r\n") != null);
+}
+
+test "VGETATTR: attribute with special characters" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myvec", "v1", "my-attr_name.v2" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "my-attr_name.v2") != null);
+}
+
+test "VGETATTR: long attribute value" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VGETATTR", "myvec", "v1", "description" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "description") != null);
+}
+
+// ============================================================================
+// VSETATTR integration tests
+// ============================================================================
+
+test "VSETATTR: RESP format for command" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "category", "news" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*5\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, request, "VSETATTR") != null);
+}
+
+test "VSETATTR: arity too few args" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*3\r\n"));
+}
+
+test "VSETATTR: arity too many args" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "cat", "val", "extra" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*6\r\n"));
+}
+
+test "VSETATTR: command with all args" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myset", "member1", "color", "red" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "myset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "member1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "red") != null);
+}
+
+test "VSETATTR: nonexistent key serialization" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "no_such_key", "v1", "attr1", "val1" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*5\r\n"));
+}
+
+test "VSETATTR: empty attribute value" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "tag", "" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    // Empty value should be serialized as $0\r\n\r\n
+    try std.testing.expect(std.mem.indexOf(u8, request, "$0\r\n\r\n") != null);
+}
+
+test "VSETATTR: attribute with unicode value" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "label", "hello world" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "hello world") != null);
+}
+
+test "VSETATTR: numeric attribute value" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "score", "0.95" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "score") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "0.95") != null);
+}
+
+test "VSETATTR: overwrite existing attribute" {
+    const allocator = std.testing.allocator;
+
+    // First set
+    {
+        const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "tag", "old" };
+        const request = try sendCommand(allocator, &cmd);
+        defer allocator.free(request);
+        try std.testing.expect(std.mem.indexOf(u8, request, "old") != null);
+    }
+
+    // Overwrite
+    const cmd = [_][]const u8{ "VSETATTR", "myvec", "v1", "tag", "new" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "new") != null);
+}
+
+// ============================================================================
+// VINFO integration tests
+// ============================================================================
+
+test "VINFO: RESP format for command" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VINFO", "myvec" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*2\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, request, "VINFO") != null);
+}
+
+test "VINFO: arity error too few" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{"VINFO"};
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*1\r\n"));
+}
+
+test "VINFO: arity error too many" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VINFO", "myvec", "extra" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.startsWith(u8, request, "*3\r\n"));
+}
+
+test "VINFO: nonexistent key serialization" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VINFO", "nonexistent" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "nonexistent") != null);
+}
+
+test "VINFO: command format validation" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VINFO", "my_vectors" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    // Should contain the key name in the serialized RESP
+    try std.testing.expect(std.mem.indexOf(u8, request, "my_vectors") != null);
+}
+
+test "VINFO: key with special characters" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VINFO", "vec:set:1" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "vec:set:1") != null);
+}
+
+test "VINFO: long key name" {
+    const allocator = std.testing.allocator;
+
+    const cmd = [_][]const u8{ "VINFO", "this_is_a_very_long_key_name_for_testing" };
+    const request = try sendCommand(allocator, &cmd);
+    defer allocator.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "this_is_a_very_long_key_name_for_testing") != null);
+}
+
+// ============================================================================
+// Integration workflow: VSETATTR + VGETATTR + VINFO
+// ============================================================================
+
+test "Integration: VSETATTR, VGETATTR, VINFO workflow" {
+    const allocator = std.testing.allocator;
+
+    // VADD command
+    {
+        const cmd = [_][]const u8{
+            "VADD", "docvec",     "3",       "COSINE",
+            "doc1", "0.1",        "0.2",     "0.3",
+            "doc2", "0.4",        "0.5",     "0.6",
+        };
+        const request = try sendCommand(allocator, &cmd);
+        defer allocator.free(request);
+        try std.testing.expect(std.mem.startsWith(u8, request, "*"));
+    }
+
+    // VSETATTR command
+    {
+        const cmd = [_][]const u8{ "VSETATTR", "docvec", "doc1", "category", "science" };
+        const request = try sendCommand(allocator, &cmd);
+        defer allocator.free(request);
+        try std.testing.expect(std.mem.indexOf(u8, request, "science") != null);
+    }
+
+    // VGETATTR command
+    {
+        const cmd = [_][]const u8{ "VGETATTR", "docvec", "doc1", "category" };
+        const request = try sendCommand(allocator, &cmd);
+        defer allocator.free(request);
+        try std.testing.expect(std.mem.indexOf(u8, request, "category") != null);
+    }
+
+    // VINFO command
+    {
+        const cmd = [_][]const u8{ "VINFO", "docvec" };
+        const request = try sendCommand(allocator, &cmd);
+        defer allocator.free(request);
+        try std.testing.expect(std.mem.indexOf(u8, request, "docvec") != null);
+    }
+}
