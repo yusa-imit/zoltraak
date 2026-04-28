@@ -150,6 +150,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "PFCOUNT",
         "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
         "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE", "TS.QUERYINDEX", "TS.INFO",
+        "VCARD", "VDIM", "VEMB", "VISMEMBER", "VRANDMEMBER", "VGETATTR", "VINFO", "VSIM", "VRANGE", "VLINKS",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -2519,7 +2520,10 @@ pub fn executeCommand(
             std.mem.eql(u8, cmd_upper, "VRANDMEMBER") or
             std.mem.eql(u8, cmd_upper, "VGETATTR") or
             std.mem.eql(u8, cmd_upper, "VSETATTR") or
-            std.mem.eql(u8, cmd_upper, "VINFO"))
+            std.mem.eql(u8, cmd_upper, "VINFO") or
+            std.mem.eql(u8, cmd_upper, "VSIM") or
+            std.mem.eql(u8, cmd_upper, "VRANGE") or
+            std.mem.eql(u8, cmd_upper, "VLINKS"))
         {
             // Convert RespValue array to string args
             var vargs = try allocator.alloc([]const u8, array.len);
@@ -2579,6 +2583,21 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "VINFO")) {
                 const result = try vector_cmds.cmdVinfo(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VSIM")) {
+                const result = try vector_cmds.cmdVsim(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VRANGE")) {
+                const result = try vector_cmds.cmdVrange(allocator, storage, vargs, client_id);
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeRespValue(result);
+            } else if (std.mem.eql(u8, cmd_upper, "VLINKS")) {
+                const result = try vector_cmds.cmdVlinks(allocator, storage, vargs, client_id);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

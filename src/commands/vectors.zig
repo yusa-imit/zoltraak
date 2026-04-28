@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const Storage = @import("../storage/memory.zig").Storage;
 const Value = @import("../storage/memory.zig").Value;
 const VectorSetValue = @import("../storage/vector.zig").VectorSetValue;
+const VectorEntry = @import("../storage/vector.zig").VectorEntry;
 const DistanceMetric = @import("../storage/vector.zig").DistanceMetric;
 const QuantizationType = @import("../storage/vector.zig").QuantizationType;
 const RespValue = @import("../protocol/parser.zig").RespValue;
@@ -1446,4 +1447,464 @@ test "cmdVinfo: wrong arity" {
     defer result.deinit(allocator);
 
     try std.testing.expect(result == .err);
+}
+
+// ============================================================================
+// VSIM - Vector Similarity Search
+// ============================================================================
+
+/// VSIM key member K [WITHSCORES] [WITHDISTANCES] [WITHEMBEDDINGS]
+/// Find K nearest neighbors to the given member's embedding.
+/// Returns array of member IDs ordered by distance (ascending).
+/// Optional flags add metadata to each result.
+pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len < 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vsim' command" };
+
+    const key = args[1];
+    const member = args[2];
+    const k_str = args[3];
+
+    // Parse K
+    const k = std.fmt.parseInt(usize, k_str, 10) catch {
+        return RespValue{ .error_string = "ERR invalid K value" };
+    };
+    if (k == 0) {
+        return RespValue{ .error_string = "ERR K must be positive" };
+    }
+
+    // Parse flags
+    var with_scores = false;
+    var with_distances = false;
+    var with_embeddings = false;
+    for (args[4..]) |flag| {
+        if (std.ascii.eqlIgnoreCase(flag, "WITHSCORES")) {
+            with_scores = true;
+        } else if (std.ascii.eqlIgnoreCase(flag, "WITHDISTANCES")) {
+            with_distances = true;
+        } else if (std.ascii.eqlIgnoreCase(flag, "WITHEMBEDDINGS")) {
+            with_embeddings = true;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    const value = storage.data.get(key) orelse {
+        return RespValue{ .error_string = "ERR no such key" };
+    };
+
+    if (value != .vector_set) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const vs = &value.vector_set;
+
+    // Get query vector
+    const query_entry = vs.get(member) orelse {
+        return RespValue{ .error_string = "ERR member not found" };
+    };
+
+    // Brute-force linear scan for K nearest neighbors
+    const NeighborResult = struct {
+        id: []const u8,
+        distance: f32,
+        embedding: []const f32,
+    };
+
+    var neighbors = std.ArrayList(NeighborResult).init(allocator);
+    defer neighbors.deinit();
+
+    // Calculate distances to all other vectors
+    var it = vs.vectors.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, member)) continue; // Skip self
+
+        const dist = vs.distance(query_entry.embedding, entry.value_ptr.*.embedding);
+        try neighbors.append(NeighborResult{
+            .id = entry.value_ptr.*.id,
+            .distance = dist,
+            .embedding = entry.value_ptr.*.embedding,
+        });
+    }
+
+    // Sort by distance (ascending)
+    std.mem.sort(NeighborResult, neighbors.items, {}, struct {
+        pub fn lessThan(_: void, a: NeighborResult, b: NeighborResult) bool {
+            return a.distance < b.distance;
+        }
+    }.lessThan);
+
+    // Take top K
+    const actual_k = @min(k, neighbors.items.len);
+
+    // Build response based on flags
+    if (!with_scores and !with_distances and !with_embeddings) {
+        // Simple array of IDs
+        var result = try allocator.alloc(RespValue, actual_k);
+        errdefer allocator.free(result);
+
+        for (0..actual_k) |i| {
+            const id_copy = try allocator.dupe(u8, neighbors.items[i].id);
+            result[i] = RespValue{ .bulk_string = id_copy };
+        }
+
+        return RespValue{ .array = result };
+    } else {
+        // Array of arrays: [id, distance?, score?, embedding?]
+        var result = try allocator.alloc(RespValue, actual_k);
+        errdefer allocator.free(result);
+
+        for (0..actual_k) |i| {
+            const neighbor = neighbors.items[i];
+            var item_count: usize = 1; // Always include ID
+            if (with_distances) item_count += 1;
+            if (with_scores) item_count += 1;
+            if (with_embeddings) item_count += 1;
+
+            var item = try allocator.alloc(RespValue, item_count);
+            errdefer allocator.free(item);
+
+            var idx: usize = 0;
+
+            // ID (always first)
+            const id_copy = try allocator.dupe(u8, neighbor.id);
+            errdefer allocator.free(id_copy);
+            item[idx] = RespValue{ .bulk_string = id_copy };
+            idx += 1;
+
+            // Distance
+            if (with_distances) {
+                const dist_str = try std.fmt.allocPrint(allocator, "{d}", .{neighbor.distance});
+                errdefer allocator.free(dist_str);
+                item[idx] = RespValue{ .bulk_string = dist_str };
+                idx += 1;
+            }
+
+            // Score (1.0 - distance)
+            if (with_scores) {
+                const score = 1.0 - neighbor.distance;
+                const score_str = try std.fmt.allocPrint(allocator, "{d}", .{score});
+                errdefer allocator.free(score_str);
+                item[idx] = RespValue{ .bulk_string = score_str };
+                idx += 1;
+            }
+
+            // Embedding
+            if (with_embeddings) {
+                var emb_vals = try allocator.alloc(RespValue, neighbor.embedding.len);
+                errdefer allocator.free(emb_vals);
+
+                for (neighbor.embedding, 0..) |val, j| {
+                    const val_str = try std.fmt.allocPrint(allocator, "{d}", .{val});
+                    errdefer allocator.free(val_str);
+                    emb_vals[j] = RespValue{ .bulk_string = val_str };
+                }
+                item[idx] = RespValue{ .array = emb_vals };
+                idx += 1;
+            }
+
+            result[i] = RespValue{ .array = item };
+        }
+
+        return RespValue{ .array = result };
+    }
+}
+
+// ============================================================================
+// VRANGE - Range-based vector retrieval
+// ============================================================================
+
+/// VRANGE key start stop [WITHEMBEDDINGS]
+/// Pagination-style range retrieval.
+/// start/stop support negative indices (-1 = last).
+/// Returns array of member IDs.
+pub fn cmdVrange(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len < 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vrange' command" };
+
+    const key = args[1];
+    const start_str = args[2];
+    const stop_str = args[3];
+
+    // Parse optional flag
+    var with_embeddings = false;
+    for (args[4..]) |flag| {
+        if (std.ascii.eqlIgnoreCase(flag, "WITHEMBEDDINGS")) {
+            with_embeddings = true;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    const value = storage.data.get(key) orelse {
+        return RespValue{ .error_string = "ERR no such key" };
+    };
+
+    if (value != .vector_set) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const vs = &value.vector_set;
+    const count = vs.cardinality();
+
+    if (count == 0) {
+        // Empty array for empty vector set
+        const empty = try allocator.alloc(RespValue, 0);
+        return RespValue{ .array = empty };
+    }
+
+    // Parse start/stop indices
+    var start = std.fmt.parseInt(i64, start_str, 10) catch {
+        return RespValue{ .error_string = "ERR invalid start index" };
+    };
+    var stop = std.fmt.parseInt(i64, stop_str, 10) catch {
+        return RespValue{ .error_string = "ERR invalid stop index" };
+    };
+
+    // Normalize negative indices
+    const count_i64 = @as(i64, @intCast(count));
+    if (start < 0) start = count_i64 + start;
+    if (stop < 0) stop = count_i64 + stop;
+
+    // Clamp to valid range
+    if (start < 0) start = 0;
+    if (stop >= count_i64) stop = count_i64 - 1;
+
+    // Empty range
+    if (start > stop) {
+        const empty = try allocator.alloc(RespValue, 0);
+        return RespValue{ .array = empty };
+    }
+
+    // Collect all member IDs
+    var members = std.ArrayList(*VectorEntry).init(allocator);
+    defer members.deinit();
+
+    var it = vs.vectors.valueIterator();
+    while (it.next()) |entry_ptr| {
+        try members.append(entry_ptr.*);
+    }
+
+    // Build response for the range [start..stop]
+    const range_size = @as(usize, @intCast(stop - start + 1));
+    var result = try allocator.alloc(RespValue, range_size);
+    errdefer allocator.free(result);
+
+    for (0..range_size) |i| {
+        const idx = @as(usize, @intCast(start)) + i;
+        const entry = members.items[idx];
+
+        if (!with_embeddings) {
+            // Just the ID
+            const id_copy = try allocator.dupe(u8, entry.id);
+            errdefer allocator.free(id_copy);
+            result[i] = RespValue{ .bulk_string = id_copy };
+        } else {
+            // [ID, embedding_array]
+            var item = try allocator.alloc(RespValue, 2);
+            errdefer allocator.free(item);
+
+            const id_copy = try allocator.dupe(u8, entry.id);
+            errdefer allocator.free(id_copy);
+            item[0] = RespValue{ .bulk_string = id_copy };
+
+            var emb_vals = try allocator.alloc(RespValue, entry.embedding.len);
+            errdefer allocator.free(emb_vals);
+
+            for (entry.embedding, 0..) |val, j| {
+                const val_str = try std.fmt.allocPrint(allocator, "{d}", .{val});
+                errdefer allocator.free(val_str);
+                emb_vals[j] = RespValue{ .bulk_string = val_str };
+            }
+            item[1] = RespValue{ .array = emb_vals };
+
+            result[i] = RespValue{ .array = item };
+        }
+    }
+
+    return RespValue{ .array = result };
+}
+
+// ============================================================================
+// VLINKS - HNSW graph navigation (stub)
+// ============================================================================
+
+/// VLINKS key member
+/// Return HNSW graph neighbors for a given member.
+/// Stub implementation: return empty array (HNSW graph not yet built).
+pub fn cmdVlinks(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vlinks' command" };
+
+    const key = args[1];
+    const member = args[2];
+
+    const value = storage.data.get(key) orelse {
+        return RespValue{ .error_string = "ERR no such key" };
+    };
+
+    if (value != .vector_set) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+
+    const vs = &value.vector_set;
+
+    // Verify member exists
+    _ = vs.get(member) orelse {
+        return RespValue{ .error_string = "ERR member not found" };
+    };
+
+    // Stub: return empty array (HNSW graph not implemented)
+    const empty = try allocator.alloc(RespValue, 0);
+    return RespValue{ .array = empty };
+}
+
+// ============================================================================
+// VSIM tests
+// ============================================================================
+
+test "cmdVsim: basic K=2 without flags" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add 4 vectors with different distances from v1
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "0.0", "0.0", "v2", "1.0", "0.0", "v3", "0.0", "1.0", "v4", "2.0", "2.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    // Find 2 nearest neighbors to v1
+    const args2 = [_][]const u8{ "VSIM", "myvec", "v1", "2" };
+    const result2 = try cmdVsim(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .array);
+    try std.testing.expectEqual(@as(usize, 2), result2.array.len);
+    // Should return v2 and v3 (both distance 1.0 from v1)
+}
+
+test "cmdVsim: with WITHSCORES flag" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "0.0", "0.0", "v2", "1.0", "0.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VSIM", "myvec", "v1", "1", "WITHSCORES" };
+    const result2 = try cmdVsim(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .array);
+    try std.testing.expectEqual(@as(usize, 1), result2.array.len);
+    try std.testing.expect(result2.array[0] == .array);
+    try std.testing.expectEqual(@as(usize, 2), result2.array[0].array.len); // [id, score]
+}
+
+test "cmdVsim: nonexistent member" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VSIM", "myvec", "nonexistent", "1" };
+    const result2 = try cmdVsim(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .err);
+}
+
+// ============================================================================
+// VRANGE tests
+// ============================================================================
+
+test "cmdVrange: basic range [0..1]" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0", "v3", "5.0", "6.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VRANGE", "myvec", "0", "1" };
+    const result2 = try cmdVrange(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .array);
+    try std.testing.expectEqual(@as(usize, 2), result2.array.len);
+}
+
+test "cmdVrange: negative indices" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VRANGE", "myvec", "-1", "-1" };
+    const result2 = try cmdVrange(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .array);
+    try std.testing.expectEqual(@as(usize, 1), result2.array.len); // Last element only
+}
+
+test "cmdVrange: with WITHEMBEDDINGS flag" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VRANGE", "myvec", "0", "0", "WITHEMBEDDINGS" };
+    const result2 = try cmdVrange(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .array);
+    try std.testing.expectEqual(@as(usize, 1), result2.array.len);
+    try std.testing.expect(result2.array[0] == .array);
+    try std.testing.expectEqual(@as(usize, 2), result2.array[0].array.len); // [id, embedding]
+}
+
+// ============================================================================
+// VLINKS tests
+// ============================================================================
+
+test "cmdVlinks: stub returns empty array" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VLINKS", "myvec", "v1" };
+    const result2 = try cmdVlinks(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .array);
+    try std.testing.expectEqual(@as(usize, 0), result2.array.len);
+}
+
+test "cmdVlinks: nonexistent member" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
+    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer result1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VLINKS", "myvec", "nonexistent" };
+    const result2 = try cmdVlinks(allocator, &storage, &args2, 3);
+    defer result2.deinit(allocator);
+
+    try std.testing.expect(result2 == .err);
 }

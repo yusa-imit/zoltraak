@@ -671,3 +671,215 @@ test "Integration: VSETATTR, VGETATTR, VINFO workflow" {
         try std.testing.expect(std.mem.indexOf(u8, request, "docvec") != null);
     }
 }
+
+// ============================================================================
+// VSIM tests
+// ============================================================================
+
+test "VSIM: basic K=2 similarity search" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    // Add 4 vectors with different L2 distances from v1 [0,0]
+    try server.send("*10\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n0.0\r\n$3\r\n0.0\r\n$2\r\nv2\r\n$3\r\n1.0\r\n$3\r\n0.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*10\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv3\r\n$3\r\n0.0\r\n$3\r\n1.0\r\n$2\r\nv4\r\n$3\r\n2.0\r\n$3\r\n2.0\r\n");
+    _ = try server.recv();
+
+    // Find 2 nearest neighbors to v1
+    try server.send("*4\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n$1\r\n2\r\n");
+    const resp = try server.recv();
+    
+    // Should return array of 2 member IDs
+    try expectStartsWith(resp, "*2\r\n");
+}
+
+test "VSIM: with WITHSCORES flag" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n0.0\r\n$3\r\n0.0\r\n$2\r\nv2\r\n$3\r\n1.0\r\n$3\r\n0.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*5\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n$1\r\n1\r\n$10\r\nWITHSCORES\r\n");
+    const resp = try server.recv();
+    
+    // Should return array of 1 result, each with [id, score]
+    try expectStartsWith(resp, "*1\r\n*2\r\n");
+}
+
+test "VSIM: with WITHDISTANCES flag" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n0.0\r\n$3\r\n0.0\r\n$2\r\nv2\r\n$3\r\n1.0\r\n$3\r\n0.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*5\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n$1\r\n1\r\n$13\r\nWITHDISTANCES\r\n");
+    const resp = try server.recv();
+    
+    // Should return array of 1 result, each with [id, distance]
+    try expectStartsWith(resp, "*1\r\n*2\r\n");
+}
+
+test "VSIM: with WITHEMBEDDINGS flag" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n0.0\r\n$3\r\n0.0\r\n$2\r\nv2\r\n$3\r\n1.0\r\n$3\r\n0.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*5\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n$1\r\n1\r\n$15\r\nWITHEMBEDDINGS\r\n");
+    const resp = try server.recv();
+    
+    // Should return array of 1 result, each with [id, embedding_array]
+    try expectStartsWith(resp, "*1\r\n*2\r\n");
+}
+
+test "VSIM: nonexistent member error" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n0.0\r\n$3\r\n0.0\r\n$2\r\nv2\r\n$3\r\n1.0\r\n$3\r\n0.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*4\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$11\r\nnonexistent\r\n$1\r\n1\r\n");
+    const resp = try server.recv();
+    
+    try expectError(resp);
+}
+
+test "VSIM: invalid K error" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n0.0\r\n$3\r\n0.0\r\n$2\r\nv2\r\n$3\r\n1.0\r\n$3\r\n0.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*4\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n$1\r\n0\r\n");
+    const resp = try server.recv();
+    
+    try expectError(resp);
+}
+
+test "VSIM: wrong arity error" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*3\r\n$4\r\nVSIM\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n");
+    const resp = try server.recv();
+    
+    try expectError(resp);
+}
+
+// ============================================================================
+// VRANGE tests
+// ============================================================================
+
+test "VRANGE: basic range [0..1]" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*10\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n1.0\r\n$3\r\n2.0\r\n$2\r\nv2\r\n$3\r\n3.0\r\n$3\r\n4.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*4\r\n$6\r\nVRANGE\r\n$5\r\nmyvec\r\n$1\r\n0\r\n$1\r\n1\r\n");
+    const resp = try server.recv();
+    
+    // Should return array of 2 member IDs
+    try expectStartsWith(resp, "*2\r\n");
+}
+
+test "VRANGE: negative indices" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*10\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n1.0\r\n$3\r\n2.0\r\n$2\r\nv2\r\n$3\r\n3.0\r\n$3\r\n4.0\r\n");
+    _ = try server.recv();
+
+    // Get last element
+    try server.send("*4\r\n$6\r\nVRANGE\r\n$5\r\nmyvec\r\n$2\r\n-1\r\n$2\r\n-1\r\n");
+    const resp = try server.recv();
+    
+    try expectStartsWith(resp, "*1\r\n");
+}
+
+test "VRANGE: with WITHEMBEDDINGS flag" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n1.0\r\n$3\r\n2.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*5\r\n$6\r\nVRANGE\r\n$5\r\nmyvec\r\n$1\r\n0\r\n$1\r\n0\r\n$15\r\nWITHEMBEDDINGS\r\n");
+    const resp = try server.recv();
+    
+    // Should return array of 1 result, each with [id, embedding_array]
+    try expectStartsWith(resp, "*1\r\n*2\r\n");
+}
+
+test "VRANGE: empty range" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n1.0\r\n$3\r\n2.0\r\n");
+    _ = try server.recv();
+
+    // start > stop
+    try server.send("*4\r\n$6\r\nVRANGE\r\n$5\r\nmyvec\r\n$1\r\n5\r\n$1\r\n3\r\n");
+    const resp = try server.recv();
+    
+    try expectEqual(resp, "*0\r\n");
+}
+
+test "VRANGE: wrong arity error" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*3\r\n$6\r\nVRANGE\r\n$5\r\nmyvec\r\n$1\r\n0\r\n");
+    const resp = try server.recv();
+    
+    try expectError(resp);
+}
+
+// ============================================================================
+// VLINKS tests
+// ============================================================================
+
+test "VLINKS: stub returns empty array" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n1.0\r\n$3\r\n2.0\r\n$2\r\nv2\r\n$3\r\n3.0\r\n$3\r\n4.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*3\r\n$6\r\nVLINKS\r\n$5\r\nmyvec\r\n$2\r\nv1\r\n");
+    const resp = try server.recv();
+    
+    // Stub implementation returns empty array
+    try expectEqual(resp, "*0\r\n");
+}
+
+test "VLINKS: nonexistent member error" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*8\r\n$4\r\nVADD\r\n$5\r\nmyvec\r\n$1\r\n2\r\n$2\r\nL2\r\n$2\r\nv1\r\n$3\r\n1.0\r\n$3\r\n2.0\r\n$2\r\nv2\r\n$3\r\n3.0\r\n$3\r\n4.0\r\n");
+    _ = try server.recv();
+
+    try server.send("*3\r\n$6\r\nVLINKS\r\n$5\r\nmyvec\r\n$11\r\nnonexistent\r\n");
+    const resp = try server.recv();
+    
+    try expectError(resp);
+}
+
+test "VLINKS: wrong arity error" {
+    var server = try TestServer.init();
+    defer server.deinit();
+
+    try server.send("*2\r\n$6\r\nVLINKS\r\n$5\r\nmyvec\r\n");
+    const resp = try server.recv();
+    
+    try expectError(resp);
+}
