@@ -40,6 +40,7 @@ pub const TopKValue = topk_mod.TopKValue;
 pub const TDigestValue = tdigest_mod.TDigestValue;
 pub const VectorSetValue = vector_mod.VectorSetValue;
 pub const LRUClock = eviction_mod.LRUClock;
+pub const LFUCounter = eviction_mod.LFUCounter;
 pub const EvictionPolicy = eviction_mod.EvictionPolicy;
 
 /// Mode for XACKDEL and XDELEX commands
@@ -540,6 +541,7 @@ pub const Storage = struct {
     active_expire_enabled: bool, // Whether active expiration is enabled (default: true)
     notification_flags: std.atomic.Value(u16), // Keyspace notification flags (from notify-keyspace-events config)
     lru_clock: LRUClock, // LRU clock for eviction policies
+    lfu_counter: LFUCounter, // LFU counter for eviction policies
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -632,6 +634,7 @@ pub const Storage = struct {
             .active_expire_enabled = true, // Active expiration enabled by default
             .notification_flags = std.atomic.Value(u16).init(0), // Notifications disabled by default
             .lru_clock = LRUClock.init(allocator),
+            .lfu_counter = LFUCounter.init(allocator),
         };
 
         return storage;
@@ -692,6 +695,7 @@ pub const Storage = struct {
         self.slowlog.deinit();
         self.latency_monitor.deinit();
         self.lru_clock.deinit();
+        self.lfu_counter.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;
@@ -812,8 +816,319 @@ pub const Storage = struct {
 
                 return false;
             },
-            .volatile_lru, .allkeys_lfu, .volatile_lfu, .allkeys_random, .volatile_random, .volatile_ttl => {
-                // Stub for other policies (Iteration 239+)
+            .volatile_lru => {
+                // Sample N keys with TTL and find LRU
+                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                defer candidates.deinit();
+
+                var it = self.data.iterator();
+                var count: usize = 0;
+                while (it.next()) |entry| {
+                    // Only consider keys with expiration
+                    const has_expiry = switch (entry.value_ptr.*) {
+                        .string => |s| s.expires_at != null,
+                        .list => |l| l.expires_at != null,
+                        .set => |s| s.expires_at != null,
+                        .sorted_set => |ss| ss.expires_at != null,
+                        .hash => |h| h.expires_at != null,
+                        .stream => |s| s.expires_at != null,
+                        .hyperloglog => |hll| hll.expires_at != null,
+                        .json => |j| j.expires_at != null,
+                        .timeseries => |ts| ts.expires_at != null,
+                        .bloom_filter => |bf| bf.expires_at != null,
+                        .cuckoo_filter => |cf| cf.expires_at != null,
+                        .count_min_sketch => |cms| cms.expires_at != null,
+                        .topk => |tk| tk.expires_at != null,
+                        .tdigest => |td| td.expires_at != null,
+                        .vector_set => |vs| vs.expires_at != null,
+                    };
+
+                    if (has_expiry) {
+                        try candidates.append(entry.key_ptr.*);
+                        count += 1;
+                        if (count >= sample_size) break;
+                    }
+                }
+
+                if (candidates.items.len == 0) {
+                    return false; // No keys with TTL
+                }
+
+                // Find key with max idle time
+                var oldest_key: ?[]const u8 = null;
+                var max_idle: u32 = 0;
+
+                for (candidates.items) |key| {
+                    const idle_time = self.lru_clock.getIdleTime(key) orelse 0;
+                    if (oldest_key == null or idle_time > max_idle) {
+                        oldest_key = key;
+                        max_idle = idle_time;
+                    }
+                }
+
+                if (oldest_key) |key| {
+                    if (self.data.fetchRemove(key)) |entry| {
+                        self.allocator.free(entry.key);
+                        var value = entry.value;
+                        value.deinit(self.allocator);
+                        self.lru_clock.remove(key);
+                        self.lfu_counter.remove(key);
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+            .allkeys_lfu => {
+                // Sample N keys and find LFU (lowest frequency)
+                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                defer candidates.deinit();
+
+                var it = self.data.keyIterator();
+                var count: usize = 0;
+                while (it.next()) |key_ptr| : (count += 1) {
+                    if (count >= sample_size) break;
+                    try candidates.append(key_ptr.*);
+                }
+
+                if (candidates.items.len == 0) {
+                    return false;
+                }
+
+                // Find key with lowest frequency
+                var lfu_key: ?[]const u8 = null;
+                var min_freq: u8 = 255;
+
+                for (candidates.items) |key| {
+                    const freq = self.lfu_counter.getCounter(key);
+                    if (lfu_key == null or freq < min_freq) {
+                        lfu_key = key;
+                        min_freq = freq;
+                    }
+                }
+
+                if (lfu_key) |key| {
+                    if (self.data.fetchRemove(key)) |entry| {
+                        self.allocator.free(entry.key);
+                        var value = entry.value;
+                        value.deinit(self.allocator);
+                        self.lru_clock.remove(key);
+                        self.lfu_counter.remove(key);
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+            .volatile_lfu => {
+                // Sample N keys with TTL and find LFU
+                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                defer candidates.deinit();
+
+                var it = self.data.iterator();
+                var count: usize = 0;
+                while (it.next()) |entry| {
+                    const has_expiry = switch (entry.value_ptr.*) {
+                        .string => |s| s.expires_at != null,
+                        .list => |l| l.expires_at != null,
+                        .set => |s| s.expires_at != null,
+                        .sorted_set => |ss| ss.expires_at != null,
+                        .hash => |h| h.expires_at != null,
+                        .stream => |s| s.expires_at != null,
+                        .hyperloglog => |hll| hll.expires_at != null,
+                        .json => |j| j.expires_at != null,
+                        .timeseries => |ts| ts.expires_at != null,
+                        .bloom_filter => |bf| bf.expires_at != null,
+                        .cuckoo_filter => |cf| cf.expires_at != null,
+                        .count_min_sketch => |cms| cms.expires_at != null,
+                        .topk => |tk| tk.expires_at != null,
+                        .tdigest => |td| td.expires_at != null,
+                        .vector_set => |vs| vs.expires_at != null,
+                    };
+
+                    if (has_expiry) {
+                        try candidates.append(entry.key_ptr.*);
+                        count += 1;
+                        if (count >= sample_size) break;
+                    }
+                }
+
+                if (candidates.items.len == 0) {
+                    return false;
+                }
+
+                // Find key with lowest frequency
+                var lfu_key: ?[]const u8 = null;
+                var min_freq: u8 = 255;
+
+                for (candidates.items) |key| {
+                    const freq = self.lfu_counter.getCounter(key);
+                    if (lfu_key == null or freq < min_freq) {
+                        lfu_key = key;
+                        min_freq = freq;
+                    }
+                }
+
+                if (lfu_key) |key| {
+                    if (self.data.fetchRemove(key)) |entry| {
+                        self.allocator.free(entry.key);
+                        var value = entry.value;
+                        value.deinit(self.allocator);
+                        self.lru_clock.remove(key);
+                        self.lfu_counter.remove(key);
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+            .allkeys_random => {
+                // Sample N keys and pick one randomly
+                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                defer candidates.deinit();
+
+                var it = self.data.keyIterator();
+                var count: usize = 0;
+                while (it.next()) |key_ptr| : (count += 1) {
+                    if (count >= sample_size) break;
+                    try candidates.append(key_ptr.*);
+                }
+
+                if (candidates.items.len == 0) {
+                    return false;
+                }
+
+                // Pick a random key
+                var prng = std.Random.DefaultPrng.init(@bitCast(std.time.nanoTimestamp()));
+                const rand = prng.random();
+                const idx = rand.intRangeAtMost(usize, 0, candidates.items.len - 1);
+                const key = candidates.items[idx];
+
+                if (self.data.fetchRemove(key)) |entry| {
+                    self.allocator.free(entry.key);
+                    var value = entry.value;
+                    value.deinit(self.allocator);
+                    self.lru_clock.remove(key);
+                    self.lfu_counter.remove(key);
+                    return true;
+                }
+
+                return false;
+            },
+            .volatile_random => {
+                // Sample N keys with TTL and pick one randomly
+                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                defer candidates.deinit();
+
+                var it = self.data.iterator();
+                var count: usize = 0;
+                while (it.next()) |entry| {
+                    const has_expiry = switch (entry.value_ptr.*) {
+                        .string => |s| s.expires_at != null,
+                        .list => |l| l.expires_at != null,
+                        .set => |s| s.expires_at != null,
+                        .sorted_set => |ss| ss.expires_at != null,
+                        .hash => |h| h.expires_at != null,
+                        .stream => |s| s.expires_at != null,
+                        .hyperloglog => |hll| hll.expires_at != null,
+                        .json => |j| j.expires_at != null,
+                        .timeseries => |ts| ts.expires_at != null,
+                        .bloom_filter => |bf| bf.expires_at != null,
+                        .cuckoo_filter => |cf| cf.expires_at != null,
+                        .count_min_sketch => |cms| cms.expires_at != null,
+                        .topk => |tk| tk.expires_at != null,
+                        .tdigest => |td| td.expires_at != null,
+                        .vector_set => |vs| vs.expires_at != null,
+                    };
+
+                    if (has_expiry) {
+                        try candidates.append(entry.key_ptr.*);
+                        count += 1;
+                        if (count >= sample_size) break;
+                    }
+                }
+
+                if (candidates.items.len == 0) {
+                    return false;
+                }
+
+                // Pick a random key
+                var prng = std.Random.DefaultPrng.init(@bitCast(std.time.nanoTimestamp()));
+                const rand = prng.random();
+                const idx = rand.intRangeAtMost(usize, 0, candidates.items.len - 1);
+                const key = candidates.items[idx];
+
+                if (self.data.fetchRemove(key)) |entry| {
+                    self.allocator.free(entry.key);
+                    var value = entry.value;
+                    value.deinit(self.allocator);
+                    self.lru_clock.remove(key);
+                    self.lfu_counter.remove(key);
+                    return true;
+                }
+
+                return false;
+            },
+            .volatile_ttl => {
+                // Sample N keys with TTL and evict one with soonest expiration
+                var candidates = std.ArrayList(struct { key: []const u8, ttl: i64 }).init(self.allocator);
+                defer candidates.deinit();
+
+                const now_ms = std.time.milliTimestamp();
+                var it = self.data.iterator();
+                var count: usize = 0;
+                while (it.next()) |entry| {
+                    const expires_at: ?i64 = switch (entry.value_ptr.*) {
+                        .string => |s| s.expires_at,
+                        .list => |l| l.expires_at,
+                        .set => |s| s.expires_at,
+                        .sorted_set => |ss| ss.expires_at,
+                        .hash => |h| h.expires_at,
+                        .stream => |s| s.expires_at,
+                        .hyperloglog => |hll| hll.expires_at,
+                        .json => |j| j.expires_at,
+                        .timeseries => |ts| ts.expires_at,
+                        .bloom_filter => |bf| bf.expires_at,
+                        .cuckoo_filter => |cf| cf.expires_at,
+                        .count_min_sketch => |cms| cms.expires_at,
+                        .topk => |tk| tk.expires_at,
+                        .tdigest => |td| td.expires_at,
+                        .vector_set => |vs| vs.expires_at,
+                    };
+
+                    if (expires_at) |exp| {
+                        try candidates.append(.{ .key = entry.key_ptr.*, .ttl = exp - now_ms });
+                        count += 1;
+                        if (count >= sample_size) break;
+                    }
+                }
+
+                if (candidates.items.len == 0) {
+                    return false;
+                }
+
+                // Find key with soonest expiration (lowest TTL)
+                var soonest_key: ?[]const u8 = null;
+                var min_ttl: i64 = std.math.maxInt(i64);
+
+                for (candidates.items) |candidate| {
+                    if (soonest_key == null or candidate.ttl < min_ttl) {
+                        soonest_key = candidate.key;
+                        min_ttl = candidate.ttl;
+                    }
+                }
+
+                if (soonest_key) |key| {
+                    if (self.data.fetchRemove(key)) |entry| {
+                        self.allocator.free(entry.key);
+                        var value = entry.value;
+                        value.deinit(self.allocator);
+                        self.lru_clock.remove(key);
+                        self.lfu_counter.remove(key);
+                        return true;
+                    }
+                }
+
                 return false;
             },
         }

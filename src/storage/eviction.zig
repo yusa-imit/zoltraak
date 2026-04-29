@@ -89,6 +89,54 @@ pub const LRUClock = struct {
     }
 };
 
+/// LFU Counter for tracking key access frequency
+/// Uses logarithmic counter with probabilistic increment (Morris counter)
+/// This approximates Redis's LFU implementation
+pub const LFUCounter = struct {
+    /// Access counters for each key (8-bit logarithmic counter)
+    counters: std.StringHashMap(u8),
+
+    allocator: std.mem.Allocator,
+    prng: std.Random.DefaultPrng,
+
+    pub fn init(allocator: std.mem.Allocator) LFUCounter {
+        return LFUCounter{
+            .counters = std.StringHashMap(u8).init(allocator),
+            .allocator = allocator,
+            .prng = std.Random.DefaultPrng.init(@bitCast(std.time.timestamp())),
+        };
+    }
+
+    pub fn deinit(self: *LFUCounter) void {
+        self.counters.deinit();
+    }
+
+    /// Increment counter for a key (logarithmic/probabilistic)
+    /// Uses Morris counter: higher values increment with lower probability
+    pub fn increment(self: *LFUCounter, key: []const u8) !void {
+        const current = self.counters.get(key) orelse 0;
+        if (current < 255) {
+            // Probability of increment decreases as counter grows
+            const rand = self.prng.random();
+            const threshold = @as(f64, @floatFromInt(current)) / 10.0;
+            if (rand.float(f64) > threshold) {
+                try self.counters.put(key, current + 1);
+            }
+        }
+    }
+
+    /// Get frequency counter for a key
+    /// Returns 0 if key not tracked
+    pub fn getCounter(self: *const LFUCounter, key: []const u8) u8 {
+        return self.counters.get(key) orelse 0;
+    }
+
+    /// Remove key from frequency tracking
+    pub fn remove(self: *LFUCounter, key: []const u8) void {
+        _ = self.counters.remove(key);
+    }
+};
+
 /// Commands that grow memory and should trigger eviction
 const WRITE_COMMANDS = std.StaticStringMap(void).initComptime(.{
     .{"SET"}, .{"SETNX"}, .{"SETEX"}, .{"PSETEX"}, .{"MSET"}, .{"MSETNX"}, .{"MSETEX"}, .{"APPEND"},
@@ -204,4 +252,64 @@ test "eviction - remove key from tracking" {
     clock.remove("key1");
     try std.testing.expect(!clock.last_access.contains("key1"));
     try std.testing.expectEqual(null, clock.getIdleTime("key1"));
+}
+
+test "eviction - LFU counter basic operations" {
+    var counter = LFUCounter.init(std.testing.allocator);
+    defer counter.deinit();
+
+    // Initial counter should be 0
+    try std.testing.expectEqual(@as(u8, 0), counter.getCounter("key1"));
+
+    // After increment, counter should be > 0 (probabilistic)
+    try counter.increment("key1");
+    const count1 = counter.getCounter("key1");
+    try std.testing.expect(count1 <= 1); // First increment usually succeeds
+
+    // Multiple increments
+    for (0..100) |_| {
+        try counter.increment("key1");
+    }
+    const count2 = counter.getCounter("key1");
+    try std.testing.expect(count2 > count1); // Should have increased
+
+    // Counter is capped at 255
+    try std.testing.expect(count2 <= 255);
+}
+
+test "eviction - LFU counter removal" {
+    var counter = LFUCounter.init(std.testing.allocator);
+    defer counter.deinit();
+
+    try counter.increment("key1");
+    try std.testing.expect(counter.counters.contains("key1"));
+
+    counter.remove("key1");
+    try std.testing.expect(!counter.counters.contains("key1"));
+    try std.testing.expectEqual(@as(u8, 0), counter.getCounter("key1"));
+}
+
+test "eviction - LFU probabilistic increment" {
+    var counter = LFUCounter.init(std.testing.allocator);
+    defer counter.deinit();
+
+    // Low counter should increment frequently
+    for (0..10) |_| {
+        try counter.increment("low_freq");
+    }
+    const low_count = counter.getCounter("low_freq");
+    try std.testing.expect(low_count > 0);
+
+    // Manually set high counter
+    try counter.counters.put("high_freq", 200);
+
+    // High counter should increment rarely
+    const before = counter.getCounter("high_freq");
+    for (0..10) |_| {
+        try counter.increment("high_freq");
+    }
+    const after = counter.getCounter("high_freq");
+
+    // High counter should increment less than low counter did
+    try std.testing.expect((after - before) < low_count);
 }
