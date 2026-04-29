@@ -18,6 +18,7 @@ const topk_mod = @import("topk.zig");
 const tdigest_mod = @import("tdigest.zig");
 const vector_mod = @import("vector.zig");
 const notifications_mod = @import("notifications.zig");
+const eviction_mod = @import("eviction.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -38,6 +39,8 @@ pub const CountMinSketchValue = cms_mod.CountMinSketchValue;
 pub const TopKValue = topk_mod.TopKValue;
 pub const TDigestValue = tdigest_mod.TDigestValue;
 pub const VectorSetValue = vector_mod.VectorSetValue;
+pub const LRUClock = eviction_mod.LRUClock;
+pub const EvictionPolicy = eviction_mod.EvictionPolicy;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -536,6 +539,7 @@ pub const Storage = struct {
     memory_tracker: MemoryTracker, // Memory usage tracking
     active_expire_enabled: bool, // Whether active expiration is enabled (default: true)
     notification_flags: std.atomic.Value(u16), // Keyspace notification flags (from notify-keyspace-events config)
+    lru_clock: LRUClock, // LRU clock for eviction policies
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -627,6 +631,7 @@ pub const Storage = struct {
             .memory_tracker = mem_tracker,
             .active_expire_enabled = true, // Active expiration enabled by default
             .notification_flags = std.atomic.Value(u16).init(0), // Notifications disabled by default
+            .lru_clock = LRUClock.init(allocator),
         };
 
         return storage;
@@ -686,11 +691,132 @@ pub const Storage = struct {
         self.blocking_queue.deinit();
         self.slowlog.deinit();
         self.latency_monitor.deinit();
+        self.lru_clock.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;
         self.mutex.unlock();
         allocator.destroy(self);
+    }
+
+    /// Check if memory limit is exceeded and evict keys if needed
+    /// Returns error.OOM if noeviction policy and memory limit reached
+    /// This should be called before write commands that grow memory
+    pub fn checkMemoryLimitAndEvict(self: *Storage, command_name: []const u8) !void {
+        // Get maxmemory config (0 = unlimited)
+        const maxmemory_val = self.config.get("maxmemory") catch return; // Continue if not set
+        const maxmemory = switch (maxmemory_val) {
+            .int => |i| if (i <= 0) return else @as(usize, @intCast(i)), // 0 or negative = unlimited
+            else => return, // Invalid type, skip check
+        };
+
+        // Get current memory usage
+        const current_memory = self.memory_tracker.current_allocated;
+        if (current_memory <= maxmemory) {
+            return; // Memory OK
+        }
+
+        // Get eviction policy
+        const policy_val = self.config.get("maxmemory-policy") catch {
+            return error.OOM; // Default to noeviction if not set
+        };
+        const policy_str = switch (policy_val) {
+            .string => |s| s,
+            else => return error.OOM, // Invalid type
+        };
+
+        const policy = EvictionPolicy.parse(policy_str) orelse {
+            return error.OOM; // Invalid policy string
+        };
+
+        // Check if this command grows memory
+        if (!eviction_mod.isMemoryGrowingCommand(command_name)) {
+            return; // Commands that don't grow memory (GET, DEL, etc.) are always allowed
+        }
+
+        // Handle noeviction policy
+        if (policy == .noeviction) {
+            return error.OOM; // Return error immediately
+        }
+
+        // Attempt to evict keys until memory is under limit
+        const max_evictions: usize = 100; // Safety limit to prevent infinite loop
+        var evictions: usize = 0;
+
+        while (evictions < max_evictions) {
+            // Recheck memory after each eviction
+            const current = self.memory_tracker.current_allocated;
+            if (current <= maxmemory) {
+                return; // Success!
+            }
+
+            // Try to evict one key
+            const evicted = try self.evictOneKey(policy);
+            if (!evicted) {
+                // No more keys can be evicted
+                return error.OOM;
+            }
+
+            evictions += 1;
+        }
+
+        // If we exhausted max_evictions and memory still high, return error
+        return error.OOM;
+    }
+
+    /// Evict a single key according to the eviction policy
+    /// Returns true if a key was evicted, false if no candidates available
+    fn evictOneKey(self: *Storage, policy: EvictionPolicy) !bool {
+        const sample_size: usize = 5; // Redis default: sample 5 keys
+
+        switch (policy) {
+            .noeviction => return false, // Should not be called with noeviction
+            .allkeys_lru => {
+                // Sample N keys and find LRU
+                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                defer candidates.deinit();
+
+                var it = self.data.keyIterator();
+                var count: usize = 0;
+                while (it.next()) |key_ptr| : (count += 1) {
+                    if (count >= sample_size) break;
+                    try candidates.append(key_ptr.*);
+                }
+
+                if (candidates.items.len == 0) {
+                    return false; // No keys to evict
+                }
+
+                // Find key with max idle time (oldest LRU)
+                var oldest_key: ?[]const u8 = null;
+                var max_idle: u32 = 0;
+
+                for (candidates.items) |key| {
+                    const idle_time = self.lru_clock.getIdleTime(key) orelse 0;
+                    if (oldest_key == null or idle_time > max_idle) {
+                        oldest_key = key;
+                        max_idle = idle_time;
+                    }
+                }
+
+                if (oldest_key) |key| {
+                    // Delete the key
+                    if (self.data.fetchRemove(key)) |entry| {
+                        self.allocator.free(entry.key);
+                        var value = entry.value;
+                        value.deinit(self.allocator);
+                        self.lru_clock.remove(key);
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+            .volatile_lru, .allkeys_lfu, .volatile_lfu, .allkeys_random, .volatile_random, .volatile_ttl => {
+                // Stub for other policies (Iteration 239+)
+                return false;
+            },
+        }
     }
 
     /// Get type of value stored at key, or null if key doesn't exist

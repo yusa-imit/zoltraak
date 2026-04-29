@@ -88,7 +88,7 @@ pub const VectorEntry = struct {
         const value_copy = try self.allocator.dupe(u8, value);
         errdefer self.allocator.free(value_copy);
 
-        if (self.attributes.fetchPut(key_copy, value_copy)) |prev| {
+        if (try self.attributes.fetchPut(key_copy, value_copy)) |prev| {
             self.allocator.free(prev.key);
             self.allocator.free(prev.value);
         }

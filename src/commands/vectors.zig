@@ -111,7 +111,7 @@ pub fn cmdVcard(allocator: Allocator, storage: *Storage, args: []const []const u
     const key = args[1];
 
     const value = storage.data.get(key) orelse {
-        return RespValue.integer(0);
+        return RespValue{ .integer = 0 };
     };
 
     if (value != .vector_set) {
@@ -119,7 +119,7 @@ pub fn cmdVcard(allocator: Allocator, storage: *Storage, args: []const []const u
     }
 
     const cardinality: i64 = @intCast(value.vector_set.cardinality());
-    return RespValue.integer(cardinality);
+    return RespValue{ .integer = cardinality };
 }
 
 /// VDIM key
@@ -140,7 +140,7 @@ pub fn cmdVdim(allocator: Allocator, storage: *Storage, args: []const []const u8
     }
 
     const dimensionality: i64 = @intCast(value.vector_set.dimensionality);
-    return RespValue.integer(dimensionality);
+    return RespValue{ .integer = dimensionality };
 }
 
 /// VEMB key id
@@ -153,7 +153,7 @@ pub fn cmdVemb(allocator: Allocator, storage: *Storage, args: []const []const u8
     const id = args[2];
 
     const value = storage.data.get(key) orelse {
-        return RespValue.null_bulk_string();
+        return RespValue{ .null_bulk_string = {} };
     };
 
     if (value != .vector_set) {
@@ -162,7 +162,7 @@ pub fn cmdVemb(allocator: Allocator, storage: *Storage, args: []const []const u8
 
     const vs = &value.vector_set;
     const entry = vs.get(id) orelse {
-        return RespValue.null_bulk_string();
+        return RespValue{ .null_bulk_string = {} };
     };
 
     // Build array of bulk strings (float values)
@@ -358,7 +358,7 @@ test "cmdVdim: basic" {
     defer storage.deinit();
 
     // Add vector
-    var vec_args = std.ArrayList([]const u8).init(allocator);
+    var vec_args = std.ArrayList([]const u8){};
     defer vec_args.deinit();
 
     try vec_args.append("VADD");
@@ -481,15 +481,15 @@ pub fn cmdVrem(allocator: Allocator, storage: *Storage, args: []const []const u8
     const key = args[1];
     const ids = args[2..];
 
-    const value = storage.data.get(key) orelse {
-        return RespValue.integer(0);
+    const entry = storage.data.getPtr(key) orelse {
+        return RespValue{ .integer = 0 };
     };
 
-    if (value != .vector_set) {
+    if (entry.* != .vector_set) {
         return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
     }
 
-    var vs = &value.vector_set;
+    var vs = &entry.vector_set;
     var removed_count: i64 = 0;
 
     for (ids) |id| {
@@ -499,7 +499,7 @@ pub fn cmdVrem(allocator: Allocator, storage: *Storage, args: []const []const u8
         }
     }
 
-    return RespValue.integer(removed_count);
+    return RespValue{ .integer = removed_count };
 }
 
 /// VISMEMBER key id
@@ -513,7 +513,7 @@ pub fn cmdVismember(allocator: Allocator, storage: *Storage, args: []const []con
     const id = args[2];
 
     const value = storage.data.get(key) orelse {
-        return RespValue.integer(0);
+        return RespValue{ .integer = 0 };
     };
 
     if (value != .vector_set) {
@@ -523,7 +523,7 @@ pub fn cmdVismember(allocator: Allocator, storage: *Storage, args: []const []con
     const vs = &value.vector_set;
     const exists = vs.contains(id);
 
-    return RespValue.integer(if (exists) 1 else 0);
+    return RespValue{ .integer = if (exists) 1 else 0 };
 }
 
 /// VRANDMEMBER key [count]
@@ -541,7 +541,7 @@ pub fn cmdVrandmember(allocator: Allocator, storage: *Storage, args: []const []c
 
     const value = storage.data.get(key) orelse {
         if (args.len == 2) {
-            return RespValue.null_bulk_string();
+            return RespValue{ .null_bulk_string = {} };
         } else {
             // With count, return empty array
             const empty = try allocator.alloc(RespValue, 0);
@@ -558,7 +558,7 @@ pub fn cmdVrandmember(allocator: Allocator, storage: *Storage, args: []const []c
     // No count argument: return single random member
     if (args.len == 2) {
         const member_id = vs.randomMember() orelse {
-            return RespValue.null_bulk_string();
+            return RespValue{ .null_bulk_string = {} };
         };
         const id_copy = try allocator.dupe(u8, member_id);
         return RespValue{ .bulk_string = id_copy };
@@ -956,7 +956,7 @@ pub fn cmdVgetattr(allocator: Allocator, storage: *Storage, args: []const []cons
     const attribute = args[3];
 
     const value = storage.data.get(key) orelse {
-        return RespValue.null_bulk_string();
+        return RespValue{ .null_bulk_string = {} };
     };
 
     if (value != .vector_set) {
@@ -965,11 +965,11 @@ pub fn cmdVgetattr(allocator: Allocator, storage: *Storage, args: []const []cons
 
     const vs = &value.vector_set;
     const entry = vs.get(member) orelse {
-        return RespValue.null_bulk_string();
+        return RespValue{ .null_bulk_string = {} };
     };
 
     const attr_value = entry.getAttribute(attribute) orelse {
-        return RespValue.null_bulk_string();
+        return RespValue{ .null_bulk_string = {} };
     };
 
     // Return the attribute value as a bulk string.
@@ -1003,11 +1003,11 @@ pub fn cmdVsetattr(allocator: Allocator, storage: *Storage, args: []const []cons
 
     var vs = &value.vector_set;
     const entry = vs.get(member) orelse {
-        return RespValue.integer(0);
+        return RespValue{ .integer = 0 };
     };
 
     try entry.setAttribute(attribute, attr_value);
-    return RespValue.integer(1);
+    return RespValue{ .integer = 1 };
 }
 
 /// VINFO key
@@ -1040,7 +1040,7 @@ pub fn cmdVinfo(allocator: Allocator, storage: *Storage, args: []const []const u
     elements[0] = RespValue{ .bulk_string = dim_label };
 
     // Element 1: dimensionality value
-    elements[1] = RespValue.integer(@intCast(vs.dimensionality));
+    elements[1] = RespValue{ .integer = @intCast(vs.dimensionality) };
 
     // Element 2: "metric" label
     const metric_label = try allocator.dupe(u8, "metric");
@@ -1058,7 +1058,7 @@ pub fn cmdVinfo(allocator: Allocator, storage: *Storage, args: []const []const u
     elements[4] = RespValue{ .bulk_string = count_label };
 
     // Element 5: count value
-    elements[5] = RespValue.integer(@intCast(vs.cardinality()));
+    elements[5] = RespValue{ .integer = @intCast(vs.cardinality()) };
 
     // Element 6: "quantization" label
     const quant_label = try allocator.dupe(u8, "quantization");
@@ -1510,8 +1510,8 @@ pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8
         embedding: []const f32,
     };
 
-    var neighbors = std.ArrayList(NeighborResult).init(allocator);
-    defer neighbors.deinit();
+    var neighbors = std.ArrayList(NeighborResult){};
+    defer neighbors.deinit(allocator);
 
     // Calculate distances to all other vectors
     var it = vs.vectors.iterator();
@@ -1519,7 +1519,7 @@ pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8
         if (std.mem.eql(u8, entry.key_ptr.*, member)) continue; // Skip self
 
         const dist = vs.distance(query_entry.embedding, entry.value_ptr.*.embedding);
-        try neighbors.append(NeighborResult{
+        try neighbors.append(allocator, NeighborResult{
             .id = entry.value_ptr.*.id,
             .distance = dist,
             .embedding = entry.value_ptr.*.embedding,
@@ -1675,12 +1675,12 @@ pub fn cmdVrange(allocator: Allocator, storage: *Storage, args: []const []const 
     }
 
     // Collect all member IDs
-    var members = std.ArrayList(*VectorEntry).init(allocator);
-    defer members.deinit();
+    var members = std.ArrayList(*VectorEntry){};
+    defer members.deinit(allocator);
 
     var it = vs.vectors.valueIterator();
     while (it.next()) |entry_ptr| {
-        try members.append(entry_ptr.*);
+        try members.append(allocator, entry_ptr.*);
     }
 
     // Build response for the range [start..stop]
