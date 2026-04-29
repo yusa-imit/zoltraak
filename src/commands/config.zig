@@ -3,6 +3,7 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const config_mod = @import("../storage/config.zig");
+const notifications_mod = @import("../storage/notifications.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
@@ -179,6 +180,17 @@ fn cmdConfigSet(
             };
             return w.writeError(err_msg);
         };
+
+        // Handle side effects for specific parameters
+        // Case-insensitive comparison for notify-keyspace-events
+        const param_lower = try std.ascii.allocLowerString(allocator, param_name);
+        defer allocator.free(param_lower);
+
+        if (std.mem.eql(u8, param_lower, "notify-keyspace-events")) {
+            // Parse the new flags and update Storage atomically
+            const new_flags = notifications_mod.parseNotificationFlags(value);
+            storage.notification_flags.store(new_flags, .release);
+        }
     }
 
     var w = Writer.init(allocator);

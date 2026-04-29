@@ -110,3 +110,54 @@ test "CONFIG GET notify-keyspace-events" {
     // Should return empty string (disabled by default)
     try testing.expect(result.items.len > 0);
 }
+
+/// Test CONFIG SET notify-keyspace-events updates Storage.notification_flags atomically
+test "CONFIG SET notify-keyspace-events - atomic flag update" {
+    const allocator = testing.allocator;
+
+    var server = try Server.init(allocator, "127.0.0.1", 6393);
+    defer server.deinit();
+
+    // Verify flags are 0 initially (disabled by default)
+    const initial_flags = server.storage.notification_flags.load(.acquire);
+    try testing.expectEqual(@as(u16, 0), initial_flags);
+
+    // Set notify-keyspace-events to "KEA" (all flags)
+    const set_cmd = "*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$24\r\nnotify-keyspace-events\r\n$3\r\nKEA\r\n";
+    var set_result = try server.handleCommand(1, set_cmd);
+    defer set_result.deinit(allocator);
+
+    // Verify flags are now non-zero (KEA should enable all flags)
+    const flags_after_set = server.storage.notification_flags.load(.acquire);
+    try testing.expect(flags_after_set != 0);
+
+    // Disable notifications by setting empty string
+    const disable_cmd = "*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$24\r\nnotify-keyspace-events\r\n$0\r\n\r\n";
+    var disable_result = try server.handleCommand(1, disable_cmd);
+    defer disable_result.deinit(allocator);
+
+    // Verify flags are back to 0
+    const flags_after_disable = server.storage.notification_flags.load(.acquire);
+    try testing.expectEqual(@as(u16, 0), flags_after_disable);
+}
+
+/// Test CONFIG SET notify-keyspace-events with specific flags
+test "CONFIG SET notify-keyspace-events - specific flags" {
+    const allocator = testing.allocator;
+
+    var server = try Server.init(allocator, "127.0.0.1", 6394);
+    defer server.deinit();
+
+    // Set specific flags: K (keyspace), g (generic)
+    const set_cmd = "*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$24\r\nnotify-keyspace-events\r\n$2\r\nKg\r\n";
+    var set_result = try server.handleCommand(1, set_cmd);
+    defer set_result.deinit(allocator);
+
+    // Verify flags are set
+    const flags = server.storage.notification_flags.load(.acquire);
+    try testing.expect(flags != 0);
+
+    // Verify the flags match what parseNotificationFlags would return for "Kg"
+    const expected_flags = notifications_mod.parseNotificationFlags("Kg");
+    try testing.expectEqual(expected_flags, flags);
+}
