@@ -98,7 +98,7 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
         }
     }
 
-    return RespValue.integer(added_count);
+    return RespValue{ .integer = added_count };
 }
 
 /// VCARD key

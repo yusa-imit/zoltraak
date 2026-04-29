@@ -49,6 +49,7 @@ const ACLStore = acl_storage.ACLStore;
 const AclUser = acl_storage.User;
 const command_registry = @import("command_registry.zig");
 const cluster_mod = @import("../storage/cluster.zig");
+const notifications_mod = @import("../storage/notifications.zig");
 
 /// Access mode for key-based command permission checking
 pub const AccessMode = enum { read, write };
@@ -339,6 +340,41 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
 
     // No keys found
     return static.positions[0..0];
+}
+
+/// Publish keyspace notification if enabled.
+/// This is a helper to call after successful command execution.
+/// - event_flag: the notification type (e.g., .string, .generic, .list)
+/// - event_name: the event name (e.g., "set", "del", "lpush")
+fn notifyKeyspaceEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_flag: notifications_mod.NotificationFlag,
+    event_name: []const u8,
+) void {
+    // Get notification flags from config
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    // Check if this event type should fire
+    if (!notifications_mod.shouldNotify(flags, event_flag)) {
+        return;
+    }
+
+    // Publish notification (ignore errors — notifications are non-critical)
+    notifications_mod.publishNotification(
+        allocator,
+        pubsub_state,
+        db_index,
+        key,
+        event_name,
+        flags,
+    ) catch {};
 }
 
 /// Execute a RESP command and return the serialized response.
@@ -731,11 +767,13 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "PING")) {
             break :blk try cmdPing(allocator, array);
         } else if (std.mem.eql(u8, cmd_upper, "SET")) {
-            break :blk try cmdSet(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdSet(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "GET")) {
             break :blk try cmdGet(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "DEL")) {
-            break :blk try cmdDel(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdDel(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "EXISTS")) {
             break :blk try cmdExists(allocator, storage, array);
         }
@@ -765,7 +803,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "SETNX")) {
             break :blk try cmdSetnx(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SETEX")) {
-            break :blk try cmdSetex(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdSetex(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "PSETEX")) {
             break :blk try cmdPsetex(allocator, storage, array);
         }
@@ -2960,7 +2999,7 @@ fn cmdPing(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
 
 /// SET key value [EX seconds] [PX milliseconds] [NX|XX]
 /// Returns +OK or $-1 if condition not met
-fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3050,7 +3089,15 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     }
 
     // Execute SET
+    const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
+
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
+    if (was_new) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .new, "new");
+    }
+
     return w.writeOK();
 }
 
@@ -3075,7 +3122,7 @@ fn cmdGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
 
 /// DEL key [key ...]
 /// Returns integer count of deleted keys
-fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3093,6 +3140,13 @@ fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             else => return w.writeError("ERR invalid key"),
         };
         try keys.append(allocator, key);
+    }
+
+    // Publish notifications for keys that actually exist before deletion
+    for (keys.items) |del_key| {
+        if (storage.exists(del_key)) {
+            notifyKeyspaceEvent(allocator, storage, ps, db_index, del_key, .generic, "del");
+        }
     }
 
     const deleted_count = storage.del(keys.items);
@@ -3605,7 +3659,7 @@ fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
 
 /// SETEX key seconds value
 /// Set key to value with expiry in seconds.
-fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3632,7 +3686,15 @@ fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
     };
 
     const expires_at = Storage.getCurrentTimestamp() + (seconds * 1000);
+    const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
+
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "setex");
+    if (was_new) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .new, "new");
+    }
+
     return w.writeOK();
 }
 
