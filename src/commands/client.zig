@@ -106,6 +106,19 @@ pub const MonitorMessage = struct {
     message: []const u8,
 };
 
+/// Invalidation message for client-side caching
+pub const InvalidationMessage = struct {
+    client_id: u64,
+    key: []const u8,
+
+    pub fn deinit(self: *InvalidationMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+    }
+};
+
+/// Set of client IDs tracking a key
+const ClientSet = std.AutoHashMap(u64, void);
+
 /// Thread-safe registry of all active client connections
 pub const ClientRegistry = struct {
     allocator: std.mem.Allocator,
@@ -120,6 +133,10 @@ pub const ClientRegistry = struct {
     pause_until_ms: i64,
     /// Pause mode: true = ALL, false = WRITE only
     pause_all: bool,
+    /// Tracking table: key -> set of client IDs that accessed this key
+    tracking_table: std.StringHashMap(ClientSet),
+    /// Maximum tracking table size (configurable via CONFIG SET tracking-table-max-keys)
+    tracking_table_max_keys: usize,
 
     /// Initialize a new client registry
     pub fn init(allocator: std.mem.Allocator) ClientRegistry {
@@ -131,6 +148,8 @@ pub const ClientRegistry = struct {
             .mutex = std.Thread.Mutex{},
             .pause_until_ms = 0,
             .pause_all = false,
+            .tracking_table = std.StringHashMap(ClientSet).init(allocator),
+            .tracking_table_max_keys = 1_000_000, // Default 1M keys (same as Redis)
         };
     }
 
@@ -146,6 +165,15 @@ pub const ClientRegistry = struct {
         }
         self.clients.deinit();
         self.killed_clients.deinit();
+
+        // Clean up tracking table
+        var tracking_it = self.tracking_table.iterator();
+        while (tracking_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            var client_set = entry.value_ptr.*;
+            client_set.deinit();
+        }
+        self.tracking_table.deinit();
     }
 
     /// Register a new client connection and return its ID
@@ -640,6 +668,160 @@ pub const ClientRegistry = struct {
 
         if (self.clients.getPtr(client_id)) |info| {
             info.tracking_next_cache = null;
+        }
+    }
+
+    /// Track key access for a client (for server-assisted client-side caching)
+    /// This records that a client accessed a key, so we can send invalidation messages later.
+    pub fn trackKeyAccess(self: *ClientRegistry, client_id: u64, key: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Get client info to check tracking settings
+        const info = self.clients.get(client_id) orelse return;
+
+        // Determine if we should track this key access
+        const should_track = blk: {
+            if (!info.tracking_enabled) break :blk false;
+
+            // OPTIN mode: only track if next_cache is explicitly true
+            if (info.tracking_optin) {
+                break :blk info.tracking_next_cache orelse false;
+            }
+
+            // OPTOUT mode: track unless next_cache is explicitly false
+            if (info.tracking_optout) {
+                break :blk info.tracking_next_cache orelse true;
+            }
+
+            // Default mode (not OPTIN/OPTOUT): always track
+            break :blk true;
+        };
+
+        if (!should_track) return;
+
+        // BCAST mode: check if key matches any prefix
+        if (info.tracking_bcast) {
+            var matches = false;
+            for (info.tracking_prefixes.items) |prefix| {
+                if (std.mem.startsWith(u8, key, prefix)) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) return; // Key doesn't match any prefix
+        }
+
+        // Enforce tracking table size limit
+        if (self.tracking_table.count() >= self.tracking_table_max_keys) {
+            // Table is full - evict random entry (LRU would be more complex)
+            var it = self.tracking_table.iterator();
+            if (it.next()) |first| {
+                const key_to_remove = first.key_ptr.*;
+                const kv = self.tracking_table.fetchRemove(key_to_remove).?;
+                self.allocator.free(kv.key);
+                var removed_set = kv.value;
+                removed_set.deinit();
+            }
+        }
+
+        // Get or create client set for this key
+        const key_copy = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(key_copy);
+
+        const entry = try self.tracking_table.getOrPut(key_copy);
+        if (entry.found_existing) {
+            // Key already exists, free the duplicate
+            self.allocator.free(key_copy);
+        } else {
+            // New entry, initialize client set
+            entry.value_ptr.* = ClientSet.init(self.allocator);
+        }
+        errdefer if (!entry.found_existing) {
+            entry.value_ptr.deinit();
+            _ = self.tracking_table.remove(entry.key_ptr.*);
+            self.allocator.free(entry.key_ptr.*);
+        };
+
+        // Add this client to the set (if not already present)
+        try entry.value_ptr.put(client_id, {});
+    }
+
+    /// Send invalidation message for a key to all tracking clients
+    /// This is called when a key is modified (SET/DEL/EXPIRE/etc.)
+    /// Returns a list of invalidation messages to send
+    pub fn getInvalidationMessages(
+        self: *ClientRegistry,
+        key: []const u8,
+        modifier_client_id: u64,
+        allocator: std.mem.Allocator,
+    ) ![]InvalidationMessage {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Look up clients tracking this key
+        const client_set = self.tracking_table.get(key) orelse return &[_]InvalidationMessage{};
+
+        var messages = std.ArrayList(InvalidationMessage){};
+        defer messages.deinit(allocator);
+
+        var it = client_set.keyIterator();
+        while (it.next()) |tracked_client_id| {
+            const tracked_id = tracked_client_id.*;
+            const tracked_info = self.clients.get(tracked_id) orelse continue;
+
+            // NOLOOP: skip if this is the client that modified the key
+            if (tracked_info.tracking_noloop and tracked_id == modifier_client_id) {
+                continue;
+            }
+
+            // BCAST mode: check if key matches prefix
+            if (tracked_info.tracking_bcast) {
+                var matches = false;
+                for (tracked_info.tracking_prefixes.items) |prefix| {
+                    if (std.mem.startsWith(u8, key, prefix)) {
+                        matches = true;
+                        break;
+                    }
+                }
+                if (!matches) continue;
+            }
+
+            // Determine target client for invalidation
+            const target_client_id = if (tracked_info.tracking_redirect > 0)
+                @as(u64, @intCast(tracked_info.tracking_redirect))
+            else
+                tracked_id;
+
+            try messages.append(allocator, .{
+                .client_id = target_client_id,
+                .key = try allocator.dupe(u8, key),
+            });
+        }
+
+        return try messages.toOwnedSlice(allocator);
+    }
+
+    /// Remove key from tracking table (called when key is deleted)
+    pub fn removeKeyFromTracking(self: *ClientRegistry, key: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.tracking_table.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+            var client_set = kv.value;
+            client_set.deinit();
+        }
+    }
+
+    /// Remove all tracking entries for a client (called when client disconnects or tracking is disabled)
+    pub fn removeClientFromTracking(self: *ClientRegistry, client_id: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var it = self.tracking_table.iterator();
+        while (it.next()) |entry| {
+            _ = entry.value_ptr.remove(client_id);
         }
     }
 

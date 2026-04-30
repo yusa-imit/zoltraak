@@ -15,6 +15,11 @@ pub const pubsub_commands = @import("commands/pubsub.zig");
 pub const replication = @import("storage/replication.zig");
 pub const replication_commands = @import("commands/replication.zig");
 pub const sentinel = @import("storage/sentinel.zig");
+pub const client = @import("commands/client.zig");
+
+// Re-export common types
+pub const ClientRegistry = client.ClientRegistry;
+pub const ClientInfo = client.ClientInfo;
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;

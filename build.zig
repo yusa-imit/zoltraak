@@ -19,17 +19,20 @@ pub fn build(b: *std.Build) void {
     });
     const zuda_mod = zuda_dep.module("zuda");
 
+    // Create main module for sharing across tests
+    const zoltraak_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zoltraak_mod.addImport("sailor", sailor_mod);
+    zoltraak_mod.addImport("zuda", zuda_mod);
+
     // Executable: zoltraak (server)
     const exe = b.addExecutable(.{
         .name = "zoltraak",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = zoltraak_mod,
     });
-    exe.root_module.addImport("sailor", sailor_mod);
-    exe.root_module.addImport("zuda", zuda_mod);
 
     // Link LuaJIT for Lua scripting support
     exe.linkSystemLibrary("luajit-5.1");
@@ -242,6 +245,25 @@ pub fn build(b: *std.Build) void {
 
     const run_client_tracking_tests = b.addRunArtifact(client_tracking_tests);
     integration_test_step.dependOn(&run_client_tracking_tests.step);
+
+    // Client tracking table unit tests (Iteration 243)
+    const client_tracking_table_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_client_tracking_table.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    client_tracking_table_tests.linkSystemLibrary("luajit-5.1");
+    client_tracking_table_tests.linkLibC();
+    client_tracking_table_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    client_tracking_table_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_client_tracking_table_tests = b.addRunArtifact(client_tracking_table_tests);
+    test_step.dependOn(&run_client_tracking_table_tests.step);
 
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
