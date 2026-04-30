@@ -114,6 +114,13 @@ pub const Config = struct {
             .{ .name = "lazyfree-lazy-server-del", .value = .{ .bool = false }, .read_only = false }, // lazy free on implicit deletes (RENAME, etc.)
             .{ .name = "lazyfree-lazy-user-del", .value = .{ .bool = false }, .read_only = false }, // lazy free on DEL (not UNLINK)
             .{ .name = "replica-lazy-flush", .value = .{ .bool = false }, .read_only = false }, // lazy flush on full resync
+
+            // Active defragmentation
+            .{ .name = "activedefrag", .value = .{ .bool = false }, .read_only = false }, // enable/disable active defragmentation
+            .{ .name = "activedefrag-cycle-min", .value = .{ .int = 1 }, .read_only = false }, // min CPU % for defrag (1-75)
+            .{ .name = "activedefrag-cycle-max", .value = .{ .int = 25 }, .read_only = false }, // max CPU % for defrag (1-75)
+            .{ .name = "activedefrag-threshold-lower", .value = .{ .int = 10 }, .read_only = false }, // min fragmentation % to start defrag
+            .{ .name = "activedefrag-threshold-upper", .value = .{ .int = 100 }, .read_only = false }, // max fragmentation % for aggressive defrag
         };
 
         for (defaults) |def| {

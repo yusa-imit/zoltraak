@@ -20,6 +20,7 @@ const vector_mod = @import("vector.zig");
 const notifications_mod = @import("notifications.zig");
 const eviction_mod = @import("eviction.zig");
 const lazyfree_mod = @import("lazyfree.zig");
+const defrag_mod = @import("defrag.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -46,6 +47,7 @@ pub const EvictionPolicy = eviction_mod.EvictionPolicy;
 pub const LazyFreeTask = lazyfree_mod.LazyFreeTask;
 pub const LazyFreeWork = lazyfree_mod.LazyFreeWork;
 pub const LazyFreeWorkType = lazyfree_mod.LazyFreeWorkType;
+pub const DefragTask = defrag_mod.DefragTask;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -547,6 +549,7 @@ pub const Storage = struct {
     lru_clock: LRUClock, // LRU clock for eviction policies
     lfu_counter: LFUCounter, // LFU counter for eviction policies
     lazyfree_task: LazyFreeTask, // Background lazy freeing task
+    defrag_task: DefragTask, // Background active defragmentation task
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -622,6 +625,10 @@ pub const Storage = struct {
         var lazy_free = try LazyFreeTask.init(allocator);
         errdefer lazy_free.deinit();
 
+        // Initialize defrag task
+        var defrag_task = try DefragTask.init(allocator);
+        errdefer defrag_task.deinit();
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
@@ -645,10 +652,21 @@ pub const Storage = struct {
             .lru_clock = LRUClock.init(allocator),
             .lfu_counter = LFUCounter.init(allocator),
             .lazyfree_task = lazy_free,
+            .defrag_task = defrag_task,
         };
 
         // Start background lazy free thread
         try storage.lazyfree_task.start();
+
+        // Start background defrag thread if activedefrag is enabled
+        const activedefrag_val = storage.config.get("activedefrag") catch config_mod.ConfigValue{ .bool = false };
+        const activedefrag_enabled = switch (activedefrag_val) {
+            .bool => |b| b,
+            else => false,
+        };
+        if (activedefrag_enabled) {
+            try storage.defrag_task.start();
+        }
 
         return storage;
     }
@@ -710,6 +728,7 @@ pub const Storage = struct {
         self.lru_clock.deinit();
         self.lfu_counter.deinit();
         self.lazyfree_task.deinit();
+        self.defrag_task.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;
