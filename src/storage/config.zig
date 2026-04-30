@@ -121,6 +121,15 @@ pub const Config = struct {
             .{ .name = "activedefrag-cycle-max", .value = .{ .int = 25 }, .read_only = false }, // max CPU % for defrag (1-75)
             .{ .name = "activedefrag-threshold-lower", .value = .{ .int = 10 }, .read_only = false }, // min fragmentation % to start defrag
             .{ .name = "activedefrag-threshold-upper", .value = .{ .int = 100 }, .read_only = false }, // max fragmentation % for aggressive defrag
+
+            // Internal encoding optimizations
+            .{ .name = "hash-max-listpack-entries", .value = .{ .int = 512 }, .read_only = false }, // max hash entries for listpack encoding
+            .{ .name = "hash-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max hash value size (bytes) for listpack
+            .{ .name = "list-max-listpack-entries", .value = .{ .int = 512 }, .read_only = false }, // max list entries for listpack encoding
+            .{ .name = "list-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max list element size (bytes) for listpack
+            .{ .name = "zset-max-listpack-entries", .value = .{ .int = 128 }, .read_only = false }, // max sorted set entries for listpack encoding
+            .{ .name = "zset-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max sorted set element size (bytes) for listpack
+            .{ .name = "set-max-intset-entries", .value = .{ .int = 512 }, .read_only = false }, // max set entries for intset encoding (integer-only)
         };
 
         for (defaults) |def| {
