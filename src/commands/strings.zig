@@ -1198,7 +1198,7 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "DBSIZE")) {
             break :blk try cmdDbsize(allocator, storage);
         } else if (std.mem.eql(u8, cmd_upper, "FLUSHDB") or std.mem.eql(u8, cmd_upper, "FLUSHALL")) {
-            break :blk try cmdFlushall(allocator, storage);
+            break :blk try cmdFlushall(allocator, storage, array);
         }
         // Replication commands
         else if (std.mem.eql(u8, cmd_upper, "REPLICAOF")) {
@@ -3231,11 +3231,40 @@ fn cmdDbsize(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
 }
 
 /// FLUSHDB / FLUSHALL — remove all keys
-fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
+/// Supports optional ASYNC/SYNC mode for lazy freeing
+fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    storage.flushAll();
+    // Parse optional ASYNC/SYNC argument
+    var is_async = false;
+    if (args.len > 1) {
+        const mode_str = switch (args[1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(mode_str, "ASYNC")) {
+            is_async = true;
+        } else if (std.ascii.eqlIgnoreCase(mode_str, "SYNC")) {
+            is_async = false;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    }
+
+    if (args.len > 2) {
+        return w.writeError("ERR syntax error");
+    }
+
+    if (is_async) {
+        // Submit flush work to background thread
+        try storage.flushAllAsync();
+    } else {
+        // Synchronous flush
+        storage.flushAll();
+    }
+
     return w.writeSimpleString("OK");
 }
 

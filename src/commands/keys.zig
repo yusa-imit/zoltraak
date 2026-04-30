@@ -352,7 +352,8 @@ pub fn cmdUnlink(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         try keys.append(allocator, key);
     }
 
-    const deleted_count = storage.del(keys.items);
+    // UNLINK is always async - submit to background thread
+    const deleted_count = try storage.unlinkAsync(keys.items);
     return w.writeInteger(@intCast(deleted_count));
 }
 

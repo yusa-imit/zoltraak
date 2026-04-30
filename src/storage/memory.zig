@@ -19,6 +19,7 @@ const tdigest_mod = @import("tdigest.zig");
 const vector_mod = @import("vector.zig");
 const notifications_mod = @import("notifications.zig");
 const eviction_mod = @import("eviction.zig");
+const lazyfree_mod = @import("lazyfree.zig");
 
 pub const Config = config_mod.Config;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
@@ -42,6 +43,9 @@ pub const VectorSetValue = vector_mod.VectorSetValue;
 pub const LRUClock = eviction_mod.LRUClock;
 pub const LFUCounter = eviction_mod.LFUCounter;
 pub const EvictionPolicy = eviction_mod.EvictionPolicy;
+pub const LazyFreeTask = lazyfree_mod.LazyFreeTask;
+pub const LazyFreeWork = lazyfree_mod.LazyFreeWork;
+pub const LazyFreeWorkType = lazyfree_mod.LazyFreeWorkType;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -542,6 +546,7 @@ pub const Storage = struct {
     notification_flags: std.atomic.Value(u16), // Keyspace notification flags (from notify-keyspace-events config)
     lru_clock: LRUClock, // LRU clock for eviction policies
     lfu_counter: LFUCounter, // LFU counter for eviction policies
+    lazyfree_task: LazyFreeTask, // Background lazy freeing task
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -613,6 +618,10 @@ pub const Storage = struct {
         // Initialize search store (empty by default)
         const search_store = try search_mod.SearchStore.init(allocator);
 
+        // Initialize lazy free task
+        var lazy_free = try LazyFreeTask.init(allocator);
+        errdefer lazy_free.deinit();
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
@@ -635,7 +644,11 @@ pub const Storage = struct {
             .notification_flags = std.atomic.Value(u16).init(0), // Notifications disabled by default
             .lru_clock = LRUClock.init(allocator),
             .lfu_counter = LFUCounter.init(allocator),
+            .lazyfree_task = lazy_free,
         };
+
+        // Start background lazy free thread
+        try storage.lazyfree_task.start();
 
         return storage;
     }
@@ -696,6 +709,7 @@ pub const Storage = struct {
         self.latency_monitor.deinit();
         self.lru_clock.deinit();
         self.lfu_counter.deinit();
+        self.lazyfree_task.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;
@@ -5559,6 +5573,102 @@ pub const Storage = struct {
             value.deinit(self.allocator);
         }
         self.data.clearRetainingCapacity();
+    }
+
+    /// Flush all keys asynchronously (lazy freeing)
+    pub fn flushAllAsync(self: *Storage) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Collect all keys first (can't mutate while iterating)
+        var keys_to_remove = std.ArrayList([]const u8){};
+        defer keys_to_remove.deinit(self.allocator);
+
+        var it = self.data.keyIterator();
+        while (it.next()) |key_ptr| {
+            try keys_to_remove.append(self.allocator, key_ptr.*);
+        }
+
+        // Now remove each key and transfer ownership to background thread
+        for (keys_to_remove.items) |key| {
+            if (self.data.fetchRemove(key)) |kv| {
+                // Allocate Value on heap for background thread
+                const value_ptr = try self.allocator.create(Value);
+                errdefer self.allocator.destroy(value_ptr);
+                value_ptr.* = kv.value; // Transfer ownership
+
+                const owned_key = try self.allocator.dupe(u8, kv.key);
+                errdefer self.allocator.free(owned_key);
+
+                // Create work item
+                const work = LazyFreeWork{
+                    .work_type = .free_key,
+                    .key = owned_key,
+                    .db_num = null,
+                    .value_ptr = value_ptr,
+                    .allocator = self.allocator,
+                };
+
+                // Submit to lazy free task
+                self.lazyfree_task.submitWork(work) catch |err| {
+                    // On submit failure, clean up the work item
+                    self.allocator.free(owned_key);
+                    value_ptr.deinit(self.allocator);
+                    self.allocator.destroy(value_ptr);
+                    return err;
+                };
+
+                // Free the HashMap's key (background has its own copy)
+                self.allocator.free(kv.key);
+            }
+        }
+    }
+
+    /// Unlink keys asynchronously (lazy freeing)
+    /// Returns the count of keys that existed and were scheduled for deletion
+    pub fn unlinkAsync(self: *Storage, keys: []const []const u8) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var deleted_count: usize = 0;
+
+        for (keys) |key| {
+            if (self.data.fetchRemove(key)) |kv| {
+                deleted_count += 1;
+
+                // Allocate Value on heap for background thread
+                const value_ptr = try self.allocator.create(Value);
+                errdefer self.allocator.destroy(value_ptr);
+                value_ptr.* = kv.value;
+
+                // Create owned copies for background thread
+                const owned_key = try self.allocator.dupe(u8, kv.key);
+                errdefer self.allocator.free(owned_key);
+
+                // Create work item (value will be freed in background)
+                const work = LazyFreeWork{
+                    .work_type = .free_key,
+                    .key = owned_key,
+                    .db_num = null,
+                    .value_ptr = value_ptr,
+                    .allocator = self.allocator,
+                };
+
+                // Submit to lazy free task
+                self.lazyfree_task.submitWork(work) catch |err| {
+                    // On submit failure, clean up the work item
+                    self.allocator.free(owned_key);
+                    value_ptr.deinit(self.allocator);
+                    self.allocator.destroy(value_ptr);
+                    return err;
+                };
+
+                // Free the HashMap key (value is transferred to work item)
+                self.allocator.free(kv.key);
+            }
+        }
+
+        return deleted_count;
     }
 
     pub fn getCurrentTimestamp() i64 {

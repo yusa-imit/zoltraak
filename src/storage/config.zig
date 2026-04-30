@@ -107,6 +107,13 @@ pub const Config = struct {
 
             // Keyspace notifications
             .{ .name = "notify-keyspace-events", .value = .{ .string = "" }, .read_only = false }, // disabled by default
+
+            // Lazy freeing
+            .{ .name = "lazyfree-lazy-eviction", .value = .{ .bool = false }, .read_only = false }, // lazy free on eviction
+            .{ .name = "lazyfree-lazy-expire", .value = .{ .bool = false }, .read_only = false }, // lazy free on expire
+            .{ .name = "lazyfree-lazy-server-del", .value = .{ .bool = false }, .read_only = false }, // lazy free on implicit deletes (RENAME, etc.)
+            .{ .name = "lazyfree-lazy-user-del", .value = .{ .bool = false }, .read_only = false }, // lazy free on DEL (not UNLINK)
+            .{ .name = "replica-lazy-flush", .value = .{ .bool = false }, .read_only = false }, // lazy flush on full resync
         };
 
         for (defaults) |def| {
