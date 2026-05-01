@@ -659,11 +659,11 @@ pub const Storage = struct {
         try storage.lazyfree_task.start();
 
         // Start background defrag thread if activedefrag is enabled
-        const activedefrag_val = storage.config.get("activedefrag") catch config_mod.ConfigValue{ .bool = false };
-        const activedefrag_enabled = switch (activedefrag_val) {
-            .bool => |b| b,
-            else => false,
-        };
+        const activedefrag_val = storage.config.get("activedefrag") catch null;
+        const activedefrag_enabled = if (activedefrag_val) |val|
+            std.mem.eql(u8, val, "yes") or std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true")
+        else
+            false;
         if (activedefrag_enabled) {
             try storage.defrag_task.start();
         }

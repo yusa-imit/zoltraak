@@ -768,12 +768,12 @@ pub fn executeCommand(
             break :blk try cmdPing(allocator, array);
         } else if (std.mem.eql(u8, cmd_upper, "SET")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try cmdSet(allocator, storage, array, ps, selected_db);
+            break :blk try cmdSet(allocator, storage, array, ps, selected_db, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "GET")) {
-            break :blk try cmdGet(allocator, storage, array);
+            break :blk try cmdGet(allocator, storage, array, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "DEL")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try cmdDel(allocator, storage, array, ps, selected_db);
+            break :blk try cmdDel(allocator, storage, array, ps, selected_db, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "EXISTS")) {
             break :blk try cmdExists(allocator, storage, array);
         }
@@ -810,7 +810,7 @@ pub fn executeCommand(
         }
         // Multi-key string commands
         else if (std.mem.eql(u8, cmd_upper, "MGET")) {
-            break :blk try cmdMget(allocator, storage, array);
+            break :blk try cmdMget(allocator, storage, array, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "MSET")) {
             break :blk try cmdMset(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "MSETNX")) {
@@ -2999,7 +2999,7 @@ fn cmdPing(allocator: std.mem.Allocator, args: []const RespValue) ![]const u8 {
 
 /// SET key value [EX seconds] [PX milliseconds] [NX|XX]
 /// Returns +OK or $-1 if condition not met
-fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3092,6 +3092,19 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
 
+    // Get invalidation messages for tracking clients
+    const invalidation_messages = try client_registry.getInvalidationMessages(key, client_id, allocator);
+    defer {
+        for (invalidation_messages) |*msg| {
+            var m = msg.*;
+            m.deinit(allocator);
+        }
+        allocator.free(invalidation_messages);
+    }
+
+    // TODO: Send invalidation push messages to RESP3 clients (requires server.zig integration)
+    // For now, generate messages and clean up
+
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
     if (was_new) {
@@ -3103,7 +3116,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
 
 /// GET key
 /// Returns bulk string value or null
-fn cmdGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3117,12 +3130,16 @@ fn cmdGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     };
 
     const value = storage.get(key);
+
+    // Track key access for client-side caching
+    client_registry.trackKeyAccess(client_id, key) catch {};
+
     return w.writeBulkString(value);
 }
 
 /// DEL key [key ...]
 /// Returns integer count of deleted keys
-fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3150,6 +3167,20 @@ fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     }
 
     const deleted_count = storage.del(keys.items);
+
+    // Generate invalidation messages for all deleted keys
+    for (keys.items) |del_key| {
+        const invalidation_messages = try client_registry.getInvalidationMessages(del_key, client_id, allocator);
+        defer {
+            for (invalidation_messages) |*msg| {
+                var m = msg.*;
+                m.deinit(allocator);
+            }
+            allocator.free(invalidation_messages);
+        }
+        // TODO: Send invalidation push messages to RESP3 clients
+    }
+
     return w.writeInteger(@intCast(deleted_count));
 }
 
@@ -3764,7 +3795,7 @@ fn cmdPsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
 /// MGET key [key ...]
 /// Returns values for each key (null bulk string for missing/wrong-type keys).
-fn cmdMget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdMget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3804,6 +3835,9 @@ fn cmdMget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
         } else {
             try buf.appendSlice(allocator, "$-1\r\n");
         }
+
+        // Track key access for client-side caching
+        client_registry.trackKeyAccess(client_id, key) catch {};
     }
 
     return buf.toOwnedSlice(allocator);
@@ -4631,13 +4665,19 @@ test "commands - SET basic" {
     const storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "SET" },
         RespValue{ .bulk_string = "key1" },
         RespValue{ .bulk_string = "value1" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -4649,6 +4689,12 @@ test "commands - SET with EX option" {
     const storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "SET" },
         RespValue{ .bulk_string = "key1" },
@@ -4657,7 +4703,7 @@ test "commands - SET with EX option" {
         RespValue{ .bulk_string = "60" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -4677,7 +4723,21 @@ test "commands - SET with PX option" {
         RespValue{ .bulk_string = "5000" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -4696,7 +4756,21 @@ test "commands - SET with NX when key doesn't exist" {
         RespValue{ .bulk_string = "NX" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -4716,7 +4790,21 @@ test "commands - SET with NX when key exists" {
         RespValue{ .bulk_string = "NX" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);
@@ -4737,7 +4825,21 @@ test "commands - SET with XX when key exists" {
         RespValue{ .bulk_string = "XX" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -4756,7 +4858,21 @@ test "commands - SET with XX when key doesn't exist" {
         RespValue{ .bulk_string = "XX" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);
@@ -4776,7 +4892,21 @@ test "commands - SET with both NX and XX returns error" {
         RespValue{ .bulk_string = "XX" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("-ERR syntax error\r\n", result);
@@ -4795,7 +4925,21 @@ test "commands - SET with negative expiration" {
         RespValue{ .bulk_string = "-1" },
     };
 
-    const result = try cmdSet(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("-ERR invalid expire time in 'set' command\r\n", result);
@@ -4813,7 +4957,14 @@ test "commands - GET existing key" {
         RespValue{ .bulk_string = "key1" },
     };
 
-    const result = try cmdGet(allocator, storage, &args);
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$5\r\nhello\r\n", result);
@@ -4829,7 +4980,14 @@ test "commands - GET non-existent key" {
         RespValue{ .bulk_string = "nosuchkey" },
     };
 
-    const result = try cmdGet(allocator, storage, &args);
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);
@@ -4844,7 +5002,14 @@ test "commands - GET wrong number of arguments" {
         RespValue{ .bulk_string = "GET" },
     };
 
-    const result = try cmdGet(allocator, storage, &args);
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("-ERR wrong number of arguments for 'get' command\r\n", result);
@@ -4862,7 +5027,21 @@ test "commands - DEL single key" {
         RespValue{ .bulk_string = "key1" },
     };
 
-    const result = try cmdDel(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings(":1\r\n", result);
@@ -4884,7 +5063,21 @@ test "commands - DEL multiple keys" {
         RespValue{ .bulk_string = "nosuchkey" },
     };
 
-    const result = try cmdDel(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings(":2\r\n", result);
@@ -4900,7 +5093,21 @@ test "commands - DEL non-existent key" {
         RespValue{ .bulk_string = "nosuchkey" },
     };
 
-    const result = try cmdDel(allocator, storage, &args);
+    var ps = PubSub.init(allocator);
+
+
+    defer ps.deinit();
+
+
+
+    var registry = ClientRegistry.init(allocator);
+
+
+    defer registry.deinit();
+
+
+
+    const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings(":0\r\n", result);
@@ -5661,13 +5868,16 @@ test "commands - MGET multiple keys" {
     try storage.set("k1", "v1", null);
     try storage.set("k2", "v2", null);
 
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "MGET" },
         RespValue{ .bulk_string = "k1" },
         RespValue{ .bulk_string = "k2" },
         RespValue{ .bulk_string = "missing" },
     };
-    const result = try cmdMget(allocator, storage, &args);
+    const result = try cmdMget(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
 
     // Should be *3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n
