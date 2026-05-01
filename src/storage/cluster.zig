@@ -316,6 +316,52 @@ pub const FailureReport = struct {
     timestamp: i64,
 };
 
+/// Migration task state for atomic slot migration (Redis 8.4+)
+pub const MigrationTaskState = enum {
+    in_progress,
+    completed,
+    failed,
+};
+
+/// Migration task operation type
+pub const MigrationOperation = enum {
+    import,
+    migrate,
+};
+
+/// Migration task for CLUSTER MIGRATION command (Redis 8.4+)
+pub const MigrationTask = struct {
+    /// Task ID (40-char hex string, SHA-1 hash of task parameters)
+    id: [40]u8,
+    /// Slot ranges being migrated (formatted as "start-end,start-end,...")
+    slots: std.ArrayListUnmanaged(u8),
+    /// Source node ID (40-char hex)
+    source: [40]u8,
+    /// Destination node ID (40-char hex)
+    dest: [40]u8,
+    /// Operation type (import or migrate)
+    operation: MigrationOperation,
+    /// Current state
+    state: MigrationTaskState,
+    /// Last error message (empty if none)
+    last_error: std.ArrayListUnmanaged(u8),
+    /// Number of retry attempts
+    retries: u32,
+    /// Task creation timestamp (Unix milliseconds)
+    create_time: i64,
+    /// Task start timestamp (Unix milliseconds)
+    start_time: i64,
+    /// Task completion timestamp (Unix milliseconds, 0 if not completed)
+    end_time: i64,
+    /// Write pause duration in milliseconds
+    write_pause_ms: i64,
+
+    pub fn deinit(self: *MigrationTask, allocator: std.mem.Allocator) void {
+        self.slots.deinit(allocator);
+        self.last_error.deinit(allocator);
+    }
+};
+
 /// Cluster state management
 pub const ClusterState = struct {
     allocator: std.mem.Allocator,
@@ -346,6 +392,9 @@ pub const ClusterState = struct {
     /// Failure reports: tracks which nodes have reported other nodes as failed
     /// Maps reported_node_id -> list of FailureReport
     failure_reports: std.StringHashMap(std.ArrayListUnmanaged(FailureReport)),
+    /// Migration tasks: tracks atomic slot migration tasks (Redis 8.4+)
+    /// Maps task_id (40-char hex) -> MigrationTask
+    migration_tasks: std.StringHashMap(*MigrationTask),
 
     pub const State = enum {
         ok,
@@ -368,6 +417,7 @@ pub const ClusterState = struct {
             .failover_votes = std.AutoHashMap(u64, std.StringHashMap([40]u8)).init(allocator),
             .my_replication_offset = 0,
             .failure_reports = std.StringHashMap(std.ArrayListUnmanaged(FailureReport)).init(allocator),
+            .migration_tasks = std.StringHashMap(*MigrationTask).init(allocator),
         };
     }
 
@@ -395,6 +445,14 @@ pub const ClusterState = struct {
             report_list.deinit(self.allocator);
         }
         self.failure_reports.deinit();
+
+        // Clean up migration tasks
+        var task_it = self.migration_tasks.valueIterator();
+        while (task_it.next()) |task| {
+            task.*.deinit(self.allocator);
+            self.allocator.destroy(task.*);
+        }
+        self.migration_tasks.deinit();
     }
 
     /// Get the node responsible for a given slot
@@ -1986,6 +2044,114 @@ pub const ClusterState = struct {
         }
 
         self.current_epoch = 0;
+    }
+
+    /// Create a new migration task for CLUSTER MIGRATION IMPORT
+    /// Returns task ID on success
+    pub fn createImportTask(
+        self: *ClusterState,
+        allocator: std.mem.Allocator,
+        slot_ranges: []const struct { start: u16, end: u16 },
+    ) !*MigrationTask {
+        const task = try allocator.create(MigrationTask);
+        errdefer allocator.destroy(task);
+
+        // Generate task ID (simplified: use timestamp + random)
+        var task_id: [40]u8 = undefined;
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        const random = prng.random();
+        const hex_chars = "0123456789abcdef";
+        for (&task_id) |*c| {
+            c.* = hex_chars[random.intRangeLessThan(u8, 0, 16)];
+        }
+
+        // Format slot ranges as "start-end,start-end,..."
+        var slots_str = std.ArrayListUnmanaged(u8){};
+        errdefer slots_str.deinit(allocator);
+
+        for (slot_ranges, 0..) |range, i| {
+            if (i > 0) {
+                try slots_str.append(allocator, ',');
+            }
+            const range_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ range.start, range.end });
+            defer allocator.free(range_str);
+            try slots_str.appendSlice(allocator, range_str);
+        }
+
+        const now = std.time.milliTimestamp();
+
+        task.* = MigrationTask{
+            .id = task_id,
+            .slots = slots_str,
+            .source = [_]u8{0} ** 40, // Will be set during import
+            .dest = if (self.myself) |node| node.node_id else [_]u8{0} ** 40,
+            .operation = .import,
+            .state = .in_progress,
+            .last_error = .{},
+            .retries = 0,
+            .create_time = now,
+            .start_time = now,
+            .end_time = 0,
+            .write_pause_ms = 0,
+        };
+
+        // Add to tasks map
+        const key = try allocator.dupe(u8, &task_id);
+        errdefer allocator.free(key);
+
+        try self.migration_tasks.put(key, task);
+        return task;
+    }
+
+    /// Cancel migration task(s)
+    /// Returns number of cancelled tasks
+    pub fn cancelMigrationTasks(self: *ClusterState, allocator: std.mem.Allocator, task_id: ?[]const u8) !u32 {
+        var cancelled: u32 = 0;
+
+        if (task_id) |id| {
+            // Cancel specific task
+            if (self.migration_tasks.fetchRemove(id)) |entry| {
+                entry.value.deinit(allocator);
+                allocator.destroy(entry.value);
+                allocator.free(entry.key);
+                cancelled = 1;
+            }
+        } else {
+            // Cancel all tasks
+            var it = self.migration_tasks.iterator();
+            var keys_to_remove = std.ArrayListUnmanaged([]const u8){};
+            defer keys_to_remove.deinit(allocator);
+
+            while (it.next()) |entry| {
+                try keys_to_remove.append(allocator, entry.key_ptr.*);
+            }
+
+            for (keys_to_remove.items) |key| {
+                if (self.migration_tasks.fetchRemove(key)) |entry| {
+                    entry.value.deinit(allocator);
+                    allocator.destroy(entry.value);
+                    allocator.free(entry.key);
+                    cancelled += 1;
+                }
+            }
+        }
+
+        return cancelled;
+    }
+
+    /// Get migration task by ID
+    pub fn getMigrationTask(self: *const ClusterState, task_id: []const u8) ?*const MigrationTask {
+        return self.migration_tasks.get(task_id);
+    }
+
+    /// Get all migration tasks
+    pub fn getAllMigrationTasks(self: *const ClusterState, allocator: std.mem.Allocator) !std.ArrayListUnmanaged(*const MigrationTask) {
+        var tasks = std.ArrayListUnmanaged(*const MigrationTask){};
+        var it = self.migration_tasks.valueIterator();
+        while (it.next()) |task| {
+            try tasks.append(allocator, task.*);
+        }
+        return tasks;
     }
 };
 

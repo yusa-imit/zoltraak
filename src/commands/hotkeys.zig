@@ -268,11 +268,7 @@ pub fn cmdHotkeys(allocator: std.mem.Allocator, storage: *Storage, args: []const
             "    Print this help.",
         };
 
-        try w.startArray(help_lines.len);
-        for (help_lines) |line| {
-            try w.writeBulkString(line);
-        }
-        return w.finalize();
+        return w.writeArrayOfBulkStrings(&help_lines);
     }
 
     // Parse subcommand

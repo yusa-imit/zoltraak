@@ -3718,6 +3718,236 @@ pub fn cmdClusterReset(
     return w.writeSimpleString("OK");
 }
 
+/// CLUSTER MIGRATION - Atomic slot migration (Redis 8.4+)
+/// Subcommands:
+///   IMPORT <start-slot> <end-slot> [<start-slot> <end-slot> ...] - Import slots
+///   CANCEL <ID task-id | ALL> - Cancel migration task(s)
+///   STATUS [ID task-id | ALL] - Get migration task status
+pub fn cmdClusterMigration(
+    allocator: std.mem.Allocator,
+    w: anytype,
+    args: []const []const u8,
+    storage: *Storage,
+) !void {
+    // Validate cluster enabled
+    if (!storage.cluster.enabled) {
+        return w.writeError("ERR This instance has cluster support disabled");
+    }
+
+    // args[0] = "CLUSTER", args[1] = "MIGRATION", args[2] = subcommand
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'cluster migration' command");
+    }
+
+    const subcmd_upper = try std.ascii.allocUpperString(allocator, args[2]);
+    defer allocator.free(subcmd_upper);
+
+    if (std.mem.eql(u8, subcmd_upper, "IMPORT")) {
+        return try cmdClusterMigrationImport(allocator, w, args[3..], storage);
+    } else if (std.mem.eql(u8, subcmd_upper, "CANCEL")) {
+        return try cmdClusterMigrationCancel(allocator, w, args[3..], storage);
+    } else if (std.mem.eql(u8, subcmd_upper, "STATUS")) {
+        return try cmdClusterMigrationStatus(allocator, w, args[3..], storage);
+    } else {
+        return w.writeErrorFmt("ERR Unknown CLUSTER MIGRATION subcommand '{s}'", .{args[2]});
+    }
+}
+
+/// CLUSTER MIGRATION IMPORT <start-slot> <end-slot> [<start-slot> <end-slot> ...]
+fn cmdClusterMigrationImport(
+    allocator: std.mem.Allocator,
+    w: anytype,
+    args: []const []const u8,
+    storage: *Storage,
+) !void {
+    // Validate arguments (must be pairs)
+    if (args.len < 2 or args.len % 2 != 0) {
+        return w.writeError("ERR wrong number of arguments for 'cluster migration import' command");
+    }
+
+    // Parse slot ranges
+    var slot_ranges = std.ArrayListUnmanaged(struct { start: u16, end: u16 }){};
+    defer slot_ranges.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 2) {
+        const start = std.fmt.parseInt(u16, args[i], 10) catch {
+            return w.writeErrorFmt("ERR Invalid slot value '{s}'", .{args[i]});
+        };
+
+        const end = std.fmt.parseInt(u16, args[i + 1], 10) catch {
+            return w.writeErrorFmt("ERR Invalid slot value '{s}'", .{args[i + 1]});
+        };
+
+        if (start >= cluster_mod.CLUSTER_SLOTS or end >= cluster_mod.CLUSTER_SLOTS) {
+            return w.writeErrorFmt("ERR Slot out of range (0-{d})", .{cluster_mod.CLUSTER_SLOTS - 1});
+        }
+
+        if (start > end) {
+            return w.writeError("ERR Start slot must be less than or equal to end slot");
+        }
+
+        try slot_ranges.append(allocator, .{ .start = start, .end = end });
+    }
+
+    // Create import task
+    const task = try storage.cluster.createImportTask(allocator, slot_ranges.items);
+
+    // Return task ID as bulk string
+    return w.writeBulkString(&task.id);
+}
+
+/// CLUSTER MIGRATION CANCEL <ID task-id | ALL>
+fn cmdClusterMigrationCancel(
+    allocator: std.mem.Allocator,
+    w: anytype,
+    args: []const []const u8,
+    storage: *Storage,
+) !void {
+    if (args.len < 1 or args.len > 2) {
+        return w.writeError("ERR wrong number of arguments for 'cluster migration cancel' command");
+    }
+
+    const mode_upper = try std.ascii.allocUpperString(allocator, args[0]);
+    defer allocator.free(mode_upper);
+
+    var task_id: ?[]const u8 = null;
+    if (std.mem.eql(u8, mode_upper, "ID")) {
+        if (args.len != 2) {
+            return w.writeError("ERR wrong number of arguments for 'cluster migration cancel id' command");
+        }
+        task_id = args[1];
+    } else if (std.mem.eql(u8, mode_upper, "ALL")) {
+        if (args.len != 1) {
+            return w.writeError("ERR wrong number of arguments for 'cluster migration cancel all' command");
+        }
+        task_id = null;
+    } else {
+        return w.writeError("ERR Syntax error. Use 'CLUSTER MIGRATION CANCEL <ID task-id | ALL>'");
+    }
+
+    const cancelled = try storage.cluster.cancelMigrationTasks(allocator, task_id);
+
+    return w.writeInteger(@intCast(cancelled));
+}
+
+/// CLUSTER MIGRATION STATUS [ID task-id | ALL]
+fn cmdClusterMigrationStatus(
+    allocator: std.mem.Allocator,
+    w: anytype,
+    args: []const []const u8,
+    storage: *Storage,
+) !void {
+    if (args.len > 2) {
+        return w.writeError("ERR wrong number of arguments for 'cluster migration status' command");
+    }
+
+    var specific_task_id: ?[]const u8 = null;
+    if (args.len == 2) {
+        const mode_upper = try std.ascii.allocUpperString(allocator, args[0]);
+        defer allocator.free(mode_upper);
+
+        if (std.mem.eql(u8, mode_upper, "ID")) {
+            specific_task_id = args[1];
+        } else if (!std.mem.eql(u8, mode_upper, "ALL")) {
+            return w.writeError("ERR Syntax error. Use 'CLUSTER MIGRATION STATUS [ID task-id | ALL]'");
+        }
+    }
+
+    // Build array of task status information
+    var result = std.ArrayListUnmanaged(RespValue){};
+    defer {
+        for (result.items) |*item| {
+            item.deinitRespValue(allocator);
+        }
+        result.deinit(allocator);
+    }
+
+    if (specific_task_id) |task_id| {
+        // Single task
+        if (storage.cluster.getMigrationTask(task_id)) |task| {
+            try result.append(allocator, try formatMigrationTask(allocator, task));
+        }
+    } else {
+        // All tasks
+        const tasks = try storage.cluster.getAllMigrationTasks(allocator);
+        defer tasks.deinit(allocator);
+
+        for (tasks.items) |task| {
+            try result.append(allocator, try formatMigrationTask(allocator, task));
+        }
+    }
+
+    return w.writeArrayOfRespValues(result.items);
+}
+
+/// Format migration task as RESP array of field-value pairs
+fn formatMigrationTask(allocator: std.mem.Allocator, task: *const cluster_mod.MigrationTask) !RespValue {
+    var fields = std.ArrayListUnmanaged(RespValue){};
+    errdefer {
+        for (fields.items) |*item| {
+            item.deinitRespValue(allocator);
+        }
+        fields.deinit(allocator);
+    }
+
+    // id
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "id")));
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, &task.id)));
+
+    // slots
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "slots")));
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, task.slots.items)));
+
+    // source
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "source")));
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, &task.source)));
+
+    // dest
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "dest")));
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, &task.dest)));
+
+    // operation
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "operation")));
+    const op_str = if (task.operation == .import) "import" else "migrate";
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, op_str)));
+
+    // state
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "state")));
+    const state_str = switch (task.state) {
+        .in_progress => "in_progress",
+        .completed => "completed",
+        .failed => "failed",
+    };
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, state_str)));
+
+    // last_error
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "last_error")));
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, task.last_error.items)));
+
+    // retries
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "retries")));
+    try fields.append(allocator, try RespValue.makeInteger(allocator, @intCast(task.retries)));
+
+    // create_time
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "create_time")));
+    try fields.append(allocator, try RespValue.makeInteger(allocator, task.create_time));
+
+    // start_time
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "start_time")));
+    try fields.append(allocator, try RespValue.makeInteger(allocator, task.start_time));
+
+    // end_time
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "end_time")));
+    try fields.append(allocator, try RespValue.makeInteger(allocator, task.end_time));
+
+    // write_pause_ms
+    try fields.append(allocator, try RespValue.makeBulkStringOwned(allocator, try allocator.dupe(u8, "write_pause_ms")));
+    try fields.append(allocator, try RespValue.makeInteger(allocator, task.write_pause_ms));
+
+    return try RespValue.makeArray(allocator, try fields.toOwnedSlice(allocator));
+}
+
 test "cmdClusterCountFailureReports - arity error" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");

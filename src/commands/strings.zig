@@ -1684,6 +1684,8 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterCountFailureReports(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "RESET")) {
                 break :blk try cluster_cmds.cmdClusterReset(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "MIGRATION")) {
+                break :blk try cluster_cmds.cmdClusterMigration(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try cluster_cmds.cmdClusterHelp(allocator, args, storage, null, 0);
             } else {
