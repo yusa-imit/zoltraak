@@ -8,11 +8,12 @@ const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const RespProtocol = client_mod.RespProtocol;
+const ClientRegistry = client_mod.ClientRegistry;
 
 /// SADD key member [member ...]
 /// Adds one or more members to a set
 /// Returns integer - count of members actually added (excluding duplicates)
-pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -44,6 +45,17 @@ pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
         return err;
     };
+
+    // Generate invalidation messages for tracking clients
+    const invalidation_messages = client_registry.getInvalidationMessages(key, client_id, allocator) catch &[_]client_mod.InvalidationMessage{};
+    defer {
+        for (invalidation_messages) |*msg| {
+            var m = msg.*;
+            m.deinit(allocator);
+        }
+        allocator.free(invalidation_messages);
+    }
+    // TODO: Send invalidation push messages to RESP3 clients
 
     return w.writeInteger(@intCast(added_count));
 }
@@ -122,7 +134,7 @@ pub fn cmdSismember(allocator: std.mem.Allocator, storage: *Storage, args: []con
 /// SMEMBERS key
 /// Returns all members of the set
 /// RESP3: Returns set, RESP2: Returns array of bulk strings
-pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -153,6 +165,9 @@ pub fn cmdSmembers(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
     };
     defer allocator.free(members);
+
+    // Track key access for client-side caching
+    client_registry.trackKeyAccess(client_id, key) catch {};
 
     // Convert to RespValue array/set
     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);

@@ -871,7 +871,7 @@ pub fn executeCommand(
         }
         // List commands
         else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
-            break :blk try lists.cmdLpush(allocator, storage, array);
+            break :blk try lists.cmdLpush(allocator, storage, array, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "RPUSH")) {
             break :blk try lists.cmdRpush(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LPOP")) {
@@ -879,7 +879,7 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "RPOP")) {
             break :blk try lists.cmdRpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LRANGE")) {
-            break :blk try lists.cmdLrange(allocator, storage, array);
+            break :blk try lists.cmdLrange(allocator, storage, array, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
             break :blk try lists.cmdLlen(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LINDEX")) {
@@ -915,14 +915,14 @@ pub fn executeCommand(
         }
         // Set commands
         else if (std.mem.eql(u8, cmd_upper, "SADD")) {
-            break :blk try sets.cmdSadd(allocator, storage, array);
+            break :blk try sets.cmdSadd(allocator, storage, array, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "SREM")) {
             break :blk try sets.cmdSrem(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SISMEMBER")) {
             break :blk try sets.cmdSismember(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SMEMBERS")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
-            break :blk try sets.cmdSmembers(allocator, storage, array, protocol_version);
+            break :blk try sets.cmdSmembers(allocator, storage, array, protocol_version, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "SCARD")) {
             break :blk try sets.cmdScard(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SUNION")) {

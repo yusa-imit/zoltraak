@@ -2,15 +2,17 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const client_mod = @import("client.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const ClientRegistry = client_mod.ClientRegistry;
 
 /// LPUSH key element [element ...]
 /// Prepends one or more elements to the list head
 /// Returns integer - length of list after push
-pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -42,6 +44,17 @@ pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
         return err;
     };
+
+    // Generate invalidation messages for tracking clients
+    const invalidation_messages = client_registry.getInvalidationMessages(key, client_id, allocator) catch &[_]client_mod.InvalidationMessage{};
+    defer {
+        for (invalidation_messages) |*msg| {
+            var m = msg.*;
+            m.deinit(allocator);
+        }
+        allocator.free(invalidation_messages);
+    }
+    // TODO: Send invalidation push messages to RESP3 clients
 
     return w.writeInteger(@intCast(length));
 }
@@ -228,7 +241,7 @@ pub fn cmdRpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// LRANGE key start stop
 /// Returns elements in the specified range (both indices inclusive)
 /// Supports negative indices (-1 = last element, -2 = penultimate, etc.)
-pub fn cmdLrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -265,6 +278,9 @@ pub fn cmdLrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeArray(&[_]RespValue{});
     };
     defer allocator.free(result);
+
+    // Track key access for client-side caching
+    client_registry.trackKeyAccess(client_id, key) catch {};
 
     // Convert to RespValue array
     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
