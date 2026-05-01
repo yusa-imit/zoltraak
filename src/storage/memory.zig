@@ -7554,6 +7554,10 @@ pub const Storage = struct {
         OR,
         XOR,
         NOT,
+        DIFF, // Redis 8.2: Set difference (first & ~(OR of rest))
+        DIFF1, // Redis 8.2: Optimized single-source difference
+        ANDOR, // Redis 8.2: Pairwise (k1&k2)|(k3&k4)|...
+        ONE, // Redis 8.2: Population count per byte position
     };
 
     /// Perform bitwise operation between strings
@@ -7652,6 +7656,95 @@ pub const Storage = struct {
                     for (result, 0..) |*dest_byte, i| {
                         dest_byte.* = ~src[i];
                     }
+                }
+            },
+            .DIFF => {
+                // Set difference: first & ~(OR of rest)
+                if (srckeys.len < 2) {
+                    // DIFF requires at least 2 keys
+                    return error.WrongType;
+                }
+                // Start with first key
+                if (src_data[0]) |src| {
+                    for (result, 0..) |*dest_byte, i| {
+                        if (i < src.len) {
+                            dest_byte.* = src[i];
+                        }
+                    }
+                }
+                // OR all remaining keys and NOT the result
+                const or_result = try self.allocator.alloc(u8, result_len);
+                defer self.allocator.free(or_result);
+                @memset(or_result, 0);
+                for (src_data[1..]) |src_opt| {
+                    if (src_opt) |src| {
+                        for (or_result, 0..) |*or_byte, i| {
+                            if (i < src.len) {
+                                or_byte.* |= src[i];
+                            }
+                        }
+                    }
+                }
+                // AND with NOT of OR result
+                for (result, 0..) |*dest_byte, i| {
+                    dest_byte.* &= ~or_result[i];
+                }
+            },
+            .DIFF1 => {
+                // Optimized for single source difference: key1 & ~key2
+                if (srckeys.len != 2) {
+                    return error.WrongType;
+                }
+                if (src_data[0]) |src1| {
+                    if (src_data[1]) |src2| {
+                        for (result, 0..) |*dest_byte, i| {
+                            const byte1 = if (i < src1.len) src1[i] else 0;
+                            const byte2 = if (i < src2.len) src2[i] else 0;
+                            dest_byte.* = byte1 & ~byte2;
+                        }
+                    } else {
+                        // src2 doesn't exist, result is src1
+                        for (result, 0..) |*dest_byte, i| {
+                            if (i < src1.len) {
+                                dest_byte.* = src1[i];
+                            }
+                        }
+                    }
+                }
+            },
+            .ANDOR => {
+                // Pairwise AND-OR: (k1&k2)|(k3&k4)|...
+                if (srckeys.len % 2 != 0) {
+                    return error.WrongType; // Must have even number of keys
+                }
+                var i: usize = 0;
+                while (i < srckeys.len) : (i += 2) {
+                    const src1_opt = src_data[i];
+                    const src2_opt = src_data[i + 1];
+                    if (src1_opt != null and src2_opt != null) {
+                        const src1 = src1_opt.?;
+                        const src2 = src2_opt.?;
+                        for (result, 0..) |*dest_byte, j| {
+                            const byte1 = if (j < src1.len) src1[j] else 0;
+                            const byte2 = if (j < src2.len) src2[j] else 0;
+                            dest_byte.* |= (byte1 & byte2);
+                        }
+                    }
+                }
+            },
+            .ONE => {
+                // Population count: count of 1-bits at each byte position across all sources
+                for (result, 0..) |*dest_byte, i| {
+                    var count: u8 = 0;
+                    for (src_data) |src_opt| {
+                        if (src_opt) |src| {
+                            if (i < src.len) {
+                                // Count 1-bits in this byte
+                                count +%= @popCount(src[i]);
+                            }
+                        }
+                    }
+                    dest_byte.* = count;
                 }
             },
         }
@@ -11594,4 +11687,63 @@ test "storage - touch counts existing keys" {
     const count = storage.touch(&keys);
 
     try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "BITOP DIFF operation" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k1", &[_]u8{0xF0}, null);
+    try storage.set("k2", &[_]u8{0xAA}, null);
+
+    const len = try storage.bitop(.DIFF, "result", &[_][]const u8{ "k1", "k2" });
+    try std.testing.expectEqual(@as(usize, 1), len);
+    const val = storage.get("result").?;
+    try std.testing.expectEqual(@as(u8, 0x50), val.string.data[0]);
+}
+
+test "BITOP DIFF1 operation" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k1", &[_]u8{0xF0}, null);
+    try storage.set("k2", &[_]u8{0xAA}, null);
+
+    const len = try storage.bitop(.DIFF1, "result", &[_][]const u8{ "k1", "k2" });
+    try std.testing.expectEqual(@as(usize, 1), len);
+    const val = storage.get("result").?;
+    try std.testing.expectEqual(@as(u8, 0x50), val.string.data[0]);
+}
+
+test "BITOP ANDOR operation" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k1", &[_]u8{0xF0}, null);
+    try storage.set("k2", &[_]u8{0x0F}, null);
+    try storage.set("k3", &[_]u8{0xFF}, null);
+    try storage.set("k4", &[_]u8{0xAA}, null);
+
+    const len = try storage.bitop(.ANDOR, "result", &[_][]const u8{ "k1", "k2", "k3", "k4" });
+    try std.testing.expectEqual(@as(usize, 1), len);
+    const val = storage.get("result").?;
+    try std.testing.expectEqual(@as(u8, 0xAA), val.string.data[0]);
+}
+
+test "BITOP ONE operation" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k1", &[_]u8{0xF0}, null);
+    try storage.set("k2", &[_]u8{0x0F}, null);
+    try storage.set("k3", &[_]u8{0xAA}, null);
+
+    const len = try storage.bitop(.ONE, "result", &[_][]const u8{ "k1", "k2", "k3" });
+    try std.testing.expectEqual(@as(usize, 1), len);
+    const val = storage.get("result").?;
+    try std.testing.expectEqual(@as(u8, 12), val.string.data[0]);
 }

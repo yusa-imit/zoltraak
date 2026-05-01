@@ -138,6 +138,14 @@ pub fn cmdBitop(
         .XOR
     else if (std.ascii.eqlIgnoreCase(op_str, "NOT"))
         .NOT
+    else if (std.ascii.eqlIgnoreCase(op_str, "DIFF"))
+        .DIFF
+    else if (std.ascii.eqlIgnoreCase(op_str, "DIFF1"))
+        .DIFF1
+    else if (std.ascii.eqlIgnoreCase(op_str, "ANDOR"))
+        .ANDOR
+    else if (std.ascii.eqlIgnoreCase(op_str, "ONE"))
+        .ONE
     else {
         try RespWriter.writeError(writer, "ERR syntax error");
         return;
@@ -146,9 +154,21 @@ pub fn cmdBitop(
     const destkey = args[2];
     const srckeys = args[3..];
 
-    // NOT requires exactly one source key
+    // Validate operation-specific requirements
     if (operation == .NOT and srckeys.len != 1) {
         try RespWriter.writeError(writer, "ERR BITOP NOT must be called with a single source key");
+        return;
+    }
+    if (operation == .DIFF and srckeys.len < 2) {
+        try RespWriter.writeError(writer, "ERR BITOP DIFF requires at least 2 source keys");
+        return;
+    }
+    if (operation == .DIFF1 and srckeys.len != 2) {
+        try RespWriter.writeError(writer, "ERR BITOP DIFF1 must be called with exactly 2 source keys");
+        return;
+    }
+    if (operation == .ANDOR and srckeys.len % 2 != 0) {
+        try RespWriter.writeError(writer, "ERR BITOP ANDOR requires an even number of source keys");
         return;
     }
 
