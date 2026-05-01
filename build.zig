@@ -737,6 +737,17 @@ pub fn build(b: *std.Build) void {
     const run_ft_hybrid_tests = b.addRunArtifact(ft_hybrid_tests);
     integration_test_step.dependOn(&run_ft_hybrid_tests.step);
 
+    // HOTKEYS integration tests (Iteration 246)
+    const hotkeys_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_hotkeys.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_hotkeys_tests = b.addRunArtifact(hotkeys_tests);
+    integration_test_step.dependOn(&run_hotkeys_tests.step);
+
     // Time Series integration tests
     const timeseries_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -44,6 +44,7 @@ const topk_cmds = @import("topk.zig");
 const tdigest_cmds = @import("tdigest.zig");
 const vector_cmds = @import("vectors.zig");
 const utility_cmds = @import("utility.zig");
+const hotkeys_cmds = @import("hotkeys.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
 const AclUser = acl_storage.User;
@@ -1415,6 +1416,8 @@ pub fn executeCommand(
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
             break :blk try introspection_cmds.cmdLatency(allocator, storage, args);
+        } else if (std.mem.eql(u8, cmd_upper, "HOTKEYS")) {
+            break :blk try hotkeys_cmds.cmdHotkeys(allocator, storage, array[1..]);
         }
         // Scripting commands
         else if (std.mem.eql(u8, cmd_upper, "EVAL")) {
