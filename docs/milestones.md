@@ -200,9 +200,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v1.21.0 (build.zig.zon)
-- **Latest available**: v1.21.0
-- **Migration status**: All versions through v1.21.0 migrated.
+- **Current in zoltraak**: v1.23.0 (build.zig.zon)
+- **Latest available**: v2.4.0
+- **Migration status**: All versions through v1.23.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -232,6 +232,7 @@
 | v1.20.0 | Quality & completeness: Windows console Unicode tests (23 tests for UTF-16, CJK, ANSI, emoji), comprehensive pattern documentation (docs/patterns.md), error message context improvements (error_context.zig), edge case hardening (division by zero fixes) — backward compatible, zero breaking changes | Done (Iter 131) |
 | v1.21.0 | Streaming & large data: DataSource abstraction (ItemDataSource, TableDataSource, LineDataSource for lazy-loading massive datasets), large data benchmarks (1M+ items for VirtualList/StreamingTable/ChunkedBuffer), memory efficiency tests — backward compatible, zero breaking changes | Done (Iter 132) |
 | v1.22.0 | Rich text & formatting: SpanBuilder/LineBuilder fluent APIs for styled text, RichTextParser for markdown conversion (bold/italic/code/strikethrough), LineBreaker with word wrapping and hyphenation, Unicode-aware width calculation (CJK, emoji), multiline height tracking — backward compatible, zero breaking changes | Done (Iter 133) |
+| v1.23.0 | Plugin architecture: Widget trait system (custom render()/measure()), custom renderer hooks (pre/post render callbacks in Terminal.draw()), theme plugin system (JSON file-based themes with runtime switching), composition helpers (Padding/Centered/Aligned/Stack/Constrained for layout), plugin demo with 10 integration tests — backward compatible, zero breaking changes | Done (Iter 249) |
 
 ### zuda Library
 
