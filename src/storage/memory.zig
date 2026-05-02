@@ -21,8 +21,10 @@ const notifications_mod = @import("notifications.zig");
 const eviction_mod = @import("eviction.zig");
 const lazyfree_mod = @import("lazyfree.zig");
 const defrag_mod = @import("defrag.zig");
+const tls_config_mod = @import("tls_config.zig");
 
 pub const Config = config_mod.Config;
+pub const TlsConfig = tls_config_mod.TlsConfig;
 pub const BlockingQueue = blocking_mod.BlockingQueue;
 pub const BlockedClient = blocking_mod.BlockedClient;
 pub const ACLStore = acl_mod.ACLStore;
@@ -530,6 +532,7 @@ pub const Storage = struct {
     allocator: std.mem.Allocator,
     data: std.StringHashMap(Value),
     config: *Config,
+    tls_config: TlsConfig, // TLS/SSL configuration (Phase 10)
     acl: ?*ACLStore, // ACL user management
     cluster: ClusterState, // Cluster state management
     cluster_config_path: []const u8, // Path to nodes.conf cluster config file
@@ -629,10 +632,15 @@ pub const Storage = struct {
         var defrag_task = try DefragTask.init(allocator);
         errdefer defrag_task.deinit();
 
+        // Initialize TLS config
+        var tls_config = try TlsConfig.init(allocator);
+        errdefer tls_config.deinit();
+
         storage.* = Storage{
             .allocator = allocator,
             .data = std.StringHashMap(Value).init(allocator),
             .config = cfg,
+            .tls_config = tls_config,
             .acl = acl_store,
             .cluster = cluster_state,
             .cluster_config_path = "nodes.conf", // Default cluster config file
@@ -686,6 +694,9 @@ pub const Storage = struct {
     /// Deinitialize storage and free all keys and values
     pub fn deinit(self: *Storage) void {
         self.mutex.lock();
+
+        // Free TLS config
+        self.tls_config.deinit();
 
         // Free ACL store
         if (self.acl) |acl| {
