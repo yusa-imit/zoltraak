@@ -45,7 +45,7 @@ test "TUI Color values" {
 
 // Test TUI Rect geometry
 test "TUI Rect creation and properties" {
-    const rect = tui.Rect.new(10, 20, 80, 24);
+    const rect = tui.Rect{ .x = 10, .y = 20, .width = 80, .height = 24 };
 
     try std.testing.expectEqual(10, rect.x);
     try std.testing.expectEqual(20, rect.y);

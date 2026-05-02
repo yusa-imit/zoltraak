@@ -352,6 +352,19 @@ pub fn build(b: *std.Build) void {
     const run_sailor_v1_16_0_tests = b.addRunArtifact(sailor_v1_16_0_tests);
     test_step.dependOn(&run_sailor_v1_16_0_tests.step);
 
+    // Sailor v2.5.0 feature tests (Iteration 251)
+    const sailor_v2_5_0_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_sailor_v2_5_0.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    sailor_v2_5_0_tests.root_module.addImport("sailor", sailor_mod);
+
+    const run_sailor_v2_5_0_tests = b.addRunArtifact(sailor_v2_5_0_tests);
+    test_step.dependOn(&run_sailor_v2_5_0_tests.step);
+
     // Lua scripting integration tests (Iteration 105)
     const lua_scripting_tests = b.addTest(.{
         .root_module = b.createModule(.{
