@@ -169,7 +169,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "HGETDEL", "HGETEX", "HSETEX",
         "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LSET",
         "LINSERT", "LREM", "LTRIM", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP",
-        "BLMOVE", "LMPOP", "BLMPOP",
+        "BLMOVE", "BRPOPLPUSH", "LMPOP", "BLMPOP",
         "SADD", "SREM", "SPOP", "SMOVE", "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
         "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZMPOP", "BZPOPMIN",
         "BZPOPMAX", "BZMPOP", "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
@@ -280,7 +280,7 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
         return static.positions[0..count];
     }
 
-    if (std.mem.eql(u8, cmd_upper, "COPY") or std.mem.eql(u8, cmd_upper, "LMOVE") or std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "RPOPLPUSH") or std.mem.eql(u8, cmd_upper, "SMOVE")) {
+    if (std.mem.eql(u8, cmd_upper, "COPY") or std.mem.eql(u8, cmd_upper, "LMOVE") or std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "BRPOPLPUSH") or std.mem.eql(u8, cmd_upper, "RPOPLPUSH") or std.mem.eql(u8, cmd_upper, "SMOVE")) {
         // Two keys: source and destination
         if (args.len > 2) {
             static.positions[0] = 1;
@@ -594,7 +594,7 @@ pub fn executeCommand(
     if (repl) |r| {
         if (r.role == .replica) {
             const replication_cmds = [_][]const u8{
-                "REPLCONF", "PSYNC", "PING", "INFO", "REPLICAOF", "WAIT", "FAILOVER", "ROLE",
+                "REPLCONF", "PSYNC", "PING", "INFO", "REPLICAOF", "SLAVEOF", "WAIT", "FAILOVER", "ROLE",
             };
             var is_repl_cmd = false;
             for (replication_cmds) |rc| {
@@ -907,7 +907,8 @@ pub fn executeCommand(
             break :blk try lists.cmdBlpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BRPOP")) {
             break :blk try lists.cmdBrpop(allocator, storage, array);
-        } else if (std.mem.eql(u8, cmd_upper, "BLMOVE")) {
+        } else if (std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "BRPOPLPUSH")) {
+            // BRPOPLPUSH is a deprecated alias for BLMOVE RIGHT LEFT
             break :blk try lists.cmdBlmove(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LMPOP")) {
             break :blk try lists.cmdLmpop(allocator, storage, array);
@@ -1202,7 +1203,8 @@ pub fn executeCommand(
             break :blk try cmdFlushall(allocator, storage, array);
         }
         // Replication commands
-        else if (std.mem.eql(u8, cmd_upper, "REPLICAOF")) {
+        else if (std.mem.eql(u8, cmd_upper, "REPLICAOF") or std.mem.eql(u8, cmd_upper, "SLAVEOF")) {
+            // SLAVEOF is a deprecated alias for REPLICAOF
             if (repl) |r| {
                 const str_args = try arrayToStrings(allocator, array);
                 defer allocator.free(str_args);
@@ -1660,7 +1662,8 @@ pub fn executeCommand(
                 break :blk try cluster_cmds.cmdClusterSetslot(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "FAILOVER")) {
                 break :blk try cluster_cmds.cmdClusterFailover(allocator, args, storage, null, 0);
-            } else if (std.mem.eql(u8, subcmd_upper, "REPLICAS")) {
+            } else if (std.mem.eql(u8, subcmd_upper, "REPLICAS") or std.mem.eql(u8, subcmd_upper, "SLAVES")) {
+                // CLUSTER SLAVES is a deprecated alias for CLUSTER REPLICAS
                 break :blk try cluster_cmds.cmdClusterReplicas(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "REPLICATE")) {
                 break :blk try cluster_cmds.cmdClusterReplicate(allocator, args, storage, null, 0);

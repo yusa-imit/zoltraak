@@ -1032,6 +1032,16 @@ pub fn build(b: *std.Build) void {
     const run_lazyfree_tests = b.addRunArtifact(lazyfree_tests);
     integration_test_step.dependOn(&run_lazyfree_tests.step);
 
+    const deprecated_aliases_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_deprecated_aliases.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_deprecated_aliases_tests = b.addRunArtifact(deprecated_aliases_tests);
+    integration_test_step.dependOn(&run_deprecated_aliases_tests.step);
+
     const defrag_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/test_defrag.zig"),
