@@ -1075,6 +1075,17 @@ pub fn build(b: *std.Build) void {
     const run_encodings_tests = b.addRunArtifact(encodings_tests);
     integration_test_step.dependOn(&run_encodings_tests.step);
 
+    // TLS CONFIG GET/SET integration tests (Iteration 252)
+    const config_tls_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_config_tls.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_config_tls_tests = b.addRunArtifact(config_tls_tests);
+    integration_test_step.dependOn(&run_config_tls_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

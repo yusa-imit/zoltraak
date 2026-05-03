@@ -95,7 +95,12 @@ fn cmdConfigGet(
 
         // For each match, get name and value
         for (matches) |param_name| {
-            const value = try storage.config.get(param_name);
+            // Try TLS config first (if it's a tls-* parameter)
+            const value = if (std.mem.startsWith(u8, param_name, "tls-"))
+                try storage.tls_config.getParameter(allocator, param_name)
+            else
+                try storage.config.get(param_name);
+
             defer if (value) |v| allocator.free(v);
 
             if (value) |v| {
@@ -167,25 +172,42 @@ fn cmdConfigSet(
             },
         };
 
-        // Attempt to set parameter
-        storage.config.set(param_name, value) catch |err| {
-            var w = Writer.init(allocator);
-            defer w.deinit();
-
-            const err_msg = switch (err) {
-                error.UnknownParameter => "ERR Unsupported CONFIG parameter",
-                error.ReadOnlyParameter => "ERR Unsupported CONFIG parameter (read-only)",
-                error.InvalidValue => "ERR Invalid argument",
-                else => "ERR Failed to set parameter",
-            };
-            return w.writeError(err_msg);
-        };
-
-        // Handle side effects for specific parameters
-        // Case-insensitive comparison for notify-keyspace-events
+        // Case-insensitive comparison for parameter routing
         const param_lower = try std.ascii.allocLowerString(allocator, param_name);
         defer allocator.free(param_lower);
 
+        // Route TLS parameters to TlsConfig, others to Config
+        if (std.mem.startsWith(u8, param_lower, "tls-")) {
+            // Update TLS config
+            storage.tls_config.setParameter(allocator, param_lower, value) catch |err| {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+
+                const err_msg = switch (err) {
+                    error.UnknownParameter => "ERR Unsupported CONFIG parameter",
+                    error.InvalidAuthClientsMode => "ERR Invalid tls-auth-clients value (must be yes/no/optional)",
+                    error.Overflow, error.InvalidCharacter => "ERR Invalid integer value",
+                    else => "ERR Failed to set parameter",
+                };
+                return w.writeError(err_msg);
+            };
+        } else {
+            // Update general config
+            storage.config.set(param_lower, value) catch |err| {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+
+                const err_msg = switch (err) {
+                    error.UnknownParameter => "ERR Unsupported CONFIG parameter",
+                    error.ReadOnlyParameter => "ERR Unsupported CONFIG parameter (read-only)",
+                    error.InvalidValue => "ERR Invalid argument",
+                    else => "ERR Failed to set parameter",
+                };
+                return w.writeError(err_msg);
+            };
+        }
+
+        // Handle side effects for specific parameters
         if (std.mem.eql(u8, param_lower, "notify-keyspace-events")) {
             // Parse the new flags and update Storage atomically
             const new_flags = notifications_mod.parseNotificationFlags(value);

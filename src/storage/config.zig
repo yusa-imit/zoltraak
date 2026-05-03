@@ -130,6 +130,28 @@ pub const Config = struct {
             .{ .name = "zset-max-listpack-entries", .value = .{ .int = 128 }, .read_only = false }, // max sorted set entries for listpack encoding
             .{ .name = "zset-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max sorted set element size (bytes) for listpack
             .{ .name = "set-max-intset-entries", .value = .{ .int = 512 }, .read_only = false }, // max set entries for intset encoding (integer-only)
+
+            // TLS/SSL configuration (Phase 10) - These are stored in Storage.tls_config but exposed via CONFIG GET/SET
+            .{ .name = "tls-port", .value = .{ .int = 0 }, .read_only = false }, // TLS port (0 = disabled)
+            .{ .name = "tls-cert-file", .value = .{ .string = "" }, .read_only = false }, // TLS certificate file path
+            .{ .name = "tls-key-file", .value = .{ .string = "" }, .read_only = false }, // TLS private key file path
+            .{ .name = "tls-key-file-pass", .value = .{ .string = "" }, .read_only = false }, // TLS key password
+            .{ .name = "tls-ca-cert-file", .value = .{ .string = "" }, .read_only = false }, // CA certificate file
+            .{ .name = "tls-ca-cert-dir", .value = .{ .string = "" }, .read_only = false }, // CA certificate directory
+            .{ .name = "tls-auth-clients", .value = .{ .string = "yes" }, .read_only = false }, // Client authentication (yes/no/optional)
+            .{ .name = "tls-protocols", .value = .{ .string = "TLSv1.2 TLSv1.3" }, .read_only = false }, // TLS protocol versions
+            .{ .name = "tls-ciphers", .value = .{ .string = "" }, .read_only = false }, // TLS 1.2 cipher suites
+            .{ .name = "tls-ciphersuites", .value = .{ .string = "" }, .read_only = false }, // TLS 1.3 cipher suites
+            .{ .name = "tls-prefer-server-ciphers", .value = .{ .bool = true }, .read_only = false }, // Prefer server cipher order
+            .{ .name = "tls-session-caching", .value = .{ .bool = true }, .read_only = false }, // Enable session caching
+            .{ .name = "tls-session-cache-size", .value = .{ .int = 20480 }, .read_only = false }, // Session cache size
+            .{ .name = "tls-session-cache-timeout", .value = .{ .int = 300 }, .read_only = false }, // Session cache timeout (seconds)
+            .{ .name = "tls-cluster", .value = .{ .bool = false }, .read_only = false }, // Enable TLS for cluster bus
+            .{ .name = "tls-replication", .value = .{ .bool = false }, .read_only = false }, // Enable TLS for replication
+            .{ .name = "tls-client-cert-file", .value = .{ .string = "" }, .read_only = false }, // Client cert file (outbound)
+            .{ .name = "tls-client-key-file", .value = .{ .string = "" }, .read_only = false }, // Client key file (outbound)
+            .{ .name = "tls-client-key-file-pass", .value = .{ .string = "" }, .read_only = false }, // Client key password
+            .{ .name = "tls-allowlisted-certs", .value = .{ .string = "" }, .read_only = false }, // Allowlisted cert paths (Redis 7.2+)
         };
 
         for (defaults) |def| {

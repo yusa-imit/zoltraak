@@ -138,6 +138,113 @@ pub const TlsConfig = struct {
             return error.InvalidSessionCacheSize;
         }
     }
+
+    /// Get TLS parameter value as string (for CONFIG GET integration)
+    /// Returns owned string, caller must free
+    pub fn getParameter(self: *const TlsConfig, allocator: std.mem.Allocator, param_name: []const u8) !?[]const u8 {
+        if (std.mem.eql(u8, param_name, "tls-port")) {
+            return try std.fmt.allocPrint(allocator, "{d}", .{self.port});
+        } else if (std.mem.eql(u8, param_name, "tls-cert-file")) {
+            return if (self.cert_file) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-key-file")) {
+            return if (self.key_file) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-key-file-pass")) {
+            return if (self.key_file_pass) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-ca-cert-file")) {
+            return if (self.ca_cert_file) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-ca-cert-dir")) {
+            return if (self.ca_cert_dir) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-auth-clients")) {
+            return try allocator.dupe(u8, self.auth_clients.toString());
+        } else if (std.mem.eql(u8, param_name, "tls-protocols")) {
+            return try allocator.dupe(u8, self.protocols);
+        } else if (std.mem.eql(u8, param_name, "tls-ciphers")) {
+            return if (self.ciphers) |c| try allocator.dupe(u8, c) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-ciphersuites")) {
+            return if (self.ciphersuites) |c| try allocator.dupe(u8, c) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-prefer-server-ciphers")) {
+            return try allocator.dupe(u8, if (self.prefer_server_ciphers) "yes" else "no");
+        } else if (std.mem.eql(u8, param_name, "tls-session-caching")) {
+            return try allocator.dupe(u8, if (self.session_caching) "yes" else "no");
+        } else if (std.mem.eql(u8, param_name, "tls-session-cache-size")) {
+            return try std.fmt.allocPrint(allocator, "{d}", .{self.session_cache_size});
+        } else if (std.mem.eql(u8, param_name, "tls-session-cache-timeout")) {
+            return try std.fmt.allocPrint(allocator, "{d}", .{self.session_cache_timeout});
+        } else if (std.mem.eql(u8, param_name, "tls-cluster")) {
+            return try allocator.dupe(u8, if (self.cluster) "yes" else "no");
+        } else if (std.mem.eql(u8, param_name, "tls-replication")) {
+            return try allocator.dupe(u8, if (self.replication) "yes" else "no");
+        } else if (std.mem.eql(u8, param_name, "tls-client-cert-file")) {
+            return if (self.client_cert_file) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-client-key-file")) {
+            return if (self.client_key_file) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-client-key-file-pass")) {
+            return if (self.client_key_file_pass) |f| try allocator.dupe(u8, f) else try allocator.dupe(u8, "");
+        } else if (std.mem.eql(u8, param_name, "tls-allowlisted-certs")) {
+            return if (self.allowlisted_certs) |c| try allocator.dupe(u8, c) else try allocator.dupe(u8, "");
+        }
+        return null;
+    }
+
+    /// Set TLS parameter value from string (for CONFIG SET integration)
+    /// Validates and updates the parameter, caller owns previous memory and must free
+    pub fn setParameter(self: *TlsConfig, allocator: std.mem.Allocator, param_name: []const u8, value_str: []const u8) !void {
+        if (std.mem.eql(u8, param_name, "tls-port")) {
+            self.port = try std.fmt.parseInt(u16, value_str, 10);
+        } else if (std.mem.eql(u8, param_name, "tls-cert-file")) {
+            if (self.cert_file) |old| allocator.free(old);
+            self.cert_file = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-key-file")) {
+            if (self.key_file) |old| allocator.free(old);
+            self.key_file = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-key-file-pass")) {
+            if (self.key_file_pass) |old| allocator.free(old);
+            self.key_file_pass = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-ca-cert-file")) {
+            if (self.ca_cert_file) |old| allocator.free(old);
+            self.ca_cert_file = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-ca-cert-dir")) {
+            if (self.ca_cert_dir) |old| allocator.free(old);
+            self.ca_cert_dir = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-auth-clients")) {
+            self.auth_clients = try AuthClientsMode.fromString(value_str);
+        } else if (std.mem.eql(u8, param_name, "tls-protocols")) {
+            allocator.free(self.protocols);
+            self.protocols = try allocator.dupe(u8, value_str);
+        } else if (std.mem.eql(u8, param_name, "tls-ciphers")) {
+            if (self.ciphers) |old| allocator.free(old);
+            self.ciphers = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-ciphersuites")) {
+            if (self.ciphersuites) |old| allocator.free(old);
+            self.ciphersuites = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-prefer-server-ciphers")) {
+            self.prefer_server_ciphers = std.mem.eql(u8, value_str, "yes");
+        } else if (std.mem.eql(u8, param_name, "tls-session-caching")) {
+            self.session_caching = std.mem.eql(u8, value_str, "yes");
+        } else if (std.mem.eql(u8, param_name, "tls-session-cache-size")) {
+            self.session_cache_size = try std.fmt.parseInt(u32, value_str, 10);
+        } else if (std.mem.eql(u8, param_name, "tls-session-cache-timeout")) {
+            self.session_cache_timeout = try std.fmt.parseInt(u32, value_str, 10);
+        } else if (std.mem.eql(u8, param_name, "tls-cluster")) {
+            self.cluster = std.mem.eql(u8, value_str, "yes");
+        } else if (std.mem.eql(u8, param_name, "tls-replication")) {
+            self.replication = std.mem.eql(u8, value_str, "yes");
+        } else if (std.mem.eql(u8, param_name, "tls-client-cert-file")) {
+            if (self.client_cert_file) |old| allocator.free(old);
+            self.client_cert_file = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-client-key-file")) {
+            if (self.client_key_file) |old| allocator.free(old);
+            self.client_key_file = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-client-key-file-pass")) {
+            if (self.client_key_file_pass) |old| allocator.free(old);
+            self.client_key_file_pass = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else if (std.mem.eql(u8, param_name, "tls-allowlisted-certs")) {
+            if (self.allowlisted_certs) |old| allocator.free(old);
+            self.allowlisted_certs = if (value_str.len > 0) try allocator.dupe(u8, value_str) else null;
+        } else {
+            return error.UnknownParameter;
+        }
+    }
 };
 
 // ============================================================================
@@ -235,6 +342,141 @@ test "TlsConfig: validate succeeds with all required files" {
     config.auth_clients = .yes;
 
     try config.validate();
+}
+
+test "TlsConfig: getParameter for integer" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    config.port = 6380;
+    const value = try config.getParameter(allocator, "tls-port");
+    defer allocator.free(value.?);
+
+    try std.testing.expectEqualStrings("6380", value.?);
+}
+
+test "TlsConfig: getParameter for string (non-empty)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    config.cert_file = try allocator.dupe(u8, "/path/to/cert.pem");
+    const value = try config.getParameter(allocator, "tls-cert-file");
+    defer allocator.free(value.?);
+
+    try std.testing.expectEqualStrings("/path/to/cert.pem", value.?);
+}
+
+test "TlsConfig: getParameter for string (null)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    const value = try config.getParameter(allocator, "tls-cert-file");
+    defer allocator.free(value.?);
+
+    try std.testing.expectEqualStrings("", value.?);
+}
+
+test "TlsConfig: getParameter for boolean (true)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    config.prefer_server_ciphers = true;
+    const value = try config.getParameter(allocator, "tls-prefer-server-ciphers");
+    defer allocator.free(value.?);
+
+    try std.testing.expectEqualStrings("yes", value.?);
+}
+
+test "TlsConfig: getParameter for boolean (false)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    config.cluster = false;
+    const value = try config.getParameter(allocator, "tls-cluster");
+    defer allocator.free(value.?);
+
+    try std.testing.expectEqualStrings("no", value.?);
+}
+
+test "TlsConfig: getParameter for auth-clients enum" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    config.auth_clients = .optional;
+    const value = try config.getParameter(allocator, "tls-auth-clients");
+    defer allocator.free(value.?);
+
+    try std.testing.expectEqualStrings("optional", value.?);
+}
+
+test "TlsConfig: setParameter for integer" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    try config.setParameter(allocator, "tls-port", "6443");
+    try std.testing.expectEqual(@as(u16, 6443), config.port);
+}
+
+test "TlsConfig: setParameter for string (non-empty)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    try config.setParameter(allocator, "tls-cert-file", "/new/cert.pem");
+    try std.testing.expectEqualStrings("/new/cert.pem", config.cert_file.?);
+}
+
+test "TlsConfig: setParameter for string (empty clears)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    config.cert_file = try allocator.dupe(u8, "/old/cert.pem");
+    try config.setParameter(allocator, "tls-cert-file", "");
+    try std.testing.expect(config.cert_file == null);
+}
+
+test "TlsConfig: setParameter for boolean (yes)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    try config.setParameter(allocator, "tls-cluster", "yes");
+    try std.testing.expect(config.cluster);
+}
+
+test "TlsConfig: setParameter for boolean (no)" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    try config.setParameter(allocator, "tls-replication", "no");
+    try std.testing.expect(!config.replication);
+}
+
+test "TlsConfig: setParameter for auth-clients enum" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    try config.setParameter(allocator, "tls-auth-clients", "no");
+    try std.testing.expectEqual(TlsConfig.AuthClientsMode.no, config.auth_clients);
+}
+
+test "TlsConfig: setParameter invalid auth-clients returns error" {
+    const allocator = std.testing.allocator;
+    var config = try TlsConfig.init(allocator);
+    defer config.deinit();
+
+    const result = config.setParameter(allocator, "tls-auth-clients", "invalid");
+    try std.testing.expectError(error.InvalidAuthClientsMode, result);
 }
 
 test "TlsConfig: validate succeeds without CA when auth_clients=no" {
