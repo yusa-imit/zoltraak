@@ -489,8 +489,8 @@ fn runTuiMode(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
 
         // Layout: split into left (list) and right (details)
         const list_width = area.width / 3;
-        const list_area = tui.Rect.new(0, 0, list_width, area.height - 1);
-        const details_area = tui.Rect.new(list_width + 1, 0, area.width - list_width - 1, area.height - 1);
+        const list_area = tui.Rect{ .x = 0, .y = 0, .width = list_width, .height = area.height - 1 };
+        const details_area = tui.Rect{ .x = list_width + 1, .y = 0, .width = area.width - list_width - 1, .height = area.height - 1 };
 
         // Render key list
         try renderKeyList(&frame, list_area, keys_list.items, selected_index);
@@ -875,9 +875,9 @@ fn runAdvancedTuiMode(allocator: std.mem.Allocator, host: []const u8, port: u16)
         // Middle: LineChart (1/3)
         // Right: Status (1/3)
         const col_width = area.width / 3;
-        const tree_area = tui.Rect.new(0, 0, col_width, area.height - 2);
-        const chart_area = tui.Rect.new(col_width, 0, col_width, area.height - 2);
-        const status_area = tui.Rect.new(col_width * 2, 0, col_width, area.height - 2);
+        const tree_area = tui.Rect{ .x = 0, .y = 0, .width = col_width, .height = area.height - 2 };
+        const chart_area = tui.Rect{ .x = col_width, .y = 0, .width = col_width, .height = area.height - 2 };
+        const status_area = tui.Rect{ .x = col_width * 2, .y = 0, .width = col_width, .height = area.height - 2 };
 
         // Render Tree widget
         try tui_advanced.renderTree(&frame, tree_area, &dashboard.keys_tree, dashboard.selected_index);
