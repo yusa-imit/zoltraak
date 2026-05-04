@@ -918,6 +918,16 @@ pub fn build(b: *std.Build) void {
     const run_module_commands_tests = b.addRunArtifact(module_commands_tests);
     integration_test_step.dependOn(&run_module_commands_tests.step);
 
+    const module_commands_execution_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_module_commands_execution.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_module_commands_execution_tests = b.addRunArtifact(module_commands_execution_tests);
+    integration_test_step.dependOn(&run_module_commands_execution_tests.step);
+
     // Time Series TS.ADD/TS.MADD integration tests
     const ts_add_madd_tests = b.addTest(.{
         .root_module = b.createModule(.{

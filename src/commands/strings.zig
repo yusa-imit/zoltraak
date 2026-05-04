@@ -714,6 +714,14 @@ pub fn executeCommand(
 
     // Execute command
     const response = blk: {
+        // ── MODULE COMMAND DISPATCH ────────────────────────────────────────────
+        // Check for dynamically loaded module commands BEFORE built-in commands
+        // This allows modules to override built-in commands (Redis behavior)
+        if (storage.module_store.getCommand(cmd_upper)) |module_cmd| {
+            // Module command found - execute via module handler
+            break :blk try module_cmd.cmdfunc(allocator, storage, array);
+        }
+
         // Server & Auth commands
         if (std.mem.eql(u8, cmd_upper, "AUTH")) {
             break :blk try auth_cmds.cmdAuth(allocator, array, storage, client_registry, client_id);
