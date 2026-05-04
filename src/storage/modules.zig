@@ -94,14 +94,14 @@ pub const ModuleStore = struct {
     ///          Empty slice if no modules loaded
     pub fn listModules(self: *ModuleStore) ![]const ModuleInfo {
         var modules = try std.ArrayList(ModuleInfo).initCapacity(self.allocator, self.modules.count());
-        errdefer modules.deinit();
+        errdefer modules.deinit(self.allocator);
 
         var it = self.modules.valueIterator();
         while (it.next()) |value| {
-            try modules.append(value.*);
+            try modules.append(self.allocator, value.*);
         }
 
-        return try modules.toOwnedSlice();
+        return try modules.toOwnedSlice(self.allocator);
     }
 };
 
@@ -176,7 +176,7 @@ test "ModuleStore: uses StringHashMap for modules" {
     var store = ModuleStore.init(allocator);
     defer store.deinit();
 
-    // Verify StringHashMap type
+    // Verify modules field exists and is a struct (StringHashMap is a struct)
     const TypeInfo = @typeInfo(@TypeOf(store.modules));
-    try testing.expect(TypeInfo != null);
+    try testing.expect(TypeInfo == .@"struct");
 }

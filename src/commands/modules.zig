@@ -73,7 +73,7 @@ pub fn cmdModuleLoad(
     // Stub implementation returns NotSupported error
     var w = Writer.init(allocator);
     defer w.deinit();
-    return try w.writeError("ERR Error loading the extension. Please check the server logs.");
+    return try w.writeError("ERR Error loading the module. Please check the server logs.");
 }
 
 /// Handle MODULE UNLOAD command (stub implementation)
