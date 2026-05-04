@@ -22,6 +22,7 @@ const eviction_mod = @import("eviction.zig");
 const lazyfree_mod = @import("lazyfree.zig");
 const defrag_mod = @import("defrag.zig");
 const tls_config_mod = @import("tls_config.zig");
+const modules_mod = @import("modules.zig");
 
 pub const Config = config_mod.Config;
 pub const TlsConfig = tls_config_mod.TlsConfig;
@@ -50,6 +51,7 @@ pub const LazyFreeTask = lazyfree_mod.LazyFreeTask;
 pub const LazyFreeWork = lazyfree_mod.LazyFreeWork;
 pub const LazyFreeWorkType = lazyfree_mod.LazyFreeWorkType;
 pub const DefragTask = defrag_mod.DefragTask;
+pub const ModuleStore = modules_mod.ModuleStore;
 
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
@@ -553,6 +555,7 @@ pub const Storage = struct {
     lfu_counter: LFUCounter, // LFU counter for eviction policies
     lazyfree_task: LazyFreeTask, // Background lazy freeing task
     defrag_task: DefragTask, // Background active defragmentation task
+    module_store: ModuleStore, // Dynamically loaded modules (Phase 17)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -661,6 +664,7 @@ pub const Storage = struct {
             .lfu_counter = LFUCounter.init(allocator),
             .lazyfree_task = lazy_free,
             .defrag_task = defrag_task,
+            .module_store = ModuleStore.init(allocator),
         };
 
         // Start background lazy free thread
@@ -740,6 +744,7 @@ pub const Storage = struct {
         self.lfu_counter.deinit();
         self.lazyfree_task.deinit();
         self.defrag_task.deinit();
+        self.module_store.deinit();
         self.config.deinit();
 
         const allocator = self.allocator;

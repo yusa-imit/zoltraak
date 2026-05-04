@@ -897,6 +897,17 @@ pub fn build(b: *std.Build) void {
     const run_sentinel_final_tests = b.addRunArtifact(sentinel_final_tests);
     integration_test_step.dependOn(&run_sentinel_final_tests.step);
 
+    // Module integration tests (Phase 17)
+    const modules_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_modules.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_modules_tests = b.addRunArtifact(modules_tests);
+    integration_test_step.dependOn(&run_modules_tests.step);
+
     // Time Series TS.ADD/TS.MADD integration tests
     const ts_add_madd_tests = b.addTest(.{
         .root_module = b.createModule(.{

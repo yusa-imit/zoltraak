@@ -45,6 +45,7 @@ const tdigest_cmds = @import("tdigest.zig");
 const vector_cmds = @import("vectors.zig");
 const utility_cmds = @import("utility.zig");
 const hotkeys_cmds = @import("hotkeys.zig");
+const modules_cmds = @import("modules.zig");
 const acl_storage = @import("../storage/acl.zig");
 const ACLStore = acl_storage.ACLStore;
 const AclUser = acl_storage.User;
@@ -531,7 +532,7 @@ pub fn executeCommand(
         "READONLY", "READWRITE",
         "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH",
         "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",
-        "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT",
+        "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT", "MODULE",
     };
     var should_check_redirect = true;
     for (skip_redirect_cmds) |skip_cmd| {
@@ -1797,6 +1798,50 @@ pub fn executeCommand(
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
                 const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown SENTINEL subcommand '{s}'", .{subcmd});
+                break :blk try w.writeError(err_msg);
+            }
+        }
+        // MODULE commands
+        else if (std.mem.eql(u8, cmd_upper, "MODULE")) {
+            if (array.len < 2) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                break :blk try w.writeError("ERR wrong number of arguments for 'module' command");
+            }
+            const subcmd = switch (array[1]) {
+                .bulk_string => |s| s,
+                else => {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    break :blk try w.writeError("ERR invalid subcommand format");
+                },
+            };
+            const subcmd_upper = try std.ascii.allocUpperString(allocator, subcmd);
+            defer allocator.free(subcmd_upper);
+
+            // Convert RespValue array to string args (same as CLUSTER/SENTINEL)
+            var args = try allocator.alloc([]const u8, array.len);
+            defer allocator.free(args);
+            for (array, 0..) |val, i| {
+                args[i] = switch (val) {
+                    .bulk_string => |s| s,
+                    else => "",
+                };
+            }
+
+            if (std.mem.eql(u8, subcmd_upper, "HELP")) {
+                break :blk try modules_cmds.cmdModuleHelp(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
+                break :blk try modules_cmds.cmdModuleLoad(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "UNLOAD")) {
+                break :blk try modules_cmds.cmdModuleUnload(allocator, args, storage, null, 0);
+            } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
+                break :blk try modules_cmds.cmdModuleList(allocator, args, storage, null, 0);
+            } else {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [256]u8 = undefined;
+                const err_msg = try std.fmt.bufPrint(&buf, "ERR unknown MODULE subcommand '{s}'", .{subcmd});
                 break :blk try w.writeError(err_msg);
             }
         }
