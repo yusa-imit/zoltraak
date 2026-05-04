@@ -181,7 +181,7 @@ test "MODULE HELP: arity validation (rejects extra args)" {
         std.mem.indexOf(u8, response, "syntax error") != null);
 }
 
-test "MODULE LIST: returns empty array RESP2 format (stub)" {
+test "MODULE LIST: returns empty array when no modules loaded" {
     const stream = try connectToServer();
     defer stream.close();
 
@@ -194,7 +194,7 @@ test "MODULE LIST: returns empty array RESP2 format (stub)" {
     const response = try sendCommand(stream, cmd);
     defer allocator.free(response);
 
-    // Stub should return empty array *0\r\n
+    // Should return empty array *0\r\n (no modules loaded)
     try testing.expectEqualStrings("*0\r\n", response);
 }
 
@@ -236,23 +236,23 @@ test "MODULE LOAD: requires path argument" {
         std.mem.indexOf(u8, response, "syntax error") != null);
 }
 
-test "MODULE LOAD: stub returns error.NotSupported" {
+test "MODULE LOAD: nonexistent file returns error" {
     const stream = try connectToServer();
     defer stream.close();
 
     const allocator = testing.allocator;
 
-    // Send MODULE LOAD with valid path
-    const cmd = try formatCommand(allocator, &[_][]const u8{ "MODULE", "LOAD", "/path/to/module.so" });
+    // Send MODULE LOAD with nonexistent file
+    const cmd = try formatCommand(allocator, &[_][]const u8{ "MODULE", "LOAD", "/nonexistent/module.so" });
     defer allocator.free(cmd);
 
     const response = try sendCommand(stream, cmd);
     defer allocator.free(response);
 
-    // Stub should return NotSupported error
+    // Should return error loading module
     try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
-    try testing.expect(std.mem.indexOf(u8, response, "not supported") != null or
-        std.mem.indexOf(u8, response, "NotSupported") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "loading the module") != null or
+        std.mem.indexOf(u8, response, "server logs") != null);
 }
 
 test "MODULE LOAD: accepts optional arguments" {
@@ -261,17 +261,17 @@ test "MODULE LOAD: accepts optional arguments" {
 
     const allocator = testing.allocator;
 
-    // Send MODULE LOAD with path and optional args
+    // Send MODULE LOAD with path and optional args (nonexistent file will error)
     const cmd = try formatCommand(allocator, &[_][]const u8{ "MODULE", "LOAD", "/path/to/module.so", "arg1", "arg2" });
     defer allocator.free(cmd);
 
     const response = try sendCommand(stream, cmd);
     defer allocator.free(response);
 
-    // Should accept but return NotSupported (stub)
+    // Should accept arguments but fail because file doesn't exist
     try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
-    try testing.expect(std.mem.indexOf(u8, response, "not supported") != null or
-        std.mem.indexOf(u8, response, "NotSupported") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "loading the module") != null or
+        std.mem.indexOf(u8, response, "server logs") != null);
 }
 
 test "MODULE LOAD: arity validation (requires at least 3 args)" {
@@ -312,23 +312,23 @@ test "MODULE UNLOAD: requires name argument" {
         std.mem.indexOf(u8, response, "syntax error") != null);
 }
 
-test "MODULE UNLOAD: stub returns error.NotSupported" {
+test "MODULE UNLOAD: nonexistent module returns error" {
     const stream = try connectToServer();
     defer stream.close();
 
     const allocator = testing.allocator;
 
-    // Send MODULE UNLOAD with valid name
+    // Send MODULE UNLOAD with nonexistent module name
     const cmd = try formatCommand(allocator, &[_][]const u8{ "MODULE", "UNLOAD", "mymodule" });
     defer allocator.free(cmd);
 
     const response = try sendCommand(stream, cmd);
     defer allocator.free(response);
 
-    // Stub should return NotSupported error
+    // Should return module not found error
     try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
-    try testing.expect(std.mem.indexOf(u8, response, "not supported") != null or
-        std.mem.indexOf(u8, response, "NotSupported") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "No such module") != null or
+        std.mem.indexOf(u8, response, "not found") != null);
 }
 
 test "MODULE UNLOAD: arity validation (requires exactly 3 args)" {
@@ -435,4 +435,46 @@ test "MODULE dispatcher: case-insensitive subcommands" {
     defer allocator.free(response);
 
     try testing.expect(std.mem.startsWith(u8, response, "*4\r\n"));
+}
+
+test "MODULE LOAD: empty path returns error" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const allocator = testing.allocator;
+
+    // Send MODULE LOAD with empty path
+    const cmd = try formatCommand(allocator, &[_][]const u8{ "MODULE", "LOAD", "" });
+    defer allocator.free(cmd);
+
+    const response = try sendCommand(stream, cmd);
+    defer allocator.free(response);
+
+    // Should return error (invalid path)
+    try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+}
+
+test "MODULE LOAD: validates file extension in error cases" {
+    const stream = try connectToServer();
+    defer stream.close();
+
+    const allocator = testing.allocator;
+
+    // Try to load various invalid paths
+    const paths = [_][]const u8{
+        "/tmp/nonexistent.so",
+        "/tmp/nonexistent.dylib",
+        "/tmp/nonexistent.dll",
+    };
+
+    for (paths) |path| {
+        const cmd = try formatCommand(allocator, &[_][]const u8{ "MODULE", "LOAD", path });
+        defer allocator.free(cmd);
+
+        const response = try sendCommand(stream, cmd);
+        defer allocator.free(response);
+
+        // All should fail with library loading error
+        try testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    }
 }
