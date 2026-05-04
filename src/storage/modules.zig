@@ -409,13 +409,13 @@ pub const ModuleStore = struct {
     ///   - module_name: Name of the module whose commands to remove
     pub fn removeModuleCommands(self: *ModuleStore, module_name: []const u8) void {
         // Collect command names to remove (can't modify HashMap while iterating)
-        var to_remove = std.ArrayList([]const u8).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch return;
+        defer to_remove.deinit(self.allocator);
 
         var it = self.commands.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.module_name, module_name)) {
-                to_remove.append(entry.key_ptr.*) catch continue;
+                to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 
@@ -423,7 +423,8 @@ pub const ModuleStore = struct {
         for (to_remove.items) |cmd_name| {
             if (self.commands.fetchRemove(cmd_name)) |entry| {
                 self.allocator.free(entry.key);
-                entry.value.deinit(self.allocator);
+                var cmd = entry.value;
+                cmd.deinit(self.allocator);
             }
         }
     }
