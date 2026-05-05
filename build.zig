@@ -960,6 +960,17 @@ pub fn build(b: *std.Build) void {
     const run_module_hooks_integration_tests = b.addRunArtifact(module_hooks_integration_tests);
     integration_test_step.dependOn(&run_module_hooks_integration_tests.step);
 
+    // Module timers tests (Iteration 261)
+    const module_timers_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_module_timers.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_module_timers_tests = b.addRunArtifact(module_timers_tests);
+    integration_test_step.dependOn(&run_module_timers_tests.step);
+
     // Time Series TS.ADD/TS.MADD integration tests
     const ts_add_madd_tests = b.addTest(.{
         .root_module = b.createModule(.{

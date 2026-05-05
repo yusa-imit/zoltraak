@@ -88,6 +88,27 @@ pub const ModuleCtx = struct {
     ) !void {
         return self.store.registerHook(hook_type, self.name, callback, context);
     }
+
+    /// Create a timer that fires after specified period
+    /// Redis module ABI: RedisModuleTimerID RedisModule_CreateTimer(RedisModuleCtx *ctx, mstime_t period, RedisModuleTimerProc callback, void *data)
+    pub fn createTimer(
+        self: *ModuleCtx,
+        period_ms: i64,
+        data: ?*anyopaque,
+        callback: TimerCallback,
+        free_data: ?FreeFn,
+    ) !u64 {
+        return self.store.timers.createTimer(self.name, period_ms, data, callback, free_data);
+    }
+
+    /// Stop a previously created timer
+    /// Redis module ABI: int RedisModule_StopTimer(RedisModuleCtx *ctx, RedisModuleTimerID id, void **data)
+    pub fn stopTimer(
+        self: *ModuleCtx,
+        timer_id: u64,
+    ) !void {
+        return self.store.timers.stopTimer(timer_id);
+    }
 };
 
 /// Function signature for module OnLoad function
@@ -251,6 +272,8 @@ pub const ModuleError = error{
     InvalidDataTypeName,
     /// Data type not found
     DataTypeNotFound,
+    /// Timer not found
+    TimerNotFound,
 };
 
 /// Storage for dynamically loaded modules
@@ -261,6 +284,7 @@ pub const ModuleStore = struct {
     data_types: std.StringHashMap(ModuleDataType),
     blocking: ModuleBlockingStore,
     hooks: std.ArrayList(ModuleHook),
+    timers: ModuleTimerStore,
 
     /// Initialize a new ModuleStore
     ///
@@ -276,6 +300,7 @@ pub const ModuleStore = struct {
             .data_types = std.StringHashMap(ModuleDataType).init(allocator),
             .blocking = ModuleBlockingStore.init(allocator),
             .hooks = std.ArrayList(ModuleHook).init(allocator),
+            .timers = ModuleTimerStore.init(allocator),
         };
     }
 
@@ -331,6 +356,9 @@ pub const ModuleStore = struct {
 
         // Clean up blocking store
         self.blocking.deinit();
+
+        // Clean up timer store
+        self.timers.deinit();
     }
 
     /// Load a module from the specified path
@@ -495,6 +523,9 @@ pub const ModuleStore = struct {
 
         // Remove all hooks registered by this module
         self.removeModuleHooks(module_info.name) catch {};
+
+        // Remove all timers registered by this module
+        self.timers.removeModuleTimers(module_info.name);
     }
 
     /// List all loaded modules
@@ -828,6 +859,201 @@ pub const ModuleStore = struct {
                 i += 1;
             }
         }
+    }
+};
+
+// ============================================================================
+// Module Timer API
+// ============================================================================
+
+/// Callback function invoked when a timer fires
+/// Redis module ABI: void (*RedisModuleTimerProc)(RedisModuleCtx *ctx, void *data)
+pub const TimerCallback = *const fn (allocator: std.mem.Allocator, data: ?*anyopaque) void;
+
+/// Represents a timer registered by a module
+/// Timers can be one-shot or periodic based on the period_ms value
+pub const TimerInfo = struct {
+    /// Unique timer identifier
+    timer_id: u64,
+    /// Module that owns this timer
+    module_name: []const u8,
+    /// Period in milliseconds (0 = one-shot)
+    period_ms: i64,
+    /// Next fire time (milliseconds since epoch)
+    next_fire_time: i64,
+    /// Module-specific private data
+    data: ?*anyopaque,
+    /// Callback function to invoke
+    callback: TimerCallback,
+    /// Free function for data
+    free_data: ?FreeFn,
+
+    allocator: std.mem.Allocator,
+
+    /// Deallocate TimerInfo and free private data
+    pub fn deinit(self: *TimerInfo) void {
+        self.allocator.free(self.module_name);
+        // Free data if free function provided
+        if (self.free_data) |free_fn| {
+            if (self.data) |d| {
+                free_fn(self.allocator, d);
+            }
+        }
+    }
+};
+
+/// Storage for module timers
+pub const ModuleTimerStore = struct {
+    allocator: std.mem.Allocator,
+    /// Map of timer_id -> TimerInfo
+    timers: std.AutoHashMap(u64, TimerInfo),
+    /// Next timer ID for registration
+    next_timer_id: u64,
+
+    /// Initialize a new ModuleTimerStore
+    pub fn init(allocator: std.mem.Allocator) ModuleTimerStore {
+        return .{
+            .allocator = allocator,
+            .timers = std.AutoHashMap(u64, TimerInfo).init(allocator),
+            .next_timer_id = 1,
+        };
+    }
+
+    /// Deallocate all timers
+    pub fn deinit(self: *ModuleTimerStore) void {
+        var iter = self.timers.iterator();
+        while (iter.next()) |entry| {
+            var timer = entry.value_ptr;
+            timer.deinit();
+        }
+        self.timers.deinit();
+    }
+
+    /// Create a new timer
+    ///
+    /// Arguments:
+    ///   - module_name: Name of the module creating the timer
+    ///   - period_ms: Period in milliseconds (0 = one-shot timer)
+    ///   - data: Module-specific private data (can be null)
+    ///   - callback: Function to invoke when timer fires
+    ///   - free_data: Function to free data when timer is deleted
+    ///
+    /// Returns:
+    ///   - Timer ID on success
+    ///   - error.OutOfMemory if allocation fails
+    pub fn createTimer(
+        self: *ModuleTimerStore,
+        module_name: []const u8,
+        period_ms: i64,
+        data: ?*anyopaque,
+        callback: TimerCallback,
+        free_data: ?FreeFn,
+    ) !u64 {
+        const timer_id = self.next_timer_id;
+        self.next_timer_id += 1;
+
+        const now_ms = std.time.milliTimestamp();
+        const owned_name = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(owned_name);
+
+        const timer = TimerInfo{
+            .timer_id = timer_id,
+            .module_name = owned_name,
+            .period_ms = period_ms,
+            .next_fire_time = now_ms + period_ms,
+            .data = data,
+            .callback = callback,
+            .free_data = free_data,
+            .allocator = self.allocator,
+        };
+
+        try self.timers.put(timer_id, timer);
+        return timer_id;
+    }
+
+    /// Stop and remove a timer
+    ///
+    /// Arguments:
+    ///   - timer_id: ID of the timer to stop
+    ///
+    /// Returns:
+    ///   - error.TimerNotFound if timer doesn't exist
+    pub fn stopTimer(self: *ModuleTimerStore, timer_id: u64) !void {
+        if (self.timers.fetchRemove(timer_id)) |kv| {
+            var timer = kv.value;
+            timer.deinit();
+        } else {
+            return error.TimerNotFound;
+        }
+    }
+
+    /// Process all timers and invoke callbacks for those that have fired
+    ///
+    /// This should be called periodically (e.g., every 10ms) by the server's
+    /// main event loop.
+    ///
+    /// Returns:
+    ///   - Number of timers that fired
+    pub fn processTimers(self: *ModuleTimerStore) usize {
+        const now_ms = std.time.milliTimestamp();
+        var fired_count: usize = 0;
+        var to_remove = std.ArrayList(u64).init(self.allocator);
+        defer to_remove.deinit();
+
+        var iter = self.timers.iterator();
+        while (iter.next()) |entry| {
+            const timer = entry.value_ptr;
+            if (now_ms >= timer.next_fire_time) {
+                // Invoke callback
+                timer.callback(self.allocator, timer.data);
+                fired_count += 1;
+
+                // One-shot timer (period_ms == 0) should be removed
+                if (timer.period_ms == 0) {
+                    to_remove.append(timer.timer_id) catch {};
+                } else {
+                    // Periodic timer: reschedule
+                    timer.next_fire_time = now_ms + timer.period_ms;
+                }
+            }
+        }
+
+        // Remove one-shot timers that have fired
+        for (to_remove.items) |timer_id| {
+            _ = self.stopTimer(timer_id) catch {};
+        }
+
+        return fired_count;
+    }
+
+    /// Remove all timers registered by a specific module
+    ///
+    /// Arguments:
+    ///   - module_name: Name of the module whose timers should be removed
+    pub fn removeModuleTimers(self: *ModuleTimerStore, module_name: []const u8) void {
+        var to_remove = std.ArrayList(u64).init(self.allocator);
+        defer to_remove.deinit();
+
+        var iter = self.timers.iterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.module_name, module_name)) {
+                to_remove.append(entry.value_ptr.timer_id) catch {};
+            }
+        }
+
+        for (to_remove.items) |timer_id| {
+            _ = self.stopTimer(timer_id) catch {};
+        }
+    }
+
+    /// Get count of active timers
+    pub fn timerCount(self: *ModuleTimerStore) usize {
+        return self.timers.count();
+    }
+
+    /// Check if a timer exists
+    pub fn hasTimer(self: *ModuleTimerStore, timer_id: u64) bool {
+        return self.timers.contains(timer_id);
     }
 };
 
