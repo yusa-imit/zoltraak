@@ -77,6 +77,17 @@ pub const ModuleCtx = struct {
     ) !?[]const u8 {
         return self.store.blocking.unblockClient(client_id, storage);
     }
+
+    /// Register a hook for event notifications
+    /// Redis module ABI: int RedisModule_SubscribeToServerEvent(RedisModuleCtx *ctx, RedisModuleEvent event, RedisModuleEventCallback callback)
+    pub fn registerHook(
+        self: *ModuleCtx,
+        hook_type: HookType,
+        callback: HookCallback,
+        context: ?*anyopaque,
+    ) !void {
+        return self.store.registerHook(hook_type, self.name, callback, context);
+    }
 };
 
 /// Function signature for module OnLoad function
@@ -173,6 +184,45 @@ pub const ModuleInfo = struct {
     }
 };
 
+/// Types of events that can trigger module hooks
+pub const HookType = enum {
+    /// Keyspace notifications (key added/modified/deleted)
+    keyspace_notification,
+    /// Command filter (before/after command execution)
+    command_filter,
+    /// Client state change (connect/disconnect)
+    client_state_change,
+};
+
+/// Information about a key for hook callbacks
+pub const KeyInfo = struct {
+    key: []const u8,
+    db: i32,
+};
+
+/// Function signature for module hook callback
+/// Redis module ABI: void (*hook)(RedisModuleCtx *ctx, RedisModuleEvent eid, uint64_t subevent, void *data)
+///
+/// Simplified signature for internal use:
+/// - ctx: opaque context pointer (module-specific data)
+/// - event_type: numeric event type identifier
+/// - event: event name string
+/// - key: key information for the event
+pub const HookCallback = *const fn (ctx: ?*anyopaque, event_type: i32, event: []const u8, key: *const KeyInfo) void;
+
+/// A registered module hook
+pub const ModuleHook = struct {
+    module_name: []const u8,
+    hook_type: HookType,
+    callback: HookCallback,
+    context: ?*anyopaque,
+
+    /// Deallocate ModuleHook structure and owned strings
+    pub fn deinit(self: *ModuleHook, allocator: std.mem.Allocator) void {
+        allocator.free(self.module_name);
+    }
+};
+
 /// Error types for module operations
 pub const ModuleError = error{
     /// Dynamic library loading not supported in this implementation
@@ -210,6 +260,7 @@ pub const ModuleStore = struct {
     commands: std.StringHashMap(ModuleCommand),
     data_types: std.StringHashMap(ModuleDataType),
     blocking: ModuleBlockingStore,
+    hooks: std.ArrayList(ModuleHook),
 
     /// Initialize a new ModuleStore
     ///
@@ -217,13 +268,14 @@ pub const ModuleStore = struct {
     ///   - allocator: Memory allocator for module storage
     ///
     /// Returns a new ModuleStore instance
-    pub fn init(allocator: std.mem.Allocator) ModuleStore {
+    pub fn init(allocator: std.mem.Allocator) !ModuleStore {
         return ModuleStore{
             .allocator = allocator,
             .modules = std.StringHashMap(ModuleInfo).init(allocator),
             .commands = std.StringHashMap(ModuleCommand).init(allocator),
             .data_types = std.StringHashMap(ModuleDataType).init(allocator),
             .blocking = ModuleBlockingStore.init(allocator),
+            .hooks = std.ArrayList(ModuleHook).init(allocator),
         };
     }
 
@@ -270,6 +322,12 @@ pub const ModuleStore = struct {
         }
 
         self.data_types.deinit();
+
+        // Free hooks
+        for (self.hooks.items) |*hook| {
+            hook.deinit(self.allocator);
+        }
+        self.hooks.deinit(self.allocator);
 
         // Clean up blocking store
         self.blocking.deinit();
@@ -434,6 +492,9 @@ pub const ModuleStore = struct {
 
         // Remove all data types registered by this module
         self.removeModuleDataTypes(module_info.name);
+
+        // Remove all hooks registered by this module
+        self.removeModuleHooks(module_info.name) catch {};
     }
 
     /// List all loaded modules
@@ -650,6 +711,121 @@ pub const ModuleStore = struct {
                 self.allocator.free(entry.key);
                 var dt = entry.value;
                 dt.deinit(self.allocator);
+            }
+        }
+    }
+
+    // ========================================================================
+    // Hook Management API
+    // ========================================================================
+
+    /// Register a module hook for event notifications
+    ///
+    /// Arguments:
+    ///   - hook_type: Type of event to hook (keyspace, command filter, client state)
+    ///   - module_name: Name of the module registering the hook
+    ///   - callback: Function to call when event occurs
+    ///   - context: Optional context pointer passed to callback
+    ///
+    /// Returns:
+    ///   - void on success
+    ///   - error.OutOfMemory if allocation fails
+    pub fn registerHook(
+        self: *ModuleStore,
+        hook_type: HookType,
+        module_name: []const u8,
+        callback: HookCallback,
+        context: ?*anyopaque,
+    ) !void {
+        const module_name_copy = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(module_name_copy);
+
+        const hook = ModuleHook{
+            .module_name = module_name_copy,
+            .hook_type = hook_type,
+            .callback = callback,
+            .context = context,
+        };
+
+        try self.hooks.append(self.allocator, hook);
+    }
+
+    /// Get all hooks registered for a specific hook type
+    ///
+    /// Arguments:
+    ///   - hook_type: Type of hook to retrieve
+    ///
+    /// Returns:
+    ///   - Slice of ModuleHook matching the specified type
+    pub fn getHooks(self: *ModuleStore, hook_type: HookType) []const ModuleHook {
+        var result = std.ArrayList(ModuleHook).initCapacity(self.allocator, 0) catch return &[_]ModuleHook{};
+        defer result.deinit(self.allocator);
+
+        for (self.hooks.items) |hook| {
+            if (hook.hook_type == hook_type) {
+                result.append(self.allocator, hook) catch continue;
+            }
+        }
+
+        return result.toOwnedSlice(self.allocator) catch &[_]ModuleHook{};
+    }
+
+    /// Trigger keyspace notification event to all registered hooks
+    ///
+    /// Arguments:
+    ///   - event_type: Numeric event type identifier
+    ///   - event: Event name (e.g., "set", "del", "expire")
+    ///   - key: Key information for the event
+    ///
+    /// Returns:
+    ///   - void on success
+    pub fn triggerKeyspaceNotification(
+        self: *ModuleStore,
+        event_type: i32,
+        event: []const u8,
+        key: *const KeyInfo,
+    ) !void {
+        for (self.hooks.items) |hook| {
+            if (hook.hook_type == .keyspace_notification) {
+                hook.callback(hook.context, event_type, event, key);
+            }
+        }
+    }
+
+    /// Trigger command filter event to all registered hooks
+    ///
+    /// Arguments:
+    ///   - key: Key information (command name in key field)
+    ///
+    /// Returns:
+    ///   - void on success
+    pub fn triggerCommandFilter(self: *ModuleStore, key: *const KeyInfo) !void {
+        for (self.hooks.items) |hook| {
+            if (hook.hook_type == .command_filter) {
+                hook.callback(hook.context, 0, "", key);
+            }
+        }
+    }
+
+    /// Remove all hooks registered by a specific module
+    ///
+    /// This is called automatically when a module is unloaded to clean up
+    /// all hooks that the module registered.
+    ///
+    /// Arguments:
+    ///   - module_name: Name of the module whose hooks should be removed
+    ///
+    /// Returns:
+    ///   - void on success
+    ///   - error.OutOfMemory if temporary allocation fails
+    pub fn removeModuleHooks(self: *ModuleStore, module_name: []const u8) !void {
+        var i: usize = 0;
+        while (i < self.hooks.items.len) {
+            if (std.mem.eql(u8, self.hooks.items[i].module_name, module_name)) {
+                var hook = self.hooks.swapRemove(i);
+                hook.deinit(self.allocator);
+            } else {
+                i += 1;
             }
         }
     }

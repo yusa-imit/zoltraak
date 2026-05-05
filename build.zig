@@ -938,6 +938,28 @@ pub fn build(b: *std.Build) void {
     const run_module_datatypes_tests = b.addRunArtifact(module_datatypes_tests);
     integration_test_step.dependOn(&run_module_datatypes_tests.step);
 
+    // Module hooks unit tests
+    const module_hooks_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_module_hooks.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_module_hooks_tests = b.addRunArtifact(module_hooks_tests);
+    integration_test_step.dependOn(&run_module_hooks_tests.step);
+
+    // Module hooks integration tests
+    const module_hooks_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_module_hooks_integration.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_module_hooks_integration_tests = b.addRunArtifact(module_hooks_integration_tests);
+    integration_test_step.dependOn(&run_module_hooks_integration_tests.step);
+
     // Time Series TS.ADD/TS.MADD integration tests
     const ts_add_madd_tests = b.addTest(.{
         .root_module = b.createModule(.{
