@@ -21,6 +21,30 @@ pub const ModuleCtx = struct {
     ) !void {
         return self.store.registerCommand(self.name, name, cmdfunc, flags, firstkey, lastkey, keystep);
     }
+
+    /// Register a new data type from a module
+    /// Redis module ABI: RedisModuleType *RedisModule_CreateDataType(RedisModuleCtx *ctx, const char *name, int encver, RedisModuleTypeMethods *typemethods)
+    pub fn createDataType(
+        self: *ModuleCtx,
+        name: []const u8,
+        encver: u32,
+        rdb_save: ?RdbSaveFn,
+        rdb_load: ?RdbLoadFn,
+        aof_rewrite: ?AofRewriteFn,
+        mem_usage: ?MemUsageFn,
+        free_fn: FreeFn,
+    ) !void {
+        return self.store.registerDataType(
+            self.name,
+            name,
+            encver,
+            rdb_save,
+            rdb_load,
+            aof_rewrite,
+            mem_usage,
+            free_fn,
+        );
+    }
 };
 
 /// Function signature for module OnLoad function
@@ -37,6 +61,26 @@ pub const OnUnloadFn = *const fn (ctx: *ModuleCtx) c_int;
 /// We use a simpler signature internally - modules convert their C ABI to this
 pub const ModuleCmdFunc = *const fn (allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) anyerror![]const u8;
 
+/// Function signature for RDB save callback
+/// Redis module ABI: void (*rdb_save)(RedisModuleIO *io, void *value)
+pub const RdbSaveFn = *const fn (data: *anyopaque, writer: anytype) anyerror!void;
+
+/// Function signature for RDB load callback
+/// Redis module ABI: void *(*rdb_load)(RedisModuleIO *io, int encver)
+pub const RdbLoadFn = *const fn (allocator: std.mem.Allocator, reader: anytype, encver: u32) anyerror!*anyopaque;
+
+/// Function signature for AOF rewrite callback
+/// Redis module ABI: void (*aof_rewrite)(RedisModuleIO *io, RedisModuleString *key, void *value)
+pub const AofRewriteFn = *const fn (key: []const u8, data: *anyopaque, writer: anytype) anyerror!void;
+
+/// Function signature for memory usage callback
+/// Redis module ABI: size_t (*mem_usage)(const void *value)
+pub const MemUsageFn = *const fn (data: *const anyopaque) usize;
+
+/// Function signature for free callback
+/// Redis module ABI: void (*free)(void *value)
+pub const FreeFn = *const fn (allocator: std.mem.Allocator, data: *anyopaque) void;
+
 /// Information about a registered module command
 pub const ModuleCommand = struct {
     name: []const u8,
@@ -51,6 +95,25 @@ pub const ModuleCommand = struct {
         allocator.free(self.name);
         allocator.free(self.module_name);
         allocator.free(self.flags);
+    }
+};
+
+/// Information about a registered module data type
+/// Redis module ABI: RedisModuleType
+pub const ModuleDataType = struct {
+    name: []const u8,
+    module_name: []const u8,
+    encver: u32,
+    rdb_save: ?RdbSaveFn,
+    rdb_load: ?RdbLoadFn,
+    aof_rewrite: ?AofRewriteFn,
+    mem_usage: ?MemUsageFn,
+    free: FreeFn,
+
+    /// Deallocate ModuleDataType structure and owned strings
+    pub fn deinit(self: *ModuleDataType, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.module_name);
     }
 };
 
@@ -100,6 +163,12 @@ pub const ModuleError = error{
     CommandAlreadyExists,
     /// Invalid command name
     InvalidCommandName,
+    /// Data type already registered
+    DataTypeAlreadyExists,
+    /// Invalid data type name
+    InvalidDataTypeName,
+    /// Data type not found
+    DataTypeNotFound,
 };
 
 /// Storage for dynamically loaded modules
@@ -107,6 +176,7 @@ pub const ModuleStore = struct {
     allocator: std.mem.Allocator,
     modules: std.StringHashMap(ModuleInfo),
     commands: std.StringHashMap(ModuleCommand),
+    data_types: std.StringHashMap(ModuleDataType),
 
     /// Initialize a new ModuleStore
     ///
@@ -119,6 +189,7 @@ pub const ModuleStore = struct {
             .allocator = allocator,
             .modules = std.StringHashMap(ModuleInfo).init(allocator),
             .commands = std.StringHashMap(ModuleCommand).init(allocator),
+            .data_types = std.StringHashMap(ModuleDataType).init(allocator),
         };
     }
 
@@ -151,6 +222,20 @@ pub const ModuleStore = struct {
         }
 
         self.commands.deinit();
+
+        // Free data type keys
+        var dt_key_it = self.data_types.keyIterator();
+        while (dt_key_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+
+        // Free data type values
+        var dt_val_it = self.data_types.valueIterator();
+        while (dt_val_it.next()) |value| {
+            value.deinit(self.allocator);
+        }
+
+        self.data_types.deinit();
     }
 
     /// Load a module from the specified path
@@ -309,6 +394,9 @@ pub const ModuleStore = struct {
 
         // Remove all commands registered by this module
         self.removeModuleCommands(module_info.name);
+
+        // Remove all data types registered by this module
+        self.removeModuleDataTypes(module_info.name);
     }
 
     /// List all loaded modules
@@ -425,6 +513,106 @@ pub const ModuleStore = struct {
                 self.allocator.free(entry.key);
                 var cmd = entry.value;
                 cmd.deinit(self.allocator);
+            }
+        }
+    }
+
+    /// Register a new data type for a module
+    ///
+    /// Arguments:
+    ///   - module_name: Name of the module registering the data type
+    ///   - name: Name of the data type
+    ///   - encver: Encoding version for RDB serialization
+    ///   - rdb_save: Optional RDB save callback
+    ///   - rdb_load: Optional RDB load callback
+    ///   - aof_rewrite: Optional AOF rewrite callback
+    ///   - mem_usage: Optional memory usage callback
+    ///   - free_fn: Required free callback
+    ///
+    /// Returns:
+    ///   - void on success
+    ///   - ModuleError.InvalidDataTypeName if name is empty
+    ///   - ModuleError.DataTypeAlreadyExists if data type already registered
+    pub fn registerDataType(
+        self: *ModuleStore,
+        module_name: []const u8,
+        name: []const u8,
+        encver: u32,
+        rdb_save: ?RdbSaveFn,
+        rdb_load: ?RdbLoadFn,
+        aof_rewrite: ?AofRewriteFn,
+        mem_usage: ?MemUsageFn,
+        free_fn: FreeFn,
+    ) !void {
+        // Validate name is not empty
+        if (name.len == 0) {
+            return ModuleError.InvalidDataTypeName;
+        }
+
+        // Check if data type already exists
+        if (self.data_types.contains(name)) {
+            return ModuleError.DataTypeAlreadyExists;
+        }
+
+        // Allocate owned strings
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+
+        const owned_module_name = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(owned_module_name);
+
+        // Create data type
+        const data_type = ModuleDataType{
+            .name = owned_name,
+            .module_name = owned_module_name,
+            .encver = encver,
+            .rdb_save = rdb_save,
+            .rdb_load = rdb_load,
+            .aof_rewrite = aof_rewrite,
+            .mem_usage = mem_usage,
+            .free = free_fn,
+        };
+
+        // Store in HashMap
+        try self.data_types.put(owned_name, data_type);
+    }
+
+    /// Get a registered data type by name
+    ///
+    /// Arguments:
+    ///   - name: Name of the data type to retrieve
+    ///
+    /// Returns:
+    ///   - Pointer to ModuleDataType if found
+    ///   - null if not found
+    pub fn getDataType(self: *ModuleStore, name: []const u8) ?*ModuleDataType {
+        return self.data_types.getPtr(name);
+    }
+
+    /// Remove all data types registered by a module
+    ///
+    /// Called when a module is unloaded to clean up all its data types.
+    ///
+    /// Arguments:
+    ///   - module_name: Name of the module whose data types to remove
+    pub fn removeModuleDataTypes(self: *ModuleStore, module_name: []const u8) void {
+        // Collect data type names to remove (can't modify HashMap while iterating)
+        var to_remove = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch return;
+        defer to_remove.deinit(self.allocator);
+
+        var it = self.data_types.iterator();
+        while (it.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.module_name, module_name)) {
+                to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
+            }
+        }
+
+        // Remove collected data types
+        for (to_remove.items) |dt_name| {
+            if (self.data_types.fetchRemove(dt_name)) |entry| {
+                self.allocator.free(entry.key);
+                var dt = entry.value;
+                dt.deinit(self.allocator);
             }
         }
     }
