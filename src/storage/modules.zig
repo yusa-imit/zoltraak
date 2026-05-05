@@ -45,6 +45,38 @@ pub const ModuleCtx = struct {
             free_fn,
         );
     }
+
+    /// Block a client from a module command
+    /// Redis module ABI: RedisModuleBlockedClient *RedisModule_BlockClient(RedisModuleCtx *ctx, RedisModuleCmdFunc reply_callback, RedisModuleCmdFunc timeout_callback, void (*free_privdata)(void*), long long timeout_ms)
+    pub fn blockClient(
+        self: *ModuleCtx,
+        timeout_ms: i64,
+        privdata: ?*anyopaque,
+        timeout_fn: ?BlockedClientTimeoutFn,
+        reply_cb: ?BlockedClientReplyCb,
+        disconnect_cb: ?BlockedClientDisconnectCb,
+        free_privdata: ?FreeFn,
+    ) !u64 {
+        return self.store.blocking.blockClient(
+            self.name,
+            timeout_ms,
+            privdata,
+            timeout_fn,
+            reply_cb,
+            disconnect_cb,
+            free_privdata,
+        );
+    }
+
+    /// Unblock a previously blocked client
+    /// Redis module ABI: int RedisModule_UnblockClient(RedisModuleBlockedClient *bc, void *privdata)
+    pub fn unblockClient(
+        self: *ModuleCtx,
+        client_id: u64,
+        storage: *Storage,
+    ) !?[]const u8 {
+        return self.store.blocking.unblockClient(client_id, storage);
+    }
 };
 
 /// Function signature for module OnLoad function
@@ -63,15 +95,15 @@ pub const ModuleCmdFunc = *const fn (allocator: std.mem.Allocator, storage: *Sto
 
 /// Function signature for RDB save callback
 /// Redis module ABI: void (*rdb_save)(RedisModuleIO *io, void *value)
-pub const RdbSaveFn = *const fn (data: *anyopaque, writer: anytype) anyerror!void;
+pub const RdbSaveFn = *const fn (data: *anyopaque, writer: std.io.AnyWriter) anyerror!void;
 
 /// Function signature for RDB load callback
 /// Redis module ABI: void *(*rdb_load)(RedisModuleIO *io, int encver)
-pub const RdbLoadFn = *const fn (allocator: std.mem.Allocator, reader: anytype, encver: u32) anyerror!*anyopaque;
+pub const RdbLoadFn = *const fn (allocator: std.mem.Allocator, reader: std.io.AnyReader, encver: u32) anyerror!*anyopaque;
 
 /// Function signature for AOF rewrite callback
 /// Redis module ABI: void (*aof_rewrite)(RedisModuleIO *io, RedisModuleString *key, void *value)
-pub const AofRewriteFn = *const fn (key: []const u8, data: *anyopaque, writer: anytype) anyerror!void;
+pub const AofRewriteFn = *const fn (key: []const u8, data: *anyopaque, writer: std.io.AnyWriter) anyerror!void;
 
 /// Function signature for memory usage callback
 /// Redis module ABI: size_t (*mem_usage)(const void *value)
@@ -177,6 +209,7 @@ pub const ModuleStore = struct {
     modules: std.StringHashMap(ModuleInfo),
     commands: std.StringHashMap(ModuleCommand),
     data_types: std.StringHashMap(ModuleDataType),
+    blocking: ModuleBlockingStore,
 
     /// Initialize a new ModuleStore
     ///
@@ -190,6 +223,7 @@ pub const ModuleStore = struct {
             .modules = std.StringHashMap(ModuleInfo).init(allocator),
             .commands = std.StringHashMap(ModuleCommand).init(allocator),
             .data_types = std.StringHashMap(ModuleDataType).init(allocator),
+            .blocking = ModuleBlockingStore.init(allocator),
         };
     }
 
@@ -236,6 +270,9 @@ pub const ModuleStore = struct {
         }
 
         self.data_types.deinit();
+
+        // Clean up blocking store
+        self.blocking.deinit();
     }
 
     /// Load a module from the specified path
@@ -619,6 +656,246 @@ pub const ModuleStore = struct {
 };
 
 // ============================================================================
+// Module Blocking Context API
+// ============================================================================
+
+/// Callback function invoked when a blocked client is unblocked
+/// Redis module ABI: void (*RedisModuleBlockedClientTimedOut)(RedisModuleCtx *ctx, void *privdata)
+pub const BlockedClientTimeoutFn = *const fn (allocator: std.mem.Allocator, privdata: ?*anyopaque) anyerror!void;
+
+/// Callback function invoked to prepare response for unblocked client
+/// Redis module ABI: int (*RedisModuleBlockedClientReplyCb)(RedisModuleCtx *ctx, void **argv, int argc, void *privdata)
+pub const BlockedClientReplyCb = *const fn (allocator: std.mem.Allocator, storage: *Storage, privdata: ?*anyopaque) anyerror![]const u8;
+
+/// Callback function invoked when a blocked client disconnects before unblocking
+/// Redis module ABI: void (*RedisModuleBlockedClientDisconnectCb)(RedisModuleCtx *ctx, void *privdata)
+pub const BlockedClientDisconnectCb = *const fn (allocator: std.mem.Allocator, privdata: ?*anyopaque) void;
+
+/// Represents a client blocked by a module command
+/// Tracks client ID, timeout, callbacks, and module-specific private data
+pub const ModuleBlockedClient = struct {
+    /// Unique client identifier
+    client_id: u64,
+    /// Module that blocked this client
+    module_name: []const u8,
+    /// Timeout in milliseconds (0 = infinite)
+    timeout_ms: i64,
+    /// Start time (milliseconds since epoch)
+    start_time: i64,
+    /// Module-specific private data
+    privdata: ?*anyopaque,
+    /// Callback for timeout
+    timeout_fn: ?BlockedClientTimeoutFn,
+    /// Callback for preparing reply
+    reply_cb: ?BlockedClientReplyCb,
+    /// Callback for disconnect
+    disconnect_cb: ?BlockedClientDisconnectCb,
+    /// Free function for privdata
+    free_privdata: ?FreeFn,
+
+    allocator: std.mem.Allocator,
+
+    /// Deallocate ModuleBlockedClient and free private data
+    pub fn deinit(self: *ModuleBlockedClient) void {
+        self.allocator.free(self.module_name);
+        // Free privdata if free function provided
+        if (self.free_privdata) |free_fn| {
+            if (self.privdata) |data| {
+                free_fn(self.allocator, data);
+            }
+        }
+    }
+};
+
+/// Storage for module-blocked clients
+///
+/// THREAD SAFETY: This implementation assumes single-threaded access.
+/// If multi-threaded command processing is added, protect blocked_clients
+/// with a Mutex and use atomic operations for next_client_id.
+pub const ModuleBlockingStore = struct {
+    allocator: std.mem.Allocator,
+    /// Map of client_id -> ModuleBlockedClient
+    blocked_clients: std.AutoHashMap(u64, ModuleBlockedClient),
+    /// Next client ID for blocking operations
+    next_client_id: u64,
+
+    /// Initialize a new ModuleBlockingStore
+    pub fn init(allocator: std.mem.Allocator) ModuleBlockingStore {
+        return ModuleBlockingStore{
+            .allocator = allocator,
+            .blocked_clients = std.AutoHashMap(u64, ModuleBlockedClient).init(allocator),
+            .next_client_id = 1,
+        };
+    }
+
+    /// Deallocate ModuleBlockingStore and all blocked clients
+    pub fn deinit(self: *ModuleBlockingStore) void {
+        var it = self.blocked_clients.valueIterator();
+        while (it.next()) |client| {
+            var c = client.*;
+            c.deinit();
+        }
+        self.blocked_clients.deinit();
+    }
+
+    /// Block a client with the specified module context
+    ///
+    /// Arguments:
+    ///   - module_name: Name of the module blocking the client
+    ///   - timeout_ms: Timeout in milliseconds (0 = infinite)
+    ///   - privdata: Module-specific private data
+    ///               OWNERSHIP: Transferred immediately to ModuleBlockingStore.
+    ///               Freed via free_privdata callback on unblock/timeout/disconnect.
+    ///               DO NOT access privdata after this call returns.
+    ///   - timeout_fn: Optional timeout callback
+    ///   - reply_cb: Optional reply callback
+    ///   - disconnect_cb: Optional disconnect callback
+    ///   - free_privdata: Function to free privdata (REQUIRED if privdata is non-null)
+    ///
+    /// Returns:
+    ///   - client_id: Unique identifier for this blocked client
+    pub fn blockClient(
+        self: *ModuleBlockingStore,
+        module_name: []const u8,
+        timeout_ms: i64,
+        privdata: ?*anyopaque,
+        timeout_fn: ?BlockedClientTimeoutFn,
+        reply_cb: ?BlockedClientReplyCb,
+        disconnect_cb: ?BlockedClientDisconnectCb,
+        free_privdata: ?FreeFn,
+    ) !u64 {
+        // Validate that if privdata is provided, free_privdata must also be provided
+        if (privdata != null and free_privdata == null) {
+            std.log.warn("blockClient: privdata provided without free_privdata - potential memory leak", .{});
+        }
+        const client_id = self.next_client_id;
+        self.next_client_id += 1;
+
+        const owned_module_name = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(owned_module_name);
+
+        const now = std.time.milliTimestamp();
+
+        const blocked_client = ModuleBlockedClient{
+            .client_id = client_id,
+            .module_name = owned_module_name,
+            .timeout_ms = timeout_ms,
+            .start_time = now,
+            .privdata = privdata,
+            .timeout_fn = timeout_fn,
+            .reply_cb = reply_cb,
+            .disconnect_cb = disconnect_cb,
+            .free_privdata = free_privdata,
+            .allocator = self.allocator,
+        };
+
+        try self.blocked_clients.put(client_id, blocked_client);
+        return client_id;
+    }
+
+    /// Unblock a client with the specified client ID
+    ///
+    /// Calls the reply callback to generate response, then removes client from blocked list.
+    ///
+    /// Arguments:
+    ///   - client_id: Unique identifier returned by blockClient
+    ///   - storage: Storage instance for reply callback
+    ///
+    /// Returns:
+    ///   - Response string to send to client (owned by caller)
+    ///   - null if client not found or no reply callback
+    pub fn unblockClient(
+        self: *ModuleBlockingStore,
+        client_id: u64,
+        storage: *Storage,
+    ) !?[]const u8 {
+        const entry = self.blocked_clients.fetchRemove(client_id) orelse return null;
+        var client = entry.value;
+        defer client.deinit();
+
+        // Call reply callback if provided
+        if (client.reply_cb) |reply_fn| {
+            return try reply_fn(self.allocator, storage, client.privdata);
+        }
+
+        return null;
+    }
+
+    /// Trigger timeout for all expired blocked clients
+    ///
+    /// Iterates through all blocked clients, calls timeout callbacks for expired ones,
+    /// and removes them from the blocked list.
+    ///
+    /// Returns:
+    ///   - Count of clients timed out
+    pub fn processTimeouts(self: *ModuleBlockingStore) !usize {
+        const now = std.time.milliTimestamp();
+        var timed_out_count: usize = 0;
+
+        // Collect client IDs to timeout (can't modify HashMap while iterating)
+        var to_timeout = try std.ArrayList(u64).initCapacity(self.allocator, 0);
+        defer to_timeout.deinit(self.allocator);
+
+        var it = self.blocked_clients.iterator();
+        while (it.next()) |entry| {
+            const client = entry.value_ptr;
+            // Skip clients with infinite timeout (timeout_ms == 0)
+            if (client.timeout_ms > 0) {
+                const elapsed = now - client.start_time;
+                if (elapsed >= client.timeout_ms) {
+                    try to_timeout.append(self.allocator, client.client_id);
+                }
+            }
+        }
+
+        // Process timeouts
+        for (to_timeout.items) |client_id| {
+            if (self.blocked_clients.fetchRemove(client_id)) |entry| {
+                var client = entry.value;
+                defer client.deinit();
+
+                // Call timeout callback if provided
+                if (client.timeout_fn) |timeout_fn| {
+                    timeout_fn(self.allocator, client.privdata) catch |err| {
+                        std.log.err("Module blocking timeout callback failed: {}", .{err});
+                    };
+                }
+                timed_out_count += 1;
+            }
+        }
+
+        return timed_out_count;
+    }
+
+    /// Handle client disconnect before unblock
+    ///
+    /// Calls disconnect callback and removes client from blocked list.
+    ///
+    /// Arguments:
+    ///   - client_id: Unique identifier of disconnected client
+    pub fn handleDisconnect(self: *ModuleBlockingStore, client_id: u64) void {
+        const entry = self.blocked_clients.fetchRemove(client_id) orelse return;
+        var client = entry.value;
+        defer client.deinit();
+
+        // Call disconnect callback if provided
+        if (client.disconnect_cb) |disconnect_fn| {
+            disconnect_fn(self.allocator, client.privdata);
+        }
+    }
+
+    /// Get count of currently blocked clients
+    pub fn blockedCount(self: *ModuleBlockingStore) usize {
+        return self.blocked_clients.count();
+    }
+
+    /// Check if a client is currently blocked
+    pub fn isBlocked(self: *ModuleBlockingStore, client_id: u64) bool {
+        return self.blocked_clients.contains(client_id);
+    }
+};
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
 
@@ -828,4 +1105,290 @@ test "ModuleStore: ModuleCtx createCommand method" {
     if (cmd) |c| {
         try testing.expectEqualStrings("testmodule", c.module_name);
     }
+}
+
+// ============================================================================
+// Module Blocking Tests
+// ============================================================================
+
+test "ModuleBlockingStore: init and deinit" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+}
+
+test "ModuleBlockingStore: block and unblock client" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    // Block a client
+    const client_id = try blocking.blockClient(
+        "testmodule",
+        5000, // 5 second timeout
+        null, // no privdata
+        null, // no timeout callback
+        null, // no reply callback
+        null, // no disconnect callback
+        null, // no free function
+    );
+
+    try testing.expect(client_id > 0);
+    try testing.expectEqual(@as(usize, 1), blocking.blockedCount());
+    try testing.expect(blocking.isBlocked(client_id));
+
+    // Unblock the client
+    var mock_storage: Storage = undefined;
+    const response = try blocking.unblockClient(client_id, &mock_storage);
+    try testing.expect(response == null); // No reply callback
+
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+    try testing.expect(!blocking.isBlocked(client_id));
+}
+
+test "ModuleBlockingStore: multiple clients" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    // Block 3 clients
+    const id1 = try blocking.blockClient("mod1", 1000, null, null, null, null, null);
+    const id2 = try blocking.blockClient("mod2", 2000, null, null, null, null, null);
+    const id3 = try blocking.blockClient("mod3", 0, null, null, null, null, null); // Infinite timeout
+
+    try testing.expectEqual(@as(usize, 3), blocking.blockedCount());
+    try testing.expect(id1 != id2);
+    try testing.expect(id2 != id3);
+
+    // Unblock one
+    var mock_storage: Storage = undefined;
+    _ = try blocking.unblockClient(id2, &mock_storage);
+    try testing.expectEqual(@as(usize, 2), blocking.blockedCount());
+    try testing.expect(!blocking.isBlocked(id2));
+}
+
+fn testTimeoutCallback(allocator: std.mem.Allocator, privdata: ?*anyopaque) !void {
+    _ = allocator;
+    if (privdata) |data| {
+        const counter = @as(*usize, @ptrCast(@alignCast(data)));
+        counter.* += 1;
+    }
+}
+
+test "ModuleBlockingStore: timeout callback" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    var timeout_counter: usize = 0;
+
+    // Block client with very short timeout (1ms)
+    _ = try blocking.blockClient(
+        "testmodule",
+        1, // 1ms timeout
+        @ptrCast(&timeout_counter),
+        testTimeoutCallback,
+        null,
+        null,
+        null, // Don't free stack variable
+    );
+
+    try testing.expectEqual(@as(usize, 1), blocking.blockedCount());
+
+    // Wait for timeout
+    std.time.sleep(5 * std.time.ns_per_ms);
+
+    // Process timeouts
+    const timed_out = try blocking.processTimeouts();
+    try testing.expectEqual(@as(usize, 1), timed_out);
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+    try testing.expectEqual(@as(usize, 1), timeout_counter);
+}
+
+test "ModuleBlockingStore: infinite timeout not triggered" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    var timeout_counter: usize = 0;
+
+    // Block client with infinite timeout (0)
+    const client_id = try blocking.blockClient(
+        "testmodule",
+        0, // Infinite timeout
+        @ptrCast(&timeout_counter),
+        testTimeoutCallback,
+        null,
+        null,
+        null,
+    );
+
+    // Wait a bit
+    std.time.sleep(10 * std.time.ns_per_ms);
+
+    // Process timeouts - should not timeout
+    const timed_out = try blocking.processTimeouts();
+    try testing.expectEqual(@as(usize, 0), timed_out);
+    try testing.expectEqual(@as(usize, 1), blocking.blockedCount());
+    try testing.expect(blocking.isBlocked(client_id));
+    try testing.expectEqual(@as(usize, 0), timeout_counter);
+}
+
+fn testDisconnectCallback(allocator: std.mem.Allocator, privdata: ?*anyopaque) void {
+    _ = allocator;
+    if (privdata) |data| {
+        const counter = @as(*usize, @ptrCast(@alignCast(data)));
+        counter.* += 1;
+    }
+}
+
+test "ModuleBlockingStore: disconnect callback" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    var disconnect_counter: usize = 0;
+
+    const client_id = try blocking.blockClient(
+        "testmodule",
+        5000,
+        @ptrCast(&disconnect_counter),
+        null,
+        null,
+        testDisconnectCallback,
+        null,
+    );
+
+    try testing.expectEqual(@as(usize, 1), blocking.blockedCount());
+
+    // Simulate disconnect
+    blocking.handleDisconnect(client_id);
+
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+    try testing.expectEqual(@as(usize, 1), disconnect_counter);
+}
+
+fn testReplyCallback(allocator: std.mem.Allocator, storage: *Storage, privdata: ?*anyopaque) ![]const u8 {
+    _ = storage;
+    if (privdata) |data| {
+        const msg = @as(*const []const u8, @ptrCast(@alignCast(data)));
+        return try allocator.dupe(u8, msg.*);
+    }
+    return try allocator.dupe(u8, "+OK\r\n");
+}
+
+test "ModuleBlockingStore: reply callback" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    const reply_msg = "+CUSTOM_REPLY\r\n";
+
+    const client_id = try blocking.blockClient(
+        "testmodule",
+        5000,
+        @ptrCast(@constCast(&reply_msg)),
+        null,
+        testReplyCallback,
+        null,
+        null,
+    );
+
+    var mock_storage: Storage = undefined;
+    const response = try blocking.unblockClient(client_id, &mock_storage);
+
+    try testing.expect(response != null);
+    if (response) |resp| {
+        defer allocator.free(resp);
+        try testing.expectEqualStrings(reply_msg, resp);
+    }
+
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+}
+
+fn testFreePrivdata(allocator: std.mem.Allocator, data: *anyopaque) void {
+    const counter = @as(*usize, @ptrCast(@alignCast(data)));
+    allocator.destroy(counter);
+}
+
+test "ModuleBlockingStore: privdata cleanup on unblock" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    // Allocate privdata on heap
+    const privdata = try allocator.create(usize);
+    privdata.* = 42;
+
+    const client_id = try blocking.blockClient(
+        "testmodule",
+        5000,
+        privdata,
+        null,
+        null,
+        null,
+        testFreePrivdata,
+    );
+
+    var mock_storage: Storage = undefined;
+    _ = try blocking.unblockClient(client_id, &mock_storage);
+
+    // Privdata should be freed by free_privdata callback during deinit
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+}
+
+test "ModuleBlockingStore: multiple timeouts" {
+    const allocator = testing.allocator;
+    var blocking = ModuleBlockingStore.init(allocator);
+    defer blocking.deinit();
+
+    var timeout_counter: usize = 0;
+
+    // Block 3 clients with short timeouts
+    _ = try blocking.blockClient("mod1", 1, @ptrCast(&timeout_counter), testTimeoutCallback, null, null, null);
+    _ = try blocking.blockClient("mod2", 1, @ptrCast(&timeout_counter), testTimeoutCallback, null, null, null);
+    _ = try blocking.blockClient("mod3", 1, @ptrCast(&timeout_counter), testTimeoutCallback, null, null, null);
+
+    try testing.expectEqual(@as(usize, 3), blocking.blockedCount());
+
+    // Wait for all to timeout
+    std.time.sleep(10 * std.time.ns_per_ms);
+
+    const timed_out = try blocking.processTimeouts();
+    try testing.expectEqual(@as(usize, 3), timed_out);
+    try testing.expectEqual(@as(usize, 0), blocking.blockedCount());
+    try testing.expectEqual(@as(usize, 3), timeout_counter);
+}
+
+test "ModuleCtx: blockClient and unblockClient" {
+    const allocator = testing.allocator;
+    var store = ModuleStore.init(allocator);
+    defer store.deinit();
+
+    var ctx = ModuleCtx{
+        .name = "testmodule",
+        .ver = 1,
+        .store = &store,
+    };
+
+    // Block via context
+    const client_id = try ctx.blockClient(
+        5000,
+        null,
+        null,
+        null,
+        null,
+        null,
+    );
+
+    try testing.expect(client_id > 0);
+    try testing.expect(store.blocking.isBlocked(client_id));
+
+    // Unblock via context
+    var mock_storage: Storage = undefined;
+    const response = try ctx.unblockClient(client_id, &mock_storage);
+    try testing.expect(response == null);
+    try testing.expect(!store.blocking.isBlocked(client_id));
 }
