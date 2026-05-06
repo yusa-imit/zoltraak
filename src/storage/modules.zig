@@ -109,6 +109,66 @@ pub const ModuleCtx = struct {
     ) !void {
         return self.store.timers.stopTimer(timer_id);
     }
+
+    /// Get a thread-safe context for background thread command execution
+    /// Redis module ABI: RedisModuleCtx *RedisModule_GetThreadSafeContext(RedisModuleBlockedClient *bc)
+    pub fn getThreadSafeContext(
+        self: *ModuleCtx,
+        allocator: std.mem.Allocator,
+    ) !*ThreadSafeContext {
+        return ThreadSafeContext.init(allocator, &self.store.global_lock);
+    }
+
+    /// Get a thread-safe context bound to a blocked client
+    /// Replies will be accumulated and delivered when the client is unblocked
+    pub fn getThreadSafeContextBound(
+        self: *ModuleCtx,
+        allocator: std.mem.Allocator,
+        client_id: u64,
+    ) !*ThreadSafeContext {
+        return ThreadSafeContext.initBound(allocator, &self.store.global_lock, client_id);
+    }
+
+    /// Free a thread-safe context
+    /// Redis module ABI: void RedisModule_FreeThreadSafeContext(RedisModuleCtx *ctx)
+    pub fn freeThreadSafeContext(
+        self: *ModuleCtx,
+        allocator: std.mem.Allocator,
+        ctx: *ThreadSafeContext,
+    ) !void {
+        _ = self; // unused
+        return ctx.deinit(allocator);
+    }
+
+    /// Lock a thread-safe context to access Redis dataset
+    /// Redis module ABI: void RedisModule_ThreadSafeContextLock(RedisModuleCtx *ctx)
+    pub fn lockThreadSafeContext(
+        self: *ModuleCtx,
+        ctx: *ThreadSafeContext,
+    ) void {
+        _ = self; // unused
+        ctx.lockContext();
+    }
+
+    /// Unlock a thread-safe context
+    /// Redis module ABI: void RedisModule_ThreadSafeContextUnlock(RedisModuleCtx *ctx)
+    pub fn unlockThreadSafeContext(
+        self: *ModuleCtx,
+        ctx: *ThreadSafeContext,
+    ) void {
+        _ = self; // unused
+        ctx.unlockContext();
+    }
+
+    /// Try to lock a thread-safe context without blocking
+    /// Redis module ABI: int RedisModule_ThreadSafeContextTryLock(RedisModuleCtx *ctx)
+    pub fn tryLockThreadSafeContext(
+        self: *ModuleCtx,
+        ctx: *ThreadSafeContext,
+    ) bool {
+        _ = self; // unused
+        return ctx.tryLockContext();
+    }
 };
 
 /// Function signature for module OnLoad function
@@ -285,6 +345,7 @@ pub const ModuleStore = struct {
     blocking: ModuleBlockingStore,
     hooks: std.ArrayList(ModuleHook),
     timers: ModuleTimerStore,
+    global_lock: GlobalLock,
 
     /// Initialize a new ModuleStore
     ///
@@ -301,6 +362,7 @@ pub const ModuleStore = struct {
             .blocking = ModuleBlockingStore.init(allocator),
             .hooks = std.ArrayList(ModuleHook).init(allocator),
             .timers = ModuleTimerStore.init(allocator),
+            .global_lock = GlobalLock.init(),
         };
     }
 
@@ -1764,6 +1826,197 @@ test "ModuleBlockingStore: multiple timeouts" {
     try testing.expectEqual(@as(usize, 3), timeout_counter);
 }
 
+/// Global lock (GIL) for Redis main thread access
+/// Only one thread can hold the lock at a time, ensuring single-threaded semantics
+pub const GlobalLock = struct {
+    mutex: std.Thread.Mutex,
+    owner_thread: ?std.Thread.Id,
+    waiter_count: usize,
+
+    pub fn init() GlobalLock {
+        return .{
+            .mutex = .{},
+            .owner_thread = null,
+            .waiter_count = 0,
+        };
+    }
+
+    /// Acquire the global lock (blocking)
+    /// Returns the thread ID of the caller for validation
+    pub fn lock(self: *GlobalLock) std.Thread.Id {
+        const thread_id = std.Thread.getCurrentId();
+
+        // Track waiter before blocking
+        @atomicStore(usize, &self.waiter_count, self.waiter_count + 1, .monotonic);
+
+        self.mutex.lock();
+
+        // Decrement waiter after acquiring
+        @atomicStore(usize, &self.waiter_count, self.waiter_count - 1, .monotonic);
+
+        self.owner_thread = thread_id;
+        return thread_id;
+    }
+
+    /// Release the global lock
+    pub fn unlock(self: *GlobalLock) void {
+        self.owner_thread = null;
+        self.mutex.unlock();
+    }
+
+    /// Try to acquire the lock without blocking
+    /// Returns the thread ID on success, null if already locked
+    pub fn tryLock(self: *GlobalLock) ?std.Thread.Id {
+        if (self.mutex.tryLock()) {
+            const thread_id = std.Thread.getCurrentId();
+            self.owner_thread = thread_id;
+            return thread_id;
+        }
+        return null;
+    }
+
+    /// Check if the lock is held by the current thread
+    pub fn isOwnedByCurrentThread(self: *const GlobalLock) bool {
+        const current = std.Thread.getCurrentId();
+        return if (self.owner_thread) |owner| owner == current else false;
+    }
+
+    /// Get number of threads waiting to acquire the lock
+    pub fn getWaiterCount(self: *const GlobalLock) usize {
+        return @atomicLoad(usize, &self.waiter_count, .monotonic);
+    }
+};
+
+/// Thread-safe context for background thread command execution
+/// Redis module ABI: RedisModuleCtx with thread-safe semantics
+pub const ThreadSafeContext = struct {
+    global_lock: *GlobalLock,
+    creator_thread: std.Thread.Id,
+    locked: bool,
+    client_id: ?u64, // If bound to a blocked client
+    reply_buffer: ?std.ArrayList(u8), // Accumulated reply for bound client
+
+    /// Create a thread-safe context (detached, not bound to client)
+    /// Redis module ABI: RedisModuleCtx *RedisModule_GetThreadSafeContext(RedisModuleBlockedClient *bc)
+    pub fn init(allocator: std.mem.Allocator, global_lock: *GlobalLock) !*ThreadSafeContext {
+        const ctx = try allocator.create(ThreadSafeContext);
+        ctx.* = .{
+            .global_lock = global_lock,
+            .creator_thread = std.Thread.getCurrentId(),
+            .locked = false,
+            .client_id = null,
+            .reply_buffer = null,
+        };
+        return ctx;
+    }
+
+    /// Create a thread-safe context bound to a blocked client
+    /// This variant accumulates replies in a buffer for delivery to the client
+    pub fn initBound(allocator: std.mem.Allocator, global_lock: *GlobalLock, client_id: u64) !*ThreadSafeContext {
+        const ctx = try allocator.create(ThreadSafeContext);
+        ctx.* = .{
+            .global_lock = global_lock,
+            .creator_thread = std.Thread.getCurrentId(),
+            .locked = false,
+            .client_id = client_id,
+            .reply_buffer = std.ArrayList(u8).init(allocator),
+        };
+        return ctx;
+    }
+
+    /// Free a thread-safe context
+    /// Redis module ABI: void RedisModule_FreeThreadSafeContext(RedisModuleCtx *ctx)
+    /// MUST be called from the same thread that created the context
+    /// MUST not be called while context is locked
+    pub fn deinit(self: *ThreadSafeContext, allocator: std.mem.Allocator) !void {
+        // Validate caller thread
+        const current_thread = std.Thread.getCurrentId();
+        if (current_thread != self.creator_thread) {
+            return error.WrongThread;
+        }
+
+        // Cannot free while locked
+        if (self.locked) {
+            return error.ContextLocked;
+        }
+
+        if (self.reply_buffer) |*buf| {
+            buf.deinit();
+        }
+
+        allocator.destroy(self);
+    }
+
+    /// Acquire the global lock
+    /// Redis module ABI: void RedisModule_ThreadSafeContextLock(RedisModuleCtx *ctx)
+    pub fn lockContext(self: *ThreadSafeContext) void {
+        _ = self.global_lock.lock();
+        self.locked = true;
+    }
+
+    /// Release the global lock
+    /// Redis module ABI: void RedisModule_ThreadSafeContextUnlock(RedisModuleCtx *ctx)
+    pub fn unlockContext(self: *ThreadSafeContext) void {
+        self.locked = false;
+        self.global_lock.unlock();
+    }
+
+    /// Try to acquire the global lock without blocking
+    /// Redis module ABI: int RedisModule_ThreadSafeContextTryLock(RedisModuleCtx *ctx)
+    /// Returns true if lock acquired, false otherwise
+    pub fn tryLockContext(self: *ThreadSafeContext) bool {
+        if (self.global_lock.tryLock()) |_| {
+            self.locked = true;
+            return true;
+        }
+        return false;
+    }
+
+    /// Check if context is currently locked
+    pub fn isLocked(self: *const ThreadSafeContext) bool {
+        return self.locked;
+    }
+
+    /// Execute a command (requires lock to be held)
+    /// This validates that the global lock is held before allowing command execution
+    pub fn callCommand(
+        self: *ThreadSafeContext,
+        allocator: std.mem.Allocator,
+        storage: *Storage,
+        cmd: ModuleCmdFunc,
+        args: []const RespValue,
+    ) ![]const u8 {
+        // CRITICAL: Must hold global lock to access Redis dataset
+        if (!self.locked) {
+            return error.ContextNotLocked;
+        }
+
+        // Execute command (this accesses the Redis dataset)
+        const response = try cmd(allocator, storage, args);
+
+        // If bound to a client, accumulate reply in buffer
+        if (self.reply_buffer) |*buf| {
+            try buf.appendSlice(response);
+            allocator.free(response);
+            // Return empty slice - actual reply will be sent when client is unblocked
+            return try allocator.dupe(u8, "");
+        }
+
+        return response;
+    }
+
+    /// Get accumulated reply (for bound contexts)
+    /// Returns null if not bound or no reply accumulated
+    pub fn getReply(self: *ThreadSafeContext, allocator: std.mem.Allocator) !?[]const u8 {
+        if (self.reply_buffer) |*buf| {
+            if (buf.items.len > 0) {
+                return try allocator.dupe(u8, buf.items);
+            }
+        }
+        return null;
+    }
+};
+
 test "ModuleCtx: blockClient and unblockClient" {
     const allocator = testing.allocator;
     var store = ModuleStore.init(allocator);
@@ -1793,4 +2046,244 @@ test "ModuleCtx: blockClient and unblockClient" {
     const response = try ctx.unblockClient(client_id, &mock_storage);
     try testing.expect(response == null);
     try testing.expect(!store.blocking.isBlocked(client_id));
+}
+
+test "GlobalLock: single-threaded lock/unlock" {
+    var lock = GlobalLock.init();
+
+    // Initially no owner
+    try testing.expect(lock.owner_thread == null);
+    try testing.expect(!lock.isOwnedByCurrentThread());
+
+    // Acquire lock
+    const thread_id = lock.lock();
+    try testing.expect(lock.owner_thread.? == thread_id);
+    try testing.expect(lock.isOwnedByCurrentThread());
+
+    // Release lock
+    lock.unlock();
+    try testing.expect(lock.owner_thread == null);
+    try testing.expect(!lock.isOwnedByCurrentThread());
+}
+
+test "GlobalLock: tryLock success and failure" {
+    var lock = GlobalLock.init();
+
+    // First tryLock succeeds
+    const thread_id_1 = lock.tryLock();
+    try testing.expect(thread_id_1 != null);
+    try testing.expect(lock.isOwnedByCurrentThread());
+
+    // Second tryLock fails (already locked)
+    const thread_id_2 = lock.tryLock();
+    try testing.expect(thread_id_2 == null);
+
+    // Release and try again
+    lock.unlock();
+    const thread_id_3 = lock.tryLock();
+    try testing.expect(thread_id_3 != null);
+
+    lock.unlock();
+}
+
+test "ThreadSafeContext: create and free detached context" {
+    const allocator = testing.allocator;
+    var lock = GlobalLock.init();
+
+    const ctx = try ThreadSafeContext.init(allocator, &lock);
+    try testing.expect(ctx.creator_thread == std.Thread.getCurrentId());
+    try testing.expect(!ctx.locked);
+    try testing.expect(ctx.client_id == null);
+    try testing.expect(ctx.reply_buffer == null);
+
+    try ctx.deinit(allocator);
+}
+
+test "ThreadSafeContext: create and free bound context" {
+    const allocator = testing.allocator;
+    var lock = GlobalLock.init();
+
+    const client_id: u64 = 12345;
+    const ctx = try ThreadSafeContext.initBound(allocator, &lock, client_id);
+    try testing.expect(ctx.client_id.? == client_id);
+    try testing.expect(ctx.reply_buffer != null);
+
+    try ctx.deinit(allocator);
+}
+
+test "ThreadSafeContext: cannot free while locked" {
+    const allocator = testing.allocator;
+    var lock = GlobalLock.init();
+
+    const ctx = try ThreadSafeContext.init(allocator, &lock);
+    ctx.lockContext();
+
+    // Should error
+    try testing.expectError(error.ContextLocked, ctx.deinit(allocator));
+
+    // Unlock and free successfully
+    ctx.unlockContext();
+    try ctx.deinit(allocator);
+}
+
+test "ThreadSafeContext: lock and unlock" {
+    const allocator = testing.allocator;
+    var lock = GlobalLock.init();
+
+    const ctx = try ThreadSafeContext.init(allocator, &lock);
+    defer ctx.deinit(allocator) catch unreachable;
+
+    try testing.expect(!ctx.isLocked());
+    try testing.expect(!lock.isOwnedByCurrentThread());
+
+    ctx.lockContext();
+    try testing.expect(ctx.isLocked());
+    try testing.expect(lock.isOwnedByCurrentThread());
+
+    ctx.unlockContext();
+    try testing.expect(!ctx.isLocked());
+    try testing.expect(!lock.isOwnedByCurrentThread());
+}
+
+test "ThreadSafeContext: tryLock" {
+    const allocator = testing.allocator;
+    var lock = GlobalLock.init();
+
+    const ctx = try ThreadSafeContext.init(allocator, &lock);
+    defer ctx.deinit(allocator) catch unreachable;
+
+    // First tryLock succeeds
+    try testing.expect(ctx.tryLockContext());
+    try testing.expect(ctx.isLocked());
+
+    // Create another context (simulating different thread context)
+    const ctx2 = try ThreadSafeContext.init(allocator, &lock);
+    defer ctx2.deinit(allocator) catch unreachable;
+
+    // Second tryLock fails (lock already held)
+    try testing.expect(!ctx2.tryLockContext());
+    try testing.expect(!ctx2.isLocked());
+
+    // Release first lock
+    ctx.unlockContext();
+
+    // Now second context can acquire
+    try testing.expect(ctx2.tryLockContext());
+    try testing.expect(ctx2.isLocked());
+
+    ctx2.unlockContext();
+}
+
+test "ModuleCtx: thread-safe context lifecycle" {
+    const allocator = testing.allocator;
+    var store = try ModuleStore.init(allocator);
+    defer store.deinit();
+
+    var ctx = ModuleCtx{
+        .name = "testmodule",
+        .ver = 1,
+        .store = &store,
+    };
+
+    // Create thread-safe context
+    const ts_ctx = try ctx.getThreadSafeContext(allocator);
+
+    try testing.expect(!ts_ctx.isLocked());
+    try testing.expect(ts_ctx.client_id == null);
+
+    // Lock and unlock
+    ctx.lockThreadSafeContext(ts_ctx);
+    try testing.expect(ts_ctx.isLocked());
+
+    ctx.unlockThreadSafeContext(ts_ctx);
+    try testing.expect(!ts_ctx.isLocked());
+
+    // Free context
+    try ctx.freeThreadSafeContext(allocator, ts_ctx);
+}
+
+test "ModuleCtx: bound thread-safe context with reply accumulation" {
+    const allocator = testing.allocator;
+    var store = try ModuleStore.init(allocator);
+    defer store.deinit();
+
+    var ctx = ModuleCtx{
+        .name = "testmodule",
+        .ver = 1,
+        .store = &store,
+    };
+
+    const client_id: u64 = 99999;
+
+    // Create bound context
+    const ts_ctx = try ctx.getThreadSafeContextBound(allocator, client_id);
+    defer ctx.freeThreadSafeContext(allocator, ts_ctx) catch unreachable;
+
+    try testing.expect(ts_ctx.client_id.? == client_id);
+    try testing.expect(ts_ctx.reply_buffer != null);
+
+    // Simulate reply accumulation
+    if (ts_ctx.reply_buffer) |*buf| {
+        try buf.appendSlice("+OK\r\n");
+        try buf.appendSlice(":12345\r\n");
+    }
+
+    const reply = try ts_ctx.getReply(allocator);
+    try testing.expect(reply != null);
+    defer if (reply) |r| allocator.free(r);
+
+    try testing.expectEqualStrings("+OK\r\n:12345\r\n", reply.?);
+}
+
+// Multi-threaded test helper
+const ThreadTestContext = struct {
+    lock: *GlobalLock,
+    counter: *usize,
+    iterations: usize,
+};
+
+fn threadWorker(context: *ThreadTestContext) void {
+    var i: usize = 0;
+    while (i < context.iterations) : (i += 1) {
+        const thread_id = context.lock.lock();
+        _ = thread_id;
+
+        // Critical section - increment shared counter
+        context.counter.* += 1;
+
+        context.lock.unlock();
+
+        // Small delay to increase contention
+        std.time.sleep(1 * std.time.ns_per_us);
+    }
+}
+
+test "GlobalLock: multi-threaded contention" {
+    var lock = GlobalLock.init();
+
+    var counter: usize = 0;
+    const num_threads = 10;
+    const iterations_per_thread = 100;
+
+    var threads: [num_threads]std.Thread = undefined;
+    var contexts: [num_threads]ThreadTestContext = undefined;
+
+    // Spawn worker threads
+    for (0..num_threads) |i| {
+        contexts[i] = .{
+            .lock = &lock,
+            .counter = &counter,
+            .iterations = iterations_per_thread,
+        };
+        threads[i] = try std.Thread.spawn(.{}, threadWorker, .{&contexts[i]});
+    }
+
+    // Wait for all threads
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Verify counter is correct (all increments were atomic)
+    const expected = num_threads * iterations_per_thread;
+    try testing.expectEqual(expected, counter);
 }
