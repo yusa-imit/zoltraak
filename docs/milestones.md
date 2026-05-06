@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v1.22.0 (rich text & formatting: SpanBuilder/LineBuilder fluent APIs, RichTextParser for markdown, LineBreaker with hyphenation, Unicode-aware width calculation)
+- **Sailor library**: v2.6.0 (latest, all migrations through v2.6.0 complete)
 
 ---
 
@@ -236,7 +236,7 @@
 
 ### zuda Library
 
-- **Current**: 2/5 migrations complete (Glob, Haversine done; HyperLogLog BLOCKED, Geohash BLOCKED, Sorted Set DEFERRED) — zuda v1.15.0 integrated
+- **Current**: 2/5 migrations complete (Glob, Haversine done; HyperLogLog BLOCKED, Geohash BLOCKED, Sorted Set DEFERRED) — zuda v2.0.0 integrated
 - **Repository**: https://github.com/yusa-imit/zuda
 - **Compatibility layers**: `zuda.compat.zoltraak_sortedset` — drop-in SortedSet wrapper
 - **Migration guides**: See zuda `docs/migrations/ZOLTRAAK_SORTEDSET.md` for detailed API mapping

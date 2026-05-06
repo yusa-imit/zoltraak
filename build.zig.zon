@@ -9,8 +9,8 @@
             .hash = "sailor-2.6.0-53_z3Pk2MwDzTYOnqAveynowQLjJKZSrCHjFCu8yefjk",
         },
         .zuda = .{
-            .url = "https://github.com/yusa-imit/zuda/archive/refs/tags/v1.15.0.tar.gz",
-            .hash = "zuda-1.15.0-ih6_-FEAJgCMw1r7iXElqo7XO3UlSBp1arjTBqSk_CFS",
+            .url = "https://github.com/yusa-imit/zuda/archive/refs/tags/v2.0.0.tar.gz",
+            .hash = "zuda-2.0.0-ih6_-LooSACKpI9MTcPEa3VDy65JJlphPeTFO5nAB7SD",
         },
     },
     .paths = .{
