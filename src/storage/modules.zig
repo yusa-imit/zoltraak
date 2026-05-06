@@ -169,6 +169,64 @@ pub const ModuleCtx = struct {
         _ = self; // unused
         return ctx.tryLockContext();
     }
+
+    /// Allocate memory tracked for this module
+    /// Redis module ABI: void *RedisModule_Alloc(size_t bytes)
+    pub fn alloc(
+        self: *ModuleCtx,
+        base_allocator: std.mem.Allocator,
+        size: usize,
+    ) ![]u8 {
+        return self.store.moduleAlloc(base_allocator, self.name, size);
+    }
+
+    /// Allocate zero-initialized memory tracked for this module
+    /// Redis module ABI: void *RedisModule_Calloc(size_t nmemb, size_t size)
+    pub fn calloc(
+        self: *ModuleCtx,
+        base_allocator: std.mem.Allocator,
+        size: usize,
+    ) ![]u8 {
+        const mem = try self.alloc(base_allocator, size);
+        @memset(mem, 0);
+        return mem;
+    }
+
+    /// Reallocate memory tracked for this module
+    /// Redis module ABI: void *RedisModule_Realloc(void *ptr, size_t bytes)
+    pub fn realloc(
+        self: *ModuleCtx,
+        base_allocator: std.mem.Allocator,
+        old_mem: []u8,
+        new_size: usize,
+    ) ![]u8 {
+        return self.store.moduleRealloc(base_allocator, self.name, old_mem, new_size);
+    }
+
+    /// Free memory allocated by RedisModule_Alloc
+    /// Redis module ABI: void RedisModule_Free(void *ptr)
+    pub fn free(
+        self: *ModuleCtx,
+        base_allocator: std.mem.Allocator,
+        mem: []u8,
+    ) void {
+        self.store.moduleFree(base_allocator, mem);
+    }
+
+    /// Get ratio of used memory to maxmemory limit
+    /// Redis module ABI: float RedisModule_GetUsedMemoryRatio()
+    pub fn getUsedMemoryRatio(self: *ModuleCtx) f32 {
+        return self.store.getUsedMemoryRatio();
+    }
+
+    /// Get memory statistics for this module
+    pub fn getMemoryStats(self: *ModuleCtx) struct {
+        total: usize,
+        count: usize,
+        peak: usize,
+    } {
+        return self.store.getModuleMemoryStats(self.name);
+    }
 };
 
 /// Function signature for module OnLoad function
@@ -241,6 +299,120 @@ pub const ModuleDataType = struct {
     }
 };
 
+/// Per-module memory accounting statistics
+pub const ModuleMemoryStats = struct {
+    total_allocated: usize,
+    allocation_count: usize,
+    peak_memory: usize,
+    mutex: std.Thread.Mutex,
+
+    pub fn init() ModuleMemoryStats {
+        return .{
+            .total_allocated = 0,
+            .allocation_count = 0,
+            .peak_memory = 0,
+            .mutex = .{},
+        };
+    }
+
+    /// Record an allocation
+    pub fn recordAlloc(self: *ModuleMemoryStats, size: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.total_allocated += size;
+        self.allocation_count += 1;
+
+        if (self.total_allocated > self.peak_memory) {
+            self.peak_memory = self.total_allocated;
+        }
+    }
+
+    /// Record a deallocation
+    pub fn recordFree(self: *ModuleMemoryStats, size: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.total_allocated >= size) {
+            self.total_allocated -= size;
+        } else {
+            self.total_allocated = 0; // Guard against underflow
+        }
+
+        if (self.allocation_count > 0) {
+            self.allocation_count -= 1;
+        }
+    }
+
+    /// Get current statistics (thread-safe snapshot)
+    pub fn getStats(self: *const ModuleMemoryStats) struct {
+        total: usize,
+        count: usize,
+        peak: usize,
+    } {
+        // We need a non-const self for mutex, but logically this is a read
+        const mutable_self = @constCast(self);
+        mutable_self.mutex.lock();
+        defer mutable_self.mutex.unlock();
+
+        return .{
+            .total = self.total_allocated,
+            .count = self.allocation_count,
+            .peak = self.peak_memory,
+        };
+    }
+};
+
+/// Allocation header for module memory tracking
+/// Prepended to every RedisModule_Alloc allocation
+const AllocationHeader = struct {
+    size: usize,
+    module_name_len: u8,
+    // module_name follows immediately after this struct
+
+    const MAX_MODULE_NAME_LEN = 255;
+
+    /// Get total size including header and module name
+    fn getTotalSize(module_name: []const u8, requested_size: usize) usize {
+        return @sizeOf(AllocationHeader) + module_name.len + requested_size;
+    }
+
+    /// Write header and return pointer to user data
+    fn write(ptr: [*]u8, module_name: []const u8, requested_size: usize) [*]u8 {
+        const header: *AllocationHeader = @ptrCast(@alignCast(ptr));
+        header.* = .{
+            .size = requested_size,
+            .module_name_len = @intCast(module_name.len),
+        };
+
+        // Copy module name after header
+        const name_ptr = ptr + @sizeOf(AllocationHeader);
+        @memcpy(name_ptr[0..module_name.len], module_name);
+
+        // Return pointer to user data (after header and name)
+        return name_ptr + module_name.len;
+    }
+
+    /// Read header from user pointer (reverse of write)
+    fn read(user_ptr: [*]u8) struct {
+        header: *AllocationHeader,
+        module_name: []const u8,
+    } {
+        const name_end_ptr = user_ptr;
+        const name_start_ptr = name_end_ptr - @sizeOf(AllocationHeader);
+        const header_ptr = name_start_ptr - @sizeOf(AllocationHeader);
+
+        const header: *AllocationHeader = @ptrCast(@alignCast(header_ptr));
+        const module_name_ptr = name_start_ptr;
+        const module_name = module_name_ptr[0..header.module_name_len];
+
+        return .{
+            .header = header,
+            .module_name = module_name,
+        };
+    }
+};
+
 /// Information about a loaded module
 pub const ModuleInfo = struct {
     name: []const u8,
@@ -249,6 +421,8 @@ pub const ModuleInfo = struct {
     args: [][]const u8,
     /// Dynamic library handle (null if module is not loaded from library)
     lib: ?std.DynLib,
+    /// Memory accounting for this module
+    memory: ModuleMemoryStats,
 
     /// Deallocate ModuleInfo structure and all owned strings
     pub fn deinit(self: *ModuleInfo, allocator: std.mem.Allocator) void {
@@ -513,6 +687,7 @@ pub const ModuleStore = struct {
             .path = owned_path,
             .args = owned_args,
             .lib = lib,
+            .memory = ModuleMemoryStats.init(),
         };
 
         try self.modules.put(owned_name, module_info);
@@ -678,6 +853,130 @@ pub const ModuleStore = struct {
     ///   - null if command not registered
     pub fn getCommand(self: *ModuleStore, name: []const u8) ?*const ModuleCommand {
         return self.commands.getPtr(name);
+    }
+
+    /// Allocate memory tracked for a specific module
+    /// Redis module ABI: void *RedisModule_Alloc(size_t bytes)
+    pub fn moduleAlloc(
+        self: *ModuleStore,
+        base_allocator: std.mem.Allocator,
+        module_name: []const u8,
+        size: usize,
+    ) ![]u8 {
+        // Calculate total size including header
+        const total_size = AllocationHeader.getTotalSize(module_name, size);
+
+        // Allocate from base allocator
+        const raw_mem = try base_allocator.alloc(u8, total_size);
+
+        // Write header and get user pointer
+        const user_ptr = AllocationHeader.write(raw_mem.ptr, module_name, size);
+
+        // Update module statistics
+        if (self.modules.getPtr(module_name)) |module_info| {
+            module_info.memory.recordAlloc(size);
+        }
+
+        return user_ptr[0..size];
+    }
+
+    /// Reallocate memory tracked for a module
+    /// Redis module ABI: void *RedisModule_Realloc(void *ptr, size_t bytes)
+    pub fn moduleRealloc(
+        self: *ModuleStore,
+        base_allocator: std.mem.Allocator,
+        module_name: []const u8,
+        old_mem: []u8,
+        new_size: usize,
+    ) ![]u8 {
+        // Read old header
+        const old_info = AllocationHeader.read(old_mem.ptr);
+        const old_size = old_info.header.size;
+
+        // Free old allocation from stats
+        if (self.modules.getPtr(module_name)) |module_info| {
+            module_info.memory.recordFree(old_size);
+        }
+
+        // Calculate raw pointer (before header)
+        const old_total_size = AllocationHeader.getTotalSize(module_name, old_size);
+        const raw_old_ptr = old_mem.ptr - @sizeOf(AllocationHeader) - module_name.len;
+        const raw_old_mem = raw_old_ptr[0..old_total_size];
+
+        // Calculate new total size
+        const new_total_size = AllocationHeader.getTotalSize(module_name, new_size);
+
+        // Reallocate
+        const raw_new_mem = try base_allocator.realloc(raw_old_mem, new_total_size);
+
+        // Write new header
+        const user_ptr = AllocationHeader.write(raw_new_mem.ptr, module_name, new_size);
+
+        // Update stats with new allocation
+        if (self.modules.getPtr(module_name)) |module_info| {
+            module_info.memory.recordAlloc(new_size);
+        }
+
+        return user_ptr[0..new_size];
+    }
+
+    /// Free memory allocated by moduleAlloc
+    /// Redis module ABI: void RedisModule_Free(void *ptr)
+    pub fn moduleFree(
+        self: *ModuleStore,
+        base_allocator: std.mem.Allocator,
+        mem: []u8,
+    ) void {
+        // Read header to get module name and size
+        const info = AllocationHeader.read(mem.ptr);
+        const module_name = info.module_name;
+        const size = info.header.size;
+
+        // Update module statistics
+        if (self.modules.getPtr(module_name)) |module_info| {
+            module_info.memory.recordFree(size);
+        }
+
+        // Calculate raw pointer and size
+        const total_size = AllocationHeader.getTotalSize(module_name, size);
+        const raw_ptr = mem.ptr - @sizeOf(AllocationHeader) - module_name.len;
+        const raw_mem = raw_ptr[0..total_size];
+
+        // Free from base allocator
+        base_allocator.free(raw_mem);
+    }
+
+    /// Get memory statistics for a specific module
+    pub fn getModuleMemoryStats(self: *ModuleStore, module_name: []const u8) struct {
+        total: usize,
+        count: usize,
+        peak: usize,
+    } {
+        if (self.modules.getPtr(module_name)) |module_info| {
+            return module_info.memory.getStats();
+        }
+        return .{ .total = 0, .count = 0, .peak = 0 };
+    }
+
+    /// Get total memory used by all modules
+    pub fn getTotalModuleMemory(self: *ModuleStore) usize {
+        var total: usize = 0;
+        var it = self.modules.valueIterator();
+        while (it.next()) |module_info| {
+            const stats = module_info.memory.getStats();
+            total += stats.total;
+        }
+        return total;
+    }
+
+    /// Get ratio of used memory to maxmemory limit
+    /// Redis module ABI: float RedisModule_GetUsedMemoryRatio()
+    /// Returns 0.0 if no limit, otherwise used/limit
+    pub fn getUsedMemoryRatio(self: *ModuleStore) f32 {
+        _ = self;
+        // TODO: Integrate with actual maxmemory configuration
+        // For now, return 0.0 (unlimited)
+        return 0.0;
     }
 
     /// Remove all commands registered by a module
@@ -1446,6 +1745,7 @@ test "ModuleStore: ModuleInfo structure with fields" {
         .path = path,
         .args = args,
         .lib = null, // No dynamic library in this test
+        .memory = ModuleMemoryStats.init(),
     };
     defer info.deinit(allocator);
 
@@ -2256,6 +2556,225 @@ fn threadWorker(context: *ThreadTestContext) void {
         // Small delay to increase contention
         std.time.sleep(1 * std.time.ns_per_us);
     }
+}
+
+test "ModuleMemoryStats: record allocations and frees" {
+    var stats = ModuleMemoryStats.init();
+
+    // Record some allocations
+    stats.recordAlloc(100);
+    stats.recordAlloc(200);
+    stats.recordAlloc(50);
+
+    var snapshot = stats.getStats();
+    try testing.expectEqual(@as(usize, 350), snapshot.total);
+    try testing.expectEqual(@as(usize, 3), snapshot.count);
+    try testing.expectEqual(@as(usize, 350), snapshot.peak);
+
+    // Free some memory
+    stats.recordFree(100);
+    snapshot = stats.getStats();
+    try testing.expectEqual(@as(usize, 250), snapshot.total);
+    try testing.expectEqual(@as(usize, 2), snapshot.count);
+    try testing.expectEqual(@as(usize, 350), snapshot.peak); // Peak unchanged
+
+    // Allocate more (new peak)
+    stats.recordAlloc(500);
+    snapshot = stats.getStats();
+    try testing.expectEqual(@as(usize, 750), snapshot.total);
+    try testing.expectEqual(@as(usize, 3), snapshot.count);
+    try testing.expectEqual(@as(usize, 750), snapshot.peak); // New peak
+
+    // Free all
+    stats.recordFree(200);
+    stats.recordFree(50);
+    stats.recordFree(500);
+    snapshot = stats.getStats();
+    try testing.expectEqual(@as(usize, 0), snapshot.total);
+    try testing.expectEqual(@as(usize, 0), snapshot.count);
+    try testing.expectEqual(@as(usize, 750), snapshot.peak); // Peak still 750
+}
+
+test "ModuleCtx: module memory allocation and free" {
+    const allocator = testing.allocator;
+    var store = try ModuleStore.init(allocator);
+    defer store.deinit();
+
+    // Create a module
+    const module_name = "testmodule";
+    const owned_name = try allocator.dupe(u8, module_name);
+    const owned_path = try allocator.dupe(u8, "/path/to/module.so");
+    const owned_args = try allocator.alloc([]const u8, 0);
+
+    const module_info = ModuleInfo{
+        .name = owned_name,
+        .ver = 1,
+        .path = owned_path,
+        .args = owned_args,
+        .lib = null,
+        .memory = ModuleMemoryStats.init(),
+    };
+    try store.modules.put(owned_name, module_info);
+
+    var ctx = ModuleCtx{
+        .name = module_name,
+        .ver = 1,
+        .store = &store,
+    };
+
+    // Allocate memory
+    const mem1 = try ctx.alloc(allocator, 100);
+    try testing.expectEqual(@as(usize, 100), mem1.len);
+
+    var stats = ctx.getMemoryStats();
+    try testing.expectEqual(@as(usize, 100), stats.total);
+    try testing.expectEqual(@as(usize, 1), stats.count);
+
+    // Allocate more
+    const mem2 = try ctx.alloc(allocator, 200);
+    try testing.expectEqual(@as(usize, 200), mem2.len);
+
+    stats = ctx.getMemoryStats();
+    try testing.expectEqual(@as(usize, 300), stats.total);
+    try testing.expectEqual(@as(usize, 2), stats.count);
+
+    // Free one
+    ctx.free(allocator, mem1);
+    stats = ctx.getMemoryStats();
+    try testing.expectEqual(@as(usize, 200), stats.total);
+    try testing.expectEqual(@as(usize, 1), stats.count);
+
+    // Free the other
+    ctx.free(allocator, mem2);
+    stats = ctx.getMemoryStats();
+    try testing.expectEqual(@as(usize, 0), stats.total);
+    try testing.expectEqual(@as(usize, 0), stats.count);
+}
+
+test "ModuleCtx: calloc zeroes memory" {
+    const allocator = testing.allocator;
+    var store = try ModuleStore.init(allocator);
+    defer store.deinit();
+
+    const module_name = "testmodule";
+    const owned_name = try allocator.dupe(u8, module_name);
+    const owned_path = try allocator.dupe(u8, "/path/to/module.so");
+    const owned_args = try allocator.alloc([]const u8, 0);
+
+    const module_info = ModuleInfo{
+        .name = owned_name,
+        .ver = 1,
+        .path = owned_path,
+        .args = owned_args,
+        .lib = null,
+        .memory = ModuleMemoryStats.init(),
+    };
+    try store.modules.put(owned_name, module_info);
+
+    var ctx = ModuleCtx{
+        .name = module_name,
+        .ver = 1,
+        .store = &store,
+    };
+
+    const mem = try ctx.calloc(allocator, 100);
+    defer ctx.free(allocator, mem);
+
+    // All bytes should be zero
+    for (mem) |byte| {
+        try testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "ModuleCtx: realloc preserves data and updates stats" {
+    const allocator = testing.allocator;
+    var store = try ModuleStore.init(allocator);
+    defer store.deinit();
+
+    const module_name = "testmodule";
+    const owned_name = try allocator.dupe(u8, module_name);
+    const owned_path = try allocator.dupe(u8, "/path/to/module.so");
+    const owned_args = try allocator.alloc([]const u8, 0);
+
+    const module_info = ModuleInfo{
+        .name = owned_name,
+        .ver = 1,
+        .path = owned_path,
+        .args = owned_args,
+        .lib = null,
+        .memory = ModuleMemoryStats.init(),
+    };
+    try store.modules.put(owned_name, module_info);
+
+    var ctx = ModuleCtx{
+        .name = module_name,
+        .ver = 1,
+        .store = &store,
+    };
+
+    // Allocate and write data
+    var mem = try ctx.alloc(allocator, 10);
+    @memcpy(mem, "ABCDEFGHIJ");
+
+    var stats = ctx.getMemoryStats();
+    try testing.expectEqual(@as(usize, 10), stats.total);
+
+    // Realloc to larger size
+    mem = try ctx.realloc(allocator, mem, 20);
+    try testing.expectEqual(@as(usize, 20), mem.len);
+
+    // Original data should be preserved
+    try testing.expectEqualStrings("ABCDEFGHIJ", mem[0..10]);
+
+    stats = ctx.getMemoryStats();
+    try testing.expectEqual(@as(usize, 20), stats.total);
+    try testing.expectEqual(@as(usize, 1), stats.count);
+
+    ctx.free(allocator, mem);
+}
+
+test "ModuleStore: getTotalModuleMemory" {
+    const allocator = testing.allocator;
+    var store = try ModuleStore.init(allocator);
+    defer store.deinit();
+
+    // Create two modules
+    const mod1_name = try allocator.dupe(u8, "module1");
+    const mod1_info = ModuleInfo{
+        .name = mod1_name,
+        .ver = 1,
+        .path = try allocator.dupe(u8, "/path/1.so"),
+        .args = try allocator.alloc([]const u8, 0),
+        .lib = null,
+        .memory = ModuleMemoryStats.init(),
+    };
+    try store.modules.put(mod1_name, mod1_info);
+
+    const mod2_name = try allocator.dupe(u8, "module2");
+    const mod2_info = ModuleInfo{
+        .name = mod2_name,
+        .ver = 1,
+        .path = try allocator.dupe(u8, "/path/2.so"),
+        .args = try allocator.alloc([]const u8, 0),
+        .lib = null,
+        .memory = ModuleMemoryStats.init(),
+    };
+    try store.modules.put(mod2_name, mod2_info);
+
+    // Allocate for module1
+    var ctx1 = ModuleCtx{ .name = "module1", .ver = 1, .store = &store };
+    const mem1 = try ctx1.alloc(allocator, 100);
+
+    // Allocate for module2
+    var ctx2 = ModuleCtx{ .name = "module2", .ver = 1, .store = &store };
+    const mem2 = try ctx2.alloc(allocator, 200);
+
+    // Total should be sum
+    const total = store.getTotalModuleMemory();
+    try testing.expectEqual(@as(usize, 300), total);
+
+    ctx1.free(allocator, mem1);
+    ctx2.free(allocator, mem2);
 }
 
 test "GlobalLock: multi-threaded contention" {
