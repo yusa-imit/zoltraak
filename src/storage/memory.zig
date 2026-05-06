@@ -664,7 +664,7 @@ pub const Storage = struct {
             .lfu_counter = LFUCounter.init(allocator),
             .lazyfree_task = lazy_free,
             .defrag_task = defrag_task,
-            .module_store = ModuleStore.init(allocator),
+            .module_store = try ModuleStore.init(allocator),
         };
 
         // Start background lazy free thread
@@ -826,7 +826,7 @@ pub const Storage = struct {
             .noeviction => return false, // Should not be called with noeviction
             .allkeys_lru => {
                 // Sample N keys and find LRU
-                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                var candidates = std.ArrayList([]const u8){};
                 defer candidates.deinit();
 
                 var it = self.data.keyIterator();
@@ -867,7 +867,7 @@ pub const Storage = struct {
             },
             .volatile_lru => {
                 // Sample N keys with TTL and find LRU
-                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                var candidates = std.ArrayList([]const u8){};
                 defer candidates.deinit();
 
                 var it = self.data.iterator();
@@ -930,7 +930,7 @@ pub const Storage = struct {
             },
             .allkeys_lfu => {
                 // Sample N keys and find LFU (lowest frequency)
-                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                var candidates = std.ArrayList([]const u8){};
                 defer candidates.deinit();
 
                 var it = self.data.keyIterator();
@@ -971,7 +971,7 @@ pub const Storage = struct {
             },
             .volatile_lfu => {
                 // Sample N keys with TTL and find LFU
-                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                var candidates = std.ArrayList([]const u8){};
                 defer candidates.deinit();
 
                 var it = self.data.iterator();
@@ -1033,7 +1033,7 @@ pub const Storage = struct {
             },
             .allkeys_random => {
                 // Sample N keys and pick one randomly
-                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                var candidates = std.ArrayList([]const u8){};
                 defer candidates.deinit();
 
                 var it = self.data.keyIterator();
@@ -1066,7 +1066,7 @@ pub const Storage = struct {
             },
             .volatile_random => {
                 // Sample N keys with TTL and pick one randomly
-                var candidates = std.ArrayList([]const u8).init(self.allocator);
+                var candidates = std.ArrayList([]const u8){};
                 defer candidates.deinit();
 
                 var it = self.data.iterator();
@@ -1120,7 +1120,7 @@ pub const Storage = struct {
             },
             .volatile_ttl => {
                 // Sample N keys with TTL and evict one with soonest expiration
-                var candidates = std.ArrayList(struct { key: []const u8, ttl: i64 }).init(self.allocator);
+                var candidates = std.ArrayList(struct { key: []const u8, ttl: i64 }){};
                 defer candidates.deinit();
 
                 const now_ms = std.time.milliTimestamp();

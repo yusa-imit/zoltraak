@@ -696,7 +696,7 @@ test "BloomFilterValue scanDump/loadChunk round-trip" {
     _ = try bf.add("cherry");
 
     // Dump all chunks
-    var chunks = std.ArrayList([]const u8).init(std.testing.allocator);
+    var chunks = std.ArrayList([]const u8){};
     defer {
         for (chunks.items) |chunk| {
             std.testing.allocator.free(chunk);
@@ -719,7 +719,7 @@ test "BloomFilterValue scanDump/loadChunk round-trip" {
     defer bf2.deinit();
 
     var context = BloomFilterValue.LoadContext{
-        .buffer = std.ArrayList(u8).init(std.testing.allocator),
+        .buffer = std.ArrayList(u8){},
         .expected_iterator = 0,
     };
     defer context.deinit();
@@ -757,7 +757,7 @@ test "BloomFilterValue loadChunk invalid iterator" {
     defer bf.deinit();
 
     var context = BloomFilterValue.LoadContext{
-        .buffer = std.ArrayList(u8).init(std.testing.allocator),
+        .buffer = std.ArrayList(u8){},
         .expected_iterator = 0,
     };
     defer context.deinit();
@@ -782,7 +782,7 @@ test "BloomFilterValue scanDump preserves nonscaling" {
     defer bf2.deinit();
 
     var context = BloomFilterValue.LoadContext{
-        .buffer = std.ArrayList(u8).init(std.testing.allocator),
+        .buffer = std.ArrayList(u8){},
         .expected_iterator = 0,
     };
     defer context.deinit();

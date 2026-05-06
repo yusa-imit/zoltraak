@@ -534,7 +534,7 @@ pub const ModuleStore = struct {
             .commands = std.StringHashMap(ModuleCommand).init(allocator),
             .data_types = std.StringHashMap(ModuleDataType).init(allocator),
             .blocking = ModuleBlockingStore.init(allocator),
-            .hooks = std.ArrayList(ModuleHook).init(allocator),
+            .hooks = std.ArrayList(ModuleHook){},
             .timers = ModuleTimerStore.init(allocator),
             .global_lock = GlobalLock.init(),
         };
@@ -1358,8 +1358,8 @@ pub const ModuleTimerStore = struct {
     pub fn processTimers(self: *ModuleTimerStore) usize {
         const now_ms = std.time.milliTimestamp();
         var fired_count: usize = 0;
-        var to_remove = std.ArrayList(u64).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove = std.ArrayList(u64){};
+        defer to_remove.deinit(self.allocator);
 
         var iter = self.timers.iterator();
         while (iter.next()) |entry| {
@@ -1371,7 +1371,7 @@ pub const ModuleTimerStore = struct {
 
                 // One-shot timer (period_ms == 0) should be removed
                 if (timer.period_ms == 0) {
-                    to_remove.append(timer.timer_id) catch {};
+                    to_remove.append(self.allocator, timer.timer_id) catch {};
                 } else {
                     // Periodic timer: reschedule
                     timer.next_fire_time = now_ms + timer.period_ms;
@@ -1392,13 +1392,13 @@ pub const ModuleTimerStore = struct {
     /// Arguments:
     ///   - module_name: Name of the module whose timers should be removed
     pub fn removeModuleTimers(self: *ModuleTimerStore, module_name: []const u8) void {
-        var to_remove = std.ArrayList(u64).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove = std.ArrayList(u64){};
+        defer to_remove.deinit(self.allocator);
 
         var iter = self.timers.iterator();
         while (iter.next()) |entry| {
             if (std.mem.eql(u8, entry.value_ptr.module_name, module_name)) {
-                to_remove.append(entry.value_ptr.timer_id) catch {};
+                to_remove.append(self.allocator, entry.value_ptr.timer_id) catch {};
             }
         }
 
@@ -2219,7 +2219,7 @@ pub const ThreadSafeContext = struct {
             .creator_thread = std.Thread.getCurrentId(),
             .locked = false,
             .client_id = client_id,
-            .reply_buffer = std.ArrayList(u8).init(allocator),
+            .reply_buffer = std.ArrayList(u8){},
         };
         return ctx;
     }

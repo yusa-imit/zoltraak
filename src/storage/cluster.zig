@@ -1350,7 +1350,7 @@ pub const ClusterState = struct {
         const expiry_threshold = now - 60_000; // 60 seconds
 
         var it = self.failure_reports.iterator();
-        var keys_to_remove = std.ArrayList([40]u8).init(self.allocator);
+        var keys_to_remove = std.ArrayList([40]u8){};
         defer keys_to_remove.deinit();
 
         while (it.next()) |entry| {
