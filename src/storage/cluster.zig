@@ -974,35 +974,56 @@ pub const ClusterState = struct {
     }
 
     /// Select random nodes for gossip (up to max_nodes)
+    /// Uses Fisher-Yates shuffle for uniform random selection
     /// Returns array of GossipNodeInfo that caller must free
     pub fn selectRandomNodesForGossip(self: *const ClusterState, allocator: std.mem.Allocator, max_nodes: usize) ![]GossipNodeInfo {
-        var result = std.ArrayListUnmanaged(GossipNodeInfo){};
-        errdefer result.deinit(allocator);
+        // First, collect all eligible nodes (excluding ourselves)
+        var eligible = std.ArrayListUnmanaged(*ClusterNode){};
+        errdefer eligible.deinit(allocator);
 
         var it = self.nodes.valueIterator();
-        var count: usize = 0;
-
-        // Simple selection: just take first N nodes
-        // TODO: Make this truly random using RNG
         while (it.next()) |node| {
-            if (count >= max_nodes) break;
-
             // Skip ourselves
             if (self.myself) |myself| {
                 if (std.mem.eql(u8, &node.*.id, &myself.id)) {
                     continue;
                 }
             }
+            try eligible.append(allocator, node.*);
+        }
+        defer eligible.deinit(allocator);
 
+        // If we have fewer eligible nodes than requested, return all
+        const selection_count = @min(max_nodes, eligible.items.len);
+        if (selection_count == 0) {
+            return &[_]GossipNodeInfo{};
+        }
+
+        // Fisher-Yates shuffle for first selection_count elements
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        const random = prng.random();
+
+        var i: usize = 0;
+        while (i < selection_count) : (i += 1) {
+            const j = random.intRangeLessThan(usize, i, eligible.items.len);
+            // Swap elements at i and j
+            const temp = eligible.items[i];
+            eligible.items[i] = eligible.items[j];
+            eligible.items[j] = temp;
+        }
+
+        // Build result from first selection_count elements
+        var result = std.ArrayListUnmanaged(GossipNodeInfo){};
+        errdefer result.deinit(allocator);
+
+        for (eligible.items[0..selection_count]) |node| {
             try result.append(allocator, GossipNodeInfo{
-                .node_id = node.*.id,
-                .addr = node.*.addr,
-                .port = node.*.port,
-                .flags = node.*.flags,
-                .pong_recv = node.*.pong_recv,
+                .node_id = node.id,
+                .addr = node.addr,
+                .port = node.port,
+                .flags = node.flags,
+                .pong_recv = node.pong_recv,
             });
-
-            count += 1;
         }
 
         return result.toOwnedSlice(allocator);
@@ -3313,6 +3334,92 @@ test "Select random nodes for gossip" {
     try std.testing.expect(!std.mem.eql(u8, &selected[0].node_id, &selected[1].node_id));
     try std.testing.expect(!std.mem.eql(u8, &selected[1].node_id, &selected[2].node_id));
     try std.testing.expect(!std.mem.eql(u8, &selected[0].node_id, &selected[2].node_id));
+}
+
+test "Select random nodes for gossip - uniform distribution" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Add 5 nodes
+    var i: u8 = 0;
+    while (i < 5) : (i += 1) {
+        var node_id: [40]u8 = undefined;
+        @memset(&node_id, 'A' + i);
+        const node = try allocator.create(ClusterNode);
+        node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7000 + i);
+        const node_key = try allocator.dupe(u8, &node_id);
+        try cluster.nodes.put(node_key, node);
+    }
+
+    // Track selection count for each node (5 nodes: A, B, C, D, E)
+    var selection_counts = [_]usize{0} ** 5;
+
+    // Run selection 100 times (select 2 out of 5 each time)
+    var run: usize = 0;
+    while (run < 100) : (run += 1) {
+        const selected = try cluster.selectRandomNodesForGossip(allocator, 2);
+        defer allocator.free(selected);
+
+        try std.testing.expectEqual(@as(usize, 2), selected.len);
+
+        // Count which nodes were selected
+        for (selected) |gossip_info| {
+            const first_char = gossip_info.node_id[0];
+            if (first_char >= 'A' and first_char <= 'E') {
+                selection_counts[first_char - 'A'] += 1;
+            }
+        }
+    }
+
+    // Verify all nodes were selected at least once (probabilistic test)
+    // With 100 runs selecting 2 out of 5 nodes, each node has 40% chance per run
+    // Probability all nodes selected at least once is very high (>99.999%)
+    for (selection_counts, 0..) |count, idx| {
+        try std.testing.expect(count > 0); // Each node should be selected at least once
+        // Also verify no node is selected every time (would indicate broken randomness)
+        try std.testing.expect(count < 100);
+        _ = idx; // Unused
+    }
+}
+
+test "Select random nodes for gossip - edge cases" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    // Setup myself
+    const my_id = "0123456789abcdef0123456789abcdef01234567".*;
+    const my_node = try allocator.create(ClusterNode);
+    my_node.* = try ClusterNode.init(allocator, my_id, "127.0.0.1", 7000);
+    cluster.myself = my_node;
+
+    // Test 1: Empty cluster (only myself)
+    {
+        const selected = try cluster.selectRandomNodesForGossip(allocator, 3);
+        defer allocator.free(selected);
+        try std.testing.expectEqual(@as(usize, 0), selected.len);
+    }
+
+    // Test 2: Fewer nodes than requested
+    {
+        var node_id: [40]u8 = undefined;
+        @memset(&node_id, 'X');
+        const node = try allocator.create(ClusterNode);
+        node.* = try ClusterNode.init(allocator, node_id, "127.0.0.1", 7001);
+        const node_key = try allocator.dupe(u8, &node_id);
+        try cluster.nodes.put(node_key, node);
+
+        const selected = try cluster.selectRandomNodesForGossip(allocator, 5);
+        defer allocator.free(selected);
+        try std.testing.expectEqual(@as(usize, 1), selected.len); // Only 1 node available
+    }
 }
 
 test "Background gossip: periodic PING creation" {
