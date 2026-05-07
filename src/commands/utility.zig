@@ -1332,3 +1332,231 @@ test "cmdDebug - DEBUG CHANGE-REPL-ID returns OK (stub)" {
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
 }
+
+/// LOLWUT [VERSION version] - Display Redis version and computer art
+pub fn cmdLolwut(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    _: *Storage,
+    _: *PubSub,
+    _: ?*TxState,
+    _: *ClientRegistry,
+    _: u64,
+    _: *ServerConfig,
+    _: u8,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    // Parse VERSION parameter if provided
+    var version: u32 = 0; // 0 = use Zoltraak version (0.1.0 -> version 1)
+
+    if (args.len >= 3) {
+        const version_key = args[1];
+
+        if (!std.ascii.eqlIgnoreCase(version_key, "VERSION")) {
+            return try w.writeError("ERR syntax error");
+        }
+
+        const version_str = args[2];
+
+        version = std.fmt.parseInt(u32, version_str, 10) catch {
+            return try w.writeError("ERR invalid version number");
+        };
+    }
+
+    // Generate art based on version
+    const art = try generateLolwutArt(allocator, version);
+    defer allocator.free(art);
+
+    return try w.writeBulkString(art);
+}
+
+fn generateLolwutArt(allocator: std.mem.Allocator, version: u32) ![]const u8 {
+    // Use version 0 or 1 for Zoltraak v0.1.0 -> display our own art
+    const effective_version = if (version == 0) 1 else version;
+
+    return switch (effective_version) {
+        1 => try generateZoltraakArt(allocator),
+        5 => try generateRedis5Art(allocator),
+        6 => try generateRedis6Art(allocator),
+        7 => try generateRedis7Art(allocator),
+        else => try generateGenericArt(allocator, effective_version),
+    };
+}
+
+fn generateZoltraakArt(allocator: std.mem.Allocator) ![]const u8 {
+    // Zoltraak's custom art - lightning bolt theme
+    const art =
+        \\
+        \\    ___________    ________    __
+        \\   |_  ___  __ \  |_   __ \  |  |
+        \\     | |_  | ||  |   | |__) | |  |
+        \\     |  _| | ||_ |   |  __ /  |  |
+        \\    _| |_ |  ___|  _| |  \ \_ |  |___
+        \\   |_____||_|     |____||____||______|
+        \\
+        \\         ⚡ Zoltraak v0.1.0 ⚡
+        \\      Redis-compatible data store
+        \\           Written in Zig
+        \\
+    ;
+    return allocator.dupe(u8, art);
+}
+
+fn generateRedis5Art(allocator: std.mem.Allocator) ![]const u8 {
+    // Simple geometric pattern for Redis 5.0
+    const art =
+        \\
+        \\    ╔════════════════════╗
+        \\    ║  ▓▒░ Redis 5 ░▒▓  ║
+        \\    ║  ░▒▓ Classic ▓▒░  ║
+        \\    ╚════════════════════╝
+        \\
+        \\      Redis 5.0.0+
+        \\
+    ;
+    return allocator.dupe(u8, art);
+}
+
+fn generateRedis6Art(allocator: std.mem.Allocator) ![]const u8 {
+    // ASCII pattern for Redis 6.0
+    const art =
+        \\
+        \\    ┌──────────────────┐
+        \\    │ ▄▄ ▄▄▄ ▄▄ ▄▄▄ ▄▄ │
+        \\    │ ██ ███ ██ ███ ██ │
+        \\    │ ▀▀ ▀▀▀ ▀▀ ▀▀▀ ▀▀ │
+        \\    └──────────────────┘
+        \\
+        \\      Redis 6.0.0+
+        \\
+    ;
+    return allocator.dupe(u8, art);
+}
+
+fn generateRedis7Art(allocator: std.mem.Allocator) ![]const u8 {
+    // Wave pattern for Redis 7.0
+    const art =
+        \\
+        \\    ╭──────────────────╮
+        \\    │ ≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈ │
+        \\    │ ～～～～～～～～ │
+        \\    │ ≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋≋ │
+        \\    ╰──────────────────╯
+        \\
+        \\      Redis 7.0.0+
+        \\
+    ;
+    return allocator.dupe(u8, art);
+}
+
+fn generateGenericArt(allocator: std.mem.Allocator, version: u32) ![]const u8 {
+    // Generic art for unknown versions
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 128);
+    defer buf.deinit(allocator);
+
+    const writer = buf.writer(allocator);
+
+    try writer.writeAll("\n");
+    try writer.writeAll("    ┌──────────────────┐\n");
+    try writer.print("    │  Redis {d}.0.0+    │\n", .{version});
+    try writer.writeAll("    │  (Unknown ver)   │\n");
+    try writer.writeAll("    └──────────────────┘\n");
+    try writer.writeAll("\n");
+
+    return try buf.toOwnedSlice(allocator);
+}
+
+// ── LOLWUT Unit Tests ────────────────────────────────────────────────────────
+
+test "cmdLolwut - default version shows Zoltraak art" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{"LOLWUT"};
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    // Should contain Zoltraak version art
+    try std.testing.expect(std.mem.indexOf(u8, result, "Zoltraak") != null);
+}
+
+test "cmdLolwut - version 5 shows Redis 5 art" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "LOLWUT", "VERSION", "5" };
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    // Should contain Redis 5 art
+    try std.testing.expect(std.mem.indexOf(u8, result, "Redis 5") != null);
+}
+
+test "cmdLolwut - version 7 shows Redis 7 art" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "LOLWUT", "VERSION", "7" };
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    // Should contain Redis 7 reference
+    try std.testing.expect(std.mem.indexOf(u8, result, "Redis 7") != null);
+}
+
+test "cmdLolwut - invalid version returns error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "LOLWUT", "VERSION", "notanumber" };
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "cmdLolwut - unknown version returns generic art" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "LOLWUT", "VERSION", "99" };
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    // Should contain version 99 in generic art
+    try std.testing.expect(std.mem.indexOf(u8, result, "99") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Unknown ver") != null);
+}
