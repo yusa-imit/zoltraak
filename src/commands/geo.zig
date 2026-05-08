@@ -18,26 +18,79 @@ const MAX_LON = 180.0;
 
 /// GeoHash encoding parameters (52-bit precision like Redis)
 const GEOHASH_STEP_MAX = 26; // 26 steps = 52 bits
+const GEOHASH_LAT_RANGE = [2]f64{ -90.0, 90.0 };
+const GEOHASH_LON_RANGE = [2]f64{ -180.0, 180.0 };
 
 /// Encodes latitude and longitude into a 52-bit geohash
-/// Migrated to zuda.algorithms.geometry.geohashEncode()
+/// NOTE: Cannot migrate to zuda - zuda uses string-based encoding, Redis uses 52-bit integer
 fn encodeGeohash(latitude: f64, longitude: f64) !u64 {
     if (latitude < MIN_LAT or latitude > MAX_LAT) return error.InvalidLatitude;
     if (longitude < MIN_LON or longitude > MAX_LON) return error.InvalidLongitude;
 
-    const coord = Coord.init(latitude, longitude);
-    return zuda.algorithms.geometry.geohashEncode(coord, GEOHASH_STEP_MAX * 2);
+    var lat_range = GEOHASH_LAT_RANGE;
+    var lon_range = GEOHASH_LON_RANGE;
+    var hash: u64 = 0;
+    var bit: u6 = 0;
+
+    while (bit < GEOHASH_STEP_MAX * 2) : (bit += 1) {
+        if (bit % 2 == 0) {
+            // Even bit: longitude
+            const mid = (lon_range[0] + lon_range[1]) / 2.0;
+            if (longitude > mid) {
+                hash |= @as(u64, 1) << @intCast(51 - bit);
+                lon_range[0] = mid;
+            } else {
+                lon_range[1] = mid;
+            }
+        } else {
+            // Odd bit: latitude
+            const mid = (lat_range[0] + lat_range[1]) / 2.0;
+            if (latitude > mid) {
+                hash |= @as(u64, 1) << @intCast(51 - bit);
+                lat_range[0] = mid;
+            } else {
+                lat_range[1] = mid;
+            }
+        }
+    }
+
+    return hash;
 }
 
 const Coords = struct { lat: f64, lon: f64 };
 
 /// Decodes a 52-bit geohash into latitude and longitude
-/// Migrated to zuda.algorithms.geometry.geohashDecode()
+/// NOTE: Cannot migrate to zuda - zuda uses string-based encoding, Redis uses 52-bit integer
 fn decodeGeohash(hash: u64) Coords {
-    const decoded = zuda.algorithms.geometry.geohashDecode(hash, GEOHASH_STEP_MAX * 2);
+    var lat_range = GEOHASH_LAT_RANGE;
+    var lon_range = GEOHASH_LON_RANGE;
+    var bit: u6 = 0;
+
+    while (bit < GEOHASH_STEP_MAX * 2) : (bit += 1) {
+        const is_set = (hash & (@as(u64, 1) << @intCast(51 - bit))) != 0;
+
+        if (bit % 2 == 0) {
+            // Even bit: longitude
+            const mid = (lon_range[0] + lon_range[1]) / 2.0;
+            if (is_set) {
+                lon_range[0] = mid;
+            } else {
+                lon_range[1] = mid;
+            }
+        } else {
+            // Odd bit: latitude
+            const mid = (lat_range[0] + lat_range[1]) / 2.0;
+            if (is_set) {
+                lat_range[0] = mid;
+            } else {
+                lat_range[1] = mid;
+            }
+        }
+    }
+
     return .{
-        .lat = decoded.lat,
-        .lon = decoded.lon,
+        .lat = (lat_range[0] + lat_range[1]) / 2.0,
+        .lon = (lon_range[0] + lon_range[1]) / 2.0,
     };
 }
 
