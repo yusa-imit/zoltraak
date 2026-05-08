@@ -32,6 +32,44 @@ pub const Config = struct {
     replicaof_port: u16 = 0,
 };
 
+/// Server statistics tracking
+pub const ServerStats = struct {
+    /// Total number of commands processed since server start
+    total_commands_processed: std.atomic.Value(u64),
+    /// Total number of connections received since server start
+    total_connections_received: std.atomic.Value(u64),
+    /// Server start time (Unix timestamp in seconds)
+    start_time_seconds: i64,
+
+    pub fn init() ServerStats {
+        return ServerStats{
+            .total_commands_processed = std.atomic.Value(u64).init(0),
+            .total_connections_received = std.atomic.Value(u64).init(0),
+            .start_time_seconds = std.time.timestamp(),
+        };
+    }
+
+    pub fn recordCommand(self: *ServerStats) void {
+        _ = self.total_commands_processed.fetchAdd(1, .release);
+    }
+
+    pub fn recordConnection(self: *ServerStats) void {
+        _ = self.total_connections_received.fetchAdd(1, .release);
+    }
+
+    pub fn getCommandsProcessed(self: *const ServerStats) u64 {
+        return self.total_commands_processed.load(.acquire);
+    }
+
+    pub fn getConnectionsReceived(self: *const ServerStats) u64 {
+        return self.total_connections_received.load(.acquire);
+    }
+
+    pub fn getUptimeSeconds(self: *const ServerStats) i64 {
+        return std.time.timestamp() - self.start_time_seconds;
+    }
+};
+
 /// Shutdown request state
 pub const ShutdownRequest = struct {
     save: bool, // true = save RDB before shutdown, false = don't save
@@ -206,6 +244,8 @@ pub const Server = struct {
     shutdown_state: ShutdownState,
     /// Background gossip task for cluster protocol
     gossip_task: ?GossipTask,
+    /// Server statistics tracking (commands processed, connections, uptime)
+    stats: ServerStats,
 
     /// Initialize a new server instance.
     /// If `config.replicaof_host` is set, the server starts as a replica.
@@ -255,6 +295,7 @@ pub const Server = struct {
             .running = std.atomic.Value(bool).init(false),
             .shutdown_state = ShutdownState.init(),
             .gossip_task = null,
+            .stats = ServerStats.init(),
         };
 
         // Initialize gossip task if cluster mode is enabled
@@ -365,6 +406,9 @@ pub const Server = struct {
                 std.debug.print("Error accepting connection: {any}\n", .{err});
                 continue;
             };
+
+            // Record connection statistics
+            self.stats.recordConnection();
 
             // Handle connection
             self.handleConnection(connection) catch |err| {
@@ -542,6 +586,9 @@ pub const Server = struct {
                 _ = connection.stream.write(error_response) catch break;
                 continue;
             };
+
+            // Record command execution in statistics
+            self.stats.recordCommand();
 
             // Update last command timestamp
             self.client_registry.updateLastCommand(client_id, cmd_name);
