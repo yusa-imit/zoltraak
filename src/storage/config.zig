@@ -1,4 +1,5 @@
 const std = @import("std");
+const glob = @import("../utils/glob.zig");
 
 /// Configuration parameter value types
 pub const ConfigValue = union(enum) {
@@ -343,7 +344,7 @@ pub const Config = struct {
 
         var it = self.params.keyIterator();
         while (it.next()) |key| {
-            if (try globMatch(pattern, key.*)) {
+            if (glob.matchGlob(pattern, key.*)) {
                 const dup = try self.allocator.dupe(u8, key.*);
                 try matches.append(self.allocator, dup);
             }
@@ -364,62 +365,7 @@ pub const Config = struct {
     }
 };
 
-/// Glob pattern matching for CONFIG GET
-/// Supports *, ?, and [abc] patterns
-fn globMatch(pattern: []const u8, text: []const u8) !bool {
-    var p_idx: usize = 0;
-    var t_idx: usize = 0;
-
-    while (p_idx < pattern.len) {
-        const p_char = pattern[p_idx];
-
-        if (p_char == '*') {
-            // Wildcard - match zero or more characters
-            if (p_idx == pattern.len - 1) {
-                // Star at end matches rest of string
-                return true;
-            }
-            // Try matching rest of pattern at each position
-            while (t_idx <= text.len) : (t_idx += 1) {
-                if (try globMatch(pattern[p_idx + 1 ..], text[t_idx..])) {
-                    return true;
-                }
-            }
-            return false;
-        } else if (p_char == '?') {
-            // Single character wildcard
-            if (t_idx >= text.len) return false;
-            p_idx += 1;
-            t_idx += 1;
-        } else if (p_char == '[') {
-            // Character class [abc]
-            if (t_idx >= text.len) return false;
-
-            const close = std.mem.indexOfScalarPos(u8, pattern, p_idx, ']') orelse return false;
-            const char_class = pattern[p_idx + 1 .. close];
-            const t_char = text[t_idx];
-
-            var matched = false;
-            for (char_class) |cc| {
-                if (cc == t_char) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) return false;
-
-            p_idx = close + 1;
-            t_idx += 1;
-        } else {
-            // Literal character
-            if (t_idx >= text.len or pattern[p_idx] != text[t_idx]) return false;
-            p_idx += 1;
-            t_idx += 1;
-        }
-    }
-
-    return t_idx == text.len;
-}
+// Glob pattern matching moved to utils/glob.zig and migrated to zuda.algorithms.string.globMatch
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -558,32 +504,32 @@ test "Config.getMatching with glob patterns" {
     }
 }
 
-test "globMatch patterns" {
+test "glob patterns for CONFIG GET" {
     // Wildcard *
-    try std.testing.expect(try globMatch("*", "anything"));
-    try std.testing.expect(try globMatch("max*", "maxmemory"));
-    try std.testing.expect(try globMatch("*memory", "maxmemory"));
-    try std.testing.expect(try globMatch("max*policy", "maxmemory-policy"));
+    try std.testing.expect(glob.matchGlob("*", "anything"));
+    try std.testing.expect(glob.matchGlob("max*", "maxmemory"));
+    try std.testing.expect(glob.matchGlob("*memory", "maxmemory"));
+    try std.testing.expect(glob.matchGlob("max*policy", "maxmemory-policy"));
 
     // Single character ?
-    try std.testing.expect(try globMatch("p?rt", "port"));
-    try std.testing.expect(try globMatch("p?rt", "part")); // ? matches any single char
-    try std.testing.expect(!try globMatch("p?rt", "ports")); // too long
-    try std.testing.expect(!try globMatch("p?rt", "prt")); // too short
+    try std.testing.expect(glob.matchGlob("p?rt", "port"));
+    try std.testing.expect(glob.matchGlob("p?rt", "part")); // ? matches any single char
+    try std.testing.expect(!glob.matchGlob("p?rt", "ports")); // too long
+    try std.testing.expect(!glob.matchGlob("p?rt", "prt")); // too short
 
     // Character class []
-    try std.testing.expect(try globMatch("[abc]ind", "bind"));
-    try std.testing.expect(!try globMatch("[abc]ind", "find"));
-    try std.testing.expect(try globMatch("[pP]ort", "port"));
-    try std.testing.expect(try globMatch("[pP]ort", "Port"));
+    try std.testing.expect(glob.matchGlob("[abc]ind", "bind"));
+    try std.testing.expect(!glob.matchGlob("[abc]ind", "find"));
+    try std.testing.expect(glob.matchGlob("[pP]ort", "port"));
+    try std.testing.expect(glob.matchGlob("[pP]ort", "Port"));
 
     // Combined patterns
-    try std.testing.expect(try globMatch("max*-*", "maxmemory-policy"));
-    try std.testing.expect(!try globMatch("max*-*", "maxmemory"));
+    try std.testing.expect(glob.matchGlob("max*-*", "maxmemory-policy"));
+    try std.testing.expect(!glob.matchGlob("max*-*", "maxmemory"));
 
     // Exact match
-    try std.testing.expect(try globMatch("port", "port"));
-    try std.testing.expect(!try globMatch("port", "ports"));
+    try std.testing.expect(glob.matchGlob("port", "port"));
+    try std.testing.expect(!glob.matchGlob("port", "ports"));
 }
 
 test "Config.set case insensitive" {
