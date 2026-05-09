@@ -6154,6 +6154,61 @@ test "BITPOS - wrong type error" {
     try testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
 }
 
+test "BITPOS - BIT mode with bit-level range" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set bit 20 (byte 2, bit 4)
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "20", "1" });
+
+    // BIT mode: search bits 16-23 (same as byte 2)
+    const response1 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1", "16", "23", "BIT" });
+    defer testing.allocator.free(response1);
+    try testing.expectEqualStrings(":20\r\n", response1);
+
+    // BIT mode: narrow range that excludes bit 20
+    const response2 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1", "21", "23", "BIT" });
+    defer testing.allocator.free(response2);
+    try testing.expectEqualStrings(":-1\r\n", response2);
+
+    // BIT mode: exact bit match
+    const response3 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1", "20", "20", "BIT" });
+    defer testing.allocator.free(response3);
+    try testing.expectEqualStrings(":20\r\n", response3);
+}
+
+test "BITPOS - BIT mode with negative indices" {
+    var server = try TestServer.start(testing.allocator);
+    defer server.stop();
+
+    var client = try RespClient.init(testing.allocator, "127.0.0.1", 6379);
+    defer client.deinit();
+
+    // Set bits: Byte 0 = 0xFF (all 1s), Byte 2 = 0x80 (bit 16 set)
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "0", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "1", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "2", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "3", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "4", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "5", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "6", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "7", "1" });
+    _ = try client.sendCommand(&[_][]const u8{ "SETBIT", "mykey", "16", "1" });
+
+    // BIT mode: last 16 bits (-16 to -1), first 0 should be bit 8
+    const response1 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "0", "-16", "-1", "BIT" });
+    defer testing.allocator.free(response1);
+    try testing.expectEqualStrings(":8\r\n", response1);
+
+    // BIT mode: last 8 bits (-8 to -1), should find bit 16
+    const response2 = try client.sendCommand(&[_][]const u8{ "BITPOS", "mykey", "1", "-8", "-1", "BIT" });
+    defer testing.allocator.free(response2);
+    try testing.expectEqualStrings(":16\r\n", response2);
+}
+
 // ============================================================================
 // INFO Command Tests (Iteration 30)
 // ============================================================================

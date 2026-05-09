@@ -5587,7 +5587,7 @@ pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len < 3 or args.len > 5) {
+    if (args.len < 3 or args.len > 6) {
         return w.writeError("ERR wrong number of arguments for 'bitpos' command");
     }
 
@@ -5618,7 +5618,7 @@ pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         };
     } else null;
 
-    const end: ?i64 = if (args.len == 5) blk: {
+    const end: ?i64 = if (args.len >= 5) blk: {
         break :blk switch (args[4]) {
             .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
@@ -5627,7 +5627,21 @@ pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         };
     } else null;
 
-    const position = storage.bitpos(key, bit, start, end) catch |err| {
+    const unit: storage_mod.RangeUnit = if (args.len == 6) blk: {
+        const unit_str = switch (args[5]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.ascii.eqlIgnoreCase(unit_str, "BYTE")) {
+            break :blk .byte;
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "BIT")) {
+            break :blk .bit;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    } else .byte;
+
+    const position = storage.bitpos(key, bit, start, end, unit) catch |err| {
         if (err == error.WrongType) {
             return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
         }

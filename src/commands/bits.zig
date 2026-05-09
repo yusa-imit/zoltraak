@@ -1,5 +1,6 @@
 const std = @import("std");
-const Storage = @import("../storage/memory.zig").Storage;
+const memory = @import("../storage/memory.zig");
+const Storage = memory.Storage;
 const RespWriter = @import("../protocol/writer.zig").RespWriter;
 
 /// SETBIT key offset value
@@ -187,7 +188,7 @@ pub fn cmdBitop(
     try RespWriter.writeInteger(writer, @intCast(result_len));
 }
 
-/// BITPOS key bit [start [end]]
+/// BITPOS key bit [start [end [BYTE|BIT]]]
 /// Find first bit set to 0 or 1 in a string
 pub fn cmdBitpos(
     storage: *Storage,
@@ -195,7 +196,7 @@ pub fn cmdBitpos(
     writer: anytype,
     _: std.mem.Allocator,
 ) !void {
-    if (args.len < 3 or args.len > 5) {
+    if (args.len < 3 or args.len > 6) {
         try RespWriter.writeError(writer, "ERR wrong number of arguments for 'bitpos' command");
         return;
     }
@@ -221,14 +222,25 @@ pub fn cmdBitpos(
         };
     } else null;
 
-    const end: ?i64 = if (args.len == 5) blk: {
+    const end: ?i64 = if (args.len >= 5) blk: {
         break :blk std.fmt.parseInt(i64, args[4], 10) catch {
             try RespWriter.writeError(writer, "ERR value is not an integer or out of range");
             return;
         };
     } else null;
 
-    const position = storage.bitpos(key, bit, start, end) catch |err| switch (err) {
+    const unit: memory.RangeUnit = if (args.len == 6) blk: {
+        if (std.ascii.eqlIgnoreCase(args[5], "BYTE")) {
+            break :blk .byte;
+        } else if (std.ascii.eqlIgnoreCase(args[5], "BIT")) {
+            break :blk .bit;
+        } else {
+            try RespWriter.writeError(writer, "ERR syntax error");
+            return;
+        }
+    } else .byte;
+
+    const position = storage.bitpos(key, bit, start, end, unit) catch |err| switch (err) {
         error.WrongType => {
             try RespWriter.writeError(writer, "WRONGTYPE Operation against a key holding the wrong kind of value");
             return;
@@ -391,4 +403,109 @@ test "BITPOS command - non-existent key" {
     // BITPOS nonexistent 0 - should return 0 (first bit is conceptually 0)
     try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "nonexistent", "0" }, writer, testing.allocator);
     try testing.expectEqualStrings(":0\r\n", buf.items);
+}
+
+test "BITPOS command - BIT mode with positive indices" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    const writer = buf.writer(testing.allocator);
+
+    // Set bit 10: byte 1, bit 2 (within 0b00100000)
+    _ = try storage.setbit("mykey", 10, 1);
+
+    // BITPOS mykey 1 0 15 BIT - search bits 0-15, should find bit 10
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "0", "15", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":10\r\n", buf.items);
+    buf.clearRetainingCapacity();
+
+    // BITPOS mykey 1 0 9 BIT - search bits 0-9, should not find (returns -1)
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "0", "9", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":-1\r\n", buf.items);
+    buf.clearRetainingCapacity();
+
+    // BITPOS mykey 1 10 10 BIT - exact bit match
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "10", "10", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":10\r\n", buf.items);
+}
+
+test "BITPOS command - BIT mode with negative indices" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    const writer = buf.writer(testing.allocator);
+
+    // Set bits to create pattern: 3 bytes = 24 bits
+    // Byte 0: 0xFF (all 1s), Byte 1: 0x00, Byte 2: 0x80 (bit 16 set)
+    for (0..8) |i| {
+        _ = try storage.setbit("mykey", i, 1);
+    }
+    _ = try storage.setbit("mykey", 16, 1);
+
+    // BITPOS mykey 0 -16 -1 BIT - last 16 bits (8-23), first 0 should be bit 8
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "0", "-16", "-1", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":8\r\n", buf.items);
+    buf.clearRetainingCapacity();
+
+    // BITPOS mykey 1 -8 -1 BIT - last byte (16-23), should find bit 16
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "-8", "-1", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":16\r\n", buf.items);
+}
+
+test "BITPOS command - BIT vs BYTE mode comparison" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    const writer = buf.writer(testing.allocator);
+
+    // Set bit 20: byte 2, bit 4
+    _ = try storage.setbit("mykey", 20, 1);
+
+    // BYTE mode: search bytes 2-2 (16 bits to 23 bits)
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "2", "2" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":20\r\n", buf.items);
+    buf.clearRetainingCapacity();
+
+    // BIT mode: search bits 16-23 (same range as byte 2)
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "16", "23", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":20\r\n", buf.items);
+    buf.clearRetainingCapacity();
+
+    // BIT mode: narrow search bits 20-22 (mid-byte range)
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "20", "22", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":20\r\n", buf.items);
+    buf.clearRetainingCapacity();
+
+    // BIT mode: search bits 21-22 (after target bit)
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "21", "22", "BIT" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":-1\r\n", buf.items);
+}
+
+test "BITPOS command - invalid BYTE|BIT modifier" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    const writer = buf.writer(testing.allocator);
+
+    // Invalid modifier should return error
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "0", "10", "INVALID" }, writer, testing.allocator);
+    try testing.expect(std.mem.startsWith(u8, buf.items, "-ERR"));
+    buf.clearRetainingCapacity();
+
+    // BYTE modifier should be accepted (case insensitive)
+    _ = try storage.setbit("mykey", 10, 1);
+    try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "1", "1", "BYTE" }, writer, testing.allocator);
+    try testing.expectEqualStrings(":10\r\n", buf.items);
 }

@@ -61,6 +61,12 @@ pub const XRefMode = enum {
     acked, // Safe: only delete if all groups acknowledged
 };
 
+/// Range unit for BITPOS command (Redis 7.0.0+)
+pub const RangeUnit = enum {
+    byte, // Default: start/end are byte indices
+    bit, // Redis 7.0+: start/end are bit indices
+};
+
 /// Type of value stored in the key-value store
 pub const ValueType = enum {
     string,
@@ -7811,14 +7817,20 @@ pub const Storage = struct {
 
     /// Find first bit set to 0 or 1 in a string
     /// bit: 0 or 1 to search for
-    /// start/end: byte range (supports negative indices)
-    /// Returns bit position (0-based) or -1 if not found
+    /// Find first bit set to 0 or 1 in a string
+    /// key: The key holding the string value
+    /// bit: 0 or 1 - the bit value to search for
+    /// start: Start position (byte or bit index depending on unit)
+    /// end: End position (byte or bit index depending on unit)
+    /// unit: RangeUnit.byte (default) or RangeUnit.bit (Redis 7.0+)
+    /// Returns bit position (0-based, absolute) or -1 if not found
     pub fn bitpos(
         self: *Storage,
         key: []const u8,
         bit: u1,
         start: ?i64,
         end: ?i64,
+        unit: RangeUnit,
     ) error{WrongType}!i64 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -7837,42 +7849,70 @@ pub const Storage = struct {
                         return if (bit == 0) 0 else -1;
                     }
 
-                    const len: i64 = @intCast(sv.data.len);
-                    const start_idx = if (start) |s| blk: {
-                        const idx = if (s < 0) len + s else s;
-                        break :blk @max(0, @min(idx, len - 1));
-                    } else 0;
-                    const end_idx = if (end) |e| blk: {
-                        const idx = if (e < 0) len + e else e;
-                        break :blk @max(0, @min(idx, len - 1));
-                    } else len - 1;
+                    // Convert to byte-level indices regardless of unit
+                    const bit_len: i64 = @intCast(sv.data.len * 8);
+                    const byte_len: i64 = @intCast(sv.data.len);
 
-                    if (start_idx > end_idx) {
+                    var start_bit: i64 = 0;
+                    var end_bit: i64 = bit_len - 1;
+                    var has_explicit_end: bool = false;
+
+                    if (unit == .bit) {
+                        // BIT mode: start/end are bit indices
+                        if (start) |s| {
+                            const s_norm = if (s < 0) bit_len + s else s;
+                            start_bit = @max(0, @min(s_norm, bit_len - 1));
+                        }
+                        if (end) |e| {
+                            const e_norm = if (e < 0) bit_len + e else e;
+                            end_bit = @max(0, @min(e_norm, bit_len - 1));
+                            has_explicit_end = true;
+                        } else if (start != null) {
+                            // Only start specified, end is end of string
+                            end_bit = bit_len - 1;
+                        }
+                    } else {
+                        // BYTE mode: start/end are byte indices
+                        if (start) |s| {
+                            const s_norm = if (s < 0) byte_len + s else s;
+                            start_bit = @max(0, @min(s_norm, byte_len - 1)) * 8;
+                        }
+                        if (end) |e| {
+                            const e_norm = if (e < 0) byte_len + e else e;
+                            end_bit = (@max(0, @min(e_norm, byte_len - 1)) + 1) * 8 - 1;
+                            has_explicit_end = true;
+                        } else if (start != null) {
+                            // Only start specified, end is end of string
+                            end_bit = bit_len - 1;
+                        }
+                    }
+
+                    // After normalization, convert to unsigned for the search loop
+                    const start_bit_u: usize = @intCast(@max(0, start_bit));
+                    const end_bit_u: usize = @intCast(@max(0, @min(end_bit, bit_len - 1)));
+
+                    if (start_bit_u > end_bit_u) {
                         return -1;
                     }
 
-                    const start_u: usize = @intCast(start_idx);
-                    const end_u: usize = @intCast(end_idx);
+                    // Search bit by bit within range (unsigned arithmetic - no overflow risk)
+                    var bit_pos: usize = start_bit_u;
+                    while (bit_pos <= end_bit_u) : (bit_pos += 1) {
+                        const byte_idx = bit_pos / 8; // No cast needed
+                        const bit_offset: u3 = @intCast(bit_pos % 8); // Safe: 0-7
+                        // Redis uses MSB-first bit ordering: bit 0 is MSB of byte 0
+                        const current_bit: u1 = @intCast((sv.data[byte_idx] >> (7 - bit_offset)) & 1);
 
-                    // Search byte by byte
-                    for (sv.data[start_u .. end_u + 1], start_u..) |byte, byte_idx| {
-                        // Check each bit in the byte
-                        var bit_idx: u3 = 0;
-                        while (bit_idx < 8) : (bit_idx += 1) {
-                            const current_bit: u1 = @intCast((byte >> (7 - bit_idx)) & 1);
-                            if (current_bit == bit) {
-                                const pos: i64 = @intCast(byte_idx * 8 + bit_idx);
-                                return pos;
-                            }
+                        if (current_bit == bit) {
+                            return @intCast(bit_pos); // Convert back to i64 for return
                         }
                     }
 
                     // Not found in range
                     // Special case: if searching for 0 and end is not specified,
-                    // return position after last byte
-                    if (bit == 0 and end == null) {
-                        const pos: i64 = @intCast(sv.data.len * 8);
-                        return pos;
+                    // return position after last byte (padding behavior)
+                    if (bit == 0 and !has_explicit_end) {
+                        return bit_len;
                     }
 
                     return -1;
