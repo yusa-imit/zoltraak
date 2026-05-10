@@ -9468,7 +9468,7 @@ pub const Storage = struct {
                     // Simple mode: basic stream metadata
                     const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
 
-                    try writer.print("*14\r\n", .{});
+                    try writer.print("*18\r\n", .{});
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
                     try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
@@ -9478,6 +9478,8 @@ pub const Storage = struct {
                         last_id.ms,
                         last_id.seq,
                     });
+                    try writer.print("$13\r\nidmp-duration\r\n:{d}\r\n", .{stream_val.idmp_duration_sec});
+                    try writer.print("$12\r\nidmp-maxsize\r\n:{d}\r\n", .{stream_val.idmp_maxsize});
                     try writer.print("$13\r\nfirst-entry\r\n", .{});
                     if (stream_val.entries.items.len > 0) {
                         const first_entry = stream_val.entries.items[0];
@@ -9513,7 +9515,7 @@ pub const Storage = struct {
                     const limit = count_limit orelse stream_val.entries.items.len;
                     const num_entries = @min(limit, stream_val.entries.items.len);
 
-                    try writer.print("*12\r\n", .{});
+                    try writer.print("*14\r\n", .{});
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
                     try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
@@ -9524,6 +9526,8 @@ pub const Storage = struct {
                         last_id.ms,
                         last_id.seq,
                     });
+                    try writer.print("$13\r\nidmp-duration\r\n:{d}\r\n", .{stream_val.idmp_duration_sec});
+                    try writer.print("$12\r\nidmp-maxsize\r\n:{d}\r\n", .{stream_val.idmp_maxsize});
 
                     try writer.print("$7\r\nentries\r\n*{d}\r\n", .{num_entries});
                     for (stream_val.entries.items[0..num_entries]) |stream_entry| {

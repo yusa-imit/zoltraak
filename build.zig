@@ -221,6 +221,18 @@ pub fn build(b: *std.Build) void {
     const run_xread_blocking_tests = b.addRunArtifact(xread_blocking_tests);
     integration_test_step.dependOn(&run_xread_blocking_tests.step);
 
+    // XINFO STREAM IDMP fields integration tests (Iteration 244)
+    const xinfo_stream_idmp_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_xinfo_stream_idmp.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_xinfo_stream_idmp_tests = b.addRunArtifact(xinfo_stream_idmp_tests);
+    integration_test_step.dependOn(&run_xinfo_stream_idmp_tests.step);
+
     // TUI snapshot tests (sailor v1.5.0)
     const tui_snapshot_tests = b.addTest(.{
         .root_module = b.createModule(.{
