@@ -6,7 +6,6 @@ const memory = @import("zoltraak").storage.memory;
 const Server = @import("zoltraak").Server;
 const notifications_mod = @import("zoltraak").storage.notifications;
 
-/// Test keyspace notifications for SET command
 test "keyspace notifications - SET command with KEg flags" {
     const allocator = testing.allocator;
 
@@ -34,7 +33,6 @@ test "keyspace notifications - SET command with KEg flags" {
     try testing.expect(pending > 0);
 }
 
-/// Test keyevent notifications for DEL command
 test "keyspace notifications - DEL command with KE flags" {
     const allocator = testing.allocator;
 
@@ -66,7 +64,6 @@ test "keyspace notifications - DEL command with KE flags" {
     try testing.expect(pending > 0);
 }
 
-/// Test notification flags parsing
 test "parseNotificationFlags - comprehensive" {
     try testing.expect(notifications_mod.parseNotificationFlags("KEA") != 0);
     try testing.expect(notifications_mod.parseNotificationFlags("Kg") != 0);
@@ -74,7 +71,6 @@ test "parseNotificationFlags - comprehensive" {
     try testing.expect(notifications_mod.parseNotificationFlags("K$lsh") != 0);
 }
 
-/// Test notifications disabled by default
 test "keyspace notifications - disabled by default" {
     const allocator = testing.allocator;
 
@@ -96,7 +92,6 @@ test "keyspace notifications - disabled by default" {
     try testing.expect(pending == 0);
 }
 
-/// Test CONFIG GET notify-keyspace-events
 test "CONFIG GET notify-keyspace-events" {
     const allocator = testing.allocator;
 
@@ -111,7 +106,6 @@ test "CONFIG GET notify-keyspace-events" {
     try testing.expect(result.items.len > 0);
 }
 
-/// Test CONFIG SET notify-keyspace-events updates Storage.notification_flags atomically
 test "CONFIG SET notify-keyspace-events - atomic flag update" {
     const allocator = testing.allocator;
 
@@ -141,7 +135,6 @@ test "CONFIG SET notify-keyspace-events - atomic flag update" {
     try testing.expectEqual(@as(u16, 0), flags_after_disable);
 }
 
-/// Test CONFIG SET notify-keyspace-events with specific flags
 test "CONFIG SET notify-keyspace-events - specific flags" {
     const allocator = testing.allocator;
 

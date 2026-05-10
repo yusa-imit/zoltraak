@@ -789,19 +789,24 @@ pub fn executeCommand(
         }
         // String counter commands
         else if (std.mem.eql(u8, cmd_upper, "INCR")) {
-            break :blk try cmdIncr(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdIncr(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "DECR")) {
-            break :blk try cmdDecr(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdDecr(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "INCRBY")) {
-            break :blk try cmdIncrby(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdIncrby(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "DECRBY")) {
-            break :blk try cmdDecrby(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdDecrby(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "INCRBYFLOAT")) {
             break :blk try cmdIncrbyfloat(allocator, storage, array);
         }
         // String utility commands
         else if (std.mem.eql(u8, cmd_upper, "APPEND")) {
-            break :blk try cmdAppend(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdAppend(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "STRLEN")) {
             break :blk try cmdStrlen(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GETSET")) {
@@ -809,7 +814,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "GETDEL")) {
             break :blk try cmdGetdel(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GETEX")) {
-            break :blk try cmdGetex(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdGetex(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "SETNX")) {
             break :blk try cmdSetnx(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SETEX")) {
@@ -844,15 +850,20 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "PEXPIRETIME")) {
             break :blk try keys_cmds.cmdPexpiretime(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "EXPIRE")) {
-            break :blk try keys_cmds.cmdExpire(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdExpire(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "PEXPIRE")) {
-            break :blk try keys_cmds.cmdPexpire(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdPexpire(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "EXPIREAT")) {
-            break :blk try keys_cmds.cmdExpireat(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdExpireat(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "PEXPIREAT")) {
-            break :blk try keys_cmds.cmdPexpireat(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdPexpireat(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "PERSIST")) {
-            break :blk try keys_cmds.cmdPersist(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdPersist(allocator, storage, array, ps, selected_db);
         }
         // Keyspace commands
         else if (std.mem.eql(u8, cmd_upper, "TYPE")) {
@@ -860,9 +871,11 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "KEYS")) {
             break :blk try keys_cmds.cmdKeys(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "RENAME")) {
-            break :blk try keys_cmds.cmdRename(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdRename(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "RENAMENX")) {
-            break :blk try keys_cmds.cmdRenamenx(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdRenamenx(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "RANDOMKEY")) {
             break :blk try keys_cmds.cmdRandomkey(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "UNLINK")) {
@@ -1121,7 +1134,8 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {
             break :blk try cmdGetrange(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SETRANGE")) {
-            break :blk try cmdSetrange(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdSetrange(allocator, storage, array, ps, selected_db);
         }
         // Bit operations
         else if (std.mem.eql(u8, cmd_upper, "SETBIT")) {
@@ -3436,7 +3450,7 @@ fn parseInteger(value: RespValue) !i64 {
 
 /// INCR key
 /// Increments the integer value of key by 1.
-fn cmdIncr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdIncr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3456,12 +3470,15 @@ fn cmdIncr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
         else => return err,
     };
 
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "incr");
+
     return w.writeInteger(new_val);
 }
 
 /// DECR key
 /// Decrements the integer value of key by 1.
-fn cmdDecr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdDecr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3481,12 +3498,15 @@ fn cmdDecr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
         else => return err,
     };
 
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "decr");
+
     return w.writeInteger(new_val);
 }
 
 /// INCRBY key increment
 /// Increments the integer value of key by increment.
-fn cmdIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3510,12 +3530,15 @@ fn cmdIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         else => return err,
     };
 
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "incrby");
+
     return w.writeInteger(new_val);
 }
 
 /// DECRBY key decrement
 /// Decrements the integer value of key by decrement.
-fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3543,6 +3566,9 @@ fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
         else => return err,
     };
+
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "decrby");
 
     return w.writeInteger(new_val);
 }
@@ -3587,7 +3613,7 @@ fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
 /// APPEND key value
 /// Appends value to the string stored at key. Returns new length.
-fn cmdAppend(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdAppend(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3609,6 +3635,9 @@ fn cmdAppend(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         else => return err,
     };
+
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "append");
 
     return w.writeInteger(@intCast(new_len));
 }
@@ -3701,7 +3730,7 @@ fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
 /// GETEX key [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-ms | PERSIST]
 /// Gets the value and optionally updates the expiry.
-fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3757,6 +3786,11 @@ fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
         else => return err,
     };
     defer if (val) |v| allocator.free(v);
+
+    // Publish "getex" notification (for expiry modification)
+    if (val != null and (expires_at != null or persist)) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "getex");
+    }
 
     return w.writeBulkString(val);
 }
@@ -5367,7 +5401,7 @@ pub fn cmdGetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 /// SETRANGE key offset value
 /// Overwrite bytes at offset in string. Zero-pads if necessary.
 /// Returns new total length.
-pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -5401,6 +5435,9 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
         return err;
     };
+
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "setrange");
 
     return w.writeInteger(@intCast(new_len));
 }

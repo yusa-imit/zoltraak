@@ -2,11 +2,47 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
+const notifications_mod = @import("../storage/notifications.zig");
 const glob = @import("../utils/glob.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a key modification
+/// This helper function handles both keyspace and keyevent channels based on config flags
+fn notifyKeyspaceEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_flag: notifications_mod.NotificationFlag,
+    event_name: []const u8,
+) void {
+    // Get notification flags from config
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    // Check if this event type should fire
+    if (!notifications_mod.shouldNotify(flags, event_flag)) {
+        return;
+    }
+
+    // Publish notification (ignore errors — notifications are non-critical)
+    notifications_mod.publishNotification(
+        allocator,
+        pubsub_state,
+        db_index,
+        key,
+        event_name,
+        flags,
+    ) catch {};
+}
 
 // ── TTL family ────────────────────────────────────────────────────────────────
 
@@ -108,31 +144,31 @@ pub fn cmdPexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []c
 
 /// EXPIRE key seconds [NX|XX|GT|LT]
 /// Set expiry in seconds. Returns 1 if set, 0 if key does not exist.
-pub fn cmdExpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    return cmdExpireImpl(allocator, storage, args, false, "expire");
+pub fn cmdExpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    return cmdExpireImpl(allocator, storage, args, ps, db_index, false, "expire");
 }
 
 /// PEXPIRE key milliseconds [NX|XX|GT|LT]
 /// Set expiry in milliseconds. Returns 1 if set, 0 if key does not exist.
-pub fn cmdPexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    return cmdExpireImpl(allocator, storage, args, true, "pexpire");
+pub fn cmdPexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    return cmdExpireImpl(allocator, storage, args, ps, db_index, true, "pexpire");
 }
 
 /// EXPIREAT key unix-time-seconds [NX|XX|GT|LT]
 /// Set expiry as absolute Unix timestamp in seconds.
-pub fn cmdExpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    return cmdExpireatImpl(allocator, storage, args, false, "expireat");
+pub fn cmdExpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    return cmdExpireatImpl(allocator, storage, args, ps, db_index, false, "expireat");
 }
 
 /// PEXPIREAT key unix-time-milliseconds [NX|XX|GT|LT]
 /// Set expiry as absolute Unix timestamp in milliseconds.
-pub fn cmdPexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    return cmdExpireatImpl(allocator, storage, args, true, "pexpireat");
+pub fn cmdPexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    return cmdExpireatImpl(allocator, storage, args, ps, db_index, true, "pexpireat");
 }
 
 /// PERSIST key
 /// Remove the expiry from a key. Returns 1 if removed, 0 if key has no expiry or doesn't exist.
-pub fn cmdPersist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdPersist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -151,6 +187,12 @@ pub fn cmdPersist(allocator: std.mem.Allocator, storage: *Storage, args: []const
     if (ttl_ms == -1) return w.writeInteger(0); // already no expiry
 
     const ok = storage.setExpiry(key, null, 0);
+
+    // Publish "persist" notification if successful
+    if (ok) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, "persist");
+    }
+
     return w.writeInteger(if (ok) 1 else 0);
 }
 
@@ -248,7 +290,7 @@ pub fn cmdKeys(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
 /// RENAME key newkey
 /// Returns +OK. Returns -ERR if key does not exist.
-pub fn cmdRename(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdRename(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -271,12 +313,17 @@ pub fn cmdRename(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         else => return err,
     };
 
+    // Publish notifications for the rename event
+    // "del" event for old key, "set" event for new key
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, "del");
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, newkey, .generic, "set");
+
     return w.writeOK();
 }
 
 /// RENAMENX key newkey
 /// Returns :1 if renamed, :0 if newkey already exists.
-pub fn cmdRenamenx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdRenamenx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -298,6 +345,12 @@ pub fn cmdRenamenx(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         error.NoSuchKey => return w.writeError("ERR no such key"),
         else => return err,
     };
+
+    // Publish notifications if rename was successful
+    if (ok) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, "del");
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, newkey, .generic, "set");
+    }
 
     return w.writeInteger(if (ok) 1 else 0);
 }
@@ -607,6 +660,8 @@ fn cmdExpireImpl(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const RespValue,
+    ps: *PubSub,
+    db_index: u32,
     is_ms: bool,
     cmd_name: []const u8,
 ) ![]const u8 {
@@ -668,6 +723,12 @@ fn cmdExpireImpl(
         now_ms + (time_val * 1000);
 
     const ok = storage.setExpiry(key, expires_at_ms, options);
+
+    // Publish "expire" or "pexpire" notification if successful
+    if (ok) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, cmd_name);
+    }
+
     return w.writeInteger(if (ok) 1 else 0);
 }
 
@@ -677,6 +738,8 @@ fn cmdExpireatImpl(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const RespValue,
+    ps: *PubSub,
+    db_index: u32,
     is_ms: bool,
     cmd_name: []const u8,
 ) ![]const u8 {
@@ -735,6 +798,12 @@ fn cmdExpireatImpl(
     const expires_at_ms: i64 = if (is_ms) unix_time else unix_time * 1000;
 
     const ok = storage.setExpiry(key, expires_at_ms, options);
+
+    // Publish "expireat" or "pexpireat" notification if successful
+    if (ok) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, cmd_name);
+    }
+
     return w.writeInteger(if (ok) 1 else 0);
 }
 
