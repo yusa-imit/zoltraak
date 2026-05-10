@@ -4547,11 +4547,10 @@ pub fn cmdDigest(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeNull();
     }
 
-    // Compute Wyhash (placeholder for XXH3 - Zig std doesn't have XXH3 yet)
-    // TODO: Replace with XXH3 when available for full Redis compatibility
-    const hash_value = std.hash.Wyhash.hash(0, value_result.?);
+    // Compute XXH3-64 hash digest as per Redis 8.4 specification
+    const hash_value = std.hash.XxHash3.hash(0, value_result.?);
 
-    // Convert to hex string
+    // Convert to hex string (16 lowercase hex characters for 64-bit hash)
     const hex_str = try std.fmt.allocPrint(allocator, "{x:0>16}", .{hash_value});
     defer allocator.free(hex_str);
 

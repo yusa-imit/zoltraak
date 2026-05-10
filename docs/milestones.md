@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 242 (461+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 18.7 Redis 8.x Commands: DELEX** ✅, 2/5 zuda migrations, sailor v1.22.0 migrated)
+- **Iterations complete**: 243 (462+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 18.7 Redis 8.x Commands: DELEX, DIGEST** ✅, 2/5 zuda migrations, sailor v2.8.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 18 (Advanced Features & Polish) — DELEX complete, next: DIGEST enhancements or Phase 10 TLS
+- **Current phase**: Phase 18 (Advanced Features & Polish) — DIGEST complete, next: XCFGSET or BITOP extensions or Phase 10 TLS
 - **Next milestone**: Phase 10 (TLS/SSL) or Phase 17 (Modules API) or Phase 18 polish features
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
