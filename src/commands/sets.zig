@@ -3,12 +3,51 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const client_mod = @import("./client.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const RespProtocol = client_mod.RespProtocol;
 const ClientRegistry = client_mod.ClientRegistry;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a set command
+fn notifySetEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .set)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
+
+/// Publish keyspace notification for generic commands (e.g., del)
+fn notifyGenericEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .generic)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// SADD key member [member ...]
 /// Adds one or more members to a set
