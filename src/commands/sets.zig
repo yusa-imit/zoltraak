@@ -52,7 +52,7 @@ fn notifyGenericEvent(
 /// SADD key member [member ...]
 /// Adds one or more members to a set
 /// Returns integer - count of members actually added (excluding duplicates)
-pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
+pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -85,6 +85,11 @@ pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return err;
     };
 
+    // Publish notification if members were added
+    if (added_count > 0) {
+        notifySetEvent(allocator, storage, ps, db_index, key, "sadd");
+    }
+
     // Generate invalidation messages for tracking clients
     const invalidation_messages = client_registry.getInvalidationMessages(key, client_id, allocator) catch &[_]client_mod.InvalidationMessage{};
     defer {
@@ -102,7 +107,7 @@ pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// SREM key member [member ...]
 /// Removes one or more members from a set
 /// Returns integer - count of members actually removed
-pub fn cmdSrem(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSrem(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -134,6 +139,14 @@ pub fn cmdSrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
         return err;
     };
+
+    // Publish notification if members were removed
+    if (removed_count > 0) {
+        notifySetEvent(allocator, storage, ps, db_index, key, "srem");
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
 
     return w.writeInteger(@intCast(removed_count));
 }
@@ -393,7 +406,7 @@ pub fn cmdSdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
 /// SUNIONSTORE destination key [key ...]
 /// Store the union of sets in destination. Returns count of members in result.
-pub fn cmdSunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -424,12 +437,18 @@ pub fn cmdSunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return err;
     };
 
+    // Notify only on destination key
+    notifySetEvent(allocator, storage, ps, db_index, dest, "sunionstore");
+    if (count == 0) {
+        notifyGenericEvent(allocator, storage, ps, db_index, dest, "del");
+    }
+
     return w.writeInteger(@intCast(count));
 }
 
 /// SINTERSTORE destination key [key ...]
 /// Store the intersection of sets in destination. Returns count of members in result.
-pub fn cmdSinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -460,12 +479,18 @@ pub fn cmdSinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return err;
     };
 
+    // Notify only on destination key
+    notifySetEvent(allocator, storage, ps, db_index, dest, "sinterstore");
+    if (count == 0) {
+        notifyGenericEvent(allocator, storage, ps, db_index, dest, "del");
+    }
+
     return w.writeInteger(@intCast(count));
 }
 
 /// SDIFFSTORE destination key [key ...]
 /// Store the difference of sets in destination. Returns count of members in result.
-pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -496,13 +521,19 @@ pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
         return err;
     };
 
+    // Notify only on destination key
+    notifySetEvent(allocator, storage, ps, db_index, dest, "sdiffstore");
+    if (count == 0) {
+        notifyGenericEvent(allocator, storage, ps, db_index, dest, "del");
+    }
+
     return w.writeInteger(@intCast(count));
 }
 
 /// SPOP key [count]
 /// Remove and return random member(s) from set.
 /// Returns bulk string (single pop) or array (with count).
-pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -543,6 +574,10 @@ pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
                 allocator.free(members);
             }
             if (members.len > 0) {
+                notifySetEvent(allocator, storage, ps, db_index, key, "spop");
+                if (!storage.exists(key)) {
+                    notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                }
                 return w.writeBulkString(members[0]);
             }
         }
@@ -553,6 +588,12 @@ pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
             defer {
                 for (members) |m| allocator.free(m);
                 allocator.free(members);
+            }
+            if (members.len > 0) {
+                notifySetEvent(allocator, storage, ps, db_index, key, "spop");
+                if (!storage.exists(key)) {
+                    notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                }
             }
             var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len);
             defer resp_values.deinit(allocator);
@@ -630,7 +671,7 @@ pub fn cmdSrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
 /// SMOVE source destination member
 /// Atomically move member between sets.
 /// Returns :1 if moved, :0 if member not in source.
-pub fn cmdSmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -657,6 +698,15 @@ pub fn cmdSmove(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
         return err;
     };
+
+    // Fire notifications in correct order: source removal first, then destination addition
+    if (moved) {
+        notifySetEvent(allocator, storage, ps, db_index, source, "srem");
+        notifySetEvent(allocator, storage, ps, db_index, destination, "sadd");
+        if (!storage.exists(source)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, source, "del");
+        }
+    }
 
     return w.writeInteger(if (moved) 1 else 0);
 }

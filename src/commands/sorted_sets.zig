@@ -3,12 +3,51 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const client_mod = @import("./client.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const MapPair = writer_mod.MapPair;
 const Storage = storage_mod.Storage;
 const RespProtocol = client_mod.RespProtocol;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a sorted set command
+fn notifyZsetEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .zset)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
+
+/// Publish keyspace notification for generic commands (e.g., del)
+fn notifyGenericEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .generic)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// Parse score from string, supporting +inf and -inf
 fn parseScore(s: []const u8) !f64 {
@@ -24,7 +63,7 @@ fn parseScore(s: []const u8) !f64 {
 /// ZADD key [NX|XX] [CH] score member [score member ...]
 /// Sets members with scores in a sorted set
 /// Returns integer - count of new members added (or changed if CH flag set)
-pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -108,6 +147,11 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return err;
     };
 
+    // Publish notification if members were added or updated
+    if (result.added > 0 or result.updated > 0) {
+        notifyZsetEvent(allocator, storage, ps, db_index, key, "zadd");
+    }
+
     // Return added or changed count depending on CH flag
     const ch_flag = (options & 4) != 0;
     const count = if (ch_flag) result.changed else result.added;
@@ -117,7 +161,7 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// ZREM key member [member ...]
 /// Removes members from a sorted set
 /// Returns integer - count of members removed
-pub fn cmdZrem(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZrem(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -147,6 +191,14 @@ pub fn cmdZrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
         return err;
     };
+
+    // Publish notification if members were removed
+    if (removed_count > 0) {
+        notifyZsetEvent(allocator, storage, ps, db_index, key, "zrem");
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
 
     return w.writeInteger(@intCast(removed_count));
 }
@@ -752,7 +804,7 @@ pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 /// ZINCRBY key increment member
 /// Increment score of member in sorted set by increment
 /// Returns new score as bulk string
-pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -785,6 +837,9 @@ pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
         }
         return err;
     };
+
+    // Publish notification
+    notifyZsetEvent(allocator, storage, ps, db_index, key, "zincrby");
 
     var score_buf: [64]u8 = undefined;
     const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{new_score});
@@ -843,7 +898,7 @@ pub fn cmdZcount(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// ZPOPMIN key [count]
 /// Remove and return lowest-score members.
 /// Returns interleaved array of [member, score, ...].
-pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -880,6 +935,12 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
             for (members) |sm| allocator.free(sm.member);
             allocator.free(members);
         }
+        if (members.len > 0) {
+            notifyZsetEvent(allocator, storage, ps, db_index, key, "zpopmin");
+            if (!storage.exists(key)) {
+                notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+            }
+        }
         var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
         defer resp_values.deinit(allocator);
         // Collect allocated score strings so we can free them after writeArray
@@ -904,7 +965,7 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
 /// ZPOPMAX key [count]
 /// Remove and return highest-score members.
 /// Returns interleaved array of [member, score, ...].
-pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -940,6 +1001,12 @@ pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const
         defer {
             for (members) |sm| allocator.free(sm.member);
             allocator.free(members);
+        }
+        if (members.len > 0) {
+            notifyZsetEvent(allocator, storage, ps, db_index, key, "zpopmax");
+            if (!storage.exists(key)) {
+                notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+            }
         }
         var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
         defer resp_values.deinit(allocator);

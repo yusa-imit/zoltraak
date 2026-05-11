@@ -3,17 +3,56 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const client_mod = @import("./client.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const MapPair = writer_mod.MapPair;
 const Storage = storage_mod.Storage;
 const RespProtocol = client_mod.RespProtocol;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a hash command
+fn notifyHashEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .hash)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
+
+/// Publish keyspace notification for generic commands (e.g., del)
+fn notifyGenericEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .generic)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// HSET key field value [field value ...]
 /// Sets field-value pairs in a hash
 /// Returns integer - count of fields added (not updated)
-pub fn cmdHset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -56,6 +95,11 @@ pub fn cmdHset(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return err;
     };
 
+    // Publish notification if fields were added or modified
+    if (added_count > 0 or args.len > 4) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hset");
+    }
+
     return w.writeInteger(@intCast(added_count));
 }
 
@@ -63,7 +107,7 @@ pub fn cmdHset(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// Deprecated alias for HSET - sets field-value pairs in a hash
 /// Returns simple string "OK"
 /// Note: Redis deprecated this in favor of HSET, but many clients still use it
-pub fn cmdHmset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHmset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -106,6 +150,9 @@ pub fn cmdHmset(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return err;
     };
 
+    // Publish notification (HMSET always modifies)
+    notifyHashEvent(allocator, storage, ps, db_index, key, "hset");
+
     // HMSET returns "OK" instead of the count
     return w.writeSimpleString("OK");
 }
@@ -144,7 +191,7 @@ pub fn cmdHget(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// HDEL key field [field ...]
 /// Delete fields from a hash
 /// Returns integer - count of fields deleted
-pub fn cmdHdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -176,6 +223,14 @@ pub fn cmdHdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
         return err;
     };
+
+    // Publish notification if fields were deleted
+    if (deleted_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hdel");
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
 
     return w.writeInteger(@intCast(deleted_count));
 }
@@ -418,7 +473,7 @@ pub fn cmdHmget(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// HINCRBY key field increment
 /// Increment integer field in a hash by increment
 /// Returns new value as integer
-pub fn cmdHincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -452,13 +507,16 @@ pub fn cmdHincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
         else => return err,
     };
 
+    // Publish notification
+    notifyHashEvent(allocator, storage, ps, db_index, key, "hincrby");
+
     return w.writeInteger(new_value);
 }
 
 /// HINCRBYFLOAT key field increment
 /// Increment float field in a hash by increment
 /// Returns new value as bulk string
-pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -491,6 +549,9 @@ pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []
         else => return err,
     };
 
+    // Publish notification
+    notifyHashEvent(allocator, storage, ps, db_index, key, "hincrbyfloat");
+
     // Format result as bulk string with no trailing zeros
     var buf: [64]u8 = undefined;
     const raw = std.fmt.bufPrint(&buf, "{d}", .{new_value}) catch "0";
@@ -510,7 +571,7 @@ pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []
 /// HSETNX key field value
 /// Set field in hash only if field does not exist
 /// Returns 1 if field was set, 0 if field already existed
-pub fn cmdHsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -537,6 +598,11 @@ pub fn cmdHsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         else => return err,
     };
+
+    // Publish notification if field was set
+    if (was_set) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hset");
+    }
 
     return w.writeInteger(if (was_set) 1 else 0);
 }
