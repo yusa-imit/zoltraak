@@ -3,16 +3,57 @@ const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const client_mod = @import("client.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const ClientRegistry = client_mod.ClientRegistry;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a list command
+/// Fires only if list events (.list flag) are enabled
+fn notifyListEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .list)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
+
+/// Publish keyspace notification for generic commands (e.g., del)
+/// Fires only if generic events (.generic flag) are enabled
+fn notifyGenericEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .generic)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// LPUSH key element [element ...]
 /// Prepends one or more elements to the list head
 /// Returns integer - length of list after push
-pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
+pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, client_registry: *ClientRegistry, client_id: u64) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -45,6 +86,9 @@ pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return err;
     };
 
+    // Publish notification
+    notifyListEvent(allocator, storage, ps, db_index, key, "lpush");
+
     // Generate invalidation messages for tracking clients
     const invalidation_messages = client_registry.getInvalidationMessages(key, client_id, allocator) catch &[_]client_mod.InvalidationMessage{};
     defer {
@@ -62,7 +106,7 @@ pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// RPUSH key element [element ...]
 /// Appends one or more elements to the list tail
 /// Returns integer - length of list after push
-pub fn cmdRpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdRpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -95,6 +139,9 @@ pub fn cmdRpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return err;
     };
 
+    // Publish notification
+    notifyListEvent(allocator, storage, ps, db_index, key, "rpush");
+
     return w.writeInteger(@intCast(length));
 }
 
@@ -102,7 +149,7 @@ pub fn cmdRpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Removes and returns the first element(s) from the list head
 /// Without count: returns single bulk string
 /// With count: returns array of bulk strings
-pub fn cmdLpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -133,6 +180,9 @@ pub fn cmdLpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         count = @intCast(count_i64);
     }
 
+    // Check if key exists before popping
+    const key_existed = storage.exists(key);
+
     // Execute LPOP
     const result = (try storage.lpop(allocator, key, count)) orelse {
         // Key doesn't exist or is not a list
@@ -145,6 +195,15 @@ pub fn cmdLpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     defer {
         for (result) |elem| allocator.free(elem);
         allocator.free(result);
+    }
+
+    // Publish notifications if key existed and was popped
+    if (key_existed and result.len > 0) {
+        notifyListEvent(allocator, storage, ps, db_index, key, "lpop");
+        // If list is now empty, also fire del event
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
     }
 
     // Format response based on count parameter
@@ -172,7 +231,7 @@ pub fn cmdLpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// Removes and returns the last element(s) from the list tail
 /// Without count: returns single bulk string
 /// With count: returns array of bulk strings
-pub fn cmdRpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdRpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -203,6 +262,9 @@ pub fn cmdRpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         count = @intCast(count_i64);
     }
 
+    // Check if key exists before popping
+    const key_existed = storage.exists(key);
+
     // Execute RPOP
     const result = (try storage.rpop(allocator, key, count)) orelse {
         // Key doesn't exist or is not a list
@@ -215,6 +277,15 @@ pub fn cmdRpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     defer {
         for (result) |elem| allocator.free(elem);
         allocator.free(result);
+    }
+
+    // Publish notifications if key existed and was popped
+    if (key_existed and result.len > 0) {
+        notifyListEvent(allocator, storage, ps, db_index, key, "rpop");
+        // If list is now empty, also fire del event
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
     }
 
     // Format response based on count parameter
@@ -815,7 +886,7 @@ pub fn cmdLindex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
 /// LSET key index element
 /// Sets the element at index in the list to element.
-pub fn cmdLset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -849,13 +920,16 @@ pub fn cmdLset(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         else => return err,
     };
 
+    // Publish notification
+    notifyListEvent(allocator, storage, ps, db_index, key, "lset");
+
     return w.writeSimpleString("OK");
 }
 
 /// LTRIM key start stop
 /// Trims the list to the specified range [start, stop].
 /// Returns +OK always (even if key doesn't exist).
-pub fn cmdLtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -893,13 +967,20 @@ pub fn cmdLtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return err;
     };
 
+    // Publish notification
+    notifyListEvent(allocator, storage, ps, db_index, key, "ltrim");
+    // If list is now empty, also fire del event
+    if (!storage.exists(key)) {
+        notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+    }
+
     return w.writeSimpleString("OK");
 }
 
 /// LREM key count element
 /// Removes `count` occurrences of `element` from the list.
 /// count > 0: from head; count < 0: from tail; count == 0: all.
-pub fn cmdLrem(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLrem(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -933,13 +1014,22 @@ pub fn cmdLrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return err;
     };
 
+    // Publish notification if elements were removed
+    if (removed > 0) {
+        notifyListEvent(allocator, storage, ps, db_index, key, "lrem");
+        // If list is now empty, also fire del event
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
+
     return w.writeInteger(@intCast(removed));
 }
 
 /// LPUSHX key element [element ...]
 /// Prepends elements only if the key already exists as a list.
 /// Returns 0 if key doesn't exist; returns new length otherwise.
-pub fn cmdLpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -970,13 +1060,18 @@ pub fn cmdLpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return err;
     };
 
+    // Publish notification only if key existed and was modified
+    if (length != null) {
+        notifyListEvent(allocator, storage, ps, db_index, key, "lpush");
+    }
+
     return w.writeInteger(@intCast(length orelse 0));
 }
 
 /// RPUSHX key element [element ...]
 /// Appends elements only if the key already exists as a list.
 /// Returns 0 if key doesn't exist; returns new length otherwise.
-pub fn cmdRpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdRpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1007,13 +1102,18 @@ pub fn cmdRpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return err;
     };
 
+    // Publish notification only if key existed and was modified
+    if (length != null) {
+        notifyListEvent(allocator, storage, ps, db_index, key, "rpush");
+    }
+
     return w.writeInteger(@intCast(length orelse 0));
 }
 
 /// LINSERT key BEFORE|AFTER pivot element
 /// Inserts element before or after the first occurrence of pivot.
 /// Returns new list length, -1 if pivot not found, 0 if key doesn't exist.
-pub fn cmdLinsert(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLinsert(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1054,6 +1154,11 @@ pub fn cmdLinsert(allocator: std.mem.Allocator, storage: *Storage, args: []const
         }
         return err;
     };
+
+    // Publish notification only if element was inserted
+    if (result > 0) {
+        notifyListEvent(allocator, storage, ps, db_index, key, "linsert");
+    }
 
     return w.writeInteger(result);
 }
@@ -1165,7 +1270,7 @@ pub fn cmdLpos(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// LMOVE source dest LEFT|RIGHT LEFT|RIGHT
 /// Atomically pops from source and pushes to destination.
 /// Returns the moved element, or null bulk if source is empty/missing.
-pub fn cmdLmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1215,6 +1320,22 @@ pub fn cmdLmove(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     };
     defer if (moved) |m| allocator.free(m);
 
+    // Publish notifications if element was moved
+    if (moved) |_| {
+        // Fire source pop event
+        const src_event = if (src_left) "lpop" else "rpop";
+        notifyListEvent(allocator, storage, ps, db_index, src, src_event);
+
+        // Fire destination push event
+        const dst_event = if (dst_left) "lpush" else "rpush";
+        notifyListEvent(allocator, storage, ps, db_index, dst, dst_event);
+
+        // If source is now empty, also fire del event
+        if (!storage.exists(src)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, src, "del");
+        }
+    }
+
     if (moved) |elem| {
         return w.writeBulkString(elem);
     } else {
@@ -1225,7 +1346,7 @@ pub fn cmdLmove(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// RPOPLPUSH source dest
 /// Legacy command equivalent to LMOVE source dest RIGHT LEFT.
 /// Pops from source tail, pushes to dest head.
-pub fn cmdRpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdRpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1251,6 +1372,18 @@ pub fn cmdRpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return err;
     };
     defer if (moved) |m| allocator.free(m);
+
+    // Publish notifications if element was moved
+    if (moved) |_| {
+        // Fire rpop on source, lpush on destination
+        notifyListEvent(allocator, storage, ps, db_index, src, "rpop");
+        notifyListEvent(allocator, storage, ps, db_index, dst, "lpush");
+
+        // If source is now empty, also fire del event
+        if (!storage.exists(src)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, src, "del");
+        }
+    }
 
     if (moved) |elem| {
         return w.writeBulkString(elem);
@@ -1760,7 +1893,9 @@ test "lists - RPOPLPUSH on missing source returns null" {
 /// Blocking version of LPOP - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, element] or null if timeout expires.
-pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps; // TODO: Add notification support for blocking commands
+    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1833,7 +1968,9 @@ pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Blocking version of RPOP - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, element] or null if timeout expires.
-pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps; // TODO: Add notification support for blocking commands
+    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1906,7 +2043,9 @@ pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Blocking version of LMOVE - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns the moved element or null if source is empty and timeout expires.
-pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps; // TODO: Add notification support for blocking commands
+    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1998,7 +2137,9 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// Pops elements from the first non-empty list key from the list of provided key names.
 /// Elements are popped from either the left or right of the first non-empty list.
 /// Returns array [key, [elements...]] or null if all lists are empty.
-pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps; // TODO: Add notification support for list commands
+    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2131,7 +2272,9 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Blocking version of LMPOP - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns [key, [elements...]] or null if timeout expires.
-pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps; // TODO: Add notification support for blocking commands
+    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 

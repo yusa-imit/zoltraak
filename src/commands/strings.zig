@@ -894,13 +894,17 @@ pub fn executeCommand(
         }
         // List commands
         else if (std.mem.eql(u8, cmd_upper, "LPUSH")) {
-            break :blk try lists.cmdLpush(allocator, storage, array, client_registry, client_id);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLpush(allocator, storage, array, ps, selected_db, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "RPUSH")) {
-            break :blk try lists.cmdRpush(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdRpush(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LPOP")) {
-            break :blk try lists.cmdLpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "RPOP")) {
-            break :blk try lists.cmdRpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdRpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LRANGE")) {
             break :blk try lists.cmdLrange(allocator, storage, array, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "LLEN")) {
@@ -908,34 +912,47 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "LINDEX")) {
             break :blk try lists.cmdLindex(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LSET")) {
-            break :blk try lists.cmdLset(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLset(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LTRIM")) {
-            break :blk try lists.cmdLtrim(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLtrim(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LREM")) {
-            break :blk try lists.cmdLrem(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLrem(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LPUSHX")) {
-            break :blk try lists.cmdLpushx(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLpushx(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "RPUSHX")) {
-            break :blk try lists.cmdRpushx(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdRpushx(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LINSERT")) {
-            break :blk try lists.cmdLinsert(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLinsert(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LPOS")) {
             break :blk try lists.cmdLpos(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "LMOVE")) {
-            break :blk try lists.cmdLmove(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLmove(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "RPOPLPUSH")) {
-            break :blk try lists.cmdRpoplpush(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdRpoplpush(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BLPOP")) {
-            break :blk try lists.cmdBlpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdBlpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BRPOP")) {
-            break :blk try lists.cmdBrpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdBrpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "BRPOPLPUSH")) {
             // BRPOPLPUSH is a deprecated alias for BLMOVE RIGHT LEFT
-            break :blk try lists.cmdBlmove(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdBlmove(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LMPOP")) {
-            break :blk try lists.cmdLmpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdLmpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BLMPOP")) {
-            break :blk try lists.cmdBlmpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdBlmpop(allocator, storage, array, ps, selected_db);
         }
         // Set commands
         else if (std.mem.eql(u8, cmd_upper, "SADD")) {
