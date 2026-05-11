@@ -2,6 +2,8 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 const streams = @import("streams.zig");
 
 const RespValue = protocol.RespValue;
@@ -10,13 +12,32 @@ const Storage = storage_mod.Storage;
 const StreamId = storage_mod.Value.StreamId;
 const StreamEntry = storage_mod.Value.StreamEntry;
 const XRefMode = storage_mod.XRefMode;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a stream command
+fn notifyStreamEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .stream)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// XGROUP CREATE key groupname <id | $> [MKSTREAM]
 /// XGROUP DESTROY key groupname
 /// XGROUP SETID key groupname <id | $>
 /// XGROUP CREATECONSUMER key groupname consumername
 /// XGROUP DELCONSUMER key groupname consumername
-pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -79,6 +100,9 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             else => |e| return e,
         };
 
+        // Publish notification (NEVER fire "del" for streams)
+        notifyStreamEvent(allocator, storage, ps, db_index, key, "xgroup-create");
+
         return w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "DESTROY")) {
         if (args.len < 4) {
@@ -99,6 +123,11 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             else => |e| return e,
         };
+
+        // Publish notification if group was destroyed (NEVER fire "del" for streams)
+        if (destroyed) {
+            notifyStreamEvent(allocator, storage, ps, db_index, key, "xgroup-destroy");
+        }
 
         return w.writeInteger(if (destroyed) 1 else 0);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "SETID")) {
@@ -128,6 +157,9 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             else => |e| return e,
         };
 
+        // Publish notification (NEVER fire "del" for streams)
+        notifyStreamEvent(allocator, storage, ps, db_index, key, "xgroup-setid");
+
         return w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "CREATECONSUMER")) {
         if (args.len < 5) {
@@ -155,6 +187,11 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             else => |e| return e,
         };
+
+        // Publish notification if consumer was created (NEVER fire "del" for streams)
+        if (created) {
+            notifyStreamEvent(allocator, storage, ps, db_index, key, "xgroup-createconsumer");
+        }
 
         return w.writeInteger(if (created) 1 else 0);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "DELCONSUMER")) {
@@ -184,6 +221,9 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             else => |e| return e,
         };
+
+        // Publish notification (NEVER fire "del" for streams)
+        notifyStreamEvent(allocator, storage, ps, db_index, key, "xgroup-delconsumer");
 
         return w.writeInteger(pending_count);
     } else {

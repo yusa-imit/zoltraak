@@ -2,17 +2,38 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const StreamId = storage_mod.Value.StreamId;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a stream command
+fn notifyStreamEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .stream)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// XADD key <ID | *> field value [field value ...]
 /// Appends a new entry to a stream.
 /// ID can be "*" for auto-generation or explicit "ms-seq" format.
 /// Returns the ID of the added entry.
-pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -50,6 +71,9 @@ pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         error.StreamIdTooSmall => return w.writeError("ERR The ID specified in XADD is equal or smaller than the target stream top item"),
         else => return err,
     };
+
+    // Publish notification
+    notifyStreamEvent(allocator, storage, ps, db_index, key, "xadd");
 
     // Format ID as bulk string
     const id_formatted = try id.format(allocator);
@@ -287,7 +311,7 @@ pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
 /// XDEL key ID [ID ...]
 /// Removes specific entries from a stream by ID.
 /// Returns number of entries deleted.
-pub fn cmdXdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -318,13 +342,18 @@ pub fn cmdXdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         else => return err,
     };
 
+    // Publish notification if entries were deleted (NEVER fire "del" for streams)
+    if (deleted > 0) {
+        notifyStreamEvent(allocator, storage, ps, db_index, key, "xdel");
+    }
+
     return w.writeInteger(@intCast(deleted));
 }
 
 /// XTRIM key MAXLEN [~] count
 /// Trims the stream to approximately the specified length.
 /// Returns number of entries deleted.
-pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -372,6 +401,11 @@ pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         else => return err,
     };
 
+    // Publish notification if entries were trimmed (NEVER fire "del" for streams)
+    if (deleted > 0) {
+        notifyStreamEvent(allocator, storage, ps, db_index, key, "xtrim");
+    }
+
     return w.writeInteger(@intCast(deleted));
 }
 
@@ -379,7 +413,7 @@ pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Set stream metadata (last_id, entries_added, max_deleted_entry_id)
 /// Creates stream if it doesn't exist
 /// $ placeholder uses current last_id (or 0-0 for empty streams)
-pub fn cmdXsetid(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXsetid(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -442,6 +476,9 @@ pub fn cmdXsetid(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         error.InvalidStreamId, error.InvalidCharacter, error.Overflow => return w.writeError("ERR invalid stream ID specified as stream command argument"),
         else => return err,
     };
+
+    // Publish notification (NEVER fire "del" for streams)
+    notifyStreamEvent(allocator, storage, ps, db_index, key, "xsetid");
 
     return w.writeSimpleString("OK");
 }

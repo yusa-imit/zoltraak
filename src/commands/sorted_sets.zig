@@ -2090,7 +2090,7 @@ test "cmdZcount - exclusive bounds" {
 /// ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]
 /// Pops members with the highest or lowest scores from the first non-empty sorted set.
 /// Returns array [key, [member, score, ...]] or null if all sorted sets are empty.
-pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2181,6 +2181,13 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
 
         if (members.len > 0) {
+            // Publish notification before returning
+            const event_name = if (pop_min) "zpopmin" else "zpopmax";
+            notifyZsetEvent(allocator, storage, ps, db_index, key, event_name);
+            if (!storage.exists(key)) {
+                notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+            }
+
             // Return [key, [member, score, ...]]
             // Build member-score array
             var member_score_buf = std.ArrayList(u8){};
@@ -2380,7 +2387,10 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// Blocking version of ZPOPMIN - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, member, score] or null if timeout expires.
-pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps;
+    _ = db_index;
+    // TODO: Implement notifications for blocking operations
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2467,7 +2477,10 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 /// Blocking version of ZPOPMAX - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, member, score] or null if timeout expires.
-pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    _ = ps;
+    _ = db_index;
+    // TODO: Implement notifications for blocking operations
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3258,7 +3271,7 @@ pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
 /// ZUNIONSTORE destination numkeys key [key ...]
 /// Store union of sorted sets in destination
-pub fn cmdZunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3301,12 +3314,18 @@ pub fn cmdZunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return err;
     };
 
+    // Publish notification on destination only
+    notifyZsetEvent(allocator, storage, ps, db_index, dest, "zunionstore");
+    if (count == 0) {
+        notifyGenericEvent(allocator, storage, ps, db_index, dest, "del");
+    }
+
     return w.writeInteger(@intCast(count));
 }
 
 /// ZINTERSTORE destination numkeys key [key ...]
 /// Store intersection of sorted sets in destination
-pub fn cmdZinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3349,12 +3368,18 @@ pub fn cmdZinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return err;
     };
 
+    // Publish notification on destination only
+    notifyZsetEvent(allocator, storage, ps, db_index, dest, "zinterstore");
+    if (count == 0) {
+        notifyGenericEvent(allocator, storage, ps, db_index, dest, "del");
+    }
+
     return w.writeInteger(@intCast(count));
 }
 
 /// ZDIFFSTORE destination numkeys key [key ...]
 /// Store difference of sorted sets in destination
-pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3397,12 +3422,18 @@ pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
         return err;
     };
 
+    // Publish notification on destination only
+    notifyZsetEvent(allocator, storage, ps, db_index, dest, "zdiffstore");
+    if (count == 0) {
+        notifyGenericEvent(allocator, storage, ps, db_index, dest, "del");
+    }
+
     return w.writeInteger(@intCast(count));
 }
 
 /// ZREMRANGEBYRANK key start stop
 /// Remove all members in a sorted set within the given ranks
-pub fn cmdZremrangebyrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZremrangebyrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3438,12 +3469,20 @@ pub fn cmdZremrangebyrank(allocator: std.mem.Allocator, storage: *Storage, args:
         return err;
     };
 
+    // Publish notification if members were removed
+    if (removed > 0) {
+        notifyZsetEvent(allocator, storage, ps, db_index, key, "zremrangebyrank");
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
+
     return w.writeInteger(@intCast(removed));
 }
 
 /// ZREMRANGEBYSCORE key min max
 /// Remove all members in a sorted set within the given scores
-pub fn cmdZremrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZremrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3487,12 +3526,20 @@ pub fn cmdZremrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
         return err;
     };
 
+    // Publish notification if members were removed
+    if (removed > 0) {
+        notifyZsetEvent(allocator, storage, ps, db_index, key, "zremrangebyscore");
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
+
     return w.writeInteger(@intCast(removed));
 }
 
 /// ZREMRANGEBYLEX key min max
 /// Remove all members in a sorted set between the given lexicographical range
-pub fn cmdZremrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZremrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3524,6 +3571,14 @@ pub fn cmdZremrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: 
         }
         return err;
     };
+
+    // Publish notification if members were removed
+    if (removed > 0) {
+        notifyZsetEvent(allocator, storage, ps, db_index, key, "zremrangebylex");
+        if (!storage.exists(key)) {
+            notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+        }
+    }
 
     return w.writeInteger(@intCast(removed));
 }

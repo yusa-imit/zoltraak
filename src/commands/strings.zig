@@ -1117,11 +1117,14 @@ pub fn executeCommand(
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try sorted_sets.cmdZpopmax(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZMPOP")) {
-            break :blk try sorted_sets.cmdZmpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZmpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BZPOPMIN")) {
-            break :blk try sorted_sets.cmdBzpopmin(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdBzpopmin(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BZPOPMAX")) {
-            break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BZMPOP")) {
             break :blk try sorted_sets.cmdBzmpop(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
@@ -1143,17 +1146,23 @@ pub fn executeCommand(
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZdiff(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZUNIONSTORE")) {
-            break :blk try sorted_sets.cmdZunionstore(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZunionstore(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZINTERSTORE")) {
-            break :blk try sorted_sets.cmdZinterstore(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZinterstore(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZDIFFSTORE")) {
-            break :blk try sorted_sets.cmdZdiffstore(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZdiffstore(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZREMRANGEBYRANK")) {
-            break :blk try sorted_sets.cmdZremrangebyrank(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZremrangebyrank(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZREMRANGEBYSCORE")) {
-            break :blk try sorted_sets.cmdZremrangebyscore(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZremrangebyscore(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZREMRANGEBYLEX")) {
-            break :blk try sorted_sets.cmdZremrangebylex(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdZremrangebylex(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYLEX")) {
             break :blk try sorted_sets.cmdZrangebylex(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGEBYLEX")) {
@@ -1190,7 +1199,8 @@ pub fn executeCommand(
         }
         // Stream commands
         else if (std.mem.eql(u8, cmd_upper, "XADD")) {
-            break :blk try streams.cmdXadd(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try streams.cmdXadd(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "XLEN")) {
             break :blk try streams.cmdXlen(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XRANGE")) {
@@ -1198,11 +1208,14 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "XREVRANGE")) {
             break :blk try streams.cmdXrevrange(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XDEL")) {
-            break :blk try streams.cmdXdel(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try streams.cmdXdel(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "XTRIM")) {
-            break :blk try streams.cmdXtrim(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try streams.cmdXtrim(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "XGROUP")) {
-            break :blk try streams_adv.cmdXgroup(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try streams_adv.cmdXgroup(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "XREAD")) {
             break :blk try streams_adv.cmdXread(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XREADGROUP")) {
@@ -1222,7 +1235,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "XINFO")) {
             break :blk try streams.cmdXinfoStream(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XSETID")) {
-            break :blk try streams.cmdXsetid(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try streams.cmdXsetid(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "XCFGSET")) {
             break :blk try streams.cmdXcfgset(allocator, storage, array);
         }
