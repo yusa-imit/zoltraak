@@ -26,7 +26,7 @@ fn notifyZsetEvent(
     const config_str = config_value orelse return;
     const flags = notifications_mod.parseNotificationFlags(config_str);
 
-    if (!notifications_mod.shouldNotify(flags, .zset)) return;
+    if (!notifications_mod.shouldNotify(flags, .sorted_set)) return;
 
     notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
 }
@@ -147,8 +147,8 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return err;
     };
 
-    // Publish notification if members were added or updated
-    if (result.added > 0 or result.updated > 0) {
+    // Publish notification if members were added or changed
+    if (result.added > 0 or result.changed > 0) {
         notifyZsetEvent(allocator, storage, ps, db_index, key, "zadd");
     }
 

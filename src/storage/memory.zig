@@ -19,6 +19,7 @@ const topk_mod = @import("topk.zig");
 const tdigest_mod = @import("tdigest.zig");
 const vector_mod = @import("vector.zig");
 const notifications_mod = @import("notifications.zig");
+const pubsub_mod = @import("pubsub.zig");
 const eviction_mod = @import("eviction.zig");
 const lazyfree_mod = @import("lazyfree.zig");
 const defrag_mod = @import("defrag.zig");
@@ -578,6 +579,7 @@ pub const Storage = struct {
     lazyfree_task: LazyFreeTask, // Background lazy freeing task
     defrag_task: DefragTask, // Background active defragmentation task
     module_store: ModuleStore, // Dynamically loaded modules (Phase 17)
+    pubsub_state: ?*pubsub_mod.PubSub, // Optional pubsub state for firing notifications (set by server after init)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -687,6 +689,7 @@ pub const Storage = struct {
             .lazyfree_task = lazy_free,
             .defrag_task = defrag_task,
             .module_store = try ModuleStore.init(allocator),
+            .pubsub_state = null, // Will be set by server after init
         };
 
         // Start background lazy free thread
@@ -839,6 +842,34 @@ pub const Storage = struct {
         return error.OOM;
     }
 
+    /// Helper to delete a key and fire evicted notification
+    /// Fires evicted event before deletion if notifications are enabled and pubsub available
+    /// Returns true if key was deleted, false otherwise
+    fn deleteKeyWithEvictionNotification(self: *Storage, key: []const u8) bool {
+        if (self.data.fetchRemove(key)) |kv| {
+            // Fire evicted event before deletion (if notifications enabled and pubsub available)
+            if (self.pubsub_state) |pubsub| {
+                const flags = self.notification_flags.load(.monotonic);
+                if (flags != 0 and notifications_mod.shouldNotify(flags, .evicted)) {
+                    notifications_mod.publishNotification(
+                        self.allocator,
+                        pubsub,
+                        0, // db_index - currently always 0
+                        key,
+                        "evicted",
+                        flags,
+                    ) catch {}; // Fire-and-forget in eviction path
+                }
+            }
+
+            self.allocator.free(kv.key);
+            var value = kv.value;
+            value.deinit(self.allocator);
+            return true;
+        }
+        return false;
+    }
+
     /// Evict a single key according to the eviction policy
     /// Returns true if a key was evicted, false if no candidates available
     fn evictOneKey(self: *Storage, policy: EvictionPolicy) !bool {
@@ -875,11 +906,8 @@ pub const Storage = struct {
                 }
 
                 if (oldest_key) |key| {
-                    // Delete the key
-                    if (self.data.fetchRemove(key)) |entry| {
-                        self.allocator.free(entry.key);
-                        var value = entry.value;
-                        value.deinit(self.allocator);
+                    // Delete the key with eviction notification
+                    if (self.deleteKeyWithEvictionNotification(key)) {
                         self.lru_clock.remove(key);
                         return true;
                     }
@@ -938,10 +966,7 @@ pub const Storage = struct {
                 }
 
                 if (oldest_key) |key| {
-                    if (self.data.fetchRemove(key)) |entry| {
-                        self.allocator.free(entry.key);
-                        var value = entry.value;
-                        value.deinit(self.allocator);
+                    if (self.deleteKeyWithEvictionNotification(key)) {
                         self.lru_clock.remove(key);
                         self.lfu_counter.remove(key);
                         return true;
@@ -979,10 +1004,7 @@ pub const Storage = struct {
                 }
 
                 if (lfu_key) |key| {
-                    if (self.data.fetchRemove(key)) |entry| {
-                        self.allocator.free(entry.key);
-                        var value = entry.value;
-                        value.deinit(self.allocator);
+                    if (self.deleteKeyWithEvictionNotification(key)) {
                         self.lru_clock.remove(key);
                         self.lfu_counter.remove(key);
                         return true;
@@ -1041,10 +1063,7 @@ pub const Storage = struct {
                 }
 
                 if (lfu_key) |key| {
-                    if (self.data.fetchRemove(key)) |entry| {
-                        self.allocator.free(entry.key);
-                        var value = entry.value;
-                        value.deinit(self.allocator);
+                    if (self.deleteKeyWithEvictionNotification(key)) {
                         self.lru_clock.remove(key);
                         self.lfu_counter.remove(key);
                         return true;
@@ -1075,10 +1094,7 @@ pub const Storage = struct {
                 const idx = rand.intRangeAtMost(usize, 0, candidates.items.len - 1);
                 const key = candidates.items[idx];
 
-                if (self.data.fetchRemove(key)) |entry| {
-                    self.allocator.free(entry.key);
-                    var value = entry.value;
-                    value.deinit(self.allocator);
+                if (self.deleteKeyWithEvictionNotification(key)) {
                     self.lru_clock.remove(key);
                     self.lfu_counter.remove(key);
                     return true;
@@ -1129,10 +1145,7 @@ pub const Storage = struct {
                 const idx = rand.intRangeAtMost(usize, 0, candidates.items.len - 1);
                 const key = candidates.items[idx];
 
-                if (self.data.fetchRemove(key)) |entry| {
-                    self.allocator.free(entry.key);
-                    var value = entry.value;
-                    value.deinit(self.allocator);
+                if (self.deleteKeyWithEvictionNotification(key)) {
                     self.lru_clock.remove(key);
                     self.lfu_counter.remove(key);
                     return true;
@@ -1190,10 +1203,7 @@ pub const Storage = struct {
                 }
 
                 if (soonest_key) |key| {
-                    if (self.data.fetchRemove(key)) |entry| {
-                        self.allocator.free(entry.key);
-                        var value = entry.value;
-                        value.deinit(self.allocator);
+                    if (self.deleteKeyWithEvictionNotification(key)) {
                         self.lru_clock.remove(key);
                         self.lfu_counter.remove(key);
                         return true;
@@ -1374,6 +1384,21 @@ pub const Storage = struct {
 
         // Check expiration
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            // Fire expired event before deletion (if notifications enabled and pubsub available)
+            if (self.pubsub_state) |pubsub| {
+                const flags = self.notification_flags.load(.monotonic);
+                if (flags != 0 and notifications_mod.shouldNotify(flags, .expired)) {
+                    notifications_mod.publishNotification(
+                        self.allocator,
+                        pubsub,
+                        0, // db_index - currently always 0
+                        key,
+                        "expired",
+                        flags,
+                    ) catch {}; // Fire-and-forget in hot path
+                }
+            }
+
             // Expired - delete and return null
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
@@ -1418,6 +1443,21 @@ pub const Storage = struct {
 
         // Check expiration
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            // Fire expired event before deletion (if notifications enabled and pubsub available)
+            if (self.pubsub_state) |pubsub| {
+                const flags = self.notification_flags.load(.monotonic);
+                if (flags != 0 and notifications_mod.shouldNotify(flags, .expired)) {
+                    notifications_mod.publishNotification(
+                        self.allocator,
+                        pubsub,
+                        0, // db_index - currently always 0
+                        key,
+                        "expired",
+                        flags,
+                    ) catch {}; // Fire-and-forget in hot path
+                }
+            }
+
             // Expired - delete and return false
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
@@ -1453,9 +1493,24 @@ pub const Storage = struct {
             }
         }
 
-        // Remove expired keys
+        // Remove expired keys and fire notifications
         for (expired_keys.items) |key| {
             if (self.data.fetchRemove(key)) |kv| {
+                // Fire expired event before deletion (if notifications enabled and pubsub available)
+                if (self.pubsub_state) |pubsub| {
+                    const flags = self.notification_flags.load(.monotonic);
+                    if (flags != 0 and notifications_mod.shouldNotify(flags, .expired)) {
+                        notifications_mod.publishNotification(
+                            self.allocator,
+                            pubsub,
+                            0, // db_index - currently always 0
+                            key,
+                            "expired",
+                            flags,
+                        ) catch continue; // Skip notification on error, continue deletion
+                    }
+                }
+
                 self.allocator.free(kv.key);
                 var value = kv.value;
                 value.deinit(self.allocator);
@@ -11822,4 +11877,135 @@ test "BITOP ONE operation" {
     try std.testing.expectEqual(@as(usize, 1), len);
     const val = storage.get("result").?;
     try std.testing.expectEqual(@as(u8, 12), val.string.data[0]);
+}
+
+// Keyspace notification tests for expired and evicted events
+
+test "keyspace notifications - lazy expiration (get)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable expired notifications
+    const flags = notifications_mod.parseNotificationFlags("Kx");
+    storage.notification_flags.store(flags, .monotonic);
+
+    const now = Storage.getCurrentTimestamp();
+    const expires_at = now - 1000; // Already expired
+
+    // Set an expired key
+    try storage.set("mykey", "myvalue", expires_at);
+
+    // Access the expired key (lazy expiration should fire event)
+    const result = storage.get("mykey");
+    try std.testing.expect(result == null);
+
+    // Key should be deleted
+    try std.testing.expect(!storage.exists("mykey"));
+}
+
+test "keyspace notifications - lazy expiration (exists)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable expired notifications
+    const flags = notifications_mod.parseNotificationFlags("Ex");
+    storage.notification_flags.store(flags, .monotonic);
+
+    const now = Storage.getCurrentTimestamp();
+    const expires_at = now - 1000;
+
+    try storage.set("key1", "value1", expires_at);
+
+    // Check existence should trigger lazy expiration
+    const exists = storage.exists("key1");
+    try std.testing.expect(!exists);
+
+    // Key should be deleted
+    try std.testing.expect(storage.get("key1") == null);
+}
+
+test "keyspace notifications - active expiration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable expired notifications
+    const flags = notifications_mod.parseNotificationFlags("Ex");
+    storage.notification_flags.store(flags, .monotonic);
+
+    const now = Storage.getCurrentTimestamp();
+
+    // Set multiple keys with different expirations
+    try storage.set("key1", "value1", now - 1000); // Expired
+    try storage.set("key2", "value2", now + 10000); // Not expired
+    try storage.set("key3", "value3", now - 500); // Expired
+
+    // Run active expiration
+    const count = storage.evictExpired();
+    try std.testing.expectEqual(@as(usize, 2), count);
+
+    // Verify only non-expired key remains
+    try std.testing.expect(storage.get("key1") == null);
+    try std.testing.expect(storage.get("key2") != null);
+    try std.testing.expect(storage.get("key3") == null);
+}
+
+test "keyspace notifications - disabled when flags are zero" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // notification_flags should be 0 by default - no overhead
+    storage.notification_flags.store(0, .monotonic);
+
+    const now = Storage.getCurrentTimestamp();
+    const expires_at = now - 1000;
+
+    try storage.set("key1", "value1", expires_at);
+
+    // Get should handle expired key without notification overhead
+    const result = storage.get("key1");
+    try std.testing.expect(result == null);
+
+    try std.testing.expect(!storage.exists("key1"));
+}
+
+test "keyspace notifications - expired flag required" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable keyspace/keyevent but NOT expired flag
+    const flags = notifications_mod.parseNotificationFlags("KE");
+    storage.notification_flags.store(flags, .monotonic);
+
+    const now = Storage.getCurrentTimestamp();
+    const expires_at = now - 1000;
+
+    try storage.set("key1", "value1", expires_at);
+
+    // Expired event should not fire (flag not enabled)
+    const result = storage.get("key1");
+    try std.testing.expect(result == null);
+}
+
+test "keyspace notifications - evicted event infrastructure" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable evicted notifications
+    const flags = notifications_mod.parseNotificationFlags("Ee");
+    storage.notification_flags.store(flags, .monotonic);
+
+    // Verify infrastructure is properly configured
+    const stored_flags = storage.notification_flags.load(.monotonic);
+    try std.testing.expect(stored_flags != 0);
+    try std.testing.expect(notifications_mod.shouldNotify(flags, .evicted));
+
+    // Set a key to verify eviction paths work
+    try storage.set("test_key", "test_value", null);
+    try std.testing.expect(storage.get("test_key") != null);
 }

@@ -298,6 +298,11 @@ pub const Server = struct {
             .stats = ServerStats.init(),
         };
 
+        // Connect storage instances to pubsub for notifications
+        for (server.databases) |*db| {
+            db.pubsub_state = &server.pubsub;
+        }
+
         // Initialize gossip task if cluster mode is enabled
         // For now, cluster mode is disabled by default, but we set up the task
         // The task will be started in start() if cluster is enabled
