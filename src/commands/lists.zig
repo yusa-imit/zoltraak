@@ -1894,8 +1894,6 @@ test "lists - RPOPLPUSH on missing source returns null" {
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, element] or null if timeout expires.
 pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps; // TODO: Add notification support for blocking commands
-    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1943,6 +1941,14 @@ pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             }
 
             if (result.len > 0) {
+                // Publish lpop notification
+                notifyListEvent(allocator, storage, ps, db_index, key, "lpop");
+
+                // If list became empty, publish del notification
+                if (storage.get(key) == null) {
+                    notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                }
+
                 // Return [key, element]
                 var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
                 defer resp_values.deinit(allocator);
@@ -1969,8 +1975,6 @@ pub fn cmdBlpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, element] or null if timeout expires.
 pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps; // TODO: Add notification support for blocking commands
-    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2018,6 +2022,14 @@ pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             }
 
             if (result.len > 0) {
+                // Publish rpop notification
+                notifyListEvent(allocator, storage, ps, db_index, key, "rpop");
+
+                // If list became empty, publish del notification
+                if (storage.get(key) == null) {
+                    notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                }
+
                 // Return [key, element]
                 var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 2);
                 defer resp_values.deinit(allocator);
@@ -2044,8 +2056,6 @@ pub fn cmdBrpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns the moved element or null if source is empty and timeout expires.
 pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps; // TODO: Add notification support for blocking commands
-    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2120,6 +2130,18 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         defer if (moved) |m| allocator.free(m);
 
         if (moved) |elem| {
+            // Publish notifications for source and destination
+            const src_event = if (src_left) "lpop" else "rpop";
+            const dst_event = if (dst_left) "lpush" else "rpush";
+
+            notifyListEvent(allocator, storage, ps, db_index, src, src_event);
+            notifyListEvent(allocator, storage, ps, db_index, dst, dst_event);
+
+            // If source list became empty, publish del notification
+            if (storage.get(src) == null) {
+                notifyGenericEvent(allocator, storage, ps, db_index, src, "del");
+            }
+
             return w.writeBulkString(elem);
         }
 
@@ -2138,8 +2160,6 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// Elements are popped from either the left or right of the first non-empty list.
 /// Returns array [key, [elements...]] or null if all lists are empty.
 pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps; // TODO: Add notification support for list commands
-    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2223,6 +2243,15 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
 
         if (result.len > 0) {
+            // Publish notification for the pop operation
+            const event_name = if (pop_left) "lpop" else "rpop";
+            notifyListEvent(allocator, storage, ps, db_index, key, event_name);
+
+            // If list became empty, publish del notification
+            if (storage.get(key) == null) {
+                notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+            }
+
             // Return [key, [elements...]]
             var elements = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
             defer elements.deinit(allocator);
@@ -2273,8 +2302,6 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns [key, [elements...]] or null if timeout expires.
 pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps; // TODO: Add notification support for blocking commands
-    _ = db_index;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2382,6 +2409,15 @@ pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             }
 
             if (result.len > 0) {
+                // Publish notification for the pop operation
+                const event_name = if (pop_left) "lpop" else "rpop";
+                notifyListEvent(allocator, storage, ps, db_index, key, event_name);
+
+                // If list became empty, publish del notification
+                if (storage.get(key) == null) {
+                    notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                }
+
                 // Return [key, [elements...]]
                 var elements = try std.ArrayList(RespValue).initCapacity(allocator, result.len);
                 defer elements.deinit(allocator);
