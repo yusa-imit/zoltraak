@@ -1242,13 +1242,17 @@ pub fn executeCommand(
         }
         // Pub/Sub commands
         else if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE")) {
-            break :blk try pubsub_cmds.cmdSubscribe(allocator, ps, array, subscriber_id);
+            const resp_version: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+            break :blk try pubsub_cmds.cmdSubscribe(allocator, ps, array, subscriber_id, resp_version);
         } else if (std.mem.eql(u8, cmd_upper, "UNSUBSCRIBE")) {
-            break :blk try pubsub_cmds.cmdUnsubscribe(allocator, ps, array, subscriber_id);
+            const resp_version: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+            break :blk try pubsub_cmds.cmdUnsubscribe(allocator, ps, array, subscriber_id, resp_version);
         } else if (std.mem.eql(u8, cmd_upper, "PSUBSCRIBE")) {
-            break :blk try pubsub_cmds.cmdPsubscribe(allocator, ps, array, subscriber_id);
+            const resp_version: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+            break :blk try pubsub_cmds.cmdPsubscribe(allocator, ps, array, subscriber_id, resp_version);
         } else if (std.mem.eql(u8, cmd_upper, "PUNSUBSCRIBE")) {
-            break :blk try pubsub_cmds.cmdPunsubscribe(allocator, ps, array, subscriber_id);
+            const resp_version: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+            break :blk try pubsub_cmds.cmdPunsubscribe(allocator, ps, array, subscriber_id, resp_version);
         } else if (std.mem.eql(u8, cmd_upper, "PUBLISH")) {
             break :blk try pubsub_cmds.cmdPublish(allocator, ps, array);
         } else if (std.mem.eql(u8, cmd_upper, "PUBSUB")) {
@@ -1256,9 +1260,11 @@ pub fn executeCommand(
         }
         // Sharded Pub/Sub (Redis 7.0+)
         else if (std.mem.eql(u8, cmd_upper, "SSUBSCRIBE")) {
-            break :blk try pubsub_cmds.cmdSsubscribe(allocator, ps, array, subscriber_id);
+            const resp_version: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+            break :blk try pubsub_cmds.cmdSsubscribe(allocator, ps, array, subscriber_id, resp_version);
         } else if (std.mem.eql(u8, cmd_upper, "SUNSUBSCRIBE")) {
-            break :blk try pubsub_cmds.cmdSunsubscribe(allocator, ps, array, subscriber_id);
+            const resp_version: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+            break :blk try pubsub_cmds.cmdSunsubscribe(allocator, ps, array, subscriber_id, resp_version);
         } else if (std.mem.eql(u8, cmd_upper, "SPUBLISH")) {
             break :blk try pubsub_cmds.cmdSpublish(allocator, ps, array);
         }
