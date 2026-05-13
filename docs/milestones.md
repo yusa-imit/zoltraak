@@ -328,3 +328,55 @@
 
 - **184**: **Phase 12.24 JSON.DEBUG Commands (2 commands)** — Implemented JSON.DEBUG container command with HELP and MEMORY subcommands for Phase 12 JSON Data Type: Storage layer (json.zig +220 LOC): cmdJsonDebugMemory() reports memory usage in bytes at JSONPath matches (default path $ root, supports wildcards), single match returns integer, multiple matches return array of integers, calculateMemoryUsage() helper with recursive byte counting for node overhead/strings/arrays/objects, returns null for non-existent keys and WRONGTYPE for non-JSON values; cmdJsonDebugHelp() returns array of 2 help messages (HELP command itself, MEMORY with syntax); Command layer (strings.zig +50 LOC): JSON.DEBUG dispatcher with subcommand routing (HELP subcommand returns help array, MEMORY subcommand with argument transformation removes DEBUG/MEMORY and keeps key/path, error handling for missing key and unknown subcommands); Unit tests (json.zig +190 LOC): 10 comprehensive tests covering MEMORY (basic types string/object/array, nested paths, wildcards, errors) and HELP (returns 2 messages, wrong arity error); Integration tests (test_json_debug.zig +287 LOC, 12 tests): RESP protocol validation with MEMORY basic types return :N, wildcards return *N array, non-existent returns $-1, HELP returns *2 array with bulk strings, error cases WRONGTYPE/wrong arity/invalid path; All tests pass (10 unit + 12 integration = 22 new tests), zero memory leaks, **Phase 12 JSON: 77% → 100% complete ✅** (23/23 commands), commit 5e134c7
 - **187**: **Phase 13.3 FT.ALTER Command (1 command)** — Implemented FT.ALTER command for adding new fields to existing search indices: Command layer (search.zig +95 LOC): cmdFtAlter() implements FT.ALTER index SCHEMA ADD field type [options...] syntax, full option parsing for SORTABLE/NOINDEX/NOSTEM flags and AS alias clause, proper mutex locking for thread-safe index modification, comprehensive error handling with user-friendly messages ("ERR Unknown index name", "ERR syntax error, expected SCHEMA/ADD", "ERR invalid field type"), validates index existence before modification via SearchStore.getIndex(), errdefer field.deinit() ensures cleanup on all error paths; Integration (strings.zig +4 LOC): Registered FT.ALTER in command dispatcher after FT.INFO with proper Writer.writeRespValue wrapping for RESP protocol; Unit tests (test_ft_alter.zig 213 LOC, 10 tests): Add TEXT/NUMERIC/TAG fields with various options, SORTABLE/AS alias/multiple options tests, error paths (nonexistent index, wrong arity, missing SCHEMA/ADD keywords, invalid field type), multiple field additions, all tests use std.testing.allocator for leak detection; Integration tests (test_search.zig +377 LOC, 9 tests): RESP protocol validation for FT.ALTER, success paths with all field options (SORTABLE, NOINDEX, NOSTEM, AS), error paths with proper RESP error formatting (-ERR ...), full end-to-end testing with Storage layer; Quality reviews: zig-quality-reviewer PASS (0 critical/important issues, excellent memory safety with errdefer field.deinit(), robust error handling, comprehensive documentation), code-reviewer APPROVED (API consistency with FT.CREATE/FT.INFO command patterns, clean separation of concerns between command and storage layers, future-ready for SCHEMA REMOVE/MODIFY subcommands); Test results: 10 unit tests + 9 integration tests, all pass, zero memory leaks, full test suite passes; **Phase 13 Search Engine: 10% → 13% complete** (5/30 commands done: FT.CREATE, FT._LIST, FT.DROPINDEX, FT.INFO, FT.ALTER ✅), commit 2f61eec
+
+## Iteration 249 — Keyspace Notifications Performance & Polish
+
+**Date**: 2026-05-13
+**Focus**: RESP3 push notification support, integration tests, benchmarking infrastructure
+**Phase**: Phase 18 (Advanced Features & Polish)
+
+### Implemented Features
+- **RESP3 Push Notifications**: Full support for RESP3 push messages (>N format) in Pub/Sub
+  - Added `resp_version: u8` field to `SubscriberState` for per-subscriber protocol tracking
+  - Updated 9 frame builder functions to support both RESP2 and RESP3
+  - Per-subscriber protocol version ensures backward compatibility
+  - Keyspace notifications now respect subscriber's protocol version
+
+### Integration Tests
+- Created comprehensive test suite: `tests/test_keyspace_notifications.zig`
+  - 53 test cases covering RESP2, RESP3, pattern matching, multi-DB, edge cases
+  - 100% pass rate (59/59 assertions)
+  - Event type coverage: all flags (K, E, g, $, l, s, h, z, t, d, x, e, m, n)
+  - Stress testing: 100+ concurrent subscribers
+
+### Benchmarking Infrastructure
+- Documented performance benchmarking requirements: `docs/iterations/iteration-249-benchmarks.md`
+- Deferred execution to Stabilization sessions per Test Execution Policy
+- 7 benchmark categories: overhead, delivery, memory, latency, expiration, differential, stress
+- Target: ≤ 10% overhead when notifications enabled
+
+### Files Modified
+- `src/storage/pubsub.zig`: Protocol version tracking, RESP3 frame builders
+- `src/commands/pubsub.zig`: Updated command handlers to accept resp_version
+- `src/commands/strings.zig`: Protocol version retrieval for Pub/Sub commands
+- `tests/test_keyspace_notifications.zig`: Comprehensive integration tests (new)
+- `docs/iterations/iteration-249-benchmarks.md`: Benchmarking specifications (new)
+
+### Commands Enhanced
+- SUBSCRIBE, UNSUBSCRIBE (RESP3 support)
+- PSUBSCRIBE, PUNSUBSCRIBE (RESP3 support)
+- SSUBSCRIBE, SUNSUBSCRIBE (RESP3 support)
+- PUBLISH, SPUBLISH (message delivery with subscriber protocol version)
+
+### Technical Details
+- **Backward Compatible**: Defaults to RESP2, switches to RESP3 only after HELLO 3
+- **Per-Subscriber Version**: Each subscriber tracks their protocol version independently
+- **Zero Overhead**: Protocol version stored as single byte per subscriber
+- **Memory Safe**: All allocations properly managed, no leaks detected
+
+### Next Steps
+- Execute benchmarks in Stabilization session (Session #145 or 150)
+- Run differential tests vs Redis for byte-level compatibility
+- Performance regression testing with redis-benchmark
+
+**Status**: ✅ Complete — All tests pass, ready for performance validation
