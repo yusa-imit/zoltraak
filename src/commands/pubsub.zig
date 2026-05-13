@@ -12,7 +12,8 @@ const PubSub = pubsub_mod.PubSub;
 /// Subscribes `subscriber_id` to one or more channels.
 /// Returns a concatenated sequence of RESP subscribe-confirmation frames,
 /// one per channel:
-///   *3\r\n$9\r\nsubscribe\r\n$<len>\r\n<channel>\r\n:<count>\r\n
+///   *3\r\n$9\r\nsubscribe\r\n$<len>\r\n<channel>\r\n:<count>\r\n (RESP2)
+///   >3\r\n+subscribe\r\n$<len>\r\n<channel>\r\n:<count>\r\n (RESP3)
 ///
 /// Caller owns the returned memory.
 pub fn cmdSubscribe(
@@ -20,6 +21,7 @@ pub fn cmdSubscribe(
     ps: *PubSub,
     args: []const RespValue,
     subscriber_id: u64,
+    resp_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -39,10 +41,13 @@ pub fn cmdSubscribe(
         };
 
         const total = try ps.subscribe(subscriber_id, channel);
-        const frame = try pubsub_mod.buildSubscribeFrame(allocator, channel, total);
+        const frame = try pubsub_mod.buildSubscribeFrame(allocator, channel, total, resp_version);
         defer allocator.free(frame);
         try buf.appendSlice(allocator, frame);
     }
+
+    // Update subscriber's protocol version
+    try ps.setSubscriberVersion(subscriber_id, resp_version);
 
     return buf.toOwnedSlice(allocator);
 }
@@ -59,6 +64,7 @@ pub fn cmdUnsubscribe(
     ps: *PubSub,
     args: []const RespValue,
     subscriber_id: u64,
+    resp_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -72,7 +78,7 @@ pub fn cmdUnsubscribe(
         const count_before = ps.channelCount(subscriber_id);
         if (count_before == 0) {
             // Redis sends one frame with nil channel and count 0
-            const frame = try pubsub_mod.buildUnsubscribeFrame(allocator, null, 0);
+            const frame = try pubsub_mod.buildUnsubscribeFrame(allocator, null, 0, resp_version);
             defer allocator.free(frame);
             try buf.appendSlice(allocator, frame);
         } else {
@@ -94,7 +100,7 @@ pub fn cmdUnsubscribe(
             // Now unsubscribe each and emit frames
             for (names.items) |ch| {
                 const remaining = try ps.unsubscribe(subscriber_id, ch);
-                const frame = try pubsub_mod.buildUnsubscribeFrame(allocator, ch, remaining);
+                const frame = try pubsub_mod.buildUnsubscribeFrame(allocator, ch, remaining, resp_version);
                 defer allocator.free(frame);
                 try buf.appendSlice(allocator, frame);
             }
@@ -107,7 +113,7 @@ pub fn cmdUnsubscribe(
             };
 
             const remaining = try ps.unsubscribe(subscriber_id, channel);
-            const frame = try pubsub_mod.buildUnsubscribeFrame(allocator, channel, remaining);
+            const frame = try pubsub_mod.buildUnsubscribeFrame(allocator, channel, remaining, resp_version);
             defer allocator.free(frame);
             try buf.appendSlice(allocator, frame);
         }
@@ -236,6 +242,7 @@ pub fn cmdPsubscribe(
     ps: *PubSub,
     args: []const RespValue,
     subscriber_id: u64,
+    resp_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -254,10 +261,13 @@ pub fn cmdPsubscribe(
         };
 
         const total = try ps.psubscribe(subscriber_id, pattern);
-        const frame = try pubsub_mod.buildPsubscribeFrame(allocator, pattern, total);
+        const frame = try pubsub_mod.buildPsubscribeFrame(allocator, pattern, total, resp_version);
         defer allocator.free(frame);
         try buf.appendSlice(allocator, frame);
     }
+
+    // Update subscriber's protocol version
+    try ps.setSubscriberVersion(subscriber_id, resp_version);
 
     return buf.toOwnedSlice(allocator);
 }
@@ -274,6 +284,7 @@ pub fn cmdPunsubscribe(
     ps: *PubSub,
     args: []const RespValue,
     subscriber_id: u64,
+    resp_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -286,7 +297,7 @@ pub fn cmdPunsubscribe(
         const count_before = ps.patternCount(subscriber_id);
         if (count_before == 0) {
             // Redis sends one frame with nil pattern and count 0
-            const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, null, 0);
+            const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, null, 0, resp_version);
             defer allocator.free(frame);
             try buf.appendSlice(allocator, frame);
         } else {
@@ -306,7 +317,7 @@ pub fn cmdPunsubscribe(
             // Now unsubscribe each and emit frames
             for (names.items) |pat| {
                 const remaining = try ps.punsubscribe(subscriber_id, pat);
-                const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, pat, remaining);
+                const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, pat, remaining, resp_version);
                 defer allocator.free(frame);
                 try buf.appendSlice(allocator, frame);
             }
@@ -319,7 +330,7 @@ pub fn cmdPunsubscribe(
             };
 
             const remaining = try ps.punsubscribe(subscriber_id, pattern);
-            const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, pattern, remaining);
+            const frame = try pubsub_mod.buildPunsubscribeFrame(allocator, pattern, remaining, resp_version);
             defer allocator.free(frame);
             try buf.appendSlice(allocator, frame);
         }
@@ -416,6 +427,7 @@ pub fn cmdSsubscribe(
     ps: *PubSub,
     args: []const RespValue,
     subscriber_id: u64,
+    resp_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -435,10 +447,13 @@ pub fn cmdSsubscribe(
         };
 
         const total = try ps.ssubscribe(subscriber_id, channel);
-        const frame = try pubsub_mod.buildSsubscribeFrame(allocator, channel, total);
+        const frame = try pubsub_mod.buildSsubscribeFrame(allocator, channel, total, resp_version);
         defer allocator.free(frame);
         try buf.appendSlice(allocator, frame);
     }
+
+    // Update subscriber's protocol version
+    try ps.setSubscriberVersion(subscriber_id, resp_version);
 
     return buf.toOwnedSlice(allocator);
 }
@@ -455,6 +470,7 @@ pub fn cmdSunsubscribe(
     ps: *PubSub,
     args: []const RespValue,
     subscriber_id: u64,
+    resp_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -466,7 +482,7 @@ pub fn cmdSunsubscribe(
         // Unsubscribe from all sharded channels
         try ps.sunsubscribeAll(subscriber_id);
         const total = ps.shardedChannelCount(subscriber_id);
-        const frame = try pubsub_mod.buildSunsubscribeFrame(allocator, null, total);
+        const frame = try pubsub_mod.buildSunsubscribeFrame(allocator, null, total, resp_version);
         defer allocator.free(frame);
         try buf.appendSlice(allocator, frame);
     } else {
@@ -478,7 +494,7 @@ pub fn cmdSunsubscribe(
             };
 
             const total = try ps.sunsubscribe(subscriber_id, channel);
-            const frame = try pubsub_mod.buildSunsubscribeFrame(allocator, channel, total);
+            const frame = try pubsub_mod.buildSunsubscribeFrame(allocator, channel, total, resp_version);
             defer allocator.free(frame);
             try buf.appendSlice(allocator, frame);
         }

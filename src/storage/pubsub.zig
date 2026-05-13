@@ -23,6 +23,8 @@ const SubscriberState = struct {
     /// Ring-buffer of pending RESP-formatted message frames.
     /// Each element is an owned slice allocated with the PubSub allocator.
     pending: std.ArrayList([]const u8),
+    /// RESP protocol version for this subscriber (2 or 3)
+    resp_version: u8,
 
     fn init(allocator: std.mem.Allocator) SubscriberState {
         return SubscriberState{
@@ -30,6 +32,7 @@ const SubscriberState = struct {
             .patterns = std.StringHashMap(void).init(allocator),
             .sharded_channels = std.StringHashMap(void).init(allocator),
             .pending = std.ArrayList([]const u8){},
+            .resp_version = 2, // Default to RESP2
         };
     }
 
@@ -340,11 +343,12 @@ pub const PubSub = struct {
 
         // 1. Deliver to exact channel subscribers
         if (self.channels.get(channel)) |sub_list| {
-            const frame = try buildMessageFrame(self.allocator, channel, message);
-            defer self.allocator.free(frame);
-
             for (sub_list.items) |sid| {
                 const st = self.subscribers.getPtr(sid) orelse continue;
+
+                // Build frame with subscriber's protocol version
+                const frame = try buildMessageFrame(self.allocator, channel, message, st.resp_version);
+                defer self.allocator.free(frame);
 
                 // Drop oldest message if queue is full
                 if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
@@ -369,14 +373,15 @@ pub const PubSub = struct {
             // Check if channel matches this pattern
             if (!globMatch(pattern, channel)) continue;
 
-            const pframe = try buildPmessageFrame(self.allocator, pattern, channel, message);
-            defer self.allocator.free(pframe);
-
             for (sub_list.items) |sid| {
                 // Skip if already delivered via exact channel match
                 if (delivered_to.contains(sid)) continue;
 
                 const st = self.subscribers.getPtr(sid) orelse continue;
+
+                // Build frame with subscriber's protocol version
+                const pframe = try buildPmessageFrame(self.allocator, pattern, channel, message, st.resp_version);
+                defer self.allocator.free(pframe);
 
                 // Drop oldest message if queue is full
                 if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
@@ -557,11 +562,12 @@ pub const PubSub = struct {
 
         // Deliver to sharded channel subscribers
         if (self.sharded_channels.get(channel)) |sub_list| {
-            const frame = try buildSmessageFrame(self.allocator, channel, message);
-            defer self.allocator.free(frame);
-
             for (sub_list.items) |sid| {
                 const st = self.subscribers.getPtr(sid) orelse continue;
+
+                // Build frame with subscriber's protocol version
+                const frame = try buildSmessageFrame(self.allocator, channel, message, st.resp_version);
+                defer self.allocator.free(frame);
 
                 // Drop oldest message if queue is full
                 if (st.pending.items.len >= MAX_PENDING_MESSAGES) {
@@ -608,6 +614,20 @@ pub const PubSub = struct {
         return state.sharded_channels.count();
     }
 
+    /// Set the RESP protocol version for a subscriber (2 or 3)
+    /// Creates subscriber state if it doesn't exist
+    pub fn setSubscriberVersion(self: *PubSub, subscriber_id: u64, version: u8) !void {
+        const state = try self.getOrCreateState(subscriber_id);
+        state.resp_version = version;
+    }
+
+    /// Get the RESP protocol version for a subscriber
+    /// Returns the subscriber's version, or 2 (RESP2) if subscriber doesn't exist
+    pub fn getSubscriberVersion(self: *PubSub, subscriber_id: u64) u8 {
+        const state = self.subscribers.get(subscriber_id) orelse return 2;
+        return state.resp_version;
+    }
+
     // --- Private helpers ---
 
     fn getOrCreateState(self: *PubSub, subscriber_id: u64) !*SubscriberState {
@@ -618,71 +638,121 @@ pub const PubSub = struct {
     }
 };
 
-/// Build a Redis-compatible push frame for a received message:
+/// Build a Redis-compatible push frame for a received message.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $7\r\nmessage\r\n
 /// $<channel_len>\r\n<channel>\r\n
 /// $<msg_len>\r\n<msg>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +message\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// $<msg_len>\r\n<msg>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildMessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8) ![]const u8 {
+pub fn buildMessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$7\r\nmessage\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+message\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$7\r\nmessage\r\n");
+    }
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ message.len, message });
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a subscribe confirmation frame:
+/// Build a subscribe confirmation frame.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $9\r\nsubscribe\r\n
 /// $<channel_len>\r\n<channel>\r\n
 /// :<count>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +subscribe\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// :<count>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildSubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize) ![]const u8 {
+pub fn buildSubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$9\r\nsubscribe\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+subscribe\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$9\r\nsubscribe\r\n");
+    }
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build an unsubscribe confirmation frame:
+/// Build an unsubscribe confirmation frame.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $11\r\nunsubscribe\r\n
 /// $<channel_len>\r\n<channel>\r\n   (or $-1\r\n when channel is null)
 /// :<count>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +unsubscribe\r\n
+/// $<channel_len>\r\n<channel>\r\n   (or _\r\n when channel is null)
+/// :<count>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildUnsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize) ![]const u8 {
+pub fn buildUnsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$11\r\nunsubscribe\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+unsubscribe\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$11\r\nunsubscribe\r\n");
+    }
     if (channel) |ch| {
         try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ ch.len, ch });
     } else {
-        try buf.appendSlice(allocator, "$-1\r\n");
+        if (version == 3) {
+            try buf.appendSlice(allocator, "_\r\n");
+        } else {
+            try buf.appendSlice(allocator, "$-1\r\n");
+        }
     }
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a pattern message frame (pmessage):
+/// Build a pattern message frame (pmessage).
+/// RESP2 format (version=2):
 /// ```
 /// *4\r\n
 /// $8\r\npmessage\r\n
@@ -690,13 +760,28 @@ pub fn buildUnsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8,
 /// $<channel_len>\r\n<channel>\r\n
 /// $<msg_len>\r\n<msg>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >4\r\n
+/// +pmessage\r\n
+/// $<pattern_len>\r\n<pattern>\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// $<msg_len>\r\n<msg>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildPmessageFrame(allocator: std.mem.Allocator, pattern: []const u8, channel: []const u8, message: []const u8) ![]const u8 {
+pub fn buildPmessageFrame(allocator: std.mem.Allocator, pattern: []const u8, channel: []const u8, message: []const u8, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*4\r\n");
-    try buf.appendSlice(allocator, "$8\r\npmessage\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">4\r\n");
+        try buf.appendSlice(allocator, "+pmessage\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*4\r\n");
+        try buf.appendSlice(allocator, "$8\r\npmessage\r\n");
+    }
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pattern.len, pattern });
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ message.len, message });
@@ -704,108 +789,191 @@ pub fn buildPmessageFrame(allocator: std.mem.Allocator, pattern: []const u8, cha
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a psubscribe confirmation frame:
+/// Build a psubscribe confirmation frame.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $10\r\npsubscribe\r\n
 /// $<pattern_len>\r\n<pattern>\r\n
 /// :<count>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +psubscribe\r\n
+/// $<pattern_len>\r\n<pattern>\r\n
+/// :<count>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildPsubscribeFrame(allocator: std.mem.Allocator, pattern: []const u8, count: usize) ![]const u8 {
+pub fn buildPsubscribeFrame(allocator: std.mem.Allocator, pattern: []const u8, count: usize, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$10\r\npsubscribe\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+psubscribe\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$10\r\npsubscribe\r\n");
+    }
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pattern.len, pattern });
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a punsubscribe confirmation frame:
+/// Build a punsubscribe confirmation frame.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $12\r\npunsubscribe\r\n
 /// $<pattern_len>\r\n<pattern>\r\n   (or $-1\r\n when pattern is null)
 /// :<count>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +punsubscribe\r\n
+/// $<pattern_len>\r\n<pattern>\r\n   (or _\r\n when pattern is null)
+/// :<count>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildPunsubscribeFrame(allocator: std.mem.Allocator, pattern: ?[]const u8, count: usize) ![]const u8 {
+pub fn buildPunsubscribeFrame(allocator: std.mem.Allocator, pattern: ?[]const u8, count: usize, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$12\r\npunsubscribe\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+punsubscribe\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$12\r\npunsubscribe\r\n");
+    }
     if (pattern) |pat| {
         try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ pat.len, pat });
     } else {
-        try buf.appendSlice(allocator, "$-1\r\n");
+        if (version == 3) {
+            try buf.appendSlice(allocator, "_\r\n");
+        } else {
+            try buf.appendSlice(allocator, "$-1\r\n");
+        }
     }
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a sharded message frame (smessage):
+/// Build a sharded message frame (smessage).
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $8\r\nsmessage\r\n
 /// $<channel_len>\r\n<channel>\r\n
 /// $<msg_len>\r\n<msg>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +smessage\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// $<msg_len>\r\n<msg>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildSmessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8) ![]const u8 {
+pub fn buildSmessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$8\r\nsmessage\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+smessage\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$8\r\nsmessage\r\n");
+    }
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ message.len, message });
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a ssubscribe confirmation frame:
+/// Build a ssubscribe confirmation frame.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $10\r\nssubscribe\r\n
 /// $<channel_len>\r\n<channel>\r\n
 /// :<count>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +ssubscribe\r\n
+/// $<channel_len>\r\n<channel>\r\n
+/// :<count>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildSsubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize) ![]const u8 {
+pub fn buildSsubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$10\r\nssubscribe\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+ssubscribe\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$10\r\nssubscribe\r\n");
+    }
     try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ channel.len, channel });
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
     return buf.toOwnedSlice(allocator);
 }
 
-/// Build a sunsubscribe confirmation frame:
+/// Build a sunsubscribe confirmation frame.
+/// RESP2 format (version=2):
 /// ```
 /// *3\r\n
 /// $12\r\nsunsubscribe\r\n
 /// $<channel_len>\r\n<channel>\r\n   (or $-1\r\n when channel is null)
 /// :<count>\r\n
 /// ```
+/// RESP3 format (version=3):
+/// ```
+/// >3\r\n
+/// +sunsubscribe\r\n
+/// $<channel_len>\r\n<channel>\r\n   (or _\r\n when channel is null)
+/// :<count>\r\n
+/// ```
 /// Caller owns the returned slice.
-pub fn buildSunsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize) ![]const u8 {
+pub fn buildSunsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize, version: u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator, "*3\r\n");
-    try buf.appendSlice(allocator, "$12\r\nsunsubscribe\r\n");
+    if (version == 3) {
+        // RESP3 push format
+        try buf.appendSlice(allocator, ">3\r\n");
+        try buf.appendSlice(allocator, "+sunsubscribe\r\n");
+    } else {
+        // RESP2 array format
+        try buf.appendSlice(allocator, "*3\r\n");
+        try buf.appendSlice(allocator, "$12\r\nsunsubscribe\r\n");
+    }
     if (channel) |ch| {
         try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ ch.len, ch });
     } else {
-        try buf.appendSlice(allocator, "$-1\r\n");
+        if (version == 3) {
+            try buf.appendSlice(allocator, "_\r\n");
+        } else {
+            try buf.appendSlice(allocator, "$-1\r\n");
+        }
     }
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{count});
 
@@ -1031,39 +1199,75 @@ test "pubsub - activeChannels excludes empty channels after unsubscribe" {
     try std.testing.expectEqual(@as(usize, 0), chans.len);
 }
 
-test "pubsub - buildMessageFrame correct RESP format" {
+test "pubsub - buildMessageFrame correct RESP2 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildMessageFrame(allocator, "news", "hello");
+    const frame = try buildMessageFrame(allocator, "news", "hello", 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildSubscribeFrame correct RESP format" {
+test "pubsub - buildMessageFrame correct RESP3 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildSubscribeFrame(allocator, "news", 1);
+    const frame = try buildMessageFrame(allocator, "news", "hello", 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+message\r\n$4\r\nnews\r\n$5\r\nhello\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSubscribeFrame correct RESP2 format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSubscribeFrame(allocator, "news", 1, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildUnsubscribeFrame with channel" {
+test "pubsub - buildSubscribeFrame correct RESP3 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildUnsubscribeFrame(allocator, "news", 0);
+    const frame = try buildSubscribeFrame(allocator, "news", 1, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+subscribe\r\n$4\r\nnews\r\n:1\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildUnsubscribeFrame with channel RESP2" {
+    const allocator = std.testing.allocator;
+    const frame = try buildUnsubscribeFrame(allocator, "news", 0, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildUnsubscribeFrame with null channel" {
+test "pubsub - buildUnsubscribeFrame with null channel RESP2" {
     const allocator = std.testing.allocator;
-    const frame = try buildUnsubscribeFrame(allocator, null, 0);
+    const frame = try buildUnsubscribeFrame(allocator, null, 0, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildUnsubscribeFrame with channel RESP3" {
+    const allocator = std.testing.allocator;
+    const frame = try buildUnsubscribeFrame(allocator, "news", 0, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+unsubscribe\r\n$4\r\nnews\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildUnsubscribeFrame with null channel RESP3" {
+    const allocator = std.testing.allocator;
+    const frame = try buildUnsubscribeFrame(allocator, null, 0, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+unsubscribe\r\n_\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
@@ -1192,39 +1396,75 @@ test "pubsub - totalPatternCount returns global pattern count" {
     try std.testing.expectEqual(@as(usize, 2), ps.totalPatternCount());
 }
 
-test "pubsub - buildPmessageFrame correct RESP format" {
+test "pubsub - buildPmessageFrame correct RESP2 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildPmessageFrame(allocator, "news*", "news.world", "hello");
+    const frame = try buildPmessageFrame(allocator, "news*", "news.world", "hello", 2);
     defer allocator.free(frame);
 
     const expected = "*4\r\n$8\r\npmessage\r\n$5\r\nnews*\r\n$10\r\nnews.world\r\n$5\r\nhello\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildPsubscribeFrame correct RESP format" {
+test "pubsub - buildPmessageFrame correct RESP3 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildPsubscribeFrame(allocator, "news*", 1);
+    const frame = try buildPmessageFrame(allocator, "news*", "news.world", "hello", 3);
+    defer allocator.free(frame);
+
+    const expected = ">4\r\n+pmessage\r\n$5\r\nnews*\r\n$10\r\nnews.world\r\n$5\r\nhello\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPsubscribeFrame correct RESP2 format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPsubscribeFrame(allocator, "news*", 1, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$10\r\npsubscribe\r\n$5\r\nnews*\r\n:1\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildPunsubscribeFrame with pattern" {
+test "pubsub - buildPsubscribeFrame correct RESP3 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildPunsubscribeFrame(allocator, "news*", 0);
+    const frame = try buildPsubscribeFrame(allocator, "news*", 1, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+psubscribe\r\n$5\r\nnews*\r\n:1\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPunsubscribeFrame with pattern RESP2" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPunsubscribeFrame(allocator, "news*", 0, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$12\r\npunsubscribe\r\n$5\r\nnews*\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildPunsubscribeFrame with null pattern" {
+test "pubsub - buildPunsubscribeFrame with null pattern RESP2" {
     const allocator = std.testing.allocator;
-    const frame = try buildPunsubscribeFrame(allocator, null, 0);
+    const frame = try buildPunsubscribeFrame(allocator, null, 0, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$12\r\npunsubscribe\r\n$-1\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPunsubscribeFrame with pattern RESP3" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPunsubscribeFrame(allocator, "news*", 0, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+punsubscribe\r\n$5\r\nnews*\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildPunsubscribeFrame with null pattern RESP3" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPunsubscribeFrame(allocator, null, 0, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+punsubscribe\r\n_\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
@@ -1410,39 +1650,75 @@ test "pubsub - activeShardedChannels excludes empty channels after unsubscribe" 
     try std.testing.expectEqual(@as(usize, 0), chans.len);
 }
 
-test "pubsub - buildSmessageFrame correct RESP format" {
+test "pubsub - buildSmessageFrame correct RESP2 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildSmessageFrame(allocator, "news", "hello");
+    const frame = try buildSmessageFrame(allocator, "news", "hello", 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$8\r\nsmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildSsubscribeFrame correct RESP format" {
+test "pubsub - buildSmessageFrame correct RESP3 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildSsubscribeFrame(allocator, "news", 1);
+    const frame = try buildSmessageFrame(allocator, "news", "hello", 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+smessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSsubscribeFrame correct RESP2 format" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSsubscribeFrame(allocator, "news", 1, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$10\r\nssubscribe\r\n$4\r\nnews\r\n:1\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildSunsubscribeFrame with channel" {
+test "pubsub - buildSsubscribeFrame correct RESP3 format" {
     const allocator = std.testing.allocator;
-    const frame = try buildSunsubscribeFrame(allocator, "news", 0);
+    const frame = try buildSsubscribeFrame(allocator, "news", 1, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+ssubscribe\r\n$4\r\nnews\r\n:1\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSunsubscribeFrame with channel RESP2" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSunsubscribeFrame(allocator, "news", 0, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$12\r\nsunsubscribe\r\n$4\r\nnews\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
-test "pubsub - buildSunsubscribeFrame with null channel" {
+test "pubsub - buildSunsubscribeFrame with null channel RESP2" {
     const allocator = std.testing.allocator;
-    const frame = try buildSunsubscribeFrame(allocator, null, 0);
+    const frame = try buildSunsubscribeFrame(allocator, null, 0, 2);
     defer allocator.free(frame);
 
     const expected = "*3\r\n$12\r\nsunsubscribe\r\n$-1\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSunsubscribeFrame with channel RESP3" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSunsubscribeFrame(allocator, "news", 0, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+sunsubscribe\r\n$4\r\nnews\r\n:0\r\n";
+    try std.testing.expectEqualStrings(expected, frame);
+}
+
+test "pubsub - buildSunsubscribeFrame with null channel RESP3" {
+    const allocator = std.testing.allocator;
+    const frame = try buildSunsubscribeFrame(allocator, null, 0, 3);
+    defer allocator.free(frame);
+
+    const expected = ">3\r\n+sunsubscribe\r\n_\r\n:0\r\n";
     try std.testing.expectEqualStrings(expected, frame);
 }
 
@@ -1459,4 +1735,66 @@ test "pubsub - sharded and regular channels are independent" {
     _ = try ps.publish("news", "regular");
     _ = try ps.spublish("news", "sharded");
     try std.testing.expectEqual(@as(usize, 2), ps.pendingMessages(1).len);
+}
+
+test "pubsub - setSubscriberVersion and getSubscriberVersion RESP2" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Default should be RESP2
+    try std.testing.expectEqual(@as(u8, 2), ps.getSubscriberVersion(1));
+
+    // Can be set explicitly
+    try ps.setSubscriberVersion(1, 2);
+    try std.testing.expectEqual(@as(u8, 2), ps.getSubscriberVersion(1));
+}
+
+test "pubsub - setSubscriberVersion and getSubscriberVersion RESP3" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Set to RESP3
+    try ps.setSubscriberVersion(1, 3);
+    try std.testing.expectEqual(@as(u8, 3), ps.getSubscriberVersion(1));
+}
+
+test "pubsub - getSubscriberVersion returns default for unknown subscriber" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Unknown subscriber defaults to RESP2
+    try std.testing.expectEqual(@as(u8, 2), ps.getSubscriberVersion(999));
+}
+
+test "pubsub - publish respects subscriber RESP3 version" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "news");
+    try ps.setSubscriberVersion(1, 3);
+    _ = try ps.publish("news", "hello");
+
+    const pending = ps.pendingMessages(1);
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    // Should be RESP3 push format
+    try std.testing.expect(std.mem.startsWith(u8, pending[0], ">3\r\n"));
+}
+
+test "pubsub - publish respects subscriber RESP2 version" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "news");
+    try ps.setSubscriberVersion(1, 2);
+    _ = try ps.publish("news", "hello");
+
+    const pending = ps.pendingMessages(1);
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    // Should be RESP2 array format
+    try std.testing.expect(std.mem.startsWith(u8, pending[0], "*3\r\n"));
 }
