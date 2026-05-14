@@ -233,6 +233,18 @@ pub fn build(b: *std.Build) void {
     const run_xinfo_stream_idmp_tests = b.addRunArtifact(xinfo_stream_idmp_tests);
     integration_test_step.dependOn(&run_xinfo_stream_idmp_tests.step);
 
+    // Blocking sorted set notification tests (Iteration 250)
+    const blocking_zset_notification_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_blocking_zset_notifications.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_blocking_zset_notification_tests = b.addRunArtifact(blocking_zset_notification_tests);
+    integration_test_step.dependOn(&run_blocking_zset_notification_tests.step);
+
     // TUI snapshot tests (sailor v1.5.0)
     const tui_snapshot_tests = b.addTest(.{
         .root_module = b.createModule(.{

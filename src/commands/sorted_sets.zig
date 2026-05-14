@@ -2229,7 +2229,7 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Blocking version of ZMPOP - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns [key, [member, score, ...]] or null if timeout expires.
-pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2344,6 +2344,15 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             }
 
             if (members.len > 0) {
+                // Fire notification for successful pop
+                const event_name = if (pop_min) "zpopmin" else "zpopmax";
+                notifyZsetEvent(allocator, storage, ps, db_index, key, event_name);
+
+                // Check if sorted set is now empty and fire "del" generic event
+                if (storage.get(key) == null) {
+                    notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                }
+
                 // Return [key, [member, score, ...]]
                 // Build member-score array
                 var member_score_buf = std.ArrayList(u8){};
@@ -2388,9 +2397,6 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, member, score] or null if timeout expires.
 pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps;
-    _ = db_index;
-    // TODO: Implement notifications for blocking operations
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2444,6 +2450,14 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                 }
 
                 if (members.len > 0) {
+                    // Fire notification for successful pop
+                    notifyZsetEvent(allocator, storage, ps, db_index, key, "zpopmin");
+
+                    // Check if sorted set is now empty and fire "del" generic event
+                    if (storage.get(key) == null) {
+                        notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                    }
+
                     // Return [key, member, score]
                     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
                     defer resp_values.deinit(allocator);
@@ -2478,9 +2492,6 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
 /// Returns array [key, member, score] or null if timeout expires.
 pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
-    _ = ps;
-    _ = db_index;
-    // TODO: Implement notifications for blocking operations
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2534,6 +2545,14 @@ pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                 }
 
                 if (members.len > 0) {
+                    // Fire notification for successful pop
+                    notifyZsetEvent(allocator, storage, ps, db_index, key, "zpopmax");
+
+                    // Check if sorted set is now empty and fire "del" generic event
+                    if (storage.get(key) == null) {
+                        notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
+                    }
+
                     // Return [key, member, score]
                     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
                     defer resp_values.deinit(allocator);

@@ -1134,7 +1134,8 @@ pub fn executeCommand(
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BZMPOP")) {
-            break :blk try sorted_sets.cmdBzmpop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try sorted_sets.cmdBzmpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
             break :blk try sorted_sets.cmdZmscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGE")) {
