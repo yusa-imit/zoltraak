@@ -245,6 +245,18 @@ pub fn build(b: *std.Build) void {
     const run_blocking_zset_notification_tests = b.addRunArtifact(blocking_zset_notification_tests);
     integration_test_step.dependOn(&run_blocking_zset_notification_tests.step);
 
+    // Set notification tests (Iteration 251)
+    const set_notification_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_set_notifications.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_set_notification_tests = b.addRunArtifact(set_notification_tests);
+    integration_test_step.dependOn(&run_set_notification_tests.step);
+
     // TUI snapshot tests (sailor v1.5.0)
     const tui_snapshot_tests = b.addTest(.{
         .root_module = b.createModule(.{

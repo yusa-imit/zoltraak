@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 250 (462+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 18.2 Keyspace Notifications (strings, generic keys, lists, hashes, sorted sets)** ✅, **Phase 18.7 Redis 8.x Commands: DELEX, DIGEST** ✅, 2/5 zuda migrations, sailor v2.9.0 migrated)
+- **Iterations complete**: 251 (462+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 18.2 Keyspace Notifications (strings, generic keys, lists, hashes, sorted sets, sets)** ✅, **Phase 18.7 Redis 8.x Commands: DELEX, DIGEST** ✅, 2/5 zuda migrations, sailor v2.9.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 18 (Advanced Features & Polish) — Keyspace Notifications complete for strings/generic/lists/hashes/sorted sets, next: Expand to sets/streams or Phase 10 TLS
-- **Next milestone**: Phase 10 (TLS/SSL) or Phase 17 (Modules API) or Phase 18 polish features (set/stream notifications, eviction policies)
+- **Current phase**: Phase 18 (Advanced Features & Polish) — Keyspace Notifications complete for strings/generic/lists/hashes/sorted sets/sets, next: Expand to streams or Phase 10 TLS
+- **Next milestone**: Phase 10 (TLS/SSL) or Phase 17 (Modules API) or Phase 18 polish features (stream notifications, eviction policies)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
