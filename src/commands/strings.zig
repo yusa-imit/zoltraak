@@ -1029,15 +1029,20 @@ pub fn executeCommand(
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try hashes.cmdHrandfield(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HEXPIRE")) {
-            break :blk try hashes.cmdHexpire(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHexpire(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HPEXPIRE")) {
-            break :blk try hashes.cmdHpexpire(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHpexpire(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HEXPIREAT")) {
-            break :blk try hashes.cmdHexpireat(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHexpireat(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HPEXPIREAT")) {
-            break :blk try hashes.cmdHpexpireat(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHpexpireat(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HPERSIST")) {
-            break :blk try hashes.cmdHpersist(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHpersist(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HTTL")) {
             break :blk try hashes.cmdHttpl(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HPTTL")) {
@@ -1047,11 +1052,14 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "HPEXPIRETIME")) {
             break :blk try hashes.cmdHpexpiretime(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HGETDEL")) {
-            break :blk try hashes.cmdHgetdel(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHgetdel(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HGETEX")) {
-            break :blk try hashes.cmdHgetex(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHgetex(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HSETEX")) {
-            break :blk try hashes.cmdHsetex(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hashes.cmdHsetex(allocator, storage, array, ps, selected_db);
         }
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {

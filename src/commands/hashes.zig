@@ -1472,7 +1472,7 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
 /// HEXPIRE key seconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
 /// Set expiration time for hash fields
 /// Returns array of integers (1 if set, 0 if not, -2 if field doesn't exist)
-pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1558,6 +1558,11 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
         return err;
     };
 
+    // Publish notification if fields were updated
+    if (updated_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hexpire");
+    }
+
     // Build result array (1 if set, 0 if not set, -2 if field doesn't exist)
     // For simplicity, we return number of updated fields as success indicator
     // In real Redis, this would return an array per field
@@ -1581,7 +1586,7 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
 /// HPEXPIRE key milliseconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
 /// Set expiration time for hash fields in milliseconds
-pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1667,6 +1672,11 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return err;
     };
 
+    // Publish notification if fields were updated
+    if (updated_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hpexpire");
+    }
+
     var results = try allocator.alloc(i64, numfields);
     defer allocator.free(results);
 
@@ -1686,7 +1696,7 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
 /// HEXPIREAT key unix-time-seconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
 /// Set expiration time for hash fields at absolute Unix timestamp (seconds)
-pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1769,6 +1779,11 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return err;
     };
 
+    // Publish notification if fields were updated
+    if (updated_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hexpireat");
+    }
+
     var results = try allocator.alloc(i64, numfields);
     defer allocator.free(results);
 
@@ -1788,7 +1803,7 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
 /// HPEXPIREAT key unix-time-milliseconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
 /// Set expiration time for hash fields at absolute Unix timestamp (milliseconds)
-pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1869,6 +1884,11 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
         return err;
     };
 
+    // Publish notification if fields were updated
+    if (updated_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hpexpireat");
+    }
+
     var results = try allocator.alloc(i64, numfields);
     defer allocator.free(results);
 
@@ -1889,7 +1909,7 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
 /// HPERSIST key FIELDS numfields field [field ...]
 /// Remove expiration from hash fields
 /// Returns array of integers (1 if expiration removed, 0 if field has no expiration, -2 if field doesn't exist)
-pub fn cmdHpersist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHpersist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1942,6 +1962,11 @@ pub fn cmdHpersist(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
         return err;
     };
+
+    // Publish notification if field expirations were removed
+    if (removed_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hpersist");
+    }
 
     var results = try allocator.alloc(i64, numfields);
     defer allocator.free(results);
@@ -2215,7 +2240,7 @@ pub fn cmdHpexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []
 /// HGETDEL key FIELDS numfields field [field ...]
 /// Atomically gets hash field values and deletes the fields
 /// Returns array of values (nil for non-existent fields)
-pub fn cmdHgetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHgetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2273,6 +2298,17 @@ pub fn cmdHgetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const
         allocator.free(values);
     }
 
+    // Count how many fields were deleted (non-null values mean field existed)
+    var deleted_count: usize = 0;
+    for (values) |val| {
+        if (val != null) deleted_count += 1;
+    }
+
+    // Publish notification if fields were deleted
+    if (deleted_count > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hdel");
+    }
+
     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, values.len);
     defer resp_values.deinit(allocator);
 
@@ -2290,7 +2326,7 @@ pub fn cmdHgetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const
 /// HGETEX key [EX|PX|EXAT|PXAT|PERSIST] FIELDS numfields field [field ...]
 /// Atomically gets hash field values and sets/updates field expiration
 /// Returns array of values (nil for non-existent fields)
-pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2420,6 +2456,17 @@ pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         allocator.free(values);
     }
 
+    // Publish notification if expiration was modified and fields exist
+    if (has_expiration_option) {
+        var exists_count: usize = 0;
+        for (values) |val| {
+            if (val != null) exists_count += 1;
+        }
+        if (exists_count > 0) {
+            notifyHashEvent(allocator, storage, ps, db_index, key, "hgetex");
+        }
+    }
+
     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, values.len);
     defer resp_values.deinit(allocator);
 
@@ -2437,7 +2484,7 @@ pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// HSETEX key [FNX|FXX] [EX|PX|EXAT|PXAT|KEEPTTL] FIELDS numfields field value [field value ...]
 /// Atomically sets hash fields with values and expiration
 /// Returns 1 if all fields were set, 0 if conditional (fnx/fxx) failed
-pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2587,6 +2634,11 @@ pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         else => return err,
     };
+
+    // Publish notification if fields were set
+    if (result > 0) {
+        notifyHashEvent(allocator, storage, ps, db_index, key, "hset");
+    }
 
     return w.writeInteger(result);
 }
