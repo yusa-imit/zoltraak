@@ -2,6 +2,29 @@ const std = @import("std");
 const memory = @import("../storage/memory.zig");
 const Storage = memory.Storage;
 const RespWriter = @import("../protocol/writer.zig").RespWriter;
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
+
+const PubSub = pubsub_mod.PubSub;
+
+/// Helper to publish bitmap/bitfield notifications
+fn notifyBitmapEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_flag: notifications_mod.NotificationFlag,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, event_flag)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// SETBIT key offset value
 /// Set or clear the bit at offset in the string value stored at key
@@ -9,7 +32,9 @@ pub fn cmdSetbit(
     storage: *Storage,
     args: []const []const u8,
     writer: anytype,
-    _: std.mem.Allocator,
+    allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !void {
     if (args.len != 4) {
         try RespWriter.writeError(writer, "ERR wrong number of arguments for 'setbit' command");
@@ -44,6 +69,11 @@ pub fn cmdSetbit(
             return;
         },
     };
+
+    // Fire notification only if bit changed
+    if (original_bit != value) {
+        notifyBitmapEvent(allocator, storage, ps, db_index, key, .string, "setbit");
+    }
 
     try RespWriter.writeInteger(writer, original_bit);
 }
@@ -123,6 +153,8 @@ pub fn cmdBitop(
     args: []const []const u8,
     writer: anytype,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !void {
     if (args.len < 4) {
         try RespWriter.writeError(writer, "ERR wrong number of arguments for 'bitop' command");
@@ -184,7 +216,18 @@ pub fn cmdBitop(
         },
     };
 
-    _ = allocator;
+    // Fire appropriate notification based on result
+    if (result_len > 0) {
+        // Result has content, fire "set" event
+        notifyBitmapEvent(allocator, storage, ps, db_index, destkey, .string, "set");
+    } else {
+        // Result is empty, check if destkey existed and fire "del" if needed
+        const destkey_existed = storage.get(destkey) != null;
+        if (destkey_existed) {
+            notifyBitmapEvent(allocator, storage, ps, db_index, destkey, .generic, "del");
+        }
+    }
+
     try RespWriter.writeInteger(writer, @intCast(result_len));
 }
 
@@ -509,3 +552,35 @@ test "BITPOS command - invalid BYTE|BIT modifier" {
     try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "1", "1", "BYTE" }, writer, testing.allocator);
     try testing.expectEqualStrings(":10\r\n", buf.items);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Keyspace Notification Support (Iteration 255)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// TODO for zig-implementor:
+// 1. Add imports:
+//    const notifications_mod = @import("../storage/notifications.zig");
+//    const pubsub_mod = @import("../storage/pubsub.zig");
+//    const PubSub = pubsub_mod.PubSub;
+//
+// 2. Add helper function:
+//    fn notifyBitmapEvent(allocator, storage, pubsub_state, db_index, key, event_flag, event_name) void {
+//        const config_value = storage.config.get("notify-keyspace-events") catch return;
+//        const config_str = config_value orelse return;
+//        const flags = notifications_mod.parseNotificationFlags(config_str);
+//        if (!notifications_mod.shouldNotify(flags, event_flag)) return;
+//        notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+//    }
+//
+// 3. Update cmdSetbit signature: add `ps: *PubSub, db_index: u32` parameters
+//    - Call notifyBitmapEvent(..., .string, "setbit") ONLY when bit changes
+//    - Check: if (original_bit != value) { notifyBitmapEvent(...); }
+//
+// 4. Update cmdBitop signature: add `ps: *PubSub, db_index: u32` parameters
+//    - After storage.bitop(), check result_len
+//    - If result_len > 0: notifyBitmapEvent(..., .string, "set")
+//    - Else if destkey existed: notifyBitmapEvent(..., .generic, "del")
+//
+// 5. Update command routing in server.zig to pass ps and db_index
+//
+// See tests/test_bitmap_notifications.zig for comprehensive notification tests

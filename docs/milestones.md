@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 254 (462+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 18.2 Keyspace Notifications (strings, generic keys, lists, hashes, sorted sets, sets, streams, geospatial, hyperloglog)** ✅, **Phase 18.7 Redis 8.x Commands: DELEX, DIGEST** ✅, 2/5 zuda migrations, sailor v2.10.0 migrated)
+- **Iterations complete**: 255 (462+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 18.2 Keyspace Notifications (strings, generic keys, lists, hashes, sorted sets, sets, streams, geospatial, hyperloglog, bitmap/bitfield)** ✅, **Phase 18.7 Redis 8.x Commands: DELEX, DIGEST** ✅, 2/5 zuda migrations, sailor v2.10.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Phase 18 (Advanced Features & Polish) — Keyspace Notifications complete for strings/generic/lists/hashes/sorted sets/sets/streams/geospatial/hyperloglog, next: Expand to JSON/TS/probabilistic or Phase 10 TLS
+- **Current phase**: Phase 18 (Advanced Features & Polish) — Keyspace Notifications complete for strings/generic/lists/hashes/sorted sets/sets/streams/geospatial/hyperloglog/bitmap, next: Expand to JSON/TS/probabilistic or Phase 10 TLS
 - **Next milestone**: Phase 10 (TLS/SSL) or Phase 17 (Modules API) or Phase 18 polish features (notification expansion, eviction policies)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
@@ -386,3 +386,47 @@
 - Performance regression testing with redis-benchmark
 
 **Status**: ✅ Complete — All tests pass, ready for performance validation
+
+## Iteration 255 — Keyspace Notifications for Bitmap/Bitfield Commands
+
+**Date**: 2026-05-16
+**Phase**: 18.2 (Keyspace Notifications continuation)
+
+### Implementation
+
+Extended keyspace notification support to bitmap and bitfield commands following Redis semantics:
+
+**Commands with Notifications**:
+- **SETBIT**: Fires "setbit" event with `.string` flag when bit value changes
+- **BITOP**: Fires "set" event (`.string`) when result has content, or "del" event (`.generic`) when result empty and destkey existed
+- **BITFIELD**: Fires "setbit" event with `.string` flag when at least one SET/INCRBY operation modifies the string
+
+**Read-only commands** (no notifications): GETBIT, BITCOUNT, BITPOS, BITFIELD_RO
+
+### Files Modified
+
+- `src/commands/bits.zig` — Added notification support to SETBIT and BITOP
+- `src/commands/bitfield.zig` — Added notification support to BITFIELD
+- `src/commands/strings.zig` — Added bitmap notification dispatcher
+- `tests/test_bitmap_notifications.zig` — 13 integration tests for all bitmap notification scenarios
+
+### Test Coverage
+
+13 integration tests covering:
+- SETBIT notification firing when bit changes
+- SETBIT no notification when bit unchanged
+- BITOP "set" event for non-empty results
+- BITOP "del" event for empty results with existing destkey
+- BITFIELD "setbit" event for write operations
+- BITFIELD no notification for GET-only operations
+- Configuration flag validation (K$, KE$, KEA)
+- WRONGTYPE error handling (no notifications)
+
+### Redis Compatibility
+
+- Event names: lowercase ("setbit", "set", "del") matching Redis exactly
+- Notification flags: `.string` for bitmap operations, `.generic` for deletions
+- Conditional firing: Only when actual modifications occur
+- Configuration: Respects `notify-keyspace-events` setting
+
+**Commit**: `feat(notifications): add keyspace notifications for bitmap/bitfield commands (Iteration 255)`

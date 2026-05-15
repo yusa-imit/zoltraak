@@ -293,6 +293,18 @@ pub fn build(b: *std.Build) void {
     const run_hyperloglog_notification_tests = b.addRunArtifact(hyperloglog_notification_tests);
     integration_test_step.dependOn(&run_hyperloglog_notification_tests.step);
 
+    // Bitmap/Bitfield keyspace notifications integration tests (Iteration 255)
+    const bitmap_notification_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_bitmap_notifications.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_bitmap_notification_tests = b.addRunArtifact(bitmap_notification_tests);
+    integration_test_step.dependOn(&run_bitmap_notification_tests.step);
+
     // TUI snapshot tests (sailor v1.5.0)
     const tui_snapshot_tests = b.addTest(.{
         .root_module = b.createModule(.{

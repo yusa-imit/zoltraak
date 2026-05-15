@@ -1192,17 +1192,20 @@ pub fn executeCommand(
         }
         // Bit operations
         else if (std.mem.eql(u8, cmd_upper, "SETBIT")) {
-            break :blk try cmdSetbit(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdSetbit(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "GETBIT")) {
             break :blk try cmdGetbit(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITCOUNT")) {
             break :blk try cmdBitcount(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITOP")) {
-            break :blk try cmdBitop(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdBitop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BITPOS")) {
             break :blk try cmdBitpos(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "BITFIELD")) {
-            break :blk try bitfield_cmds.cmdBitfield(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try bitfield_cmds.cmdBitfield(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "BITFIELD_RO")) {
             break :blk try bitfield_cmds.cmdBitfieldRo(allocator, storage, array);
         }
@@ -5511,7 +5514,26 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
 // ── Bit operations ────────────────────────────────────────────────────────
 
-pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Helper to publish bitmap/bitfield notifications
+fn notifyBitmapEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_flag: notifications_mod.NotificationFlag,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, event_flag)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
+
+pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -5552,6 +5574,11 @@ pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         }
         return err;
     };
+
+    // Fire notification only if bit changed
+    if (original_bit != value) {
+        notifyBitmapEvent(allocator, storage, ps, db_index, key, .string, "setbit");
+    }
 
     return w.writeInteger(original_bit);
 }
@@ -5630,7 +5657,7 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     return w.writeInteger(count);
 }
 
-pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -5682,6 +5709,18 @@ pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
         return err;
     };
+
+    // Fire appropriate notification based on result
+    if (result_len > 0) {
+        // Result has content, fire "set" event
+        notifyBitmapEvent(allocator, storage, ps, db_index, destkey, .string, "set");
+    } else {
+        // Result is empty, check if destkey existed and fire "del" if needed
+        const destkey_existed = storage.get(destkey) != null;
+        if (destkey_existed) {
+            notifyBitmapEvent(allocator, storage, ps, db_index, destkey, .generic, "del");
+        }
+    }
 
     return w.writeInteger(@intCast(result_len));
 }

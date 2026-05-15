@@ -4,6 +4,10 @@ const Storage = @import("../storage/memory.zig").Storage;
 const writer_mod = @import("../protocol/writer.zig");
 const Writer = writer_mod.Writer;
 const RespValue = @import("../protocol/parser.zig").RespValue;
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
+
+const PubSub = pubsub_mod.PubSub;
 
 /// Bitfield type encoding
 const BitfieldType = struct {
@@ -141,12 +145,33 @@ fn checkOverflow(current: i64, delta: i64, bf_type: BitfieldType, overflow: Over
     return .{ .value = result, .overflow_occurred = false };
 }
 
+/// Helper to publish bitmap/bitfield notifications
+fn notifyBitmapEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_flag: notifications_mod.NotificationFlag,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, event_flag)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
+
 /// BITFIELD key [GET type offset] [SET type offset value] [INCRBY type offset increment] [OVERFLOW WRAP|SAT|FAIL]
 /// Perform arbitrary bitfield integer operations on strings
 pub fn cmdBitfield(
     allocator: Allocator,
     storage: *Storage,
     args: []const RespValue,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -366,6 +391,8 @@ pub fn cmdBitfield(
     // Save modified data
     if (modified) {
         try storage.set(key, working_data, null);
+        // Fire notification after modification
+        notifyBitmapEvent(allocator, storage, ps, db_index, key, .string, "setbit");
     }
 
     // Build response array
@@ -591,3 +618,36 @@ test "checkOverflow fail" {
     const r2 = checkOverflow(-128, -1, bf_type, .fail);
     try std.testing.expectEqual(true, r2.overflow_occurred);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Keyspace Notification Support (Iteration 255)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// TODO for zig-implementor:
+// 1. Add imports at top of file:
+//    const notifications_mod = @import("../storage/notifications.zig");
+//    const pubsub_mod = @import("../storage/pubsub.zig");
+//    const PubSub = pubsub_mod.PubSub;
+//
+// 2. Add helper function (can reuse from bits.zig):
+//    fn notifyBitmapEvent(allocator, storage, pubsub_state, db_index, key, event_flag, event_name) void {
+//        const config_value = storage.config.get("notify-keyspace-events") catch return;
+//        const config_str = config_value orelse return;
+//        const flags = notifications_mod.parseNotificationFlags(config_str);
+//        if (!notifications_mod.shouldNotify(flags, event_flag)) return;
+//        notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+//    }
+//
+// 3. Update cmdBitfield signature: add `ps: *PubSub, db_index: u32` parameters
+//    - Track `modified` flag (already exists at line 337)
+//    - After line 369 (after saving modified data), add:
+//      if (modified) {
+//          notifyBitmapEvent(allocator, storage, ps, db_index, key, .string, "setbit");
+//      }
+//    - NOTE: Event name is "setbit" (NOT "bitfield") for Redis compatibility
+//
+// 4. cmdBitfieldRo does NOT need modification (read-only, no notifications)
+//
+// 5. Update command routing in server.zig to pass ps and db_index to cmdBitfield
+//
+// See tests/test_bitmap_notifications.zig for comprehensive notification tests
