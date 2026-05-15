@@ -2,11 +2,14 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 const zuda = @import("zuda");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
+const PubSub = pubsub_mod.PubSub;
 const Coord = zuda.algorithms.geometry.Coord;
 
 // Geospatial constants
@@ -20,6 +23,24 @@ const MAX_LON = 180.0;
 const GEOHASH_STEP_MAX = 26; // 26 steps = 52 bits
 const GEOHASH_LAT_RANGE = [2]f64{ -90.0, 90.0 };
 const GEOHASH_LON_RANGE = [2]f64{ -180.0, 180.0 };
+
+/// Publish keyspace notification for a sorted set command
+fn notifyZsetEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .sorted_set)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// Encodes latitude and longitude into a 52-bit geohash
 /// NOTE: Cannot migrate to zuda - zuda uses string-based encoding, Redis uses 52-bit integer
@@ -1146,7 +1167,7 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
 /// GEOSEARCHSTORE destination source <FROMMEMBER member | FROMLONLAT lon lat>
 ///   <BYRADIUS radius <M|KM|FT|MI> | BYBOX width height <M|KM|FT|MI>>
 ///   [ASC|DESC] [COUNT count [ANY]] [STOREDIST]
-pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
 
     if (args.len < 6) {
@@ -1479,6 +1500,11 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
     // Store results
     const added = try storage.zadd(dest_key, scores.items, members.items, 0, null);
     _ = added; // We return the count, not added count
+
+    // Notify for geosearchstore command (only when results > 0)
+    if (result_count > 0) {
+        notifyZsetEvent(allocator, storage, ps, db_index, dest_key, "geosearchstore");
+    }
 
     // Free member copies (zadd duplicates them internally)
     for (members.items) |member| {

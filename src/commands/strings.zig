@@ -177,7 +177,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "XADD", "XDEL", "XTRIM", "XSETID", "XCFGSET", "XGROUP", "XACK", "XCLAIM",
         "XAUTOCLAIM", "XACKDEL", "XDELEX",
         "SETBIT", "BITOP", "BITFIELD",
-        "GEOADD", "PFADD", "PFMERGE",
+        "GEOADD", "GEOSEARCHSTORE", "PFADD", "PFMERGE",
         "RESTORE", "SORT", "DELEX", "MIGRATE",
         "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
         "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
@@ -1482,7 +1482,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
             break :blk try geo_cmds.cmdGeosearch(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCHSTORE")) {
-            break :blk try geo_cmds.cmdGeosearchstore(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try geo_cmds.cmdGeosearchstore(allocator, storage, array, ps, selected_db);
         }
         // HyperLogLog commands
         else if (std.mem.eql(u8, cmd_upper, "PFADD")) {
