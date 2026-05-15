@@ -281,6 +281,18 @@ pub fn build(b: *std.Build) void {
     const run_geo_notification_tests = b.addRunArtifact(geo_notification_tests);
     integration_test_step.dependOn(&run_geo_notification_tests.step);
 
+    // HyperLogLog keyspace notifications integration tests (Iteration 254)
+    const hyperloglog_notification_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_hyperloglog_notifications.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_hyperloglog_notification_tests = b.addRunArtifact(hyperloglog_notification_tests);
+    integration_test_step.dependOn(&run_hyperloglog_notification_tests.step);
+
     // TUI snapshot tests (sailor v1.5.0)
     const tui_snapshot_tests = b.addTest(.{
         .root_module = b.createModule(.{

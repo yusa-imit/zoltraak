@@ -1487,11 +1487,13 @@ pub fn executeCommand(
         }
         // HyperLogLog commands
         else if (std.mem.eql(u8, cmd_upper, "PFADD")) {
-            break :blk try hll_cmds.cmdPfadd(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hll_cmds.cmdPfadd(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "PFCOUNT")) {
             break :blk try hll_cmds.cmdPfcount(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "PFMERGE")) {
-            break :blk try hll_cmds.cmdPfmerge(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try hll_cmds.cmdPfmerge(allocator, storage, array, ps, selected_db);
         }
         // Server introspection commands
         else if (std.mem.eql(u8, cmd_upper, "MEMORY")) {

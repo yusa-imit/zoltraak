@@ -3,6 +3,29 @@ const Storage = @import("../storage/memory.zig").Storage;
 const Value = @import("../storage/memory.zig").Value;
 const Writer = @import("../protocol/writer.zig").Writer;
 const RespValue = @import("../protocol/parser.zig").RespValue;
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
+
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a HyperLogLog command
+/// Fires only if string events (.string flag) are enabled
+fn notifyHyperLogLogEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .string)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// PFADD key element [element ...]
 /// Add elements to HyperLogLog, returns 1 if at least one register was updated
@@ -10,6 +33,8 @@ pub fn cmdPfadd(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const RespValue,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -59,6 +84,11 @@ pub fn cmdPfadd(
         if (hll_value.add(element)) {
             updated = true;
         }
+    }
+
+    // Fire notification only if updated
+    if (updated) {
+        notifyHyperLogLogEvent(allocator, storage, ps, db_index, key, "pfadd");
     }
 
     // Return 1 if updated, 0 otherwise
@@ -131,6 +161,8 @@ pub fn cmdPfmerge(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const RespValue,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -182,6 +214,9 @@ pub fn cmdPfmerge(
     }
 
     dest_entry.value_ptr.* = Value{ .hyperloglog = merged };
+
+    // Fire notification after successful merge
+    notifyHyperLogLogEvent(allocator, storage, ps, db_index, destkey, "pfadd");
 
     return w.writeSimpleString("OK");
 }
