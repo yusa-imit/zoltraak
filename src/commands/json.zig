@@ -3,12 +3,36 @@ const protocol = @import("../protocol/parser.zig");
 const storage_mod = @import("../storage/memory.zig");
 const json_value_mod = @import("../storage/json_value.zig");
 const jsonpath_mod = @import("../storage/jsonpath.zig");
+const notifications_mod = @import("../storage/notifications.zig");
+const pubsub_mod = @import("../storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Storage = storage_mod.Storage;
 const Value = storage_mod.Value;
 const JsonNode = json_value_mod.JsonNode;
 const JsonPath = jsonpath_mod.JsonPath;
+const PubSub = pubsub_mod.PubSub;
+
+/// Publish keyspace notification for a JSON command
+/// Handles fire-and-forget notification publishing with .module flag (JSON type)
+fn notifyJsonEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    if (!notifications_mod.shouldNotify(flags, .module)) return;
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch |err| {
+        std.log.warn("Failed to publish keyspace notification for key '{s}': {}", .{ key, err });
+    };
+}
 
 /// JSON.SET key path value [NX|XX]
 /// Sets a JSON value at the specified path
@@ -16,6 +40,8 @@ pub fn cmdJsonSet(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len < 4 or args.len > 5) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.set' command" };
@@ -129,6 +155,9 @@ pub fn cmdJsonSet(
         try storage.data.put(owned_key, json_value);
     }
 
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.set");
+
     return RespValue{ .simple_string = "OK" };
 }
 
@@ -213,6 +242,8 @@ pub fn cmdJsonDel(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len < 2 or args.len > 3) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.del' command" };
@@ -254,6 +285,8 @@ pub fn cmdJsonDel(
             storage.allocator.free(kv.key);
             var val = kv.value;
             val.deinit(storage.allocator);
+            // Publish keyspace notification
+            notifyJsonEvent(allocator, storage, ps, db_index, key, "json.del");
             return RespValue{ .integer = 1 };
         }
         return RespValue{ .integer = 0 };
@@ -354,6 +387,9 @@ test "JSON.SET creates key with root path" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
@@ -361,7 +397,7 @@ test "JSON.SET creates key with root path" {
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
 
-    const result = try cmdJsonSet(&storage, &args, allocator);
+    const result = try cmdJsonSet(&storage, &args, allocator, &ps, 0);
     try std.testing.expectEqualStrings("OK", result.simple_string);
 
     // Verify value was stored
@@ -375,6 +411,9 @@ test "JSON.SET with NX flag" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // First set should succeed
     const args1 = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -384,7 +423,7 @@ test "JSON.SET with NX flag" {
         RespValue{ .bulk_string = "NX" },
     };
 
-    const result1 = try cmdJsonSet(&storage, &args1, allocator);
+    const result1 = try cmdJsonSet(&storage, &args1, allocator, &ps, 0);
     try std.testing.expectEqualStrings("OK", result1.simple_string);
 
     // Second set with NX should fail
@@ -396,7 +435,7 @@ test "JSON.SET with NX flag" {
         RespValue{ .bulk_string = "NX" },
     };
 
-    const result2 = try cmdJsonSet(&storage, &args2, allocator);
+    const result2 = try cmdJsonSet(&storage, &args2, allocator, &ps, 0);
     try std.testing.expect(result2 == .null_bulk_string);
 }
 
@@ -405,6 +444,9 @@ test "JSON.SET with XX flag" {
 
     var storage = Storage.init(allocator);
     defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
 
     // Set with XX on non-existent key should fail
     const args1 = [_]RespValue{
@@ -415,7 +457,7 @@ test "JSON.SET with XX flag" {
         RespValue{ .bulk_string = "XX" },
     };
 
-    const result1 = try cmdJsonSet(&storage, &args1, allocator);
+    const result1 = try cmdJsonSet(&storage, &args1, allocator, &ps, 0);
     try std.testing.expect(result1 == .null_bulk_string);
 
     // Create key without XX
@@ -426,7 +468,7 @@ test "JSON.SET with XX flag" {
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
 
-    const result2 = try cmdJsonSet(&storage, &args2, allocator);
+    const result2 = try cmdJsonSet(&storage, &args2, allocator, &ps, 0);
     try std.testing.expectEqualStrings("OK", result2.simple_string);
 
     // Now XX should succeed
@@ -438,7 +480,7 @@ test "JSON.SET with XX flag" {
         RespValue{ .bulk_string = "XX" },
     };
 
-    const result3 = try cmdJsonSet(&storage, &args3, allocator);
+    const result3 = try cmdJsonSet(&storage, &args3, allocator, &ps, 0);
     try std.testing.expectEqualStrings("OK", result3.simple_string);
 }
 
@@ -448,6 +490,9 @@ test "JSON.GET returns entire document" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -456,7 +501,7 @@ test "JSON.GET returns entire document" {
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
     };
 
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Get the document
     const get_args = [_]RespValue{
@@ -483,6 +528,9 @@ test "JSON.GET with path $.a" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -491,7 +539,7 @@ test "JSON.GET with path $.a" {
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
     };
 
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Get field "a"
     const get_args = [_]RespValue{
@@ -527,6 +575,9 @@ test "JSON.DEL deletes entire key" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -535,7 +586,7 @@ test "JSON.DEL deletes entire key" {
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
 
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Delete the document
     const del_args = [_]RespValue{
@@ -543,7 +594,7 @@ test "JSON.DEL deletes entire key" {
         RespValue{ .bulk_string = "doc" },
     };
 
-    const result = try cmdJsonDel(&storage, &del_args, allocator);
+    const result = try cmdJsonDel(&storage, &del_args, allocator, &ps, 0);
     try std.testing.expectEqual(@as(i64, 1), result.integer);
 
     // Verify key is gone
@@ -556,12 +607,15 @@ test "JSON.DEL on non-existent key returns 0" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.DEL" },
         RespValue{ .bulk_string = "nonexistent" },
     };
 
-    const result = try cmdJsonDel(&storage, &args, allocator);
+    const result = try cmdJsonDel(&storage, &args, allocator, &ps, 0);
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 }
 
@@ -571,6 +625,9 @@ test "JSON.TYPE returns correct type" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document with various types
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -579,7 +636,7 @@ test "JSON.TYPE returns correct type" {
         RespValue{ .bulk_string = "{\"a\":1,\"b\":\"hello\",\"c\":true,\"d\":null,\"e\":[],\"f\":{}}" },
     };
 
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Check type of root
     const root_args = [_]RespValue{
@@ -729,6 +786,8 @@ pub fn cmdJsonNumincrby(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len != 4) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.numincrby' command" };
@@ -788,6 +847,9 @@ pub fn cmdJsonNumincrby(
     // Increment the value
     target_node.number += increment;
 
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.numincrby");
+
     // Return the new value as a string
     var buf: [32]u8 = undefined;
     const result_str = try std.fmt.bufPrint(&buf, "{d}", .{target_node.number});
@@ -801,6 +863,8 @@ pub fn cmdJsonNummultby(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len != 4) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.nummultby' command" };
@@ -860,6 +924,9 @@ pub fn cmdJsonNummultby(
     // Multiply the number
     target_node.number *= multiplier;
 
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.nummultby");
+
     // Return the new value as a string
     var buf: [32]u8 = undefined;
     const result_str = try std.fmt.bufPrint(&buf, "{d}", .{target_node.number});
@@ -873,6 +940,8 @@ pub fn cmdJsonMset(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     // Need at least command + 3 args (key path value), and must be in triplets
     if (args.len < 4 or (args.len - 1) % 3 != 0) {
@@ -968,6 +1037,9 @@ pub fn cmdJsonMset(
             // Key doesn't exist - create new entry
             try storage.data.put(try allocator.dupe(u8, keys[i]), .{ .json = cloned });
         }
+
+        // Publish keyspace notification for each key set
+        notifyJsonEvent(allocator, storage, ps, db_index, keys[i], "json.mset");
     }
 
     return RespValue{ .simple_string = "OK" };
@@ -979,9 +1051,11 @@ pub fn cmdJsonForget(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     // JSON.FORGET is just an alias for JSON.DEL
-    return cmdJsonDel(storage, args, allocator);
+    return cmdJsonDel(storage, args, allocator, ps, db_index);
 }
 
 test "JSON.MGET with multiple keys" {
@@ -990,6 +1064,9 @@ test "JSON.MGET with multiple keys" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set multiple JSON documents
     const set_args1 = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -997,7 +1074,7 @@ test "JSON.MGET with multiple keys" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args1, allocator);
+    _ = try cmdJsonSet(&storage, &set_args1, allocator, &ps, 0);
 
     const set_args2 = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1005,7 +1082,7 @@ test "JSON.MGET with multiple keys" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":2}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args2, allocator);
+    _ = try cmdJsonSet(&storage, &set_args2, allocator, &ps, 0);
 
     // MGET both documents
     const mget_args = [_]RespValue{
@@ -1037,6 +1114,9 @@ test "JSON.MGET with non-existent key returns nil" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set one document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1044,7 +1124,7 @@ test "JSON.MGET with non-existent key returns nil" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // MGET with one existing and one non-existent key
     const mget_args = [_]RespValue{
@@ -1076,6 +1156,9 @@ test "JSON.NUMINCRBY increments numeric value" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document with a number
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1083,7 +1166,7 @@ test "JSON.NUMINCRBY increments numeric value" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"count\":10}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Increment the count by 5
     const incr_args = [_]RespValue{
@@ -1093,7 +1176,7 @@ test "JSON.NUMINCRBY increments numeric value" {
         RespValue{ .bulk_string = "5" },
     };
 
-    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
+    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator, &ps, 0);
     defer allocator.free(result.bulk_string);
 
     // Result should be "15"
@@ -1120,6 +1203,9 @@ test "JSON.NUMINCRBY with negative increment" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1127,7 +1213,7 @@ test "JSON.NUMINCRBY with negative increment" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"count\":10}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Decrement the count by 3
     const incr_args = [_]RespValue{
@@ -1137,7 +1223,7 @@ test "JSON.NUMINCRBY with negative increment" {
         RespValue{ .bulk_string = "-3" },
     };
 
-    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
+    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator, &ps, 0);
     defer allocator.free(result.bulk_string);
 
     const new_val = try std.fmt.parseFloat(f64, result.bulk_string);
@@ -1150,6 +1236,9 @@ test "JSON.NUMINCRBY on non-numeric value returns error" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a JSON document with a string
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1157,7 +1246,7 @@ test "JSON.NUMINCRBY on non-numeric value returns error" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"name\":\"test\"}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Try to increment a string
     const incr_args = [_]RespValue{
@@ -1167,7 +1256,7 @@ test "JSON.NUMINCRBY on non-numeric value returns error" {
         RespValue{ .bulk_string = "5" },
     };
 
-    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator);
+    const result = try cmdJsonNumincrby(&storage, &incr_args, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "not a number") != null);
 }
@@ -1178,6 +1267,9 @@ test "JSON.NUMMULTBY multiplies numeric value" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1185,7 +1277,7 @@ test "JSON.NUMMULTBY multiplies numeric value" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"count\":10}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Multiply by 3
     const mult_args = [_]RespValue{
@@ -1195,7 +1287,7 @@ test "JSON.NUMMULTBY multiplies numeric value" {
         RespValue{ .bulk_string = "3" },
     };
 
-    const result = try cmdJsonNummultby(&storage, &mult_args, allocator);
+    const result = try cmdJsonNummultby(&storage, &mult_args, allocator, &ps, 0);
     defer allocator.free(result.bulk_string);
 
     try std.testing.expectEqualStrings("30", result.bulk_string);
@@ -1207,6 +1299,9 @@ test "JSON.NUMMULTBY with negative multiplier" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1214,7 +1309,7 @@ test "JSON.NUMMULTBY with negative multiplier" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"count\":10}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Multiply by -2
     const mult_args = [_]RespValue{
@@ -1224,7 +1319,7 @@ test "JSON.NUMMULTBY with negative multiplier" {
         RespValue{ .bulk_string = "-2" },
     };
 
-    const result = try cmdJsonNummultby(&storage, &mult_args, allocator);
+    const result = try cmdJsonNummultby(&storage, &mult_args, allocator, &ps, 0);
     defer allocator.free(result.bulk_string);
 
     try std.testing.expectEqualStrings("-20", result.bulk_string);
@@ -1236,6 +1331,9 @@ test "JSON.NUMMULTBY on non-numeric value returns error" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with string field
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1243,7 +1341,7 @@ test "JSON.NUMMULTBY on non-numeric value returns error" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"name\":\"test\"}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Try to multiply string
     const mult_args = [_]RespValue{
@@ -1253,7 +1351,7 @@ test "JSON.NUMMULTBY on non-numeric value returns error" {
         RespValue{ .bulk_string = "3" },
     };
 
-    const result = try cmdJsonNummultby(&storage, &mult_args, allocator);
+    const result = try cmdJsonNummultby(&storage, &mult_args, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
 }
 
@@ -1262,6 +1360,9 @@ test "JSON.MSET sets multiple keys atomically" {
 
     var storage = Storage.init(allocator);
     defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
 
     // MSET three documents
     const mset_args = [_]RespValue{
@@ -1277,7 +1378,7 @@ test "JSON.MSET sets multiple keys atomically" {
         RespValue{ .bulk_string = "{\"c\":3}" },
     };
 
-    const result = try cmdJsonMset(&storage, &mset_args, allocator);
+    const result = try cmdJsonMset(&storage, &mset_args, allocator, &ps, 0);
     try std.testing.expect(result == .simple_string);
     try std.testing.expectEqualStrings("OK", result.simple_string);
 
@@ -1293,6 +1394,9 @@ test "JSON.MSET with wrong arity returns error" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Only 2 args after command (need triplets)
     const mset_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.MSET" },
@@ -1300,7 +1404,7 @@ test "JSON.MSET with wrong arity returns error" {
         RespValue{ .bulk_string = "$" },
     };
 
-    const result = try cmdJsonMset(&storage, &mset_args, allocator);
+    const result = try cmdJsonMset(&storage, &mset_args, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
 }
 
@@ -1310,6 +1414,9 @@ test "JSON.FORGET deletes key like JSON.DEL" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1317,7 +1424,7 @@ test "JSON.FORGET deletes key like JSON.DEL" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Use FORGET to delete
     const forget_args = [_]RespValue{
@@ -1325,7 +1432,7 @@ test "JSON.FORGET deletes key like JSON.DEL" {
         RespValue{ .bulk_string = "doc1" },
     };
 
-    const result = try cmdJsonForget(&storage, &forget_args, allocator);
+    const result = try cmdJsonForget(&storage, &forget_args, allocator, &ps, 0);
     try std.testing.expectEqual(@as(usize, 1), result.integer);
     try std.testing.expect(storage.data.get("doc1") == null);
 }
@@ -1336,6 +1443,8 @@ pub fn cmdJsonStrappend(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len < 3 or args.len > 4) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.strappend' command" };
@@ -1394,6 +1503,9 @@ pub fn cmdJsonStrappend(
     const new_str = try std.mem.concat(storage.allocator, u8, &[_][]const u8{ old_str, append_str });
     storage.allocator.free(old_str);
     target_node.string = new_str;
+
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.strappend");
 
     // Return the new string length as an integer
     return RespValue{ .integer = @intCast(new_str.len) };
@@ -1481,6 +1593,8 @@ pub fn cmdJsonToggle(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len < 2 or args.len > 3) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.toggle' command" };
@@ -1540,6 +1654,9 @@ pub fn cmdJsonToggle(
         }
     }
 
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.toggle");
+
     // Return array if multiple results, otherwise single value for legacy path
     if (results.items.len == 1) {
         // Single result - return the first element directly
@@ -1561,6 +1678,8 @@ pub fn cmdJsonClear(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len < 2 or args.len > 3) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.clear' command" };
@@ -1614,6 +1733,11 @@ pub fn cmdJsonClear(
         if (modified) {
             count += 1;
         }
+    }
+
+    // Publish keyspace notification only if something was cleared
+    if (count > 0) {
+        notifyJsonEvent(allocator, storage, ps, db_index, key, "json.clear");
     }
 
     return RespValue{ .integer = count };
@@ -1937,6 +2061,9 @@ test "JSON.STRAPPEND appends to string" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with string field
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1944,7 +2071,7 @@ test "JSON.STRAPPEND appends to string" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"name\":\"Hello\"}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Append to string
     const append_args = [_]RespValue{
@@ -1954,7 +2081,7 @@ test "JSON.STRAPPEND appends to string" {
         RespValue{ .bulk_string = " World" },
     };
 
-    const result = try cmdJsonStrappend(&storage, &append_args, allocator);
+    const result = try cmdJsonStrappend(&storage, &append_args, allocator, &ps, 0);
     try std.testing.expectEqual(@as(usize, 11), result.integer); // "Hello World".len
 
     // Verify the string was modified
@@ -1974,6 +2101,9 @@ test "JSON.STRAPPEND on non-string returns error" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with numeric field
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -1981,7 +2111,7 @@ test "JSON.STRAPPEND on non-string returns error" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"count\":10}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Try to append to number
     const append_args = [_]RespValue{
@@ -1991,7 +2121,7 @@ test "JSON.STRAPPEND on non-string returns error" {
         RespValue{ .bulk_string = "test" },
     };
 
-    const result = try cmdJsonStrappend(&storage, &append_args, allocator);
+    const result = try cmdJsonStrappend(&storage, &append_args, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
 }
 
@@ -2001,6 +2131,9 @@ test "JSON.STRLEN returns string length" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with string field
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2008,7 +2141,7 @@ test "JSON.STRLEN returns string length" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"name\":\"Hello\"}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Get string length
     const strlen_args = [_]RespValue{
@@ -2027,6 +2160,9 @@ test "JSON.STRLEN on non-string returns null" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with numeric field
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2034,7 +2170,7 @@ test "JSON.STRLEN on non-string returns null" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"count\":10}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Try to get length of number
     const strlen_args = [_]RespValue{
@@ -2068,6 +2204,9 @@ test "JSON.TOGGLE toggles single boolean" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with boolean field
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2075,7 +2214,7 @@ test "JSON.TOGGLE toggles single boolean" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"active\":true}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Toggle the boolean
     const toggle_args = [_]RespValue{
@@ -2084,7 +2223,7 @@ test "JSON.TOGGLE toggles single boolean" {
         RespValue{ .bulk_string = "$.active" },
     };
 
-    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator, &ps, 0);
     try std.testing.expect(result == .integer);
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 
@@ -2108,6 +2247,9 @@ test "JSON.TOGGLE toggles multiple booleans" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with multiple boolean fields
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2115,7 +2257,7 @@ test "JSON.TOGGLE toggles multiple booleans" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":true,\"b\":false,\"c\":true}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Toggle all booleans with wildcard
     const toggle_args = [_]RespValue{
@@ -2124,7 +2266,7 @@ test "JSON.TOGGLE toggles multiple booleans" {
         RespValue{ .bulk_string = "$.*" },
     };
 
-    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator, &ps, 0);
     defer protocol.deinitRespValue(&result, allocator);
 
     try std.testing.expect(result == .array);
@@ -2142,6 +2284,9 @@ test "JSON.TOGGLE on non-boolean returns null" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document with mixed types
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2149,7 +2294,7 @@ test "JSON.TOGGLE on non-boolean returns null" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":true,\"b\":123,\"c\":\"text\"}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Toggle all fields
     const toggle_args = [_]RespValue{
@@ -2158,7 +2303,7 @@ test "JSON.TOGGLE on non-boolean returns null" {
         RespValue{ .bulk_string = "$.*" },
     };
 
-    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator, &ps, 0);
     defer protocol.deinitRespValue(&result, allocator);
 
     try std.testing.expect(result == .array);
@@ -2180,13 +2325,16 @@ test "JSON.TOGGLE on non-existent key returns null" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const toggle_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.TOGGLE" },
         RespValue{ .bulk_string = "nonexistent" },
         RespValue{ .bulk_string = "$" },
     };
 
-    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator, &ps, 0);
     try std.testing.expect(result == .null_bulk_string);
 }
 
@@ -2196,6 +2344,9 @@ test "JSON.TOGGLE with no matches returns empty array" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set document
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2203,7 +2354,7 @@ test "JSON.TOGGLE with no matches returns empty array" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"x\":1}" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Toggle non-existent path
     const toggle_args = [_]RespValue{
@@ -2212,7 +2363,7 @@ test "JSON.TOGGLE with no matches returns empty array" {
         RespValue{ .bulk_string = "$.nonexistent" },
     };
 
-    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator, &ps, 0);
     try std.testing.expect(result == .array);
     try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
@@ -2223,6 +2374,9 @@ test "JSON.TOGGLE on root boolean" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set root as boolean
     const set_args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -2230,7 +2384,7 @@ test "JSON.TOGGLE on root boolean" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "true" },
     };
-    _ = try cmdJsonSet(&storage, &set_args, allocator);
+    _ = try cmdJsonSet(&storage, &set_args, allocator, &ps, 0);
 
     // Toggle root (implicit $)
     const toggle_args = [_]RespValue{
@@ -2238,7 +2392,7 @@ test "JSON.TOGGLE on root boolean" {
         RespValue{ .bulk_string = "doc" },
     };
 
-    const result = try cmdJsonToggle(&storage, &toggle_args, allocator);
+    const result = try cmdJsonToggle(&storage, &toggle_args, allocator, &ps, 0);
     try std.testing.expect(result == .integer);
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 
@@ -2261,12 +2415,15 @@ test "JSON.TOGGLE validates arity" {
     var storage = Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Too few args
     const too_few = [_]RespValue{
         RespValue{ .bulk_string = "JSON.TOGGLE" },
     };
 
-    const result1 = try cmdJsonToggle(&storage, &too_few, allocator);
+    const result1 = try cmdJsonToggle(&storage, &too_few, allocator, &ps, 0);
     try std.testing.expect(result1 == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result1.error_string, "wrong number of arguments") != null);
 
@@ -2278,7 +2435,7 @@ test "JSON.TOGGLE validates arity" {
         RespValue{ .bulk_string = "extra" },
     };
 
-    const result2 = try cmdJsonToggle(&storage, &too_many, allocator);
+    const result2 = try cmdJsonToggle(&storage, &too_many, allocator, &ps, 0);
     try std.testing.expect(result2 == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result2.error_string, "wrong number of arguments") != null);
 }
@@ -2290,6 +2447,8 @@ pub fn cmdJsonArrappend(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len < 4) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.arrappend' command" };
@@ -2395,6 +2554,9 @@ pub fn cmdJsonArrappend(
         }
     }
 
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.arrappend");
+
     const owned_result = try result_array.toOwnedSlice(allocator);
     return RespValue{ .array = owned_result };
 }
@@ -2431,6 +2593,8 @@ pub fn cmdJsonArrinsert(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     // Minimum: JSON.ARRINSERT key path index value
     if (args.len < 5) {
@@ -2576,6 +2740,9 @@ pub fn cmdJsonArrinsert(
         }
     }
 
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.arrinsert");
+
     const owned_result = try result_array.toOwnedSlice(allocator);
     return RespValue{ .array = owned_result };
 }
@@ -2685,6 +2852,8 @@ pub fn cmdJsonArrpop(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     // Arity: JSON.ARRPOP key [path [index]]
     if (args.len < 2 or args.len > 4) {
@@ -2786,6 +2955,9 @@ pub fn cmdJsonArrpop(
                 removed.deinit(allocator);
                 allocator.destroy(removed);
 
+                // Publish keyspace notification
+                notifyJsonEvent(allocator, storage, ps, db_index, key, "json.arrpop");
+
                 // Return as bulk string
                 const result_str = try allocator.dupe(u8, json_str);
                 return RespValue{ .bulk_string = result_str };
@@ -2864,6 +3036,9 @@ pub fn cmdJsonArrpop(
             }
         }
 
+        // Publish keyspace notification
+        notifyJsonEvent(allocator, storage, ps, db_index, key, "json.arrpop");
+
         const owned_result = try result_array.toOwnedSlice(allocator);
         return RespValue{ .array = owned_result };
     }
@@ -2880,6 +3055,8 @@ pub fn cmdJsonArrtrim(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     // Arity: JSON.ARRTRIM key path start stop
     if (args.len != 5) {
@@ -3011,6 +3188,8 @@ pub fn cmdJsonArrtrim(
             // Non-array
             return RespValue{ .null_bulk_string = {} };
         }
+        // Publish keyspace notification
+        notifyJsonEvent(allocator, storage, ps, db_index, key, "json.arrtrim");
         return RespValue{ .integer = new_len };
     } else {
         // Multiple results - return array of integers/nulls
@@ -3031,6 +3210,9 @@ pub fn cmdJsonArrtrim(
             }
         }
 
+        // Publish keyspace notification
+        notifyJsonEvent(allocator, storage, ps, db_index, key, "json.arrtrim");
+
         const owned_result = try result_array.toOwnedSlice(allocator);
         return RespValue{ .array = owned_result };
     }
@@ -3041,6 +3223,9 @@ test "JSON.ARRAPPEND - append single value to array" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set up initial JSON with array
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -3048,7 +3233,7 @@ test "JSON.ARRAPPEND - append single value to array" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"arr\":[1,2,3]}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
     try std.testing.expectEqualStrings("OK", set_result.simple_string);
 
@@ -3059,7 +3244,7 @@ test "JSON.ARRAPPEND - append single value to array" {
         RespValue{ .bulk_string = "$.arr" },
         RespValue{ .bulk_string = "4" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
     defer deinitRespValue(result, allocator);
 
     try std.testing.expect(result == .array);
@@ -3085,13 +3270,16 @@ test "JSON.ARRAPPEND - append multiple values" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "mykey" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"arr\":[1]}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Append multiple values
@@ -3103,7 +3291,7 @@ test "JSON.ARRAPPEND - append multiple values" {
         RespValue{ .bulk_string = "3" },
         RespValue{ .bulk_string = "4" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
     defer deinitRespValue(result, allocator);
 
     try std.testing.expect(result == .array);
@@ -3116,13 +3304,16 @@ test "JSON.ARRAPPEND - non-array returns null" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "mykey" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"num\":42}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Try to append to non-array
@@ -3132,7 +3323,7 @@ test "JSON.ARRAPPEND - non-array returns null" {
         RespValue{ .bulk_string = "$.num" },
         RespValue{ .bulk_string = "1" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
     defer deinitRespValue(result, allocator);
 
     try std.testing.expect(result == .array);
@@ -3145,13 +3336,16 @@ test "JSON.ARRAPPEND - multiple arrays" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "mykey" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":[1],\"b\":[2]}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Append to all arrays with wildcard
@@ -3161,7 +3355,7 @@ test "JSON.ARRAPPEND - multiple arrays" {
         RespValue{ .bulk_string = "$.*" },
         RespValue{ .bulk_string = "99" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
     defer deinitRespValue(result, allocator);
 
     try std.testing.expect(result == .array);
@@ -3175,13 +3369,16 @@ test "JSON.ARRAPPEND - key does not exist" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_append = [_]RespValue{
         RespValue{ .bulk_string = "JSON.ARRAPPEND" },
         RespValue{ .bulk_string = "nonexistent" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "1" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
 
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "key does not exist") != null);
@@ -3191,6 +3388,9 @@ test "JSON.ARRAPPEND - wrong type" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
 
     // Create a non-JSON key
     const string_val = try storage.allocator.dupe(u8, "not json");
@@ -3202,7 +3402,7 @@ test "JSON.ARRAPPEND - wrong type" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "1" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
 
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "WRONGTYPE") != null);
@@ -3213,13 +3413,16 @@ test "JSON.ARRAPPEND - arity error" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const too_few = [_]RespValue{
         RespValue{ .bulk_string = "JSON.ARRAPPEND" },
         RespValue{ .bulk_string = "key" },
         RespValue{ .bulk_string = "$" },
     };
 
-    const result = try cmdJsonArrappend(&storage, &too_few, allocator);
+    const result = try cmdJsonArrappend(&storage, &too_few, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
 }
@@ -3229,13 +3432,16 @@ test "JSON.ARRAPPEND - append complex objects" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "mykey" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"arr\":[]}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Append objects and arrays
@@ -3247,7 +3453,7 @@ test "JSON.ARRAPPEND - append complex objects" {
         RespValue{ .bulk_string = "[1,2,3]" },
         RespValue{ .bulk_string = "\"string\"" },
     };
-    const result = try cmdJsonArrappend(&storage, &args_append, allocator);
+    const result = try cmdJsonArrappend(&storage, &args_append, allocator, &ps, 0);
     defer deinitRespValue(result, allocator);
 
     try std.testing.expect(result == .array);
@@ -3778,6 +3984,8 @@ pub fn cmdJsonMerge(
     storage: *Storage,
     args: []const RespValue,
     allocator: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) !RespValue {
     if (args.len != 4) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'json.merge' command" };
@@ -3854,6 +4062,10 @@ pub fn cmdJsonMerge(
 
     patch_node.deinit(storage.allocator);
     storage.allocator.destroy(patch_node);
+
+    // Publish keyspace notification
+    notifyJsonEvent(allocator, storage, ps, db_index, key, "json.merge");
+
     return RespValue{ .simple_string = "OK" };
 }
 
@@ -3946,6 +4158,9 @@ test "JSON.OBJKEYS - basic object at root" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set object with keys
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -3953,7 +4168,7 @@ test "JSON.OBJKEYS - basic object at root" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Get keys
@@ -3975,13 +4190,16 @@ test "JSON.OBJKEYS - empty object" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objkeys = [_]RespValue{
@@ -4035,13 +4253,16 @@ test "JSON.OBJKEYS - nested object path" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"outer\":{\"inner\":{\"x\":1,\"y\":2}}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objkeys = [_]RespValue{
@@ -4061,13 +4282,16 @@ test "JSON.OBJKEYS - wildcard path with multiple objects" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":{\"b\":1},\"nested\":{\"a\":{\"c\":2}}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objkeys = [_]RespValue{
@@ -4091,13 +4315,16 @@ test "JSON.OBJKEYS - non-object returns nil in array" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":[1,2],\"b\":{\"x\":1}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objkeys = [_]RespValue{
@@ -4130,13 +4357,16 @@ test "JSON.OBJKEYS - default path is root" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Call without path argument
@@ -4160,13 +4390,16 @@ test "JSON.OBJLEN - basic object" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4186,13 +4419,16 @@ test "JSON.OBJLEN - empty object" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4245,13 +4481,16 @@ test "JSON.OBJLEN - nested object path" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"outer\":{\"inner\":{\"x\":1,\"y\":2}}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4271,13 +4510,16 @@ test "JSON.OBJLEN - wildcard path with multiple objects" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":{\"b\":1},\"nested\":{\"a\":{\"c\":2,\"d\":3}}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4301,13 +4543,16 @@ test "JSON.OBJLEN - non-object returns nil" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":[1,2],\"b\":{\"x\":1}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4340,13 +4585,16 @@ test "JSON.OBJLEN - default path is root" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4365,13 +4613,16 @@ test "JSON.OBJLEN - wildcard with mixed types returns array with nulls" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
         RespValue{ .bulk_string = "doc" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"obj\":{\"x\":1},\"arr\":[1,2],\"num\":42}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     const args_objlen = [_]RespValue{
@@ -4395,6 +4646,9 @@ test "JSON.MERGE - basic object property merge" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4402,7 +4656,7 @@ test "JSON.MERGE - basic object property merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Merge object with updated property
@@ -4412,7 +4666,7 @@ test "JSON.MERGE - basic object property merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"b\":3,\"c\":4}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
     try std.testing.expectEqualStrings("OK", merge_result.simple_string);
 
@@ -4436,6 +4690,9 @@ test "JSON.MERGE - delete property with null value" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4443,7 +4700,7 @@ test "JSON.MERGE - delete property with null value" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Merge with null to delete property
@@ -4453,7 +4710,7 @@ test "JSON.MERGE - delete property with null value" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"b\":null}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
 
     // Verify property is deleted
@@ -4474,6 +4731,9 @@ test "JSON.MERGE - nested object merge" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial nested object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4481,7 +4741,7 @@ test "JSON.MERGE - nested object merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"user\":{\"name\":\"Alice\",\"age\":30}}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Merge with nested object update
@@ -4491,7 +4751,7 @@ test "JSON.MERGE - nested object merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"user\":{\"age\":31,\"city\":\"NYC\"}}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
 
     // Verify nested merge
@@ -4513,6 +4773,9 @@ test "JSON.MERGE - array replacement (not merge)" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial object with array
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4520,7 +4783,7 @@ test "JSON.MERGE - array replacement (not merge)" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"items\":[1,2,3]}" },
     };
-    const set_result = try cmdJsonSet(&storage, &args_set, allocator);
+    const set_result = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
     try std.testing.expect(set_result == .simple_string);
 
     // Merge with different array - should replace, not merge elements
@@ -4530,7 +4793,7 @@ test "JSON.MERGE - array replacement (not merge)" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"items\":[4,5]}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
 
     // Verify array is replaced
@@ -4552,13 +4815,16 @@ test "JSON.MERGE - non-existent key error" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args_merge = [_]RespValue{
         RespValue{ .bulk_string = "JSON.MERGE" },
         RespValue{ .bulk_string = "nonexistent" },
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    const result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(result == .null_bulk_string);
 }
 
@@ -4566,6 +4832,9 @@ test "JSON.MERGE - WRONGTYPE error" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
 
     // Manually add a non-JSON value to storage
     const string_val = Value{ .string = "mystring" };
@@ -4578,7 +4847,7 @@ test "JSON.MERGE - WRONGTYPE error" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    const result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "WRONGTYPE") != null);
 }
@@ -4588,11 +4857,14 @@ test "JSON.MERGE - arity error (too few args)" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.MERGE" },
         RespValue{ .bulk_string = "doc" },
     };
-    const result = try cmdJsonMerge(&storage, &args, allocator);
+    const result = try cmdJsonMerge(&storage, &args, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
 }
@@ -4602,6 +4874,9 @@ test "JSON.MERGE - arity error (too many args)" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "JSON.MERGE" },
         RespValue{ .bulk_string = "doc" },
@@ -4609,7 +4884,7 @@ test "JSON.MERGE - arity error (too many args)" {
         RespValue{ .bulk_string = "{\"a\":1}" },
         RespValue{ .bulk_string = "extra" },
     };
-    const result = try cmdJsonMerge(&storage, &args, allocator);
+    const result = try cmdJsonMerge(&storage, &args, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
     try std.testing.expect(std.mem.indexOf(u8, result.error_string, "wrong number of arguments") != null);
 }
@@ -4619,6 +4894,9 @@ test "JSON.MERGE - invalid JSON patch" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4626,7 +4904,7 @@ test "JSON.MERGE - invalid JSON patch" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Try to merge with invalid JSON
     const args_merge = [_]RespValue{
@@ -4635,7 +4913,7 @@ test "JSON.MERGE - invalid JSON patch" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{invalid json" },
     };
-    const result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(result == .error_string);
 }
 
@@ -4644,6 +4922,9 @@ test "JSON.MERGE - primitive to object conversion" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial object with number value
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4651,7 +4932,7 @@ test "JSON.MERGE - primitive to object conversion" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"value\":42}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Merge to replace number with object
     const args_merge = [_]RespValue{
@@ -4660,7 +4941,7 @@ test "JSON.MERGE - primitive to object conversion" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"value\":{\"x\":1}}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
 
     // Verify the value is now an object
@@ -4679,6 +4960,9 @@ test "JSON.MERGE - empty object merge" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set initial object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4686,7 +4970,7 @@ test "JSON.MERGE - empty object merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Merge with empty object
     const args_merge = [_]RespValue{
@@ -4695,7 +4979,7 @@ test "JSON.MERGE - empty object merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
 
     // Verify object is unchanged
@@ -4713,6 +4997,9 @@ test "JSON.MERGE - deeply nested merge" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set deeply nested object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4720,7 +5007,7 @@ test "JSON.MERGE - deeply nested merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":{\"b\":{\"c\":1}}}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Merge deeply nested update
     const args_merge = [_]RespValue{
@@ -4729,7 +5016,7 @@ test "JSON.MERGE - deeply nested merge" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":{\"b\":{\"d\":2}}}" },
     };
-    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator);
+    const merge_result = try cmdJsonMerge(&storage, &args_merge, allocator, &ps, 0);
     try std.testing.expect(merge_result == .simple_string);
 
     // Verify nested values
@@ -4897,6 +5184,9 @@ test "JSON.DEBUG MEMORY - basic types" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set a simple string
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4904,7 +5194,7 @@ test "JSON.DEBUG MEMORY - basic types" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "\"hello\"" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Get memory usage
     const args_debug = [_]RespValue{
@@ -4924,6 +5214,9 @@ test "JSON.DEBUG MEMORY - object" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set an object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4931,7 +5224,7 @@ test "JSON.DEBUG MEMORY - object" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Get memory usage
     const args_debug = [_]RespValue{
@@ -4950,6 +5243,9 @@ test "JSON.DEBUG MEMORY - array" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set an array
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4957,7 +5253,7 @@ test "JSON.DEBUG MEMORY - array" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "[1,2,3]" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Get memory usage
     const args_debug = [_]RespValue{
@@ -4977,6 +5273,9 @@ test "JSON.DEBUG MEMORY - nested path" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set nested object
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -4984,7 +5283,7 @@ test "JSON.DEBUG MEMORY - nested path" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":{\"b\":\"value\"}}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Get memory usage of nested path
     const args_debug = [_]RespValue{
@@ -5004,6 +5303,9 @@ test "JSON.DEBUG MEMORY - wildcard path" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit(allocator);
+
     // Set object with multiple fields
     const args_set = [_]RespValue{
         RespValue{ .bulk_string = "JSON.SET" },
@@ -5011,7 +5313,7 @@ test "JSON.DEBUG MEMORY - wildcard path" {
         RespValue{ .bulk_string = "$" },
         RespValue{ .bulk_string = "{\"a\":1,\"b\":2,\"c\":3}" },
     };
-    _ = try cmdJsonSet(&storage, &args_set, allocator);
+    _ = try cmdJsonSet(&storage, &args_set, allocator, &ps, 0);
 
     // Get memory usage with wildcard
     const args_debug = [_]RespValue{

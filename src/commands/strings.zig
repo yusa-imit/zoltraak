@@ -1939,7 +1939,8 @@ pub fn executeCommand(
         }
         // JSON commands
         else if (std.mem.eql(u8, cmd_upper, "JSON.SET")) {
-            const result = try json_cmds.cmdJsonSet(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonSet(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -1949,7 +1950,8 @@ pub fn executeCommand(
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.DEL")) {
-            const result = try json_cmds.cmdJsonDel(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonDel(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -1964,27 +1966,32 @@ pub fn executeCommand(
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.NUMINCRBY")) {
-            const result = try json_cmds.cmdJsonNumincrby(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonNumincrby(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.NUMMULTBY")) {
-            const result = try json_cmds.cmdJsonNummultby(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonNummultby(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.MSET")) {
-            const result = try json_cmds.cmdJsonMset(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonMset(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.FORGET")) {
-            const result = try json_cmds.cmdJsonForget(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonForget(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.STRAPPEND")) {
-            const result = try json_cmds.cmdJsonStrappend(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonStrappend(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -1994,12 +2001,14 @@ pub fn executeCommand(
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.TOGGLE")) {
-            const result = try json_cmds.cmdJsonToggle(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonToggle(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.CLEAR")) {
-            const result = try json_cmds.cmdJsonClear(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonClear(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -2009,12 +2018,14 @@ pub fn executeCommand(
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.ARRAPPEND")) {
-            const result = try json_cmds.cmdJsonArrappend(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonArrappend(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.ARRINSERT")) {
-            const result = try json_cmds.cmdJsonArrinsert(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonArrinsert(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -2024,12 +2035,14 @@ pub fn executeCommand(
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.ARRPOP")) {
-            const result = try json_cmds.cmdJsonArrpop(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonArrpop(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.ARRTRIM")) {
-            const result = try json_cmds.cmdJsonArrtrim(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonArrtrim(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -2049,7 +2062,8 @@ pub fn executeCommand(
             defer w.deinit();
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.MERGE")) {
-            const result = try json_cmds.cmdJsonMerge(storage, array, allocator);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            const result = try json_cmds.cmdJsonMerge(storage, array, allocator, ps, selected_db);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
