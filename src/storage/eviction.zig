@@ -113,13 +113,29 @@ pub const LFUCounter = struct {
 
     /// Increment counter for a key (logarithmic/probabilistic)
     /// Uses Morris counter: higher values increment with lower probability
+    /// Default uses log-factor 10 (backward compatibility)
     pub fn increment(self: *LFUCounter, key: []const u8) !void {
+        return try self.incrementWithLogFactor(key, 10);
+    }
+
+    /// Increment counter using configurable LFU log-factor
+    /// Formula: p = 1.0 / (2^log_factor * counter + 1)
+    /// log_factor: typically 0-255; higher values make increments rarer
+    pub fn incrementWithLogFactor(self: *LFUCounter, key: []const u8, log_factor: u8) !void {
         const current = self.counters.get(key) orelse 0;
         if (current < 255) {
-            // Probability of increment decreases as counter grows
             const rand = self.prng.random();
-            const threshold = @as(f64, @floatFromInt(current)) / 10.0;
-            if (rand.float(f64) > threshold) {
+
+            // Redis formula: p = 1.0 / (2^lfu_log_factor * counter + 1)
+            // For safety, cap base_val calculation to avoid overflow
+            const base_val: f64 = if (log_factor < 30)
+                @as(f64, @floatFromInt(@as(u32, 1) << @as(u5, @intCast(log_factor))))
+            else
+                std.math.floatMax(f64); // Cap at very large value for log_factor >= 30
+
+            const threshold = 1.0 / (base_val * @as(f64, @floatFromInt(current)) + 1.0);
+
+            if (rand.float(f64) < threshold) {
                 try self.counters.put(key, current + 1);
             }
         }
@@ -312,4 +328,36 @@ test "eviction - LFU probabilistic increment" {
 
     // High counter should increment less than low counter did
     try std.testing.expect((after - before) < low_count);
+}
+
+test "eviction - LFU with configurable log-factor (low factor = more frequent increments)" {
+    var counter = LFUCounter.init(std.testing.allocator);
+    defer counter.deinit();
+
+    // Log factor 0: p = 1.0 / (2^0 * counter + 1) = 1.0 / (counter + 1)
+    // With counter=0, p=1.0 (always increments)
+    for (0..50) |_| {
+        try counter.incrementWithLogFactor("low_factor", 0);
+    }
+    const low_factor_count = counter.getCounter("low_factor");
+    try std.testing.expect(low_factor_count > 5); // Should increment frequently
+}
+
+test "eviction - LFU with configurable log-factor (high factor = rare increments)" {
+    var counter = LFUCounter.init(std.testing.allocator);
+    defer counter.deinit();
+
+    // Set counter to 50
+    try counter.counters.put("high_factor", 50);
+
+    // Log factor 16: p = 1.0 / (2^16 * 50 + 1) = 1.0 / (3276800 + 1) ≈ 0.0000003
+    // Increments should be extremely rare
+    const before = counter.getCounter("high_factor");
+    for (0..50) |_| {
+        try counter.incrementWithLogFactor("high_factor", 16);
+    }
+    const after = counter.getCounter("high_factor");
+
+    // With such a high factor, increment should be very unlikely
+    try std.testing.expectEqual(before, after);
 }

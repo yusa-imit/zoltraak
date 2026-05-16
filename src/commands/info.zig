@@ -71,7 +71,7 @@ pub fn cmdInfo(
         try buildPersistenceSection(&buf, allocator, config);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "STATS")) {
-        try buildStatsSection(&buf, allocator, stats.total_commands_processed, stats.total_connections_received);
+        try buildStatsSection(&buf, allocator, stats.total_commands_processed, stats.total_connections_received, storage);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "REPLICATION")) {
         try buildReplicationSection(&buf, allocator, repl);
@@ -220,6 +220,7 @@ fn buildStatsSection(
     allocator: std.mem.Allocator,
     total_commands_processed: u64,
     total_connections_received: u64,
+    storage: *Storage,
 ) !void {
     const bw = buf.writer(allocator);
 
@@ -236,7 +237,7 @@ fn buildStatsSection(
     try bw.writeAll("sync_partial_ok:0\r\n");
     try bw.writeAll("sync_partial_err:0\r\n");
     try bw.writeAll("expired_keys:0\r\n");
-    try bw.writeAll("evicted_keys:0\r\n");
+    try bw.print("evicted_keys:{d}\r\n", .{storage.getEvictedKeysCount()});
     try bw.writeAll("keyspace_hits:0\r\n");
     try bw.writeAll("keyspace_misses:0\r\n");
     try bw.writeAll("pubsub_channels:0\r\n");

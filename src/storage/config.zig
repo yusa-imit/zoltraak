@@ -84,6 +84,9 @@ pub const Config = struct {
             // Memory management
             .{ .name = "maxmemory", .value = .{ .int = 0 }, .read_only = false }, // 0 = unlimited
             .{ .name = "maxmemory-policy", .value = .{ .string = "noeviction" }, .read_only = false },
+            .{ .name = "maxmemory-samples", .value = .{ .int = 5 }, .read_only = false }, // Sample size for eviction (1-10)
+            .{ .name = "lfu-log-factor", .value = .{ .int = 10 }, .read_only = false }, // LFU log factor (0-255)
+            .{ .name = "lfu-decay-time", .value = .{ .int = 1 }, .read_only = false }, // LFU decay time in minutes (0-max)
 
             // Networking
             .{ .name = "timeout", .value = .{ .int = 0 }, .read_only = false }, // 0 = no timeout
@@ -294,6 +297,15 @@ pub const Config = struct {
                     std.mem.eql(u8, name_lower, "timeout") or
                     std.mem.eql(u8, name_lower, "tcp-keepalive"))
                 {
+                    if (parsed < 0) return error.InvalidValue;
+                } else if (std.mem.eql(u8, name_lower, "maxmemory-samples")) {
+                    // Must be between 1 and 10
+                    if (parsed < 1 or parsed > 10) return error.InvalidValue;
+                } else if (std.mem.eql(u8, name_lower, "lfu-log-factor")) {
+                    // Must be between 0 and 255
+                    if (parsed < 0 or parsed > 255) return error.InvalidValue;
+                } else if (std.mem.eql(u8, name_lower, "lfu-decay-time")) {
+                    // Must be non-negative
                     if (parsed < 0) return error.InvalidValue;
                 }
                 break :blk ConfigValue{ .int = parsed };
@@ -596,4 +608,79 @@ test "ConfigValue.format conversions" {
         defer allocator.free(fmt_false);
         try std.testing.expectEqualStrings("no", fmt_false);
     }
+}
+
+test "Config.set validates maxmemory-samples (1-10 range)" {
+    const allocator = std.testing.allocator;
+
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Valid: 1
+    try config.set("maxmemory-samples", "1");
+    var val = try config.get("maxmemory-samples");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("1", val.?);
+
+    // Valid: 10
+    try config.set("maxmemory-samples", "10");
+    val = try config.get("maxmemory-samples");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("10", val.?);
+
+    // Invalid: 0
+    try std.testing.expectError(error.InvalidValue, config.set("maxmemory-samples", "0"));
+
+    // Invalid: 11
+    try std.testing.expectError(error.InvalidValue, config.set("maxmemory-samples", "11"));
+
+    // Invalid: -1
+    try std.testing.expectError(error.InvalidValue, config.set("maxmemory-samples", "-1"));
+}
+
+test "Config.set validates lfu-log-factor (0-255 range)" {
+    const allocator = std.testing.allocator;
+
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Valid: 0
+    try config.set("lfu-log-factor", "0");
+    var val = try config.get("lfu-log-factor");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", val.?);
+
+    // Valid: 255
+    try config.set("lfu-log-factor", "255");
+    val = try config.get("lfu-log-factor");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("255", val.?);
+
+    // Invalid: -1
+    try std.testing.expectError(error.InvalidValue, config.set("lfu-log-factor", "-1"));
+
+    // Invalid: 256
+    try std.testing.expectError(error.InvalidValue, config.set("lfu-log-factor", "256"));
+}
+
+test "Config.set validates lfu-decay-time (non-negative)" {
+    const allocator = std.testing.allocator;
+
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Valid: 0
+    try config.set("lfu-decay-time", "0");
+    var val = try config.get("lfu-decay-time");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", val.?);
+
+    // Valid: 60
+    try config.set("lfu-decay-time", "60");
+    val = try config.get("lfu-decay-time");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("60", val.?);
+
+    // Invalid: -1
+    try std.testing.expectError(error.InvalidValue, config.set("lfu-decay-time", "-1"));
 }

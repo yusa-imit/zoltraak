@@ -576,6 +576,7 @@ pub const Storage = struct {
     notification_flags: std.atomic.Value(u16), // Keyspace notification flags (from notify-keyspace-events config)
     lru_clock: LRUClock, // LRU clock for eviction policies
     lfu_counter: LFUCounter, // LFU counter for eviction policies
+    evicted_keys: std.atomic.Value(u64), // Atomic counter for total evicted keys
     lazyfree_task: LazyFreeTask, // Background lazy freeing task
     defrag_task: DefragTask, // Background active defragmentation task
     module_store: ModuleStore, // Dynamically loaded modules (Phase 17)
@@ -686,6 +687,7 @@ pub const Storage = struct {
             .notification_flags = std.atomic.Value(u16).init(0), // Notifications disabled by default
             .lru_clock = LRUClock.init(allocator),
             .lfu_counter = LFUCounter.init(allocator),
+            .evicted_keys = std.atomic.Value(u64).init(0),
             .lazyfree_task = lazy_free,
             .defrag_task = defrag_task,
             .module_store = try ModuleStore.init(allocator),
@@ -718,6 +720,19 @@ pub const Storage = struct {
     /// Get current notification flags
     pub fn getNotificationFlags(self: *Storage) u16 {
         return self.notification_flags.load(.acquire);
+    }
+
+    /// Get the total count of evicted keys (thread-safe atomic read)
+    pub fn getEvictedKeysCount(self: *Storage) u64 {
+        return self.evicted_keys.load(.monotonic);
+    }
+
+    /// Increment the evicted keys counter atomically
+    fn incrementEvictedKeys(self: *Storage) void {
+        var current = self.evicted_keys.load(.monotonic);
+        while (!self.evicted_keys.compareAndSwapWeak(current, current + 1, .monotonic, .monotonic)) |new_current| {
+            current = new_current;
+        }
     }
 
     /// Deinitialize storage and free all keys and values
@@ -865,6 +880,7 @@ pub const Storage = struct {
             self.allocator.free(kv.key);
             var value = kv.value;
             value.deinit(self.allocator);
+            self.incrementEvictedKeys(); // Increment evicted counter
             return true;
         }
         return false;
@@ -873,7 +889,11 @@ pub const Storage = struct {
     /// Evict a single key according to the eviction policy
     /// Returns true if a key was evicted, false if no candidates available
     fn evictOneKey(self: *Storage, policy: EvictionPolicy) !bool {
-        const sample_size: usize = 5; // Redis default: sample 5 keys
+        // Get configurable sample size from maxmemory-samples config (default 5, range 1-10)
+        const samples_str = (self.config.get("maxmemory-samples") catch null);
+        defer if (samples_str) |s| self.allocator.free(s);
+
+        const sample_size: usize = if (samples_str) |s| std.fmt.parseInt(usize, s, 10) catch 5 else 5;
 
         switch (policy) {
             .noeviction => return false, // Should not be called with noeviction
