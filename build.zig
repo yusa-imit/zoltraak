@@ -1205,6 +1205,16 @@ pub fn build(b: *std.Build) void {
     const run_eviction_tests = b.addRunArtifact(eviction_tests);
     integration_test_step.dependOn(&run_eviction_tests.step);
 
+    const eviction_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_eviction_integration.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_eviction_integration_tests = b.addRunArtifact(eviction_integration_tests);
+    integration_test_step.dependOn(&run_eviction_integration_tests.step);
+
     const lazyfree_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/test_lazyfree.zig"),

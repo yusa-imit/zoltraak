@@ -797,11 +797,14 @@ pub const Storage = struct {
     /// This should be called before write commands that grow memory
     pub fn checkMemoryLimitAndEvict(self: *Storage, command_name: []const u8) !void {
         // Get maxmemory config (0 = unlimited)
-        const maxmemory_val = self.config.get("maxmemory") catch return; // Continue if not set
-        const maxmemory = switch (maxmemory_val) {
-            .int => |i| if (i <= 0) return else @as(usize, @intCast(i)), // 0 or negative = unlimited
-            else => return, // Invalid type, skip check
-        };
+        const maxmemory_str = self.config.get("maxmemory") catch return; // Continue if not set
+        defer if (maxmemory_str) |s| self.allocator.free(s);
+
+        if (maxmemory_str == null) return; // No limit configured
+
+        const maxmemory_i64 = std.fmt.parseInt(i64, maxmemory_str.?, 10) catch return;
+        if (maxmemory_i64 <= 0) return; // 0 or negative = unlimited
+        const maxmemory: usize = @intCast(maxmemory_i64);
 
         // Get current memory usage
         const current_memory = self.memory_tracker.current_allocated;
@@ -810,12 +813,13 @@ pub const Storage = struct {
         }
 
         // Get eviction policy
-        const policy_val = self.config.get("maxmemory-policy") catch {
+        const policy_str_owned = self.config.get("maxmemory-policy") catch {
             return error.OOM; // Default to noeviction if not set
         };
-        const policy_str = switch (policy_val) {
-            .string => |s| s,
-            else => return error.OOM, // Invalid type
+        defer if (policy_str_owned) |s| self.allocator.free(s);
+
+        const policy_str = policy_str_owned orelse {
+            return error.OOM; // No policy configured, default to noeviction
         };
 
         const policy = EvictionPolicy.parse(policy_str) orelse {
