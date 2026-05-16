@@ -1281,6 +1281,8 @@ pub fn cmdTsDel(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     _ = arena; // Not needed for this command
 
@@ -1312,6 +1314,11 @@ pub fn cmdTsDel(
 
     var ts = &val_ptr.timeseries;
     const deleted_count = ts.deleteRange(from_ts, to_ts);
+
+    // Publish keyspace notification if samples were deleted
+    if (deleted_count > 0) {
+        notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, key, "tsdel");
+    }
 
     // Return integer count
     var buf: [32]u8 = undefined;
@@ -1385,6 +1392,8 @@ pub fn cmdTsAlter(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     if (args.len < 2) {
         return "ERR wrong number of arguments for 'TS.ALTER' command\r\n";
@@ -1483,6 +1492,9 @@ pub fn cmdTsAlter(
             try ts.info.setLabel(storage.allocator, label.key, label.value);
         }
     }
+
+    // Publish keyspace notification after successful alteration
+    notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, key, "tsalter");
 
     return "+OK\r\n";
 }
@@ -2504,6 +2516,8 @@ pub fn cmdTsCreaterule(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     _ = arena; // Not needed for this command
 
@@ -2563,6 +2577,9 @@ pub fn cmdTsCreaterule(
 
     try source_ts.info.rules.append(storage.allocator, rule);
 
+    // Publish keyspace notification after successful rule creation
+    notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, source_key, "tscreaterule");
+
     return "+OK\r\n";
 }
 
@@ -2578,6 +2595,8 @@ pub fn cmdTsDeleterule(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     _ = arena; // Not needed for this command
 
@@ -2615,6 +2634,9 @@ pub fn cmdTsDeleterule(
     var removed_rule = source_ts.info.rules.orderedRemove(found_index.?);
     removed_rule.deinit();
 
+    // Publish keyspace notification after successful rule deletion
+    notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, source_key, "tsdeleterule");
+
     return "+OK\r\n";
 }
 
@@ -2629,19 +2651,22 @@ test "TS.DEL basic" {
     var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     // Create time series with samples
     const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
     const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
     defer allocator.free(create_result);
 
-    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "1000", "10.0" }, allocator);
-    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "2000", "20.0" }, allocator);
-    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "3000", "30.0" }, allocator);
-    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "4000", "40.0" }, allocator);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "1000", "10.0" }, allocator, &ps, 0);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "2000", "20.0" }, allocator, &ps, 0);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "3000", "30.0" }, allocator, &ps, 0);
+    _ = try cmdTsAdd(&storage, &[_][]const u8{ "TS.ADD", "myts", "4000", "40.0" }, allocator, &ps, 0);
 
     // Delete range
     const del_cmd = [_][]const u8{ "TS.DEL", "myts", "1500", "3500" };
-    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    const result = try cmdTsDel(&storage, &del_cmd, allocator, &ps, 0);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings(":2\r\n", result);
@@ -2658,8 +2683,11 @@ test "TS.DEL nonexistent key error" {
     var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     const del_cmd = [_][]const u8{ "TS.DEL", "nonexistent", "1000", "2000" };
-    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    const result = try cmdTsDel(&storage, &del_cmd, allocator, &ps, 0);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR key does not exist"));
@@ -2672,6 +2700,9 @@ test "TS.DEL WRONGTYPE error" {
     var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     // Set a string key
     const set_result = try @import("../commands/strings.zig").handleCommand(allocator, &storage, &[_]@import("../protocol/parser.zig").RespValue{
         .{ .bulk_string = "SET" },
@@ -2681,7 +2712,7 @@ test "TS.DEL WRONGTYPE error" {
     defer allocator.free(set_result);
 
     const del_cmd = [_][]const u8{ "TS.DEL", "mystring", "1000", "2000" };
-    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    const result = try cmdTsDel(&storage, &del_cmd, allocator, &ps, 0);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-WRONGTYPE"));
@@ -2694,13 +2725,16 @@ test "TS.DEL invalid range error" {
     var storage = try @import("../storage/memory.zig").Storage.init(allocator, &config);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     const create_cmd = [_][]const u8{ "TS.CREATE", "myts" };
     const create_result = try cmdTsCreate(&storage, &create_cmd, allocator);
     defer allocator.free(create_result);
 
     // from > to
     const del_cmd = [_][]const u8{ "TS.DEL", "myts", "5000", "3000" };
-    const result = try cmdTsDel(&storage, &del_cmd, allocator);
+    const result = try cmdTsDel(&storage, &del_cmd, allocator, &ps, 0);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR fromTimestamp must be"));
@@ -3065,7 +3099,9 @@ test "TS.CREATERULE basic" {
 
     // Create compaction rule
     const args = [_][]const u8{ "TS.CREATERULE", "sensor:temp:raw", "sensor:temp:avg", "AGGREGATION", "avg", "60000" };
-    const result = try cmdTsCreaterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsCreaterule(&storage, &args, arena, &ps, 0);
 
     try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
 
@@ -3087,7 +3123,9 @@ test "TS.CREATERULE source key not exists" {
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
     const args = [_][]const u8{ "TS.CREATERULE", "nonexistent", "dest", "AGGREGATION", "avg", "60000" };
-    const result = try cmdTsCreaterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsCreaterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR source key does not exist"));
 }
 
@@ -3102,7 +3140,9 @@ test "TS.CREATERULE dest key not exists" {
     const create_args = [_][]const u8{ "TS.CREATE", "source" };
     _ = try cmdTsCreate(&storage, &create_args, arena);
     const args = [_][]const u8{ "TS.CREATERULE", "source", "nonexistent", "AGGREGATION", "avg", "60000" };
-    const result = try cmdTsCreaterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsCreaterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR destination key does not exist"));
 }
 
@@ -3119,7 +3159,9 @@ test "TS.CREATERULE source not time series" {
     const create_dest_args = [_][]const u8{ "TS.CREATE", "dest" };
     _ = try cmdTsCreate(&storage, &create_dest_args, arena);
     const args = [_][]const u8{ "TS.CREATERULE", "source", "dest", "AGGREGATION", "avg", "60000" };
-    const result = try cmdTsCreaterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsCreaterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR source key is not a time series"));
 }
 
@@ -3136,8 +3178,12 @@ test "TS.CREATERULE duplicate rule" {
     const create_dest_args = [_][]const u8{ "TS.CREATE", "dest" };
     _ = try cmdTsCreate(&storage, &create_dest_args, arena);
     const args = [_][]const u8{ "TS.CREATERULE", "source", "dest", "AGGREGATION", "avg", "60000" };
-    _ = try cmdTsCreaterule(&storage, &args, arena);
-    const result = try cmdTsCreaterule(&storage, &args, arena);
+    var ps_temp = PubSub.init(allocator);
+    defer ps_temp.deinit();
+    _ = try cmdTsCreaterule(&storage, &args, arena, &ps_temp, 0);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsCreaterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR compaction rule already exists"));
 }
 
@@ -3154,9 +3200,13 @@ test "TS.DELETERULE basic" {
     const create_dest_args = [_][]const u8{ "TS.CREATE", "dest" };
     _ = try cmdTsCreate(&storage, &create_dest_args, arena);
     const create_rule_args = [_][]const u8{ "TS.CREATERULE", "source", "dest", "AGGREGATION", "avg", "60000" };
-    _ = try cmdTsCreaterule(&storage, &create_rule_args, arena);
+    var ps_temp = PubSub.init(allocator);
+    defer ps_temp.deinit();
+    _ = try cmdTsCreaterule(&storage, &create_rule_args, arena, &ps_temp, 0);
     const args = [_][]const u8{ "TS.DELETERULE", "source", "dest" };
-    const result = try cmdTsDeleterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsDeleterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
     const entry = storage.data.get("source").?;
     try std.testing.expectEqual(@as(usize, 0), entry.timeseries.info.rules.items.len);
@@ -3171,7 +3221,9 @@ test "TS.DELETERULE source not exists" {
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
     const args = [_][]const u8{ "TS.DELETERULE", "nonexistent", "dest" };
-    const result = try cmdTsDeleterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsDeleterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR source key does not exist"));
 }
 
@@ -3186,6 +3238,8 @@ test "TS.DELETERULE rule not found" {
     const create_args = [_][]const u8{ "TS.CREATE", "source" };
     _ = try cmdTsCreate(&storage, &create_args, arena);
     const args = [_][]const u8{ "TS.DELETERULE", "source", "nonexistent" };
-    const result = try cmdTsDeleterule(&storage, &args, arena);
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    const result = try cmdTsDeleterule(&storage, &args, arena, &ps, 0);
     try std.testing.expect(std.mem.startsWith(u8, result, "ERR compaction rule not found"));
 }

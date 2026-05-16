@@ -2389,11 +2389,13 @@ pub fn executeCommand(
                 const selected_db = client_registry.getSelectedDb(client_id);
                 break :blk try timeseries_cmds.cmdTsDecrby(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.DEL")) {
-                break :blk try timeseries_cmds.cmdTsDel(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsDel(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.GET")) {
                 break :blk try timeseries_cmds.cmdTsGet(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.ALTER")) {
-                break :blk try timeseries_cmds.cmdTsAlter(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsAlter(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.MGET")) {
                 break :blk try timeseries_cmds.cmdTsMget(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.RANGE")) {
@@ -2407,9 +2409,11 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, cmd_upper, "TS.QUERYINDEX")) {
                 break :blk try timeseries_cmds.cmdTsQueryindex(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.CREATERULE")) {
-                break :blk try timeseries_cmds.cmdTsCreaterule(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsCreaterule(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.DELETERULE")) {
-                break :blk try timeseries_cmds.cmdTsDeleterule(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsDeleterule(storage, args, allocator, ps, selected_db);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();
