@@ -2377,13 +2377,17 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, cmd_upper, "TS.INFO")) {
                 break :blk try timeseries_cmds.cmdTsInfo(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.ADD")) {
-                break :blk try timeseries_cmds.cmdTsAdd(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsAdd(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.MADD")) {
-                break :blk try timeseries_cmds.cmdTsMadd(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsMadd(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.INCRBY")) {
-                break :blk try timeseries_cmds.cmdTsIncrby(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsIncrby(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.DECRBY")) {
-                break :blk try timeseries_cmds.cmdTsDecrby(storage, args, allocator);
+                const selected_db = client_registry.getSelectedDb(client_id);
+                break :blk try timeseries_cmds.cmdTsDecrby(storage, args, allocator, ps, selected_db);
             } else if (std.mem.eql(u8, cmd_upper, "TS.DEL")) {
                 break :blk try timeseries_cmds.cmdTsDel(storage, args, allocator);
             } else if (std.mem.eql(u8, cmd_upper, "TS.GET")) {

@@ -7,6 +7,27 @@ const DuplicatePolicy = timeseries_mod.DuplicatePolicy;
 const Encoding = timeseries_mod.Encoding;
 const AggregationType = timeseries_mod.AggregationType;
 const CompactionRule = timeseries_mod.CompactionRule;
+const PubSub = @import("../storage/pubsub.zig").PubSub;
+const notifications_mod = @import("../storage/notifications.zig");
+
+/// Publish keyspace notification for a time series command
+fn notifyTimeSeriesEvent(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    pubsub_state: *PubSub,
+    db_index: u32,
+    key: []const u8,
+    event_name: []const u8,
+) void {
+    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_str = config_value orelse return;
+    const flags = notifications_mod.parseNotificationFlags(config_str);
+
+    // Time series uses custom event type flag (not currently in Redis spec, using 't' for consistency)
+    if (!notifications_mod.shouldNotify(flags, .string)) return; // Use .string for now as TS doesn't have dedicated flag
+
+    notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
+}
 
 /// Parse a timestamp argument, handling special "*" for current time
 fn parseTimestamp(arg: []const u8) !i64 {
@@ -260,6 +281,8 @@ pub fn cmdTsAdd(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     if (args.len < 4) {
         return "ERR wrong number of arguments for 'TS.ADD' command\r\n";
@@ -401,6 +424,9 @@ pub fn cmdTsAdd(
         entry.value_ptr.* = Value{ .timeseries = ts };
     }
 
+    // Fire keyspace notification for TS.ADD
+    notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, key, "tsadd");
+
     // Return the timestamp as integer
     var buf = try std.ArrayList(u8).initCapacity(arena, 256);
     defer buf.deinit(arena);
@@ -418,6 +444,8 @@ pub fn cmdTsMadd(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     // Validate arity: must have 1 + 3N arguments
     if (args.len < 4 or ((args.len - 1) % 3) != 0) {
@@ -462,6 +490,9 @@ pub fn cmdTsMadd(
             return "ERR failed to add sample\r\n";
         };
 
+        // Fire keyspace notification for each key
+        notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, key, "tsadd");
+
         try timestamps.append(arena, timestamp);
     }
 
@@ -491,6 +522,8 @@ pub fn cmdTsIncrby(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     if (args.len < 4) {
         return "ERR wrong number of arguments for 'TS.INCRBY' command\r\n";
@@ -630,6 +663,9 @@ pub fn cmdTsIncrby(
         entry.value_ptr.* = Value{ .timeseries = ts };
     }
 
+    // Fire keyspace notification for TS.INCRBY
+    notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, key, "tsincrby");
+
     // Return the timestamp as integer
     var buf = try std.ArrayList(u8).initCapacity(arena, 256);
     defer buf.deinit(arena);
@@ -650,6 +686,8 @@ pub fn cmdTsDecrby(
     storage: *Storage,
     args: []const []const u8,
     arena: std.mem.Allocator,
+    ps: *PubSub,
+    db_index: u32,
 ) ![]const u8 {
     if (args.len < 4) {
         return "ERR wrong number of arguments for 'TS.DECRBY' command\r\n";
@@ -788,6 +826,9 @@ pub fn cmdTsDecrby(
         entry.key_ptr.* = key_copy;
         entry.value_ptr.* = Value{ .timeseries = ts };
     }
+
+    // Fire keyspace notification for TS.DECRBY
+    notifyTimeSeriesEvent(storage.allocator, storage, ps, db_index, key, "tsdecrby");
 
     // Return the timestamp as integer
     var buf = try std.ArrayList(u8).initCapacity(arena, 256);
