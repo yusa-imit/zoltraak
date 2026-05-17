@@ -576,6 +576,7 @@ pub const Storage = struct {
     notification_flags: std.atomic.Value(u16), // Keyspace notification flags (from notify-keyspace-events config)
     lru_clock: LRUClock, // LRU clock for eviction policies
     lfu_counter: LFUCounter, // LFU counter for eviction policies
+    lfu_last_access: std.AutoHashMap(u64, i64), // LFU last access timestamps in milliseconds (key hash -> time_ms)
     evicted_keys: std.atomic.Value(u64), // Atomic counter for total evicted keys
     lazyfree_task: LazyFreeTask, // Background lazy freeing task
     defrag_task: DefragTask, // Background active defragmentation task
@@ -687,6 +688,7 @@ pub const Storage = struct {
             .notification_flags = std.atomic.Value(u16).init(0), // Notifications disabled by default
             .lru_clock = LRUClock.init(allocator),
             .lfu_counter = LFUCounter.init(allocator),
+            .lfu_last_access = std.AutoHashMap(u64, i64).init(allocator), // Track last access times for LFU decay
             .evicted_keys = std.atomic.Value(u64).init(0),
             .lazyfree_task = lazy_free,
             .defrag_task = defrag_task,
@@ -733,6 +735,68 @@ pub const Storage = struct {
         while (!self.evicted_keys.compareAndSwapWeak(current, current + 1, .monotonic, .monotonic)) |new_current| {
             current = new_current;
         }
+    }
+
+    /// Record the last access time for a key (in milliseconds) for LFU decay tracking
+    /// Should be called when a key is accessed
+    pub fn setKeyAccessTime(self: *Storage, key: []const u8, time_ms: i64) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const key_hash = std.hash_map.hashString(key);
+        try self.lfu_last_access.put(key_hash, time_ms);
+    }
+
+    /// Apply LFU decay to a key's frequency counter based on elapsed time.
+    /// Decay formula: counter -= (current_time_ms - last_access_time_ms) / (lfu_decay_time * 60000)
+    /// Counter is clamped to minimum of 0
+    pub fn applyLfuDecay(self: *Storage, key: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Get last access time for this key
+        const key_hash = std.hash_map.hashString(key);
+        const last_access_ms = self.lfu_last_access.get(key_hash) orelse {
+            // If not tracked, just skip decay
+            return;
+        };
+
+        const now_ms = getCurrentTimestamp();
+        const time_elapsed_ms = now_ms - last_access_ms;
+
+        // If time_elapsed is negative or zero, no decay
+        if (time_elapsed_ms <= 0) {
+            return;
+        }
+
+        // Get lfu-decay-time from config (in minutes, default 1)
+        const decay_time_str = (self.config.get("lfu-decay-time") catch null);
+        defer if (decay_time_str) |s| self.allocator.free(s);
+
+        const decay_time_minutes: i64 = if (decay_time_str) |s|
+            std.fmt.parseInt(i64, s, 10) catch 1
+        else
+            1; // Default to 1 minute
+
+        // Convert decay time to milliseconds
+        const decay_time_ms = decay_time_minutes * 60 * 1000;
+        if (decay_time_ms <= 0) {
+            return; // Decay time not properly configured
+        }
+
+        // Get current counter
+        const current_counter = self.lfu_counter.getCounter(key);
+
+        // Calculate decay: counter_decrease = elapsed_ms / decay_time_ms
+        const decay_amount: u8 = @intCast(std.math.min(
+            current_counter,
+            @as(u32, @intCast(time_elapsed_ms / decay_time_ms)),
+        ));
+
+        // Apply decay: never go below 0
+        const new_counter: u8 = current_counter - decay_amount;
+
+        try self.lfu_counter.counters.put(key, new_counter);
     }
 
     /// Deinitialize storage and free all keys and values
@@ -782,6 +846,7 @@ pub const Storage = struct {
         self.latency_monitor.deinit();
         self.lru_clock.deinit();
         self.lfu_counter.deinit();
+        self.lfu_last_access.deinit();
         self.lazyfree_task.deinit();
         self.defrag_task.deinit();
         self.module_store.deinit();
@@ -861,6 +926,20 @@ pub const Storage = struct {
         return error.OOM;
     }
 
+    /// Helper to remove LFU tracking for a key by its string value
+    /// Must be called before key is freed
+    inline fn cleanupLfuTracking(self: *Storage, key: []const u8) void {
+        const key_hash = std.hash_map.hashString(key);
+        _ = self.lfu_last_access.remove(key_hash);
+    }
+
+    /// Helper to remove a key and clean up all associated tracking
+    /// Calls cleanupLfuTracking internally
+    inline fn removeKeyCleanup(self: *Storage, key: []const u8) bool {
+        self.cleanupLfuTracking(key);
+        return self.data.remove(key);
+    }
+
     /// Helper to delete a key and fire evicted notification
     /// Fires evicted event before deletion if notifications are enabled and pubsub available
     /// Returns true if key was deleted, false otherwise
@@ -881,6 +960,7 @@ pub const Storage = struct {
                 }
             }
 
+            self.cleanupLfuTracking(kv.key);
             self.allocator.free(kv.key);
             var value = kv.value;
             value.deinit(self.allocator);
@@ -1250,7 +1330,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -1426,7 +1506,7 @@ pub const Storage = struct {
             // Expired - delete and return null
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -1448,6 +1528,7 @@ pub const Storage = struct {
         var count: usize = 0;
         for (keys) |key| {
             if (self.data.fetchRemove(key)) |kv| {
+                self.cleanupLfuTracking(kv.key);
                 self.allocator.free(kv.key);
                 var value = kv.value;
                 value.deinit(self.allocator);
@@ -1485,7 +1566,7 @@ pub const Storage = struct {
             // Expired - delete and return false
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return false;
@@ -1699,7 +1780,7 @@ pub const Storage = struct {
                 if (list_val.data.items.len == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -1737,7 +1818,7 @@ pub const Storage = struct {
                 if (list_val.data.items.len == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -1893,7 +1974,7 @@ pub const Storage = struct {
                 if (norm_start > norm_stop or norm_start >= len) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                     return;
@@ -1920,7 +2001,7 @@ pub const Storage = struct {
                 if (list_val.data.items.len == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -1974,7 +2055,7 @@ pub const Storage = struct {
                 if (list_val.data.items.len == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -2389,7 +2470,7 @@ pub const Storage = struct {
                 if (set_val.data.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -2418,7 +2499,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return false;
@@ -2449,7 +2530,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -2488,7 +2569,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -2614,7 +2695,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -2667,7 +2748,7 @@ pub const Storage = struct {
                 if (hash_val.data.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -2695,7 +2776,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -2748,7 +2829,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -2788,7 +2869,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -2842,7 +2923,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return false;
@@ -2871,7 +2952,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -3072,7 +3153,7 @@ pub const Storage = struct {
                 if (zset.members.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -3104,7 +3185,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -3191,7 +3272,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -3280,7 +3361,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -3307,7 +3388,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -3559,7 +3640,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -3606,7 +3687,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -3719,7 +3800,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -3770,7 +3851,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -3817,7 +3898,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             // Key expired - all fields return -2
@@ -3892,7 +3973,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             for (result) |*r| r.* = -2;
@@ -3969,7 +4050,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             for (values) |*v| v.* = null;
@@ -4009,7 +4090,7 @@ pub const Storage = struct {
                 if (hash_val.data.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -4048,7 +4129,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             for (values) |*v| v.* = null;
@@ -4111,7 +4192,7 @@ pub const Storage = struct {
             if (kv_entry.value_ptr.isExpired(getCurrentTimestamp())) {
                 const owned_key = kv_entry.key_ptr.*;
                 var value = kv_entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 value.deinit(self.allocator);
                 // Fall through to create new hash
@@ -4248,7 +4329,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -4285,7 +4366,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -4395,7 +4476,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -4708,7 +4789,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return false;
@@ -4770,7 +4851,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(now)) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return -2;
@@ -4797,7 +4878,7 @@ pub const Storage = struct {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
                 const owned_key = entry.key_ptr.*;
                 var value = entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 value.deinit(self.allocator);
             } else {
@@ -4845,7 +4926,7 @@ pub const Storage = struct {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
                 const owned_key = entry.key_ptr.*;
                 var value = entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 value.deinit(self.allocator);
             } else {
@@ -4892,7 +4973,7 @@ pub const Storage = struct {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
                 const owned_key = entry.key_ptr.*;
                 var value = entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 value.deinit(self.allocator);
             } else {
@@ -4934,7 +5015,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -4946,7 +5027,7 @@ pub const Storage = struct {
                 const result = try self.allocator.dupe(u8, sv.data);
                 const owned_key = entry.key_ptr.*;
                 var value = entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 value.deinit(self.allocator);
                 return result;
@@ -4968,7 +5049,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -5003,7 +5084,7 @@ pub const Storage = struct {
         if (src_entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = src_entry.key_ptr.*;
             var value = src_entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return error.NoSuchKey;
@@ -5025,7 +5106,7 @@ pub const Storage = struct {
 
         // Remove from old location (we already have the value copied above)
         const src_owned_key = src_entry.key_ptr.*;
-        _ = self.data.remove(key);
+        _ = self.removeKeyCleanup(key);
         self.allocator.free(src_owned_key);
 
         try self.data.put(owned_newkey, src_value);
@@ -5044,7 +5125,7 @@ pub const Storage = struct {
         if (src_entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = src_entry.key_ptr.*;
             var value = src_entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return error.NoSuchKey;
@@ -5064,7 +5145,7 @@ pub const Storage = struct {
         // Move value
         const src_value = src_entry.value_ptr.*;
         const src_owned_key = src_entry.key_ptr.*;
-        _ = self.data.remove(key);
+        _ = self.removeKeyCleanup(key);
         self.allocator.free(src_owned_key);
 
         const owned_newkey = try self.allocator.dupe(u8, newkey);
@@ -5709,6 +5790,7 @@ pub const Storage = struct {
             value.deinit(self.allocator);
         }
         self.data.clearRetainingCapacity();
+        self.lfu_last_access.clearRetainingCapacity();
     }
 
     /// Flush all keys asynchronously (lazy freeing)
@@ -5728,6 +5810,8 @@ pub const Storage = struct {
         // Now remove each key and transfer ownership to background thread
         for (keys_to_remove.items) |key| {
             if (self.data.fetchRemove(key)) |kv| {
+                self.cleanupLfuTracking(kv.key); // Clean up LFU tracking
+
                 // Allocate Value on heap for background thread
                 const value_ptr = try self.allocator.create(Value);
                 errdefer self.allocator.destroy(value_ptr);
@@ -5771,6 +5855,8 @@ pub const Storage = struct {
         for (keys) |key| {
             if (self.data.fetchRemove(key)) |kv| {
                 deleted_count += 1;
+
+                self.cleanupLfuTracking(kv.key); // Clean up LFU tracking
 
                 // Allocate Value on heap for background thread
                 const value_ptr = try self.allocator.create(Value);
@@ -5831,7 +5917,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -5874,7 +5960,7 @@ pub const Storage = struct {
                 if (set_val.data.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -5905,7 +5991,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -6095,7 +6181,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             @memset(result, false);
@@ -6151,7 +6237,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -6178,7 +6264,7 @@ pub const Storage = struct {
                 if (zset.members.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -6207,7 +6293,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -6235,7 +6321,7 @@ pub const Storage = struct {
                 if (zset.members.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -6268,7 +6354,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             @memset(result, null);
@@ -6308,7 +6394,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -6385,7 +6471,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -6460,7 +6546,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -6856,7 +6942,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -6907,7 +6993,7 @@ pub const Storage = struct {
                 if (zset.members.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -6937,7 +7023,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -6978,7 +7064,7 @@ pub const Storage = struct {
                 if (zset.members.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -7006,7 +7092,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -7048,7 +7134,7 @@ pub const Storage = struct {
                 if (zset.members.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
-                    _ = self.data.remove(key);
+                    _ = self.removeKeyCleanup(key);
                     self.allocator.free(owned_key);
                     value.deinit(self.allocator);
                 }
@@ -7081,7 +7167,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return try allocator.alloc([]const u8, 0);
@@ -7141,7 +7227,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return try allocator.alloc([]const u8, 0);
@@ -7199,7 +7285,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -7427,7 +7513,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return try allocator.dupe(u8, "");
@@ -7471,7 +7557,7 @@ pub const Storage = struct {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
                 const owned_key = entry.key_ptr.*;
                 var old_value = entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 old_value.deinit(self.allocator);
                 // Fall through to create new
@@ -7533,7 +7619,7 @@ pub const Storage = struct {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
                 const owned_key = entry.key_ptr.*;
                 var old_value = entry.value_ptr.*;
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
                 self.allocator.free(owned_key);
                 old_value.deinit(self.allocator);
                 // Fall through to create new
@@ -8106,7 +8192,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -8137,7 +8223,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -8197,7 +8283,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return null;
@@ -8256,7 +8342,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -8316,7 +8402,7 @@ pub const Storage = struct {
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
             const owned_key = entry.key_ptr.*;
             var value = entry.value_ptr.*;
-            _ = self.data.remove(key);
+            _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             return 0;
@@ -9828,7 +9914,7 @@ pub const Storage = struct {
             const owned_key = try self.allocator.dupe(u8, key);
             errdefer {
                 self.allocator.free(owned_key);
-                _ = self.data.remove(key);
+                _ = self.removeKeyCleanup(key);
             }
             entry.key_ptr.* = owned_key;
 
@@ -12032,4 +12118,137 @@ test "keyspace notifications - evicted event infrastructure" {
     // Set a key to verify eviction paths work
     try storage.set("test_key", "test_value", null);
     try std.testing.expect(storage.get("test_key") != null);
+}
+
+test "LFU decay - counter decreases over time" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set lfu-decay-time to 1 minute
+    try storage.config.set(allocator, "lfu-decay-time", "1");
+
+    // Set a key and increment its LFU counter
+    try storage.set("key1", "value1", null);
+    try storage.lfu_counter.increment("key1");
+    try storage.lfu_counter.increment("key1");
+    try storage.lfu_counter.increment("key1");
+
+    const initial_counter = storage.lfu_counter.getCounter("key1");
+    try std.testing.expect(initial_counter > 0);
+
+    // Manually set last access time to 61 seconds ago (decay_time = 1 minute = 60 seconds)
+    const now_ms = Storage.getCurrentTimestamp();
+    const old_time_ms = now_ms - (61 * 1000); // 61 seconds ago
+    try storage.setKeyAccessTime("key1", old_time_ms);
+
+    // Apply decay
+    try storage.applyLfuDecay("key1");
+
+    const decayed_counter = storage.lfu_counter.getCounter("key1");
+    // Counter should have decreased by at least 1
+    try std.testing.expect(decayed_counter < initial_counter);
+}
+
+test "LFU decay - respects lfu_decay_time config" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create two keys
+    try storage.set("key_fast_decay", "value1", null);
+    try storage.set("key_slow_decay", "value2", null);
+
+    // Set counter to 10 for both
+    try storage.lfu_counter.counters.put("key_fast_decay", 10);
+    try storage.lfu_counter.counters.put("key_slow_decay", 10);
+
+    const now_ms = Storage.getCurrentTimestamp();
+    const old_time_ms = now_ms - (5 * 60 * 1000); // 5 minutes ago
+
+    // Fast decay: lfu_decay_time = 1 minute
+    try storage.config.set(allocator, "lfu-decay-time", "1");
+    try storage.setKeyAccessTime("key_fast_decay", old_time_ms);
+    try storage.applyLfuDecay("key_fast_decay");
+    const fast_decay_counter = storage.lfu_counter.getCounter("key_fast_decay");
+
+    // Slow decay: lfu_decay_time = 10 minutes
+    try storage.config.set(allocator, "lfu-decay-time", "10");
+    try storage.setKeyAccessTime("key_slow_decay", old_time_ms);
+    try storage.applyLfuDecay("key_slow_decay");
+    const slow_decay_counter = storage.lfu_counter.getCounter("key_slow_decay");
+
+    // Fast decay should have decayed more than slow decay
+    try std.testing.expect(fast_decay_counter < slow_decay_counter);
+}
+
+test "LFU decay - counter never goes negative" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set(allocator, "lfu-decay-time", "1");
+
+    try storage.set("key1", "value1", null);
+    // Set counter to 1
+    try storage.lfu_counter.counters.put("key1", 1);
+
+    const now_ms = Storage.getCurrentTimestamp();
+    // Simulate 10 decay periods (10 minutes with 1 minute decay_time)
+    const very_old_time_ms = now_ms - (10 * 60 * 1000);
+    try storage.setKeyAccessTime("key1", very_old_time_ms);
+
+    try storage.applyLfuDecay("key1");
+
+    const final_counter = storage.lfu_counter.getCounter("key1");
+    // Counter should never be negative
+    try std.testing.expect(final_counter >= 0);
+    // Counter should be 0 after sufficient decay
+    try std.testing.expectEqual(@as(u8, 0), final_counter);
+}
+
+test "LFU decay - recent access prevents decay" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set(allocator, "lfu-decay-time", "1");
+
+    try storage.set("key1", "value1", null);
+    try storage.lfu_counter.counters.put("key1", 5);
+
+    // Set access time to NOW
+    const now_ms = Storage.getCurrentTimestamp();
+    try storage.setKeyAccessTime("key1", now_ms);
+
+    const initial_counter = storage.lfu_counter.getCounter("key1");
+    try storage.applyLfuDecay("key1");
+    const after_decay = storage.lfu_counter.getCounter("key1");
+
+    // Counter should be unchanged when accessed recently
+    try std.testing.expectEqual(initial_counter, after_decay);
+}
+
+test "LFU decay - multiple periods accumulate" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set(allocator, "lfu-decay-time", "1");
+
+    try storage.set("key1", "value1", null);
+    try storage.lfu_counter.counters.put("key1", 10);
+
+    const now_ms = Storage.getCurrentTimestamp();
+    // Simulate 5 minutes elapsed with 1 minute decay_time
+    const old_time_ms = now_ms - (5 * 60 * 1000);
+    try storage.setKeyAccessTime("key1", old_time_ms);
+
+    try storage.applyLfuDecay("key1");
+
+    const decayed_counter = storage.lfu_counter.getCounter("key1");
+    // With decay_time=1 min and elapsed=5 min, counter should decrease by ~5
+    // (formula: counter -= elapsed_ms / (decay_time_ms))
+    // This test allows some margin for rounding
+    try std.testing.expect(decayed_counter <= 5);
 }
