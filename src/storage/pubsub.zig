@@ -1,4 +1,5 @@
 const std = @import("std");
+const zuda = @import("zuda");
 
 /// Maximum number of pending messages per subscriber before oldest are dropped.
 const MAX_PENDING_MESSAGES: usize = 1024;
@@ -981,37 +982,11 @@ pub fn buildSunsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8
 }
 
 /// Simple glob matching supporting `*` and `?` wildcards.
-/// Case-sensitive, matching against the full string.
-/// `*` matches 0 or more characters, `?` matches exactly 1 character.
+/// Glob matching using zuda implementation.
+/// Supports `*` and `?` wildcards, case-sensitive.
+/// Migrated from local implementation to zuda.algorithms.string.globMatch.
 fn globMatch(pattern: []const u8, str: []const u8) bool {
-    var pi: usize = 0;
-    var si: usize = 0;
-    var star_pi: usize = std.math.maxInt(usize);
-    var star_si: usize = 0;
-
-    while (si < str.len) {
-        if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == str[si])) {
-            pi += 1;
-            si += 1;
-        } else if (pi < pattern.len and pattern[pi] == '*') {
-            star_pi = pi;
-            star_si = si;
-            pi += 1;
-        } else if (star_pi != std.math.maxInt(usize)) {
-            pi = star_pi + 1;
-            star_si += 1;
-            si = star_si;
-        } else {
-            return false;
-        }
-    }
-
-    // Consume trailing '*' in pattern
-    while (pi < pattern.len and pattern[pi] == '*') {
-        pi += 1;
-    }
-
-    return pi == pattern.len;
+    return zuda.algorithms.string.globMatch(pattern, str);
 }
 
 // --- Embedded unit tests ---

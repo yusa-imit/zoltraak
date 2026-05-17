@@ -2,6 +2,7 @@ const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
+const zuda = @import("zuda");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
@@ -380,37 +381,11 @@ pub fn cmdPubsubHelp(allocator: std.mem.Allocator) ![]const u8 {
     return w.writeArray(&help_text);
 }
 
-/// Simple glob matching supporting `*` and `?` wildcards.
-/// Case-sensitive, matching against the full string.
+/// Glob matching using zuda implementation.
+/// Supports `*` and `?` wildcards, case-sensitive.
+/// Migrated from local implementation to zuda.algorithms.string.globMatch.
 fn globMatch(pattern: []const u8, str: []const u8) bool {
-    var pi: usize = 0;
-    var si: usize = 0;
-    var star_pi: usize = std.math.maxInt(usize);
-    var star_si: usize = 0;
-
-    while (si < str.len) {
-        if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == str[si])) {
-            pi += 1;
-            si += 1;
-        } else if (pi < pattern.len and pattern[pi] == '*') {
-            star_pi = pi;
-            star_si = si;
-            pi += 1;
-        } else if (star_pi != std.math.maxInt(usize)) {
-            pi = star_pi + 1;
-            star_si += 1;
-            si = star_si;
-        } else {
-            return false;
-        }
-    }
-
-    // Consume trailing '*' in pattern
-    while (pi < pattern.len and pattern[pi] == '*') {
-        pi += 1;
-    }
-
-    return pi == pattern.len;
+    return zuda.algorithms.string.globMatch(pattern, str);
 }
 
 // ── Sharded Pub/Sub commands (Redis 7.0+) ──────────────────────────────────
