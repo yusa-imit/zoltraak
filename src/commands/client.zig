@@ -610,6 +610,7 @@ pub const ClientRegistry = struct {
             if (enabled and bcast) {
                 for (prefixes) |prefix| {
                     const prefix_copy = try self.allocator.dupe(u8, prefix);
+                    errdefer self.allocator.free(prefix_copy);
                     try info.tracking_prefixes.append(self.allocator, prefix_copy);
                 }
             }
@@ -793,9 +794,12 @@ pub const ClientRegistry = struct {
             else
                 tracked_id;
 
+            const key_copy = try allocator.dupe(u8, key);
+            errdefer allocator.free(key_copy);
+
             try messages.append(allocator, .{
                 .client_id = target_client_id,
-                .key = try allocator.dupe(u8, key),
+                .key = key_copy,
             });
         }
 
@@ -4048,6 +4052,147 @@ test "CLIENT TRACKING - invalid redirect client" {
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
     try std.testing.expect(std.mem.indexOf(u8, response, "invalid redirect") != null);
+}
+
+test "CLIENT TRACKING - valid redirect to another client" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
+    const client2 = try registry.registerClient("127.0.0.1:12346", 43);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking with REDIRECT to client2
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
+    const redirect_str = try std.fmt.allocPrint(arena_allocator, "{d}", .{client2});
+    try args.append(arena_allocator, RespValue{ .bulk_string = redirect_str });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+}
+
+test "CLIENT TRACKING - with NOLOOP flag" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking with NOLOOP
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NOLOOP" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+}
+
+test "CLIENT TRACKING - missing ON/OFF argument" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Call TRACKING without ON/OFF
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "wrong number of arguments") != null);
+}
+
+test "CLIENT TRACKING - combination BCAST NOLOOP PREFIX" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking with multiple options
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "BCAST" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NOLOOP" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "PREFIX" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "user:" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+}
+
+test "CLIENT TRACKING - OPTIN with NOLOOP" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking with OPTIN and NOLOOP
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "NOLOOP" });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
 }
 
 test "ClientRegistry - setMonitorMode and isMonitoring" {

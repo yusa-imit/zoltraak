@@ -223,7 +223,7 @@ redis-cli -p 6379
 | FLUSHDB | `FLUSHDB` | Remove all keys from the database |
 | FLUSHALL | `FLUSHALL` | Remove all keys from all databases |
 
-### Client Connection Commands (Iteration 13)
+### Client Connection Commands (Iteration 13, 260)
 
 | Command | Syntax | Description |
 |---------|--------|-------------|
@@ -231,6 +231,7 @@ redis-cli -p 6379
 | CLIENT GETNAME | `CLIENT GETNAME` | Get the current connection name |
 | CLIENT SETNAME | `CLIENT SETNAME connection-name` | Set the current connection name (no spaces allowed) |
 | CLIENT LIST | `CLIENT LIST [TYPE normal]` | List all active client connections with metadata |
+| CLIENT TRACKING | `CLIENT TRACKING <ON\|OFF> [REDIRECT client-id] [PREFIX prefix ...] [BCAST] [OPTIN] [OPTOUT] [NOLOOP]` | Enable/disable server-assisted client-side caching (Iteration 260) |
 
 ### Configuration Commands (Iteration 14)
 
