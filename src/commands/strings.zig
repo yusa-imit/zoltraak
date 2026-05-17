@@ -3270,18 +3270,10 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
 
-    // Get invalidation messages for tracking clients
-    const invalidation_messages = try client_registry.getInvalidationMessages(key, client_id, allocator);
-    defer {
-        for (invalidation_messages) |*msg| {
-            var m = msg.*;
-            m.deinit(allocator);
-        }
-        allocator.free(invalidation_messages);
-    }
-
-    // TODO: Send invalidation push messages to RESP3 clients (requires server.zig integration)
-    // For now, generate messages and clean up
+    // Notify clients about key invalidation (generate messages and cleanup tracking)
+    client_cmds.notifyInvalidation(client_registry, key, client_id, allocator) catch |err| {
+        std.log.warn("SET: failed to notify invalidation for key '{s}': {}", .{ key, err });
+    };
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
@@ -3310,7 +3302,9 @@ fn cmdGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     const value = storage.get(key);
 
     // Track key access for client-side caching
-    client_registry.trackKeyAccess(client_id, key) catch {};
+    client_registry.trackKeyAccess(client_id, key) catch |err| {
+        std.log.warn("GET: failed to track key '{s}': {}", .{ key, err });
+    };
 
     return w.writeBulkString(value);
 }
@@ -3346,18 +3340,10 @@ fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
 
     const deleted_count = storage.del(keys.items);
 
-    // Generate invalidation messages for all deleted keys
-    for (keys.items) |del_key| {
-        const invalidation_messages = try client_registry.getInvalidationMessages(del_key, client_id, allocator);
-        defer {
-            for (invalidation_messages) |*msg| {
-                var m = msg.*;
-                m.deinit(allocator);
-            }
-            allocator.free(invalidation_messages);
-        }
-        // TODO: Send invalidation push messages to RESP3 clients
-    }
+    // Notify clients about deleted keys (generate messages and cleanup tracking)
+    client_cmds.notifyInvalidationBatch(client_registry, keys.items, client_id, allocator) catch |err| {
+        std.log.warn("DEL: failed to notify invalidation: {}", .{err});
+    };
 
     return w.writeInteger(@intCast(deleted_count));
 }

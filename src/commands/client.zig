@@ -719,10 +719,11 @@ pub const ClientRegistry = struct {
             var it = self.tracking_table.iterator();
             if (it.next()) |first| {
                 const key_to_remove = first.key_ptr.*;
-                const kv = self.tracking_table.fetchRemove(key_to_remove).?;
-                self.allocator.free(kv.key);
-                var removed_set = kv.value;
-                removed_set.deinit();
+                if (self.tracking_table.fetchRemove(key_to_remove)) |kv| {
+                    self.allocator.free(kv.key);
+                    var removed_set = kv.value;
+                    removed_set.deinit();
+                }
             }
         }
 
@@ -943,7 +944,67 @@ pub const ClientRegistry = struct {
         }
         return 0; // Default to 0 if client not found
     }
+
+    /// Check if a client is using RESP3 protocol
+    /// This is needed to determine if invalidation push messages should be sent
+    pub fn isResp3Client(self: *ClientRegistry, client_id: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.protocol == .RESP3;
+        }
+        return false;
+    }
+
+    /// Check if a client is actively tracking keys
+    /// Returns true if tracking is enabled and client is ready to receive invalidations
+    pub fn isActivelyTracking(self: *ClientRegistry, client_id: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.tracking_enabled;
+        }
+        return false;
+    }
 };
+
+/// Helper function to notify clients about key invalidation
+/// This generates invalidation messages and cleans up the tracking table
+/// Note: Actual delivery of push messages happens at server.zig level
+pub fn notifyInvalidation(
+    registry: *ClientRegistry,
+    key: []const u8,
+    modifier_client_id: u64,
+    allocator: std.mem.Allocator,
+) !void {
+    // Generate invalidation messages for all tracking clients
+    const messages = try registry.getInvalidationMessages(key, modifier_client_id, allocator);
+    defer {
+        for (messages) |*msg| {
+            msg.deinit(allocator);
+        }
+        allocator.free(messages);
+    }
+
+    // Remove key from tracking table (clients must re-read to re-track)
+    // This happens even if NOLOOP suppressed the message
+    registry.removeKeyFromTracking(key);
+}
+
+/// Helper function to notify clients about multiple key invalidations
+/// This generates invalidation messages for multiple keys
+pub fn notifyInvalidationBatch(
+    registry: *ClientRegistry,
+    keys: []const []const u8,
+    modifier_client_id: u64,
+    allocator: std.mem.Allocator,
+) !void {
+    for (keys) |key| {
+        try notifyInvalidation(registry, key, modifier_client_id, allocator);
+    }
+}
 
 /// CLIENT ID - Return the current connection ID
 fn cmdClientId(allocator: std.mem.Allocator, client_id: u64, args: []const RespValue) ![]const u8 {

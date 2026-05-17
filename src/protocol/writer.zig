@@ -267,6 +267,35 @@ pub const Writer = struct {
         return buffer.toOwnedSlice(self.allocator);
     }
 
+    /// Write a RESP3 push invalidation message for client-side caching
+    /// Format: >2\r\n$10\r\ninvalidate\r\n*N\r\n<keys>
+    /// This is used for CLIENT TRACKING invalidation messages
+    pub fn writePushInvalidation(self: *Writer, keys: []const []const u8) ![]const u8 {
+        var buffer = std.ArrayList(u8){};
+        errdefer buffer.deinit(self.allocator);
+
+        // Push type: >2\r\n (2 elements: "invalidate" and array of keys)
+        try buffer.appendSlice(self.allocator, ">2\r\n");
+
+        // First element: bulk string "invalidate"
+        try buffer.appendSlice(self.allocator, "$10\r\ninvalidate\r\n");
+
+        // Second element: array of keys
+        try buffer.append(self.allocator, '*');
+        try std.fmt.format(buffer.writer(self.allocator), "{d}", .{keys.len});
+        try buffer.appendSlice(self.allocator, "\r\n");
+
+        for (keys) |key| {
+            try buffer.append(self.allocator, '$');
+            try std.fmt.format(buffer.writer(self.allocator), "{d}", .{key.len});
+            try buffer.appendSlice(self.allocator, "\r\n");
+            try buffer.appendSlice(self.allocator, key);
+            try buffer.appendSlice(self.allocator, "\r\n");
+        }
+
+        return buffer.toOwnedSlice(self.allocator);
+    }
+
     /// Write any RespValue to a RESP-encoded response
     pub fn writeRespValue(self: *Writer, value: RespValue) ![]const u8 {
         var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 512);
