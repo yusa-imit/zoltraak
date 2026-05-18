@@ -306,7 +306,7 @@ pub fn cmdSelect(
 
     // Validate against configured number of databases (default 16)
     // TODO: Once storage refactoring is complete in Iteration 126, use storage.num_databases
-    const num_databases = if (storage.config.get("databases") catch null) |val_str| blk: {
+    const num_databases = if (storage.config.getAsString("databases") catch null) |val_str| blk: {
         defer storage.config.allocator.free(val_str);
         const db_count = std.fmt.parseInt(i64, val_str, 10) catch 16;
         break :blk @as(u16, @intCast(@max(1, @min(16384, db_count))));
@@ -425,14 +425,14 @@ pub fn cmdDebug(
 
         // Save current state to RDB
         const Persistence = @import("../storage/persistence.zig").Persistence;
-        const rdb_path_opt = try config.get("dir");
+        const rdb_path_opt = try config.getAsString("dir");
         if (rdb_path_opt == null) {
             return try w.writeError("ERR config parameter 'dir' not found");
         }
         const rdb_path = rdb_path_opt.?;
         defer allocator.free(rdb_path);
 
-        const dbfilename_opt = try config.get("dbfilename");
+        const dbfilename_opt = try config.getAsString("dbfilename");
         if (dbfilename_opt == null) {
             return try w.writeError("ERR config parameter 'dbfilename' not found");
         }

@@ -155,7 +155,7 @@ fn notifyBitmapEvent(
     event_flag: notifications_mod.NotificationFlag,
     event_name: []const u8,
 ) void {
-    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
     const config_str = config_value orelse return;
     const flags = notifications_mod.parseNotificationFlags(config_str);
 
@@ -631,7 +631,7 @@ test "checkOverflow fail" {
 //
 // 2. Add helper function (can reuse from bits.zig):
 //    fn notifyBitmapEvent(allocator, storage, pubsub_state, db_index, key, event_flag, event_name) void {
-//        const config_value = storage.config.get("notify-keyspace-events") catch return;
+//        const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
 //        const config_str = config_value orelse return;
 //        const flags = notifications_mod.parseNotificationFlags(config_str);
 //        if (!notifications_mod.shouldNotify(flags, event_flag)) return;

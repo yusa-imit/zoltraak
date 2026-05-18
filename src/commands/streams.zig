@@ -20,7 +20,7 @@ fn notifyStreamEvent(
     key: []const u8,
     event_name: []const u8,
 ) void {
-    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
     const config_str = config_value orelse return;
     const flags = notifications_mod.parseNotificationFlags(config_str);
 
