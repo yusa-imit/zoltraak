@@ -700,7 +700,7 @@ pub const Storage = struct {
         try storage.lazyfree_task.start();
 
         // Start background defrag thread if activedefrag is enabled
-        const activedefrag_val = storage.config.get("activedefrag") catch null;
+        const activedefrag_val = storage.config.getAsString("activedefrag") catch null;
         const activedefrag_enabled = if (activedefrag_val) |val|
             std.mem.eql(u8, val, "yes") or std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true")
         else
@@ -770,7 +770,7 @@ pub const Storage = struct {
         }
 
         // Get lfu-decay-time from config (in minutes, default 1)
-        const decay_time_str = (self.config.get("lfu-decay-time") catch null);
+        const decay_time_str = (self.config.getAsString("lfu-decay-time") catch null);
         defer if (decay_time_str) |s| self.allocator.free(s);
 
         const decay_time_minutes: i64 = if (decay_time_str) |s|
@@ -862,7 +862,7 @@ pub const Storage = struct {
     /// This should be called before write commands that grow memory
     pub fn checkMemoryLimitAndEvict(self: *Storage, command_name: []const u8) !void {
         // Get maxmemory config (0 = unlimited)
-        const maxmemory_str = self.config.get("maxmemory") catch return; // Continue if not set
+        const maxmemory_str = self.config.getAsString("maxmemory") catch return; // Continue if not set
         defer if (maxmemory_str) |s| self.allocator.free(s);
 
         if (maxmemory_str == null) return; // No limit configured
@@ -878,7 +878,7 @@ pub const Storage = struct {
         }
 
         // Get eviction policy
-        const policy_str_owned = self.config.get("maxmemory-policy") catch {
+        const policy_str_owned = self.config.getAsString("maxmemory-policy") catch {
             return error.OOM; // Default to noeviction if not set
         };
         defer if (policy_str_owned) |s| self.allocator.free(s);
@@ -974,7 +974,7 @@ pub const Storage = struct {
     /// Returns true if a key was evicted, false if no candidates available
     fn evictOneKey(self: *Storage, policy: EvictionPolicy) !bool {
         // Get configurable sample size from maxmemory-samples config (default 5, range 1-10)
-        const samples_str = (self.config.get("maxmemory-samples") catch null);
+        const samples_str = (self.config.getAsString("maxmemory-samples") catch null);
         defer if (samples_str) |s| self.allocator.free(s);
 
         const sample_size: usize = if (samples_str) |s| std.fmt.parseInt(usize, s, 10) catch 5 else 5;

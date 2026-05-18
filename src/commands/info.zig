@@ -238,6 +238,7 @@ fn buildStatsSection(
     try bw.writeAll("sync_partial_err:0\r\n");
     try bw.writeAll("expired_keys:0\r\n");
     try bw.print("evicted_keys:{d}\r\n", .{storage.getEvictedKeysCount()});
+    try bw.print("lazyfree_pending_objects:{d}\r\n", .{storage.lazyfree_task.getPendingCount()});
     try bw.writeAll("keyspace_hits:0\r\n");
     try bw.writeAll("keyspace_misses:0\r\n");
     try bw.writeAll("pubsub_channels:0\r\n");

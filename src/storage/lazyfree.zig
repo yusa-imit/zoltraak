@@ -166,6 +166,14 @@ pub const LazyFreeTask = struct {
             },
         }
     }
+
+    /// Get number of pending objects in the lazy free queue
+    /// Used for monitoring via INFO stats
+    pub fn getPendingCount(self: *LazyFreeTask) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.queue.items.len;
+    }
 };
 
 test "LazyFreeTask init and deinit" {

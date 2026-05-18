@@ -117,6 +117,7 @@ pub const Config = struct {
             .{ .name = "lazyfree-lazy-expire", .value = .{ .bool = false }, .read_only = false }, // lazy free on expire
             .{ .name = "lazyfree-lazy-server-del", .value = .{ .bool = false }, .read_only = false }, // lazy free on implicit deletes (RENAME, etc.)
             .{ .name = "lazyfree-lazy-user-del", .value = .{ .bool = false }, .read_only = false }, // lazy free on DEL (not UNLINK)
+            .{ .name = "lazyfree-lazy-user-flush", .value = .{ .bool = false }, .read_only = false }, // lazy free on FLUSHALL/FLUSHDB default
             .{ .name = "replica-lazy-flush", .value = .{ .bool = false }, .read_only = false }, // lazy flush on full resync
 
             // Active defragmentation
@@ -209,9 +210,26 @@ pub const Config = struct {
         allocator.destroy(self);
     }
 
-    /// Get configuration parameter value
+    /// Get configuration parameter value as typed ConfigValue
+    /// Returns the value in its native type (bool, int, or string)
+    /// Returns error if parameter not found
+    pub fn get(self: *Config, param_name: []const u8) !ConfigValue {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const name_lower = try std.ascii.allocLowerString(self.allocator, param_name);
+        defer self.allocator.free(name_lower);
+
+        const value = self.params.get(name_lower) orelse {
+            return error.UnknownParameter;
+        };
+        return try value.clone(self.allocator);
+    }
+
+    /// Get configuration parameter value as string
     /// Returns owned string representation, caller must free
-    pub fn get(self: *Config, param_name: []const u8) !?[]const u8 {
+    /// Returns null if parameter not found
+    pub fn getAsString(self: *Config, param_name: []const u8) !?[]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -222,9 +240,91 @@ pub const Config = struct {
         return try value.format(self.allocator);
     }
 
-    /// Set configuration parameter value at runtime
+    /// Get configuration parameter value as typed ConfigValue (alias for get)
+    /// Returns the value in its native type (bool, int, or string)
+    pub fn getConfigValue(self: *Config, param_name: []const u8) !ConfigValue {
+        return self.get(param_name);
+    }
+
+    /// Set configuration parameter value at runtime with typed ConfigValue
     /// Returns error if parameter is read-only or value is invalid
-    pub fn set(self: *Config, param_name: []const u8, value_str: []const u8) !void {
+    pub fn setConfigValue(self: *Config, param_name: []const u8, value: ConfigValue) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const name_lower = try std.ascii.allocLowerString(self.allocator, param_name);
+        defer self.allocator.free(name_lower);
+
+        // Find metadata for validation
+        var meta: ?*ConfigParam = null;
+        for (self.metadata.items) |*m| {
+            if (std.mem.eql(u8, m.name, name_lower)) {
+                meta = m;
+                break;
+            }
+        }
+
+        const m = meta orelse return error.UnknownParameter;
+
+        // Check read-only
+        if (m.read_only) {
+            return error.ReadOnlyParameter;
+        }
+
+        // Get current value to check type matches
+        const current = self.params.get(name_lower) orelse return error.UnknownParameter;
+
+        // Ensure types match
+        const current_tag = @as(std.meta.Tag(ConfigValue), current);
+        const value_tag = @as(std.meta.Tag(ConfigValue), value);
+        if (current_tag != value_tag) {
+            return error.InvalidValue;
+        }
+
+        // Create owned copy of the value
+        const new_value = try value.clone(self.allocator);
+        errdefer new_value.deinit(self.allocator);
+
+        // Replace the value in the HashMap
+        const gop = try self.params.getOrPut(name_lower);
+        if (gop.found_existing) {
+            // Free old value
+            var old_val = gop.value_ptr.*;
+            old_val.deinit(self.allocator);
+            // Store new value
+            gop.value_ptr.* = new_value;
+        } else {
+            return error.UnknownParameter;
+        }
+    }
+
+    /// Set configuration parameter - overloaded to handle both string and ConfigValue
+    /// When passed a string, parses it based on current parameter type
+    /// When passed a ConfigValue, sets it directly (must match current type)
+    pub fn set(self: *Config, param_name: []const u8, value: anytype) !void {
+        const ValueType = @TypeOf(value);
+
+        // Dispatch based on value type
+        if (ValueType == []const u8 or ValueType == [:0]const u8) {
+            // String version - use existing logic
+            return self.setString(param_name, value);
+        } else if (ValueType == ConfigValue) {
+            // ConfigValue version - use typed setter
+            return self.setConfigValue(param_name, value);
+        } else {
+            @compileError("set() expects either []const u8 or ConfigValue, got " ++ @typeName(ValueType));
+        }
+    }
+
+    /// Set configuration parameter from string
+    /// Parses string based on current parameter type
+    pub fn setAsString(self: *Config, param_name: []const u8, value_str: []const u8) !void {
+        return self.setString(param_name, value_str);
+    }
+
+    /// Internal: Set from string value
+    /// Returns error if parameter is read-only or value is invalid
+    fn setString(self: *Config, param_name: []const u8, value_str: []const u8) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 

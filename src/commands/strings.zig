@@ -64,6 +64,7 @@ const RespType = protocol.RespType;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const Value = storage_mod.Value;
+const ConfigValue = @import("../storage/config.zig").ConfigValue;
 const Persistence = persistence_mod.Persistence;
 pub const Aof = aof_mod.Aof;
 pub const PubSub = pubsub_mod.PubSub;
@@ -358,7 +359,7 @@ fn notifyKeyspaceEvent(
     event_name: []const u8,
 ) void {
     // Get notification flags from config
-    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
     const config_str = config_value orelse return;
 
     const flags = notifications_mod.parseNotificationFlags(config_str);
@@ -3338,7 +3339,13 @@ fn cmdDel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         }
     }
 
-    const deleted_count = storage.del(keys.items);
+    // Check if lazyfree-lazy-user-del is enabled
+    const use_async = (storage.config.getConfigValue("lazyfree-lazy-user-del") catch ConfigValue{ .bool = false }).bool;
+
+    const deleted_count = if (use_async)
+        try storage.unlinkAsync(keys.items)
+    else
+        storage.del(keys.items);
 
     // Notify clients about deleted keys (generate messages and cleanup tracking)
     client_cmds.notifyInvalidationBatch(client_registry, keys.items, client_id, allocator) catch |err| {
@@ -3432,7 +3439,7 @@ fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     defer w.deinit();
 
     // Parse optional ASYNC/SYNC argument
-    var is_async = false;
+    var is_async: ?bool = null;
     if (args.len > 1) {
         const mode_str = switch (args[1]) {
             .bulk_string => |s| s,
@@ -3452,7 +3459,12 @@ fn cmdFlushall(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         return w.writeError("ERR syntax error");
     }
 
-    if (is_async) {
+    // If no explicit mode, check config for default
+    if (is_async == null) {
+        is_async = (storage.config.getConfigValue("lazyfree-lazy-user-flush") catch ConfigValue{ .bool = false }).bool;
+    }
+
+    if (is_async.?) {
         // Submit flush work to background thread
         try storage.flushAllAsync();
     } else {
@@ -5532,7 +5544,7 @@ fn notifyBitmapEvent(
     event_flag: notifications_mod.NotificationFlag,
     event_name: []const u8,
 ) void {
-    const config_value = storage.config.get("notify-keyspace-events") catch return;
+    const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
     const config_str = config_value orelse return;
     const flags = notifications_mod.parseNotificationFlags(config_str);
 
