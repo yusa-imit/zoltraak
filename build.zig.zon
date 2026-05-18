@@ -10,7 +10,7 @@
         },
         .zuda = .{
             .url = "https://github.com/yusa-imit/zuda/archive/refs/tags/v2.0.4.tar.gz",
-            .hash = "122075ee3302ac74ead8f4e05ff4f3780d78a01678d19e1a3f2cca3274719cbd3f33",
+            .hash = "zuda-2.0.4-ih6_-JX_mwB17jMCrHTq2PTgX_TzeA14oBZ40Z4aPyzK",
         },
     },
     .paths = .{
