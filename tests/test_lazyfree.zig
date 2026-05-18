@@ -278,3 +278,73 @@ test "CONFIG SET all lazyfree options" {
     try std.testing.expectEqual(false, (try storage.config.get("lazyfree-lazy-user-del")).bool);
     try std.testing.expectEqual(true, (try storage.config.get("replica-lazy-flush")).bool);
 }
+
+test "INFO stats includes lazyfree_pending_objects" {
+    const info_cmds = @import("../src/commands/info.zig");
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "INFO" },
+        RespValue{ .bulk_string = "stats" },
+    };
+
+    const result = try info_cmds.cmdInfo(
+        allocator,
+        storage,
+        null, // config
+        null, // repl
+        null, // client_registry
+        0, // client_count
+        0, // total_commands_processed
+        0, // total_connections_received
+        0, // start_time_seconds
+        &args,
+    );
+    defer allocator.free(result);
+
+    // Verify field exists
+    try std.testing.expect(std.mem.indexOf(u8, result, "lazyfree_pending_objects:") != null);
+}
+
+test "lazyfree_pending_objects updates after UNLINK" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create a key with a larger value to ensure it's queued
+    const large_value = try allocator.alloc(u8, 1000);
+    defer allocator.free(large_value);
+    @memset(large_value, 'x');
+
+    _ = try storage.set("key1", large_value, null);
+
+    // Check initial count
+    try std.testing.expectEqual(@as(usize, 0), storage.lazyfree_task.getPendingCount());
+
+    // UNLINK key
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "UNLINK" },
+        RespValue{ .bulk_string = "key1" },
+    };
+    const result = try keys_cmds.cmdUnlink(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Verify count increased (key should be in background queue)
+    try std.testing.expect(storage.lazyfree_task.getPendingCount() > 0);
+}
+
+test "lazyfree_pending_objects shows 0 when queue empty" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // No keys, no async operations
+    try std.testing.expectEqual(@as(usize, 0), storage.lazyfree_task.getPendingCount());
+}
