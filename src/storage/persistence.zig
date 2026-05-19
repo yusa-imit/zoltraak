@@ -131,10 +131,29 @@ pub const Persistence = struct {
                         }
                     },
                     .set => |s| {
-                        try w.writeInt(u32, @intCast(s.data.count()), .little);
-                        var kit = s.data.keyIterator();
-                        while (kit.next()) |k| {
-                            try writeBlob(w, k.*);
+                        const count = switch (s.encoding) {
+                            .intset => s.data.intset.length,
+                            .hashmap => s.data.hashmap.count(),
+                        };
+                        try w.writeInt(u32, @intCast(count), .little);
+
+                        switch (s.encoding) {
+                            .intset => {
+                                // Write integers as strings
+                                var i: usize = 0;
+                                while (i < s.data.intset.length) : (i += 1) {
+                                    const int_val = s.data.intset.getAt(i) catch continue;
+                                    const str = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                                    defer allocator.free(str);
+                                    try writeBlob(w, str);
+                                }
+                            },
+                            .hashmap => {
+                                var kit = s.data.hashmap.keyIterator();
+                                while (kit.next()) |k| {
+                                    try writeBlob(w, k.*);
+                                }
+                            },
                         }
                     },
                     .hash => |h| {
@@ -645,9 +664,28 @@ pub const Persistence = struct {
                         for (l.data.items) |elem| try writeBlob(w, elem);
                     },
                     .set => |s| {
-                        try w.writeInt(u32, @intCast(s.data.count()), .little);
-                        var kit = s.data.keyIterator();
-                        while (kit.next()) |k| try writeBlob(w, k.*);
+                        const count = switch (s.encoding) {
+                            .intset => s.data.intset.length,
+                            .hashmap => s.data.hashmap.count(),
+                        };
+                        try w.writeInt(u32, @intCast(count), .little);
+
+                        switch (s.encoding) {
+                            .intset => {
+                                // Write integers as strings
+                                var i: usize = 0;
+                                while (i < s.data.intset.length) : (i += 1) {
+                                    const int_val = s.data.intset.getAt(i) catch continue;
+                                    const str = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                                    defer allocator.free(str);
+                                    try writeBlob(w, str);
+                                }
+                            },
+                            .hashmap => {
+                                var kit = s.data.hashmap.keyIterator();
+                                while (kit.next()) |k| try writeBlob(w, k.*);
+                            },
+                        }
                     },
                     .hash => |h| {
                         try w.writeInt(u32, @intCast(h.data.count()), .little);

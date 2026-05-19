@@ -25,6 +25,7 @@ const lazyfree_mod = @import("lazyfree.zig");
 const defrag_mod = @import("defrag.zig");
 const tls_config_mod = @import("tls_config.zig");
 const modules_mod = @import("modules.zig");
+const intset_mod = @import("intset.zig");
 
 pub const Config = config_mod.Config;
 pub const TlsConfig = tls_config_mod.TlsConfig;
@@ -131,19 +132,89 @@ pub const Value = union(ValueType) {
         }
     };
 
-    /// Set value with optional expiration
-    /// Uses hash map for O(1) membership testing
+    /// Set encoding type
+    pub const SetEncoding = enum {
+        intset, // Compact sorted integer array (for small integer-only sets)
+        hashmap, // String hashmap (for large sets or sets with non-integers)
+    };
+
+    /// Set value with optional expiration and automatic encoding optimization
+    /// Uses intset for small integer-only sets, hashmap for larger or mixed sets
     pub const SetValue = struct {
-        data: std.StringHashMap(void),
+        encoding: SetEncoding,
+        data: union {
+            intset: intset_mod.IntSet,
+            hashmap: std.StringHashMap(void),
+        },
         expires_at: ?i64,
 
         pub fn deinit(self: *SetValue, allocator: std.mem.Allocator) void {
-            // Free all member strings (keys in the hash map)
-            var it = self.data.keyIterator();
-            while (it.next()) |key| {
-                allocator.free(key.*);
+            switch (self.encoding) {
+                .intset => {
+                    self.data.intset.deinit();
+                },
+                .hashmap => {
+                    // Free all member strings (keys in the hash map)
+                    var it = self.data.hashmap.keyIterator();
+                    while (it.next()) |key| {
+                        allocator.free(key.*);
+                    }
+                    self.data.hashmap.deinit();
+                },
             }
-            self.data.deinit();
+        }
+
+        /// Convert intset encoding to hashmap encoding
+        /// Called when adding non-integer or exceeding threshold
+        fn promoteToHashmap(self: *SetValue, allocator: std.mem.Allocator) !void {
+            if (self.encoding == .hashmap) return;
+
+            // Convert all integers to strings in hashmap
+            var hashmap = std.StringHashMap(void).init(allocator);
+            errdefer {
+                var it = hashmap.keyIterator();
+                while (it.next()) |key| {
+                    allocator.free(key.*);
+                }
+                hashmap.deinit();
+            }
+
+            // Get all integers from intset
+            const values = try self.data.intset.toSlice(allocator);
+            defer allocator.free(values);
+
+            // Convert each to string and add to hashmap
+            for (values) |value| {
+                const str = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                errdefer allocator.free(str);
+                try hashmap.put(str, {});
+            }
+
+            // Free old intset
+            self.data.intset.deinit();
+
+            // Replace with hashmap
+            self.encoding = .hashmap;
+            self.data = .{ .hashmap = hashmap };
+        }
+
+        /// Check if member exists (handles both encodings)
+        pub fn contains(self: *const SetValue, member: []const u8) !bool {
+            return switch (self.encoding) {
+                .intset => blk: {
+                    const int_val = std.fmt.parseInt(i64, member, 10) catch break :blk false;
+                    break :blk try self.data.intset.contains(int_val);
+                },
+                .hashmap => self.data.hashmap.contains(member),
+            };
+        }
+
+        /// Get cardinality (handles both encodings)
+        pub fn count(self: *const SetValue) usize {
+            return switch (self.encoding) {
+                .intset => self.data.intset.length,
+                .hashmap => self.data.hashmap.count(),
+            };
         }
     };
 
@@ -2383,60 +2454,154 @@ pub const Storage = struct {
 
         var added_count: usize = 0;
 
+        // Get intset threshold from config
+        const max_intset_entries = blk: {
+            const config_val = self.config.get("set-max-intset-entries") catch {
+                break :blk @as(u32, 512); // default
+            };
+            var val = config_val;
+            defer val.deinit(self.allocator);
+            const parsed = switch (val) {
+                .int => |i| @as(u32, @intCast(@min(@max(i, 0), 1000000))),
+                else => 512,
+            };
+            break :blk parsed;
+        };
+
         if (self.data.getEntry(key)) |entry| {
             // Key exists - verify it's a set
             switch (entry.value_ptr.*) {
                 .set => |*set_val| {
-                    // Add members to existing set
-                    for (members) |member| {
-                        // Check if member already exists
-                        if (!set_val.data.contains(member)) {
-                            // Duplicate the member string
-                            const owned_member = try self.allocator.dupe(u8, member);
-                            errdefer self.allocator.free(owned_member);
+                    switch (set_val.encoding) {
+                        .intset => {
+                            // Try to add to intset
+                            for (members) |member| {
+                                // Check if member is an integer
+                                const int_val = std.fmt.parseInt(i64, member, 10) catch {
+                                    // Non-integer - must promote to hashmap
+                                    try set_val.promoteToHashmap(self.allocator);
+                                    // Retry adding all remaining members as hashmap
+                                    return try self.saddHashmap(set_val, members, &added_count, 0);
+                                };
 
-                            try set_val.data.put(owned_member, {});
-                            added_count += 1;
-                        }
+                                // Add to intset
+                                const was_added = try set_val.data.intset.add(int_val);
+                                if (was_added) {
+                                    added_count += 1;
+                                    // Check if exceeded threshold
+                                    if (set_val.data.intset.length > max_intset_entries) {
+                                        try set_val.promoteToHashmap(self.allocator);
+                                        // Continue with hashmap for remaining members
+                                        const members_left = members[added_count..];
+                                        if (members_left.len > 0) {
+                                            const remaining_added = try self.saddHashmap(set_val, members_left, &added_count, added_count);
+                                            added_count = remaining_added;
+                                        }
+                                        return added_count;
+                                    }
+                                }
+                            }
+                            return added_count;
+                        },
+                        .hashmap => {
+                            return try self.saddHashmap(set_val, members, &added_count, 0);
+                        },
                     }
-                    return added_count;
                 },
                 else => return error.WrongType,
             }
         } else {
-            // Create new set
-            var set_map = std.StringHashMap(void).init(self.allocator);
-            errdefer {
-                var it = set_map.keyIterator();
-                while (it.next()) |k| {
-                    self.allocator.free(k.*);
-                }
-                set_map.deinit();
-            }
+            // Create new set - decide encoding based on members
+            // Check if all members are integers and count
+            var all_integers = true;
+            var unique_members = std.ArrayListUnmanaged(i64){};
+            defer unique_members.deinit(self.allocator);
 
-            // Add all members (skip duplicates within same command)
             for (members) |member| {
-                if (!set_map.contains(member)) {
-                    const owned_member = try self.allocator.dupe(u8, member);
-                    errdefer self.allocator.free(owned_member);
-
-                    try set_map.put(owned_member, {});
-                    added_count += 1;
+                const int_val = std.fmt.parseInt(i64, member, 10) catch {
+                    all_integers = false;
+                    break;
+                };
+                // Check for duplicates within command
+                const already_exists = for (unique_members.items) |existing| {
+                    if (existing == int_val) break true;
+                } else false;
+                if (!already_exists) {
+                    try unique_members.append(self.allocator, int_val);
                 }
             }
 
             const owned_key = try self.allocator.dupe(u8, key);
             errdefer self.allocator.free(owned_key);
 
-            try self.data.put(owned_key, Value{
-                .set = .{
-                    .data = set_map,
-                    .expires_at = expires_at,
-                },
-            });
+            if (all_integers and unique_members.items.len <= max_intset_entries) {
+                // Use intset encoding
+                var intset = intset_mod.IntSet.init(self.allocator);
+                errdefer intset.deinit();
+
+                for (unique_members.items) |int_val| {
+                    _ = try intset.add(int_val);
+                    added_count += 1;
+                }
+
+                try self.data.put(owned_key, Value{
+                    .set = .{
+                        .encoding = .intset,
+                        .data = .{ .intset = intset },
+                        .expires_at = expires_at,
+                    },
+                });
+            } else {
+                // Use hashmap encoding
+                var set_map = std.StringHashMap(void).init(self.allocator);
+                errdefer {
+                    var it = set_map.keyIterator();
+                    while (it.next()) |k| {
+                        self.allocator.free(k.*);
+                    }
+                    set_map.deinit();
+                }
+
+                for (members) |member| {
+                    if (!set_map.contains(member)) {
+                        const owned_member = try self.allocator.dupe(u8, member);
+                        errdefer self.allocator.free(owned_member);
+                        try set_map.put(owned_member, {});
+                        added_count += 1;
+                    }
+                }
+
+                try self.data.put(owned_key, Value{
+                    .set = .{
+                        .encoding = .hashmap,
+                        .data = .{ .hashmap = set_map },
+                        .expires_at = expires_at,
+                    },
+                });
+            }
 
             return added_count;
         }
+    }
+
+    /// Helper: Add members to hashmap-encoded set
+    fn saddHashmap(
+        self: *Storage,
+        set_val: *Value.SetValue,
+        members: []const []const u8,
+        added_count: *usize,
+        start_index: usize,
+    ) !usize {
+        _ = start_index; // Not used, kept for API compatibility
+        for (members) |member| {
+            if (!set_val.data.hashmap.contains(member)) {
+                const owned_member = try self.allocator.dupe(u8, member);
+                errdefer self.allocator.free(owned_member);
+                try set_val.data.hashmap.put(owned_member, {});
+                added_count.* += 1;
+            }
+        }
+        return added_count.*;
     }
 
     /// Remove members from a set
@@ -2459,23 +2624,46 @@ pub const Storage = struct {
             .set => |*set_val| {
                 var removed_count: usize = 0;
 
-                for (members) |member| {
-                    if (set_val.data.fetchRemove(member)) |kv| {
-                        self.allocator.free(kv.key);
-                        removed_count += 1;
-                    }
-                }
+                switch (set_val.encoding) {
+                    .intset => {
+                        for (members) |member| {
+                            // Try to parse as integer
+                            const int_val = std.fmt.parseInt(i64, member, 10) catch continue;
+                            const was_removed = try set_val.data.intset.remove(int_val);
+                            if (was_removed) removed_count += 1;
+                        }
 
-                // Auto-delete if set becomes empty
-                if (set_val.data.count() == 0) {
-                    const owned_key = entry.key_ptr.*;
-                    var value = entry.value_ptr.*;
-                    _ = self.removeKeyCleanup(key);
-                    self.allocator.free(owned_key);
-                    value.deinit(self.allocator);
-                }
+                        // Auto-delete if set becomes empty
+                        if (set_val.data.intset.length == 0) {
+                            const owned_key = entry.key_ptr.*;
+                            var value = entry.value_ptr.*;
+                            _ = self.removeKeyCleanup(key);
+                            self.allocator.free(owned_key);
+                            value.deinit(self.allocator);
+                        }
 
-                return removed_count;
+                        return removed_count;
+                    },
+                    .hashmap => {
+                        for (members) |member| {
+                            if (set_val.data.hashmap.fetchRemove(member)) |kv| {
+                                self.allocator.free(kv.key);
+                                removed_count += 1;
+                            }
+                        }
+
+                        // Auto-delete if set becomes empty
+                        if (set_val.data.hashmap.count() == 0) {
+                            const owned_key = entry.key_ptr.*;
+                            var value = entry.value_ptr.*;
+                            _ = self.removeKeyCleanup(key);
+                            self.allocator.free(owned_key);
+                            value.deinit(self.allocator);
+                        }
+
+                        return removed_count;
+                    },
+                }
             },
             else => return error.WrongType,
         }
@@ -2507,7 +2695,15 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .set => |*set_val| {
-                return set_val.data.contains(member);
+                switch (set_val.encoding) {
+                    .intset => {
+                        const int_val = std.fmt.parseInt(i64, member, 10) catch return false;
+                        return try set_val.data.intset.contains(int_val);
+                    },
+                    .hashmap => {
+                        return set_val.data.hashmap.contains(member);
+                    },
+                }
             },
             else => return error.WrongType,
         }
@@ -2538,17 +2734,35 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .set => |*set_val| {
-                const member_count = set_val.data.count();
-                var result = try allocator.alloc([]const u8, member_count);
-                errdefer allocator.free(result);
+                switch (set_val.encoding) {
+                    .intset => {
+                        const member_count = set_val.data.intset.length;
+                        var result = try allocator.alloc([]const u8, member_count);
+                        errdefer allocator.free(result);
 
-                var it = set_val.data.keyIterator();
-                var i: usize = 0;
-                while (it.next()) |member_ptr| : (i += 1) {
-                    result[i] = member_ptr.*;
+                        // Convert integers to strings
+                        var i: usize = 0;
+                        while (i < member_count) : (i += 1) {
+                            const int_val = try set_val.data.intset.getAt(i);
+                            result[i] = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                        }
+
+                        return result;
+                    },
+                    .hashmap => {
+                        const member_count = set_val.data.hashmap.count();
+                        var result = try allocator.alloc([]const u8, member_count);
+                        errdefer allocator.free(result);
+
+                        var it = set_val.data.hashmap.keyIterator();
+                        var i: usize = 0;
+                        while (it.next()) |member_ptr| : (i += 1) {
+                            result[i] = member_ptr.*;
+                        }
+
+                        return result;
+                    },
                 }
-
-                return result;
             },
             else => return null,
         }
@@ -2576,7 +2790,12 @@ pub const Storage = struct {
         }
 
         switch (entry.value_ptr.*) {
-            .set => |set_val| return set_val.data.count(),
+            .set => |set_val| {
+                return switch (set_val.encoding) {
+                    .intset => set_val.data.intset.length,
+                    .hashmap => set_val.data.hashmap.count(),
+                };
+            },
             else => return null,
         }
     }
@@ -4518,9 +4737,25 @@ pub const Storage = struct {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
             switch (entry.value_ptr.*) {
                 .set => |*set_val| {
-                    var it = set_val.data.keyIterator();
-                    while (it.next()) |member_ptr| {
-                        try accum.put(member_ptr.*, {});
+                    switch (set_val.encoding) {
+                        .intset => {
+                            var i: usize = 0;
+                            while (i < set_val.data.intset.length) : (i += 1) {
+                                const int_val = try set_val.data.intset.getAt(i);
+                                const str = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                                defer allocator.free(str);
+                                if (!accum.contains(str)) {
+                                    const owned_str = try allocator.dupe(u8, str);
+                                    try accum.put(owned_str, {});
+                                }
+                            }
+                        },
+                        .hashmap => {
+                            var it = set_val.data.hashmap.keyIterator();
+                            while (it.next()) |member_ptr| {
+                                try accum.put(member_ptr.*, {});
+                            }
+                        },
                     }
                 },
                 else => return error.WrongType,
@@ -4544,7 +4779,7 @@ pub const Storage = struct {
         self: *Storage,
         allocator: std.mem.Allocator,
         keys: []const []const u8,
-    ) ![][]const u8 {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)![][]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -4578,21 +4813,44 @@ pub const Storage = struct {
         };
         defer result_list.deinit(allocator);
 
-        var it = first_set.data.keyIterator();
-        outer: while (it.next()) |member_ptr| {
-            const member = member_ptr.*;
-            // Check in all keys (skip index 0 = already seeded)
-            for (keys[1..]) |key| {
-                const entry = self.data.getEntry(key) orelse continue :outer;
-                if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue :outer;
-                switch (entry.value_ptr.*) {
-                    .set => |*sv| {
-                        if (!sv.data.contains(member)) continue :outer;
-                    },
-                    else => return error.WrongType,
+        switch (first_set.encoding) {
+            .intset => {
+                var idx: usize = 0;
+                outer: while (idx < first_set.data.intset.length) : (idx += 1) {
+                    const int_val = try first_set.data.intset.getAt(idx);
+                    const member = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                    defer allocator.free(member);
+
+                    for (keys[1..]) |key| {
+                        const entry = self.data.getEntry(key) orelse continue :outer;
+                        if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue :outer;
+                        switch (entry.value_ptr.*) {
+                            .set => |*sv| {
+                                if (!(try sv.contains(member))) continue :outer;
+                            },
+                            else => return error.WrongType,
+                        }
+                    }
+                    try result_list.append(allocator, try allocator.dupe(u8, member));
                 }
-            }
-            try result_list.append(allocator, member);
+            },
+            .hashmap => {
+                var it = first_set.data.hashmap.keyIterator();
+                outer: while (it.next()) |member_ptr| {
+                    const member = member_ptr.*;
+                    for (keys[1..]) |key| {
+                        const entry = self.data.getEntry(key) orelse continue :outer;
+                        if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue :outer;
+                        switch (entry.value_ptr.*) {
+                            .set => |*sv| {
+                                if (!(try sv.contains(member))) continue :outer;
+                            },
+                            else => return error.WrongType,
+                        }
+                    }
+                    try result_list.append(allocator, member);
+                }
+            },
         }
 
         const result = try allocator.dupe([]const u8, result_list.items);
@@ -4607,7 +4865,7 @@ pub const Storage = struct {
         self: *Storage,
         allocator: std.mem.Allocator,
         keys: []const []const u8,
-    ) ![][]const u8 {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)![][]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -4642,20 +4900,44 @@ pub const Storage = struct {
         };
         defer result_list.deinit(allocator);
 
-        var it = first_set.data.keyIterator();
-        outer: while (it.next()) |member_ptr| {
-            const member = member_ptr.*;
-            for (keys[1..]) |key| {
-                const entry = self.data.getEntry(key) orelse continue;
-                if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
-                switch (entry.value_ptr.*) {
-                    .set => |*sv| {
-                        if (sv.data.contains(member)) continue :outer;
-                    },
-                    else => {},
+        switch (first_set.encoding) {
+            .intset => {
+                var idx: usize = 0;
+                outer: while (idx < first_set.data.intset.length) : (idx += 1) {
+                    const int_val = try first_set.data.intset.getAt(idx);
+                    const member = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                    defer allocator.free(member);
+
+                    for (keys[1..]) |key| {
+                        const entry = self.data.getEntry(key) orelse continue;
+                        if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+                        switch (entry.value_ptr.*) {
+                            .set => |*sv| {
+                                if (try sv.contains(member)) continue :outer;
+                            },
+                            else => {},
+                        }
+                    }
+                    try result_list.append(allocator, try allocator.dupe(u8, member));
                 }
-            }
-            try result_list.append(allocator, member);
+            },
+            .hashmap => {
+                var it = first_set.data.hashmap.keyIterator();
+                outer: while (it.next()) |member_ptr| {
+                    const member = member_ptr.*;
+                    for (keys[1..]) |key| {
+                        const entry = self.data.getEntry(key) orelse continue;
+                        if (entry.value_ptr.isExpired(getCurrentTimestamp())) continue;
+                        switch (entry.value_ptr.*) {
+                            .set => |*sv| {
+                                if (try sv.contains(member)) continue :outer;
+                            },
+                            else => {},
+                        }
+                    }
+                    try result_list.append(allocator, member);
+                }
+            },
         }
 
         const result = try allocator.dupe([]const u8, result_list.items);
@@ -4739,7 +5021,7 @@ pub const Storage = struct {
         const owned_key = try self.allocator.dupe(u8, dest);
         errdefer self.allocator.free(owned_key);
         try self.data.put(owned_key, Value{
-            .set = .{ .data = set_map, .expires_at = null },
+            .set = .{ .encoding = .hashmap, .data = .{ .hashmap = set_map }, .expires_at = null },
         });
         return count;
     }
@@ -5212,9 +5494,27 @@ pub const Storage = struct {
                 for (l.data.items) |elem| try writeBlob(w, elem);
             },
             .set => |s| {
-                try w.writeInt(u32, @intCast(s.data.count()), .little);
-                var kit = s.data.keyIterator();
-                while (kit.next()) |k| try writeBlob(w, k.*);
+                const count = switch (s.encoding) {
+                    .intset => s.data.intset.length,
+                    .hashmap => s.data.hashmap.count(),
+                };
+                try w.writeInt(u32, @intCast(count), .little);
+
+                switch (s.encoding) {
+                    .intset => {
+                        var i: usize = 0;
+                        while (i < s.data.intset.length) : (i += 1) {
+                            const int_val = try s.data.intset.getAt(i);
+                            const str = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                            defer allocator.free(str);
+                            try writeBlob(w, str);
+                        }
+                    },
+                    .hashmap => {
+                        var kit = s.data.hashmap.keyIterator();
+                        while (kit.next()) |k| try writeBlob(w, k.*);
+                    },
+                }
             },
             .hash => |h| {
                 try w.writeInt(u32, @intCast(h.data.count()), .little);
@@ -5385,7 +5685,7 @@ pub const Storage = struct {
                     try set_data.put(member, {});
                 }
 
-                value = Value{ .set = .{ .data = set_data, .expires_at = expires_at } };
+                value = Value{ .set = .{ .encoding = .hashmap, .data = .{ .hashmap = set_data }, .expires_at = expires_at } };
             },
             0x04 => { // Hash
                 if (payload.len < pos + 4) return error.InvalidDumpPayload;
@@ -5585,18 +5885,34 @@ pub const Storage = struct {
                 break :blk Value{ .list = .{ .data = list_copy, .expires_at = l.expires_at } };
             },
             .set => |s| blk: {
-                var set_copy = std.StringHashMap(void).init(self.allocator);
-                errdefer {
-                    var it = set_copy.keyIterator();
-                    while (it.next()) |k| self.allocator.free(k.*);
-                    set_copy.deinit();
+                switch (s.encoding) {
+                    .intset => {
+                        var intset = intset_mod.IntSet.init(self.allocator);
+                        errdefer intset.deinit();
+
+                        var i: usize = 0;
+                        while (i < s.data.intset.length) : (i += 1) {
+                            const int_val = try s.data.intset.getAt(i);
+                            _ = try intset.add(int_val);
+                        }
+
+                        break :blk Value{ .set = .{ .encoding = .intset, .data = .{ .intset = intset }, .expires_at = s.expires_at } };
+                    },
+                    .hashmap => {
+                        var set_copy = std.StringHashMap(void).init(self.allocator);
+                        errdefer {
+                            var it = set_copy.keyIterator();
+                            while (it.next()) |k| self.allocator.free(k.*);
+                            set_copy.deinit();
+                        }
+                        var it = s.data.hashmap.keyIterator();
+                        while (it.next()) |k| {
+                            const key_copy = try self.allocator.dupe(u8, k.*);
+                            try set_copy.put(key_copy, {});
+                        }
+                        break :blk Value{ .set = .{ .encoding = .hashmap, .data = .{ .hashmap = set_copy }, .expires_at = s.expires_at } };
+                    },
                 }
-                var it = s.data.keyIterator();
-                while (it.next()) |k| {
-                    const key_copy = try self.allocator.dupe(u8, k.*);
-                    try set_copy.put(key_copy, {});
-                }
-                break :blk Value{ .set = .{ .data = set_copy, .expires_at = s.expires_at } };
             },
             .hash => |h| blk: {
                 var hash_copy = std.StringHashMap(Value.FieldValue).init(self.allocator);
@@ -5908,7 +6224,7 @@ pub const Storage = struct {
         allocator: std.mem.Allocator,
         key: []const u8,
         count: usize,
-    ) error{ WrongType, OutOfMemory }!?[][]const u8 {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)!?[][]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -5925,7 +6241,12 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .set => |*set_val| {
-                const pop_count = if (count == 0) @as(usize, 1) else @min(count, set_val.data.count());
+                // For intset, promote to hashmap for SPOP (random selection is simpler with hashmap)
+                if (set_val.encoding == .intset) {
+                    try set_val.promoteToHashmap(self.allocator);
+                }
+
+                const pop_count = if (count == 0) @as(usize, 1) else @min(count, set_val.count());
                 if (pop_count == 0) return try allocator.alloc([]const u8, 0);
 
                 var result = try allocator.alloc([]const u8, pop_count);
@@ -5937,17 +6258,17 @@ pub const Storage = struct {
                 var i: usize = 0;
                 while (i < pop_count) : (i += 1) {
                     // Pick a pseudo-random member by iterating to a random offset
-                    const set_len = set_val.data.count();
+                    const set_len = set_val.count();
                     if (set_len == 0) break;
                     const rnd_idx = @as(usize, @intCast(@mod(std.time.nanoTimestamp() +% @as(i128, @intCast(i)), @as(i128, @intCast(set_len)))));
-                    var it = set_val.data.keyIterator();
+                    var it = set_val.data.hashmap.keyIterator();
                     var idx: usize = 0;
                     while (it.next()) |member_ptr| {
                         if (idx == rnd_idx) {
                             const member = member_ptr.*;
                             result[i] = try allocator.dupe(u8, member);
                             // Remove from set
-                            if (set_val.data.fetchRemove(member)) |kv| {
+                            if (set_val.data.hashmap.fetchRemove(member)) |kv| {
                                 self.allocator.free(kv.key);
                             }
                             break;
@@ -5957,7 +6278,7 @@ pub const Storage = struct {
                 }
 
                 // Auto-delete empty set
-                if (set_val.data.count() == 0) {
+                if (set_val.count() == 0) {
                     const owned_key = entry.key_ptr.*;
                     var value = entry.value_ptr.*;
                     _ = self.removeKeyCleanup(key);
@@ -5982,7 +6303,7 @@ pub const Storage = struct {
         allocator: std.mem.Allocator,
         key: []const u8,
         count: i64,
-    ) error{ WrongType, OutOfMemory }!?[][]const u8 {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)!?[][]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -5999,15 +6320,27 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .set => |*set_val| {
-                const set_len = set_val.data.count();
+                const set_len = set_val.count();
 
                 // Collect all members into a temporary slice for indexing
                 var all_members = try allocator.alloc([]const u8, set_len);
                 defer allocator.free(all_members);
-                var it = set_val.data.keyIterator();
-                var idx: usize = 0;
-                while (it.next()) |member_ptr| : (idx += 1) {
-                    all_members[idx] = member_ptr.*;
+
+                switch (set_val.encoding) {
+                    .intset => {
+                        var i: usize = 0;
+                        while (i < set_len) : (i += 1) {
+                            const int_val = try set_val.data.intset.getAt(i);
+                            all_members[i] = try std.fmt.allocPrint(allocator, "{d}", .{int_val});
+                        }
+                    },
+                    .hashmap => {
+                        var it = set_val.data.hashmap.keyIterator();
+                        var idx: usize = 0;
+                        while (it.next()) |member_ptr| : (idx += 1) {
+                            all_members[idx] = member_ptr.*;
+                        }
+                    },
                 }
 
                 if (count >= 0) {
@@ -6064,7 +6397,7 @@ pub const Storage = struct {
         source: []const u8,
         destination: []const u8,
         member: []const u8,
-    ) error{ WrongType, OutOfMemory }!bool {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)!bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -6086,7 +6419,7 @@ pub const Storage = struct {
         }
 
         const src_set = &src_entry.value_ptr.set;
-        if (!src_set.data.contains(member)) return false;
+        if (!(try src_set.contains(member))) return false;
 
         // Check destination type (if it exists)
         if (self.data.getEntry(destination)) |dst_entry| {
@@ -6100,14 +6433,23 @@ pub const Storage = struct {
 
         // Remove from source
         const owned_member: []const u8 = blk: {
-            if (src_set.data.fetchRemove(member)) |kv| {
-                break :blk kv.key;
+            switch (src_set.encoding) {
+                .intset => {
+                    const int_val = std.fmt.parseInt(i64, member, 10) catch return false;
+                    _ = try src_set.data.intset.remove(int_val);
+                    break :blk try self.allocator.dupe(u8, member);
+                },
+                .hashmap => {
+                    if (src_set.data.hashmap.fetchRemove(member)) |kv| {
+                        break :blk kv.key;
+                    }
+                    return false;
+                },
             }
-            return false;
         };
 
         // Auto-delete source if empty
-        if (src_set.data.count() == 0) {
+        if (src_set.count() == 0) {
             const owned_key = src_entry.key_ptr.*;
             var value = src_entry.value_ptr.*;
             _ = self.data.remove(source);
@@ -6128,10 +6470,14 @@ pub const Storage = struct {
                 switch (dst_entry.value_ptr.*) {
                     .set => |*dst_set| {
                         // member already owned; if destination already has it, free the dup
-                        if (dst_set.data.contains(owned_member)) {
+                        if (try dst_set.contains(owned_member)) {
                             self.allocator.free(owned_member);
                         } else {
-                            try dst_set.data.put(owned_member, {});
+                            // Need to promote to hashmap for adding string
+                            if (dst_set.encoding == .intset) {
+                                try dst_set.promoteToHashmap(self.allocator);
+                            }
+                            try dst_set.data.hashmap.put(owned_member, {});
                         }
                         return true;
                     },
@@ -6154,7 +6500,11 @@ pub const Storage = struct {
         const owned_dst_key = try self.allocator.dupe(u8, destination);
         errdefer self.allocator.free(owned_dst_key);
         try self.data.put(owned_dst_key, Value{
-            .set = .{ .data = new_set, .expires_at = null },
+            .set = .{
+                .encoding = .hashmap,
+                .data = .{ .hashmap = new_set },
+                .expires_at = null,
+            },
         });
         return true;
     }
@@ -6166,7 +6516,7 @@ pub const Storage = struct {
         allocator: std.mem.Allocator,
         key: []const u8,
         members: []const []const u8,
-    ) error{ WrongType, OutOfMemory }![]bool {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)![]bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -6191,7 +6541,7 @@ pub const Storage = struct {
         switch (entry.value_ptr.*) {
             .set => |*set_val| {
                 for (members, 0..) |member, i| {
-                    result[i] = set_val.data.contains(member);
+                    result[i] = try set_val.contains(member);
                 }
                 return result;
             },
@@ -6209,7 +6559,7 @@ pub const Storage = struct {
         allocator: std.mem.Allocator,
         keys: []const []const u8,
         limit: usize,
-    ) error{ WrongType, OutOfMemory }!usize {
+    ) (error{ WrongType, OutOfMemory, IndexOutOfBounds } || std.fmt.ParseIntError)!usize {
         const members = try self.sinter(allocator, keys);
         defer allocator.free(members);
         const count = members.len;

@@ -42,7 +42,7 @@ pub const IntSet = struct {
     }
 
     /// Get integer at position
-    fn getAt(self: *const Self, pos: usize) !i64 {
+    pub fn getAt(self: *const Self, pos: usize) !i64 {
         if (pos >= self.length) return error.IndexOutOfBounds;
 
         const byte_size = @intFromEnum(self.encoding);

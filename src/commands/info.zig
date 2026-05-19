@@ -344,7 +344,7 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
     return switch (value) {
         .string => |s| s.data.len,
         .list => |list| list.data.items.len * 8, // Rough estimate
-        .set => |set| set.data.count() * 8,
+        .set => |set| set.count() * 8,
         .hash => |hash| hash.data.count() * 16,
         .sorted_set => |zset| zset.members.count() * 24,
         .stream => |stream| stream.entries.items.len * 64,

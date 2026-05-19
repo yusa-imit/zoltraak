@@ -205,8 +205,20 @@ pub const Aof = struct {
                     defer sargs.deinit(allocator);
                     try sargs.append(allocator, "SADD");
                     try sargs.append(allocator, key);
-                    var kit = s.data.keyIterator();
-                    while (kit.next()) |k| try sargs.append(allocator, k.*);
+                    switch (s.encoding) {
+                        .intset => {
+                            var i: usize = 0;
+                            while (i < s.data.intset.length) : (i += 1) {
+                                const int_val = s.data.intset.getAt(i) catch continue;
+                                const str = std.fmt.allocPrint(allocator, "{d}", .{int_val}) catch continue;
+                                try sargs.append(allocator, str);
+                            }
+                        },
+                        .hashmap => {
+                            var kit = s.data.hashmap.keyIterator();
+                            while (kit.next()) |k| try sargs.append(allocator, k.*);
+                        },
+                    }
                     if (sargs.items.len > 2) try writeRespArgs(w, sargs.items);
                     if (expires_at) |exp| {
                         const remaining = exp - now;

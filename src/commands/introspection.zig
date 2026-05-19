@@ -86,7 +86,7 @@ pub fn cmdMemoryUsage(
         const data_size: usize = switch (value) {
             .string => |s| s.data.len + 24, // String struct + data
             .list => |l| l.data.items.len * (@sizeOf([]const u8) + 32) + 64, // ArrayList + items
-            .set => |s| s.data.count() * 64 + 128, // StringHashMap entries
+            .set => |s| s.count() * 64 + 128, // StringHashMap or intset entries
             .hash => |h| h.data.count() * 128 + 128, // FieldValue entries
             .sorted_set => |zs| zs.members.count() * 160 + 256, // Member + score + indices
             .stream => |s| s.entries.items.len * 256 + 512, // Entry struct + metadata
