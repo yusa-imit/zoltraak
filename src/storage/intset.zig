@@ -1,140 +1,108 @@
-/// Intset — compact encoding for small integer-only sets
-///
-/// Redis uses intset when a set contains only integers and is small.
-/// Format:
-/// - encoding (4 bytes): 2=int16, 4=int32, 8=int64
-/// - length (4 bytes): number of integers
-/// - contents (variable): sorted array of integers
-///
-/// All integers stored in little-endian format.
-/// Automatically upgrades encoding when larger integers are added.
-
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 
-pub const IntsetError = error{
-    InvalidEncoding,
-    OutOfMemory,
-    TooLarge,
+/// Encoding type for IntSet based on value range
+pub const Encoding = enum(u8) {
+    int16 = 2, // -32768 to 32767
+    int32 = 4, // -2147483648 to 2147483647
+    int64 = 8, // Full i64 range
 };
 
-const INTSET_ENC_INT16: u32 = 2;
-const INTSET_ENC_INT32: u32 = 4;
-const INTSET_ENC_INT64: u32 = 8;
+/// Compact integer set implementation using sorted array
+/// Memory-efficient representation for sets containing only integers
+pub const IntSet = struct {
+    encoding: Encoding,
+    data: std.ArrayListUnmanaged(u8), // Raw bytes storing integers
+    length: usize, // Number of elements
+    allocator: std.mem.Allocator,
 
-const MAX_INTSET_ENTRIES: u32 = 512; // Redis default threshold
+    const Self = @This();
 
-pub const Intset = struct {
-    encoding: u32, // 2, 4, or 8
-    length: u32,
-    contents: []u8, // Raw bytes, sorted integers
-    allocator: Allocator,
-
-    /// Create new empty intset with smallest encoding
-    pub fn init(allocator: Allocator) !Intset {
-        return Intset{
-            .encoding = INTSET_ENC_INT16,
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .encoding = .int16,
+            .data = std.ArrayListUnmanaged(u8){},
             .length = 0,
-            .contents = &[_]u8{},
             .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: *Intset) void {
-        if (self.contents.len > 0) {
-            self.allocator.free(self.contents);
-        }
+    pub fn deinit(self: *Self) void {
+        self.data.deinit(self.allocator);
     }
 
-    /// Get number of elements
-    pub fn len(self: *const Intset) u32 {
-        return self.length;
-    }
-
-    /// Check if value exists
-    pub fn contains(self: *const Intset, value: i64) bool {
-        if (self.length == 0) return false;
-        return self.search(value) != null;
-    }
-
-    /// Add value (returns true if added, false if already exists)
-    pub fn add(self: *Intset, value: i64) !bool {
-        // Check if upgrade needed
-        const required_enc = requiredEncoding(value);
-        if (required_enc > self.encoding) {
-            try self.upgradeAndAdd(value, required_enc);
-            return true;
-        }
-
-        // Binary search for insertion point
-        const pos = self.search(value) orelse {
-            // Not found, insert at correct position
-            const insert_pos = self.findInsertPos(value);
-            try self.insertAt(insert_pos, value);
-            return true;
-        };
-
-        // Already exists
-        _ = pos;
-        return false;
-    }
-
-    /// Remove value (returns true if removed, false if not found)
-    pub fn remove(self: *Intset, value: i64) bool {
-        if (self.length == 0) return false;
-
-        const pos = self.search(value) orelse return false;
-
-        // Shift elements left
-        const elem_size = self.encoding;
-        const byte_pos = pos * elem_size;
-        const remaining = (self.length - pos - 1) * elem_size;
-
-        if (remaining > 0) {
-            const src_start = byte_pos + elem_size;
-            std.mem.copyForwards(u8, self.contents[byte_pos..], self.contents[src_start .. src_start + remaining]);
-        }
-
-        self.length -= 1;
-
-        // Shrink allocation
-        const new_size = self.length * elem_size;
-        if (new_size == 0) {
-            self.allocator.free(self.contents);
-            self.contents = &[_]u8{};
+    /// Returns the encoding needed for this value
+    fn encodingForValue(value: i64) Encoding {
+        if (value >= std.math.minInt(i16) and value <= std.math.maxInt(i16)) {
+            return .int16;
+        } else if (value >= std.math.minInt(i32) and value <= std.math.maxInt(i32)) {
+            return .int32;
         } else {
-            self.contents = self.allocator.realloc(self.contents, new_size) catch self.contents;
+            return .int64;
         }
-
-        return true;
     }
 
-    /// Get value at index (sorted order)
-    pub fn get(self: *const Intset, index: u32) !i64 {
-        if (index >= self.length) return error.OutOfBounds;
+    /// Get integer at position
+    fn getAt(self: *const Self, pos: usize) !i64 {
+        if (pos >= self.length) return error.IndexOutOfBounds;
 
-        const byte_pos = index * self.encoding;
+        const byte_size = @intFromEnum(self.encoding);
+        const offset = pos * byte_size;
+
         return switch (self.encoding) {
-            INTSET_ENC_INT16 => std.mem.readInt(i16, self.contents[byte_pos..][0..2], .little),
-            INTSET_ENC_INT32 => std.mem.readInt(i32, self.contents[byte_pos..][0..4], .little),
-            INTSET_ENC_INT64 => std.mem.readInt(i64, self.contents[byte_pos..][0..8], .little),
-            else => unreachable,
+            .int16 => blk: {
+                const bytes = self.data.items[offset..][0..2];
+                break :blk @as(i64, std.mem.readInt(i16, bytes, .little));
+            },
+            .int32 => blk: {
+                const bytes = self.data.items[offset..][0..4];
+                break :blk @as(i64, std.mem.readInt(i32, bytes, .little));
+            },
+            .int64 => blk: {
+                const bytes = self.data.items[offset..][0..8];
+                break :blk std.mem.readInt(i64, bytes, .little);
+            },
         };
     }
 
-    /// Binary search (returns index if found, null otherwise)
-    fn search(self: *const Intset, value: i64) ?u32 {
-        if (self.length == 0) return null;
+    /// Set integer at position
+    fn setAt(self: *Self, pos: usize, value: i64) !void {
+        if (pos >= self.length) return error.IndexOutOfBounds;
 
-        var left: u32 = 0;
-        var right: u32 = self.length;
+        const byte_size = @intFromEnum(self.encoding);
+        const offset = pos * byte_size;
+
+        switch (self.encoding) {
+            .int16 => {
+                const v = @as(i16, @intCast(value));
+                const bytes = self.data.items[offset..][0..2];
+                std.mem.writeInt(i16, bytes, v, .little);
+            },
+            .int32 => {
+                const v = @as(i32, @intCast(value));
+                const bytes = self.data.items[offset..][0..4];
+                std.mem.writeInt(i32, bytes, v, .little);
+            },
+            .int64 => {
+                const bytes = self.data.items[offset..][0..8];
+                std.mem.writeInt(i64, bytes, value, .little);
+            },
+        }
+    }
+
+    /// Binary search for value position
+    /// Returns index if found, or insertion point if not found
+    fn search(self: *const Self, value: i64) !struct { found: bool, pos: usize } {
+        if (self.length == 0) return .{ .found = false, .pos = 0 };
+
+        var left: usize = 0;
+        var right: usize = self.length;
 
         while (left < right) {
             const mid = left + (right - left) / 2;
-            const mid_val = self.get(mid) catch unreachable;
+            const mid_val = try self.getAt(mid);
 
             if (mid_val == value) {
-                return mid;
+                return .{ .found = true, .pos = mid };
             } else if (mid_val < value) {
                 left = mid + 1;
             } else {
@@ -142,288 +110,297 @@ pub const Intset = struct {
             }
         }
 
-        return null;
+        return .{ .found = false, .pos = left };
     }
 
-    /// Find insertion position for value (binary search)
-    fn findInsertPos(self: *const Intset, value: i64) u32 {
-        if (self.length == 0) return 0;
+    /// Check if value exists in set
+    pub fn contains(self: *const Self, value: i64) !bool {
+        const result = try self.search(value);
+        return result.found;
+    }
 
-        var left: u32 = 0;
-        var right: u32 = self.length;
+    /// Upgrade encoding to support larger values
+    fn upgradeEncoding(self: *Self, new_encoding: Encoding) !void {
+        if (@intFromEnum(new_encoding) <= @intFromEnum(self.encoding)) return;
 
-        while (left < right) {
-            const mid = left + (right - left) / 2;
-            const mid_val = self.get(mid) catch unreachable;
+        const new_size = @intFromEnum(new_encoding);
+        var new_data = try std.ArrayListUnmanaged(u8).initCapacity(self.allocator, self.length * new_size);
+        errdefer new_data.deinit(self.allocator);
 
-            if (mid_val < value) {
-                left = mid + 1;
-            } else {
-                right = mid;
+        // Copy all values to new encoding
+        var i: usize = 0;
+        while (i < self.length) : (i += 1) {
+            const value = try self.getAt(i);
+
+            // Write value in new encoding
+            switch (new_encoding) {
+                .int16 => unreachable, // Can't downgrade
+                .int32 => {
+                    var bytes: [4]u8 = undefined;
+                    std.mem.writeInt(i32, &bytes, @intCast(value), .little);
+                    try new_data.appendSlice(self.allocator, &bytes);
+                },
+                .int64 => {
+                    var bytes: [8]u8 = undefined;
+                    std.mem.writeInt(i64, &bytes, value, .little);
+                    try new_data.appendSlice(self.allocator, &bytes);
+                },
             }
         }
 
-        return left;
+        self.data.deinit(self.allocator);
+        self.data = new_data;
+        self.encoding = new_encoding;
     }
 
-    /// Insert value at position
-    fn insertAt(self: *Intset, pos: u32, value: i64) !void {
-        if (self.length >= MAX_INTSET_ENTRIES) return error.TooLarge;
-
-        const elem_size = self.encoding;
-        const old_size = self.length * elem_size;
-        const new_size = (self.length + 1) * elem_size;
-
-        // Reallocate
-        const new_contents = if (old_size == 0)
-            try self.allocator.alloc(u8, new_size)
-        else
-            try self.allocator.realloc(self.contents, new_size);
-
-        self.contents = new_contents;
-
-        // Shift elements right
-        const byte_pos = pos * elem_size;
-        const remaining = (self.length - pos) * elem_size;
-        if (remaining > 0) {
-            const src_start = byte_pos;
-            const dst_start = byte_pos + elem_size;
-            std.mem.copyBackwards(u8, self.contents[dst_start .. dst_start + remaining], self.contents[src_start .. src_start + remaining]);
+    /// Add value to set
+    /// Returns true if value was added (didn't exist), false if already existed
+    pub fn add(self: *Self, value: i64) !bool {
+        // Check if value requires encoding upgrade
+        const required_encoding = encodingForValue(value);
+        if (@intFromEnum(required_encoding) > @intFromEnum(self.encoding)) {
+            try self.upgradeEncoding(required_encoding);
         }
 
-        // Write new value
-        switch (self.encoding) {
-            INTSET_ENC_INT16 => {
-                std.mem.writeInt(i16, self.contents[byte_pos..][0..2], @intCast(value), .little);
-            },
-            INTSET_ENC_INT32 => {
-                std.mem.writeInt(i32, self.contents[byte_pos..][0..4], @intCast(value), .little);
-            },
-            INTSET_ENC_INT64 => {
-                std.mem.writeInt(i64, self.contents[byte_pos..][0..8], value, .little);
-            },
-            else => unreachable,
+        const result = try self.search(value);
+        if (result.found) return false; // Already exists
+
+        // Insert at position
+        const byte_size = @intFromEnum(self.encoding);
+        const insert_offset = result.pos * byte_size;
+
+        // Resize data array
+        const old_len = self.data.items.len;
+        try self.data.resize(self.allocator, old_len + byte_size);
+
+        // Shift existing elements
+        if (result.pos < self.length) {
+            const shift_src = insert_offset;
+            const shift_dst = insert_offset + byte_size;
+            const shift_len = old_len - insert_offset;
+            std.mem.copyBackwards(u8, self.data.items[shift_dst .. shift_dst + shift_len], self.data.items[shift_src .. shift_src + shift_len]);
         }
 
         self.length += 1;
+
+        // Write new value
+        switch (self.encoding) {
+            .int16 => {
+                std.mem.writeInt(i16, self.data.items[insert_offset..][0..2], @intCast(value), .little);
+            },
+            .int32 => {
+                std.mem.writeInt(i32, self.data.items[insert_offset..][0..4], @intCast(value), .little);
+            },
+            .int64 => {
+                std.mem.writeInt(i64, self.data.items[insert_offset..][0..8], value, .little);
+            },
+        }
+
+        return true;
     }
 
-    /// Upgrade encoding and add value
-    fn upgradeAndAdd(self: *Intset, value: i64, new_enc: u32) !void {
-        const old_len = self.length;
+    /// Remove value from set
+    /// Returns true if value was removed, false if didn't exist
+    pub fn remove(self: *Self, value: i64) !bool {
+        const result = try self.search(value);
+        if (!result.found) return false;
 
-        // Allocate new contents
-        const new_size = (old_len + 1) * new_enc;
-        const new_contents = try self.allocator.alloc(u8, new_size);
-        errdefer self.allocator.free(new_contents);
+        const byte_size = @intFromEnum(self.encoding);
+        const remove_offset = result.pos * byte_size;
 
-        // Determine if value goes at start or end
-        const prepend = value < 0;
-
-        // Copy and convert old values
-        var i: u32 = 0;
-        while (i < old_len) : (i += 1) {
-            const old_val = try self.get(i);
-            const new_pos = if (prepend) i + 1 else i;
-            const byte_pos = new_pos * new_enc;
-
-            switch (new_enc) {
-                INTSET_ENC_INT32 => {
-                    std.mem.writeInt(i32, new_contents[byte_pos..][0..4], @intCast(old_val), .little);
-                },
-                INTSET_ENC_INT64 => {
-                    std.mem.writeInt(i64, new_contents[byte_pos..][0..8], old_val, .little);
-                },
-                else => unreachable,
-            }
+        // Shift elements down
+        if (result.pos < self.length - 1) {
+            const shift_src = remove_offset + byte_size;
+            const shift_dst = remove_offset;
+            const shift_len = (self.length - result.pos - 1) * byte_size;
+            std.mem.copyForwards(u8, self.data.items[shift_dst .. shift_dst + shift_len], self.data.items[shift_src .. shift_src + shift_len]);
         }
 
-        // Write new value at start or end
-        const new_val_pos = if (prepend) 0 else old_len;
-        const byte_pos = new_val_pos * new_enc;
+        self.length -= 1;
+        try self.data.resize(self.allocator, self.length * byte_size);
 
-        switch (new_enc) {
-            INTSET_ENC_INT32 => {
-                std.mem.writeInt(i32, new_contents[byte_pos..][0..4], @intCast(value), .little);
-            },
-            INTSET_ENC_INT64 => {
-                std.mem.writeInt(i64, new_contents[byte_pos..][0..8], value, .little);
-            },
-            else => unreachable,
+        return true;
+    }
+
+    /// Get all values as a slice (allocates)
+    pub fn toSlice(self: *const Self, allocator: std.mem.Allocator) ![]i64 {
+        const result = try allocator.alloc(i64, self.length);
+        errdefer allocator.free(result);
+
+        var i: usize = 0;
+        while (i < self.length) : (i += 1) {
+            result[i] = try self.getAt(i);
         }
 
-        // Free old contents
-        if (self.contents.len > 0) {
-            self.allocator.free(self.contents);
-        }
+        return result;
+    }
 
-        // Update fields
-        self.contents = new_contents;
-        self.encoding = new_enc;
-        self.length = old_len + 1;
+    /// Get random element (requires RNG)
+    pub fn random(self: *const Self, rng: std.Random) !?i64 {
+        if (self.length == 0) return null;
+        const index = rng.uintLessThan(usize, self.length);
+        return try self.getAt(index);
+    }
+
+    /// Pop random element
+    pub fn pop(self: *Self, rng: std.Random) !?i64 {
+        if (self.length == 0) return null;
+        const index = rng.uintLessThan(usize, self.length);
+        const value = try self.getAt(index);
+        _ = try self.remove(value);
+        return value;
     }
 };
 
-/// Determine required encoding for value
-fn requiredEncoding(value: i64) u32 {
-    if (value >= std.math.minInt(i16) and value <= std.math.maxInt(i16)) {
-        return INTSET_ENC_INT16;
-    } else if (value >= std.math.minInt(i32) and value <= std.math.maxInt(i32)) {
-        return INTSET_ENC_INT32;
-    } else {
-        return INTSET_ENC_INT64;
+// --- TESTS ---
+
+test "IntSet: init and deinit" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), intset.length);
+    try std.testing.expectEqual(Encoding.int16, intset.encoding);
+}
+
+test "IntSet: add single value" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    const added = try intset.add(42);
+    try std.testing.expect(added);
+    try std.testing.expectEqual(@as(usize, 1), intset.length);
+    try std.testing.expect(try intset.contains(42));
+}
+
+test "IntSet: add duplicate returns false" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(42);
+    const added_again = try intset.add(42);
+    try std.testing.expect(!added_again);
+    try std.testing.expectEqual(@as(usize, 1), intset.length);
+}
+
+test "IntSet: maintains sorted order" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(5);
+    _ = try intset.add(1);
+    _ = try intset.add(10);
+    _ = try intset.add(3);
+
+    const values = try intset.toSlice(allocator);
+    defer allocator.free(values);
+
+    try std.testing.expectEqual(@as(usize, 4), values.len);
+    try std.testing.expectEqual(@as(i64, 1), values[0]);
+    try std.testing.expectEqual(@as(i64, 3), values[1]);
+    try std.testing.expectEqual(@as(i64, 5), values[2]);
+    try std.testing.expectEqual(@as(i64, 10), values[3]);
+}
+
+test "IntSet: remove existing value" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(1);
+    _ = try intset.add(2);
+    _ = try intset.add(3);
+
+    const removed = try intset.remove(2);
+    try std.testing.expect(removed);
+    try std.testing.expectEqual(@as(usize, 2), intset.length);
+    try std.testing.expect(!try intset.contains(2));
+    try std.testing.expect(try intset.contains(1));
+    try std.testing.expect(try intset.contains(3));
+}
+
+test "IntSet: remove non-existing value" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(1);
+    const removed = try intset.remove(999);
+    try std.testing.expect(!removed);
+    try std.testing.expectEqual(@as(usize, 1), intset.length);
+}
+
+test "IntSet: encoding upgrade int16 to int32" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(100); // int16
+    try std.testing.expectEqual(Encoding.int16, intset.encoding);
+
+    _ = try intset.add(100000); // Requires int32
+    try std.testing.expectEqual(Encoding.int32, intset.encoding);
+
+    try std.testing.expect(try intset.contains(100));
+    try std.testing.expect(try intset.contains(100000));
+}
+
+test "IntSet: encoding upgrade int32 to int64" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(100000); // int32
+    try std.testing.expectEqual(Encoding.int32, intset.encoding);
+
+    _ = try intset.add(5000000000); // Requires int64
+    try std.testing.expectEqual(Encoding.int64, intset.encoding);
+
+    try std.testing.expect(try intset.contains(100000));
+    try std.testing.expect(try intset.contains(5000000000));
+}
+
+test "IntSet: negative integers" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    _ = try intset.add(-100);
+    _ = try intset.add(0);
+    _ = try intset.add(100);
+
+    try std.testing.expect(try intset.contains(-100));
+    try std.testing.expect(try intset.contains(0));
+    try std.testing.expect(try intset.contains(100));
+
+    const values = try intset.toSlice(allocator);
+    defer allocator.free(values);
+
+    try std.testing.expectEqual(@as(i64, -100), values[0]);
+    try std.testing.expectEqual(@as(i64, 0), values[1]);
+    try std.testing.expectEqual(@as(i64, 100), values[2]);
+}
+
+test "IntSet: large set" {
+    const allocator = std.testing.allocator;
+    var intset = IntSet.init(allocator);
+    defer intset.deinit();
+
+    // Add 100 values
+    var i: i64 = 0;
+    while (i < 100) : (i += 1) {
+        _ = try intset.add(i * 2); // Even numbers
     }
-}
 
-// ============================================================================
-// Tests
-// ============================================================================
+    try std.testing.expectEqual(@as(usize, 100), intset.length);
 
-test "intset: init and basic properties" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expectEqual(@as(u32, 0), is.len());
-    try std.testing.expectEqual(INTSET_ENC_INT16, is.encoding);
-}
-
-test "intset: add and contains" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expect(try is.add(42));
-    try std.testing.expect(try is.add(10));
-    try std.testing.expect(try is.add(100));
-
-    try std.testing.expectEqual(@as(u32, 3), is.len());
-    try std.testing.expect(is.contains(42));
-    try std.testing.expect(is.contains(10));
-    try std.testing.expect(is.contains(100));
-    try std.testing.expect(!is.contains(99));
-}
-
-test "intset: sorted order" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expect(try is.add(100));
-    try std.testing.expect(try is.add(10));
-    try std.testing.expect(try is.add(50));
-
-    // Should be sorted: 10, 50, 100
-    try std.testing.expectEqual(@as(i64, 10), try is.get(0));
-    try std.testing.expectEqual(@as(i64, 50), try is.get(1));
-    try std.testing.expectEqual(@as(i64, 100), try is.get(2));
-}
-
-test "intset: duplicates" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expect(try is.add(42));
-    try std.testing.expect(!try is.add(42)); // Duplicate
-
-    try std.testing.expectEqual(@as(u32, 1), is.len());
-}
-
-test "intset: remove" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expect(try is.add(10));
-    try std.testing.expect(try is.add(20));
-    try std.testing.expect(try is.add(30));
-
-    try std.testing.expect(is.remove(20));
-    try std.testing.expectEqual(@as(u32, 2), is.len());
-    try std.testing.expect(!is.contains(20));
-
-    try std.testing.expect(!is.remove(99)); // Not found
-}
-
-test "intset: encoding upgrade to i32" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    // Start with i16
-    try std.testing.expect(try is.add(100));
-    try std.testing.expectEqual(INTSET_ENC_INT16, is.encoding);
-
-    // Add value requiring i32
-    const large: i64 = 100000;
-    try std.testing.expect(try is.add(large));
-    try std.testing.expectEqual(INTSET_ENC_INT32, is.encoding);
-    try std.testing.expectEqual(@as(u32, 2), is.len());
-
-    // Verify both values exist
-    try std.testing.expect(is.contains(100));
-    try std.testing.expect(is.contains(large));
-}
-
-test "intset: encoding upgrade to i64" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    // Start with i16
-    try std.testing.expect(try is.add(100));
-    try std.testing.expectEqual(INTSET_ENC_INT16, is.encoding);
-
-    // Add value requiring i64
-    const huge: i64 = 10000000000;
-    try std.testing.expect(try is.add(huge));
-    try std.testing.expectEqual(INTSET_ENC_INT64, is.encoding);
-    try std.testing.expectEqual(@as(u32, 2), is.len());
-
-    // Verify both values exist
-    try std.testing.expect(is.contains(100));
-    try std.testing.expect(is.contains(huge));
-}
-
-test "intset: negative values" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expect(try is.add(-50));
-    try std.testing.expect(try is.add(0));
-    try std.testing.expect(try is.add(50));
-
-    // Should be sorted: -50, 0, 50
-    try std.testing.expectEqual(@as(i64, -50), try is.get(0));
-    try std.testing.expectEqual(@as(i64, 0), try is.get(1));
-    try std.testing.expectEqual(@as(i64, 50), try is.get(2));
-}
-
-test "intset: large negative upgrade" {
-    const allocator = std.testing.allocator;
-
-    var is = try Intset.init(allocator);
-    defer is.deinit();
-
-    try std.testing.expect(try is.add(100));
-    try std.testing.expectEqual(INTSET_ENC_INT16, is.encoding);
-
-    // Add large negative (prepend case in upgrade)
-    const large_neg: i64 = -100000;
-    try std.testing.expect(try is.add(large_neg));
-    try std.testing.expectEqual(INTSET_ENC_INT32, is.encoding);
-
-    // Should be sorted: -100000, 100
-    try std.testing.expectEqual(large_neg, try is.get(0));
-    try std.testing.expectEqual(@as(i64, 100), try is.get(1));
+    // Verify all exist
+    i = 0;
+    while (i < 100) : (i += 1) {
+        try std.testing.expect(try intset.contains(i * 2));
+        try std.testing.expect(!try intset.contains(i * 2 + 1)); // Odd numbers not present
+    }
 }
