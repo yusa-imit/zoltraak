@@ -149,7 +149,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "ZRANK", "ZREVRANK", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION",
         "SDIFF", "SINTER", "SUNION",
         "XLEN", "XRANGE", "XREVRANGE", "XREAD", "XREADGROUP", "XPENDING", "XINFO",
-        "GETRANGE", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
+        "GETRANGE", "SUBSTR", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
         "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
         "PFCOUNT",
         "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
@@ -1185,8 +1185,10 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZintercard(allocator, storage, array);
         }
         // String range commands
-        else if (std.mem.eql(u8, cmd_upper, "GETRANGE") or std.mem.eql(u8, cmd_upper, "SUBSTR")) {
+        else if (std.mem.eql(u8, cmd_upper, "GETRANGE")) {
             break :blk try cmdGetrange(allocator, storage, array);
+        } else if (std.mem.eql(u8, cmd_upper, "SUBSTR")) {
+            break :blk try cmdSubstr(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SETRANGE")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try cmdSetrange(allocator, storage, array, ps, selected_db);
@@ -5488,6 +5490,23 @@ pub fn cmdGetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     return w.writeBulkString(result);
 }
 
+/// SUBSTR key start end
+///
+/// DEPRECATED: This command is deprecated since Redis 2.0.0.
+/// Use GETRANGE instead. SUBSTR is provided for backwards compatibility only.
+///
+/// Returns the substring of the string value stored at key.
+/// Identical behavior to GETRANGE - negative indices supported.
+///
+/// Returns:
+///   - Bulk string: Substring at specified range
+///   - Empty string: If key doesn't exist or range is out of bounds
+///   - Error: WRONGTYPE if key is not a string
+pub fn cmdSubstr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+    // SUBSTR is a direct alias to GETRANGE with identical arguments
+    return cmdGetrange(allocator, storage, args);
+}
+
 /// SETRANGE key offset value
 /// Overwrite bytes at offset in string. Zero-pads if necessary.
 /// Returns new total length.
@@ -6715,4 +6734,115 @@ test "commands - DELEX multiple conditions error" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR multiple conditions") != null);
+}
+
+// SUBSTR tests (deprecated alias for GETRANGE)
+
+test "commands - SUBSTR basic substring" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "Hello World", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUBSTR" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "4" },
+    };
+    const result = try cmdSubstr(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$5\r\nHello\r\n", result);
+}
+
+test "commands - SUBSTR negative indices" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "Hello World", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUBSTR" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "-5" },
+        RespValue{ .bulk_string = "-1" },
+    };
+    const result = try cmdSubstr(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$5\r\nWorld\r\n", result);
+}
+
+test "commands - SUBSTR out of range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "Hello", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUBSTR" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "10" },
+        RespValue{ .bulk_string = "20" },
+    };
+    const result = try cmdSubstr(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$0\r\n\r\n", result);
+}
+
+test "commands - SUBSTR non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUBSTR" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "5" },
+    };
+    const result = try cmdSubstr(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$0\r\n\r\n", result);
+}
+
+test "commands - SUBSTR WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a non-string value (list)
+    try storage.lpush("mylist", &[_][]const u8{"value"});
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUBSTR" },
+        RespValue{ .bulk_string = "mylist" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "5" },
+    };
+    const result = try cmdSubstr(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "WRONGTYPE") != null);
+}
+
+test "commands - SUBSTR wrong number of arguments" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SUBSTR" },
+        RespValue{ .bulk_string = "mykey" },
+    };
+    const result = try cmdSubstr(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR wrong number of arguments") != null);
 }
