@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.15.0",
     .dependencies = .{
         .sailor = .{
-            .url = "https://github.com/yusa-imit/sailor/archive/refs/tags/v2.10.1.tar.gz",
-            .hash = "sailor-2.10.0-53_z3NrDNwARFDkoFv8W5svOPoDtgMtN0QKUCpQ-AWL5",
+            .url = "https://github.com/yusa-imit/sailor/archive/refs/tags/v2.10.2.tar.gz",
+            .hash = "sailor-2.10.0-53_z3HbENwBTocGP6tSYNe0_u9KwVOjPJZEnWCTsy8WS",
         },
         .zuda = .{
             .url = "https://github.com/yusa-imit/zuda/archive/refs/tags/v2.0.4.tar.gz",

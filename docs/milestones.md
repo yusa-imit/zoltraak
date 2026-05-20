@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v2.9.0 (latest, all migrations through v2.9.0 complete — Developer Experience & Debugging Tools)
+- **Sailor library**: v2.10.2 (latest, all migrations through v2.10.2 complete — AI/ML capabilities + bug fixes)
 
 ---
 
@@ -200,9 +200,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v2.7.0 (build.zig.zon)
-- **Latest available**: v2.7.0
-- **Migration status**: All versions through v2.7.0 migrated.
+- **Current in zoltraak**: v2.10.2 (build.zig.zon)
+- **Latest available**: v2.10.2
+- **Migration status**: All versions through v2.10.2 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -234,6 +234,11 @@
 | v1.22.0 | Rich text & formatting: SpanBuilder/LineBuilder fluent APIs for styled text, RichTextParser for markdown conversion (bold/italic/code/strikethrough), LineBreaker with word wrapping and hyphenation, Unicode-aware width calculation (CJK, emoji), multiline height tracking — backward compatible, zero breaking changes | Done (Iter 133) |
 | v1.23.0 | Plugin architecture: Widget trait system (custom render()/measure()), custom renderer hooks (pre/post render callbacks in Terminal.draw()), theme plugin system (JSON file-based themes with runtime switching), composition helpers (Padding/Centered/Aligned/Stack/Constrained for layout), plugin demo with 10 integration tests — backward compatible, zero breaking changes | Done (Iter 249) |
 | v2.7.0 | Event System & Async Integration: EventBus (publish-subscribe pattern, 48 tests), Command Pattern (undo/redo infrastructure, 29 tests), AsyncTaskRunner (cooperative multitasking, 21 tests), Debouncing & Throttling (rate-limiting, 25 tests) — backward compatible, zero breaking changes | Done (Iter 235) |
+| v2.8.0 | Windows compatibility: ConPTY integration, legacy console API fallback, platform-specific optimizations (Linux/macOS/Windows), multi-platform CI (native tests on all platforms), Windows console API tests (27KB), UTF-16 encoding handling, docs (Windows/macOS/Linux guides) — backward compatible, zero breaking changes | Done |
+| v2.9.0 | Developer Experience & Debugging Tools: Live Widget Inspector (hierarchical tree view, real-time properties, focus tracking, 55 tests), Advanced Profiling (flamegraphs, event traces, Chrome DevTools export, 38 tests), Error Recovery (boundaries, auto-recovery, graceful degradation, 58 tests), Developer Console (live eval, query language, state mutation, Ctrl+Shift+D toggle, 40 tests) — backward compatible, zero breaking changes | Done |
+| v2.10.0 | AI/ML capabilities: LLM Integration Layer (TokenBudget, RateLimiter, PromptTemplate, ResponseStreamWidget, LlmClient, 35 tests 70% pass rate), Smart Autocomplete (context-aware, multi-source, learning patterns, 52 tests), Layout Intelligence (AI-assisted analysis, responsiveness checking, accessibility recommendations, 52 tests), Natural Language Commands (CommandParser 11 intent types, context-aware disambiguation, semantic search, 59 tests) — backward compatible, zero breaking changes, privacy-first (API keys optional) | Done |
+| v2.10.1 | Test suite stability (patch): Fixed timing-sensitive tests (advanced_profiler sleep durations microseconds→milliseconds), documented HTTP mocking limitations (12 skipped tests), corrected error handling for HTTP stub — zero functional changes, zero breaking changes, 4426/4478 tests (98.8%) | Done |
+| v2.10.2 | Natural language commands bug fixes (patch): Fixed Zig 0.15 API compatibility (tokenize→tokenizeScalar, BoundedArray removal, toOwnedSlice parameter), fixed meaningless tests (59 tests now validate Intent types instead of string contents) — zero functional changes, zero breaking changes, 4426/4478 tests (98.8%) | Done |
 
 ### zuda Library
 
