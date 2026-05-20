@@ -1299,6 +1299,17 @@ pub fn build(b: *std.Build) void {
     const run_substr_tests = b.addRunArtifact(substr_tests);
     integration_test_step.dependOn(&run_substr_tests.step);
 
+    // SETEX/PSETEX/SETNX/GETSET (deprecated aliases) integration tests
+    const string_aliases_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_deprecated_string_aliases.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_string_aliases_tests = b.addRunArtifact(string_aliases_tests);
+    integration_test_step.dependOn(&run_string_aliases_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

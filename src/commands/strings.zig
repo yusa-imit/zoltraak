@@ -823,7 +823,8 @@ pub fn executeCommand(
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try cmdSetex(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "PSETEX")) {
-            break :blk try cmdPsetex(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdPsetex(allocator, storage, array, ps, selected_db);
         }
         // Multi-key string commands
         else if (std.mem.eql(u8, cmd_upper, "MGET")) {
@@ -3761,7 +3762,12 @@ fn cmdStrlen(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 }
 
 /// GETSET key value
+///
+/// DEPRECATED: This command is deprecated since Redis 6.2.0.
+/// Use `SET key value GET` instead. GETSET is provided for backwards compatibility only.
+///
 /// Sets key to value and returns the old value.
+/// Functionally equivalent to: SET key value GET
 fn cmdGetset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -3888,7 +3894,12 @@ fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
 }
 
 /// SETNX key value
+///
+/// DEPRECATED: This command is deprecated since Redis 2.6.12.
+/// Use `SET key value NX` instead. SETNX is provided for backwards compatibility only.
+///
 /// Set key to value only if key does not exist. Returns 1 if set, 0 if not.
+/// Functionally equivalent to: SET key value NX
 fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -3916,7 +3927,12 @@ fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
 }
 
 /// SETEX key seconds value
+///
+/// DEPRECATED: This command is deprecated since Redis 2.6.12.
+/// Use `SET key value EX seconds` instead. SETEX is provided for backwards compatibility only.
+///
 /// Set key to value with expiry in seconds.
+/// Functionally equivalent to: SET key value EX seconds
 fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -3957,8 +3973,13 @@ fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
 }
 
 /// PSETEX key milliseconds value
+///
+/// DEPRECATED: This command is deprecated since Redis 2.6.12.
+/// Use `SET key value PX milliseconds` instead. PSETEX is provided for backwards compatibility only.
+///
 /// Set key to value with expiry in milliseconds.
-fn cmdPsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Functionally equivalent to: SET key value PX milliseconds
+fn cmdPsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3985,7 +4006,15 @@ fn cmdPsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     };
 
     const expires_at = Storage.getCurrentTimestamp() + milliseconds;
+    const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
+
+    // Publish keyspace notification
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "psetex");
+    if (was_new) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .new, "new");
+    }
+
     return w.writeOK();
 }
 
