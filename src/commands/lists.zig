@@ -1392,6 +1392,86 @@ pub fn cmdRpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []con
     }
 }
 
+/// BRPOPLPUSH source destination timeout
+/// Deprecated alias for BLMOVE source destination RIGHT LEFT timeout (Redis 6.2.0)
+/// Blocking variant of RPOPLPUSH - pops from tail of source, pushes to head of destination
+/// Returns the moved element or null if timeout expires
+pub fn cmdBrpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len != 4) {
+        return w.writeError("ERR wrong number of arguments for 'brpoplpush' command");
+    }
+
+    // Parse arguments: source, destination, timeout
+    const src = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid source key"),
+    };
+
+    const dst = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid destination key"),
+    };
+
+    const timeout_str = switch (args[3]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid timeout value"),
+    };
+
+    const timeout_f = std.fmt.parseFloat(f64, timeout_str) catch {
+        return w.writeError("ERR timeout is not a float or out of range");
+    };
+
+    if (timeout_f < 0) {
+        return w.writeError("ERR timeout is negative");
+    }
+
+    // Convert timeout to milliseconds (0 = block indefinitely)
+    const timeout_ms: u64 = if (timeout_f == 0)
+        std.math.maxInt(u64)
+    else
+        @as(u64, @intFromFloat(timeout_f * 1000));
+
+    const poll_interval_ms: u64 = 100; // Poll every 100ms
+    var elapsed_ms: u64 = 0;
+
+    // BRPOPLPUSH = BLMOVE source dest RIGHT LEFT timeout
+    // src_left = false (RIGHT), dst_left = true (LEFT)
+    while (elapsed_ms < timeout_ms) {
+        const moved = storage.lmove(allocator, src, dst, false, true) catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        };
+        defer if (moved) |m| allocator.free(m);
+
+        if (moved) |elem| {
+            // Publish notifications for rpop on source, lpush on destination
+            notifyListEvent(allocator, storage, ps, db_index, src, "rpop");
+            notifyListEvent(allocator, storage, ps, db_index, dst, "lpush");
+
+            // If source list became empty, publish del notification
+            if (storage.get(src) == null) {
+                notifyGenericEvent(allocator, storage, ps, db_index, src, "del");
+            }
+
+            return w.writeBulkString(elem);
+        }
+
+        // Source list is empty - sleep and retry
+        if (elapsed_ms + poll_interval_ms >= timeout_ms) break;
+
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+        elapsed_ms += poll_interval_ms;
+    }
+
+    // Timeout - return null
+    return w.writeNull();
+}
+
 // ── Unit tests for new list commands ────────────────────────────────────────
 
 test "lists - LINDEX returns element at index" {

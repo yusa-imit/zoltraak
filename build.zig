@@ -1310,6 +1310,17 @@ pub fn build(b: *std.Build) void {
     const run_string_aliases_tests = b.addRunArtifact(string_aliases_tests);
     integration_test_step.dependOn(&run_string_aliases_tests.step);
 
+    // HMSET/RPOPLPUSH/BRPOPLPUSH/SLAVEOF (deprecated aliases) integration tests
+    const aliases_269_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_deprecated_aliases_269.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_aliases_269_tests = b.addRunArtifact(aliases_269_tests);
+    integration_test_step.dependOn(&run_aliases_269_tests.step);
+
     // Note: integration tests are NOT added to the main test step because they
     // spawn a server binary and require special lifecycle management.
     // Use `zig build test-integration` to run them separately.

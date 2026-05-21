@@ -74,6 +74,21 @@ pub fn cmdReplicaof(
     return w.writeSimpleString("OK");
 }
 
+/// SLAVEOF host port
+/// SLAVEOF NO ONE
+/// Deprecated alias for REPLICAOF (Redis 5.0.0)
+/// Make the server a replica or promote to primary
+pub fn cmdSlaveof(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    repl: *ReplicationState,
+    args: []const []const u8,
+    my_port: u16,
+) ![]const u8 {
+    // SLAVEOF is a direct alias to REPLICAOF with identical arguments
+    return cmdReplicaof(allocator, storage, repl, args, my_port);
+}
+
 /// Promote this instance to primary and disconnect from the old primary.
 fn cmdReplicaofNoOne(allocator: std.mem.Allocator, repl: *ReplicationState) ![]const u8 {
     var w = Writer.init(allocator);

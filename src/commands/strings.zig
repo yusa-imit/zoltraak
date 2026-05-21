@@ -945,10 +945,13 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "BRPOP")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try lists.cmdBrpop(allocator, storage, array, ps, selected_db);
-        } else if (std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "BRPOPLPUSH")) {
-            // BRPOPLPUSH is a deprecated alias for BLMOVE RIGHT LEFT
+        } else if (std.mem.eql(u8, cmd_upper, "BLMOVE")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try lists.cmdBlmove(allocator, storage, array, ps, selected_db);
+        } else if (std.mem.eql(u8, cmd_upper, "BRPOPLPUSH")) {
+            // BRPOPLPUSH is a deprecated alias for BLMOVE source dest RIGHT LEFT timeout
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try lists.cmdBrpoplpush(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "LMPOP")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try lists.cmdLmpop(allocator, storage, array, ps, selected_db);
