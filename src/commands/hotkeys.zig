@@ -1,7 +1,9 @@
 const std = @import("std");
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
-const Storage = @import("../storage/memory.zig").Storage;
+const storage_mod = @import("../storage/memory.zig");
+const Storage = storage_mod.Storage;
+const HotkeyTracker = storage_mod.HotkeyTracker;
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
@@ -10,7 +12,6 @@ const Writer = writer_mod.Writer;
 /// Syntax: HOTKEYS START METRICS count [CPU] [NET] [COUNT k] [DURATION seconds] [SAMPLE ratio] [SLOTS count slot [slot ...]]
 /// Returns: OK if tracking started, error if already tracking
 pub fn cmdHotkeysStart(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    _ = storage;
 
     // Parse METRICS argument
     if (args.len < 2) {
@@ -176,12 +177,27 @@ pub fn cmdHotkeysStart(allocator: std.mem.Allocator, storage: *Storage, args: []
         return w.writeError("ERR at least one of CPU or NET must be specified");
     }
 
-    // Stub implementation: just return OK
-    // TODO: Implement actual hotkeys tracking with probabilistic data structure
-    // Parameters validated above but not yet used in stub
-    if (count == 0 or top_k != null or duration != null or sample_ratio != null) {
-        // Stub: parameters are parsed but not yet stored
+    // Create and initialize HotkeyTracker
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = count,
+        .track_cpu = has_cpu,
+        .track_net = has_net,
+        .top_k = top_k orelse 10,
+        .sample_ratio = sample_ratio orelse 100,
+        .duration_ms = if (duration) |d| @as(u64, d) * 1000 else null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    errdefer tracker.deinit();
+
+    // If a tracker already exists, clean it up
+    if (storage.hotkey_tracker) |old_tracker| {
+        old_tracker.deinit();
     }
+
+    // Store the tracker and start it
+    storage.hotkey_tracker = tracker;
+    tracker.start();
 
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -192,16 +208,23 @@ pub fn cmdHotkeysStart(allocator: std.mem.Allocator, storage: *Storage, args: []
 /// Syntax: HOTKEYS STOP
 /// Returns: OK if tracking stopped, error if not tracking
 pub fn cmdHotkeysStop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    _ = storage;
-
     if (args.len != 0) {
         var w = Writer.init(allocator);
         defer w.deinit();
         return w.writeError("ERR wrong number of arguments for 'hotkeys stop' command");
     }
 
-    // Stub implementation: just return OK
-    // TODO: Implement actual tracking state management
+    // If tracker exists and is active, stop it
+    if (storage.hotkey_tracker) |tracker| {
+        if (tracker.is_active) {
+            tracker.stop();
+            var w = Writer.init(allocator);
+            defer w.deinit();
+            return w.writeSimpleString("OK");
+        }
+    }
+
+    // No active tracking, still return OK (idempotent)
     var w = Writer.init(allocator);
     defer w.deinit();
     return w.writeSimpleString("OK");
@@ -209,18 +232,32 @@ pub fn cmdHotkeysStop(allocator: std.mem.Allocator, storage: *Storage, args: []c
 
 /// HOTKEYS GET - Get tracking results
 /// Syntax: HOTKEYS GET
-/// Returns: Array of tracking metadata and results
+/// Returns: Array of tracking metadata and results (or null if no tracking)
 pub fn cmdHotkeysGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    _ = storage;
-
     if (args.len != 0) {
         var w = Writer.init(allocator);
         defer w.deinit();
         return w.writeError("ERR wrong number of arguments for 'hotkeys get' command");
     }
 
-    // Stub implementation: return null (no tracking data)
-    // TODO: Implement actual tracking data retrieval
+    // If no tracker exists, return null
+    if (storage.hotkey_tracker == null) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeNull();
+    }
+
+    const tracker = storage.hotkey_tracker.?;
+
+    // Return null if not yet started or stopped
+    if (!tracker.is_active and tracker.start_time_ms == 0) {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeNull();
+    }
+
+    // TODO: Phase 2 - Return detailed tracking results with HeavyKeeper data
+    // For now, return null to match expected behavior
     var w = Writer.init(allocator);
     defer w.deinit();
     return w.writeNull();
@@ -230,16 +267,18 @@ pub fn cmdHotkeysGet(allocator: std.mem.Allocator, storage: *Storage, args: []co
 /// Syntax: HOTKEYS RESET
 /// Returns: OK
 pub fn cmdHotkeysReset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    _ = storage;
-
     if (args.len != 0) {
         var w = Writer.init(allocator);
         defer w.deinit();
         return w.writeError("ERR wrong number of arguments for 'hotkeys reset' command");
     }
 
-    // Stub implementation: just return OK
-    // TODO: Implement actual resource cleanup
+    // Cleanup tracker if it exists
+    if (storage.hotkey_tracker) |tracker| {
+        tracker.deinit();
+        storage.hotkey_tracker = null;
+    }
+
     var w = Writer.init(allocator);
     defer w.deinit();
     return w.writeSimpleString("OK");

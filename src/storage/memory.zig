@@ -623,6 +623,113 @@ fn inLexRange(member: []const u8, min: LexRange, max: LexRange) bool {
     return max_ok;
 }
 
+/// HotkeyTracker tracks frequently accessed keys for monitoring
+/// Phase 1: Stub implementation with basic counters
+/// Phase 2: Will integrate HeavyKeeper probabilistic data structure
+pub const HotkeyTracker = struct {
+    allocator: std.mem.Allocator,
+    is_active: bool,
+    metrics_count: u32, // Number of distinct metrics (usually 2: CPU + NET)
+    track_cpu: bool,
+    track_net: bool,
+    top_k: u32, // Number of top keys to track (default 10)
+    sample_ratio: u32, // Sampling ratio (1 to 100, default 100 = always sample)
+    duration_ms: ?u64, // Duration in milliseconds (null = indefinite)
+    start_time_ms: i64, // Timestamp when tracking started
+
+    // Stub counters (will be replaced by HeavyKeeper in Phase 2)
+    keys_sampled: u64, // Total number of key accesses sampled
+    total_cpu_us: u64, // Total CPU microseconds tracked
+    total_net_bytes: u64, // Total network bytes tracked
+
+    /// Configuration for HotkeyTracker
+    pub const TrackerConfig = struct {
+        metrics_count: u32,
+        track_cpu: bool,
+        track_net: bool,
+        top_k: u32,
+        sample_ratio: u32,
+        duration_ms: ?u64,
+    };
+
+    /// Initialize a new HotkeyTracker
+    /// Takes ownership of allocator - caller must call deinit()
+    pub fn init(allocator: std.mem.Allocator, config: TrackerConfig) !*HotkeyTracker {
+        const tracker = try allocator.create(HotkeyTracker);
+        errdefer allocator.destroy(tracker);
+
+        tracker.* = HotkeyTracker{
+            .allocator = allocator,
+            .is_active = false,
+            .metrics_count = config.metrics_count,
+            .track_cpu = config.track_cpu,
+            .track_net = config.track_net,
+            .top_k = config.top_k,
+            .sample_ratio = config.sample_ratio,
+            .duration_ms = config.duration_ms,
+            .start_time_ms = 0, // Will be set in start()
+            .keys_sampled = 0,
+            .total_cpu_us = 0,
+            .total_net_bytes = 0,
+        };
+
+        return tracker;
+    }
+
+    /// Free HotkeyTracker resources
+    pub fn deinit(self: *HotkeyTracker) void {
+        self.allocator.destroy(self);
+    }
+
+    /// Start tracking (mark as active and record start time)
+    pub fn start(self: *HotkeyTracker) void {
+        self.is_active = true;
+        self.start_time_ms = std.time.milliTimestamp();
+    }
+
+    /// Stop tracking (mark as inactive but preserve data)
+    pub fn stop(self: *HotkeyTracker) void {
+        self.is_active = false;
+    }
+
+    /// Reset all counters and data
+    pub fn reset(self: *HotkeyTracker) void {
+        self.keys_sampled = 0;
+        self.total_cpu_us = 0;
+        self.total_net_bytes = 0;
+        self.start_time_ms = 0;
+    }
+
+    /// Record a key access with metrics
+    /// In stub phase, just accumulates counters
+    /// key: the key being accessed (unused in stub, will be used by HeavyKeeper in Phase 2)
+    /// cpu_us: CPU microseconds for this operation
+    /// net_bytes: Network bytes for this operation
+    pub fn recordAccess(self: *HotkeyTracker, key: []const u8, cpu_us: u64, net_bytes: u64) void {
+        _ = key; // Unused in stub implementation
+
+        if (self.track_cpu) {
+            self.total_cpu_us += cpu_us;
+        }
+        if (self.track_net) {
+            self.total_net_bytes += net_bytes;
+        }
+        self.keys_sampled += 1;
+    }
+
+    /// Check if tracking duration has expired
+    /// Returns true if duration is set and elapsed time exceeds duration_ms
+    pub fn isExpired(self: *HotkeyTracker) bool {
+        if (!self.is_active or self.duration_ms == null) {
+            return false;
+        }
+
+        const now_ms = std.time.milliTimestamp();
+        const elapsed_ms = now_ms - self.start_time_ms;
+        return elapsed_ms >= self.duration_ms.?;
+    }
+};
+
 /// Thread-safe in-memory storage engine with TTL support
 pub const Storage = struct {
     allocator: std.mem.Allocator,
@@ -653,6 +760,7 @@ pub const Storage = struct {
     defrag_task: DefragTask, // Background active defragmentation task
     module_store: ModuleStore, // Dynamically loaded modules (Phase 17)
     pubsub_state: ?*pubsub_mod.PubSub, // Optional pubsub state for firing notifications (set by server after init)
+    hotkey_tracker: ?*HotkeyTracker, // Optional hotkeys tracking state (Phase 1)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -765,6 +873,7 @@ pub const Storage = struct {
             .defrag_task = defrag_task,
             .module_store = try ModuleStore.init(allocator),
             .pubsub_state = null, // Will be set by server after init
+            .hotkey_tracker = null, // Will be created on HOTKEYS START
         };
 
         // Start background lazy free thread
@@ -921,6 +1030,12 @@ pub const Storage = struct {
         self.lazyfree_task.deinit();
         self.defrag_task.deinit();
         self.module_store.deinit();
+
+        // Free hotkey tracker if active
+        if (self.hotkey_tracker) |tracker| {
+            tracker.deinit();
+        }
+
         self.config.deinit();
 
         const allocator = self.allocator;
@@ -12601,4 +12716,286 @@ test "LFU decay - multiple periods accumulate" {
     // (formula: counter -= elapsed_ms / (decay_time_ms))
     // This test allows some margin for rounding
     try std.testing.expect(decayed_counter <= 5);
+}
+
+// ===== HOTKEY TRACKER TESTS =====
+
+test "HotkeyTracker init creates tracker with correct config" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 2,
+        .track_cpu = true,
+        .track_net = true,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    try std.testing.expect(!tracker.is_active);
+    try std.testing.expectEqual(@as(u32, 2), tracker.metrics_count);
+    try std.testing.expect(tracker.track_cpu);
+    try std.testing.expect(tracker.track_net);
+    try std.testing.expectEqual(@as(u32, 10), tracker.top_k);
+    try std.testing.expectEqual(@as(u32, 100), tracker.sample_ratio);
+    try std.testing.expect(tracker.duration_ms == null);
+    try std.testing.expectEqual(@as(u64, 0), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_net_bytes);
+}
+
+test "HotkeyTracker start marks active and records time" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 1,
+        .track_cpu = true,
+        .track_net = false,
+        .top_k = 5,
+        .sample_ratio = 50,
+        .duration_ms = 60000,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    try std.testing.expect(!tracker.is_active);
+
+    tracker.start();
+
+    try std.testing.expect(tracker.is_active);
+    try std.testing.expect(tracker.start_time_ms > 0);
+}
+
+test "HotkeyTracker stop marks inactive" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 1,
+        .track_cpu = true,
+        .track_net = false,
+        .top_k = 5,
+        .sample_ratio = 50,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    tracker.start();
+    try std.testing.expect(tracker.is_active);
+
+    tracker.stop();
+    try std.testing.expect(!tracker.is_active);
+}
+
+test "HotkeyTracker reset clears counters" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 2,
+        .track_cpu = true,
+        .track_net = true,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    tracker.start();
+    tracker.recordAccess("key1", 100, 200);
+    tracker.recordAccess("key2", 50, 150);
+
+    try std.testing.expectEqual(@as(u64, 2), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 150), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 350), tracker.total_net_bytes);
+
+    tracker.reset();
+
+    try std.testing.expectEqual(@as(u64, 0), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_net_bytes);
+    try std.testing.expectEqual(@as(i64, 0), tracker.start_time_ms);
+}
+
+test "HotkeyTracker recordAccess with CPU metric" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 1,
+        .track_cpu = true,
+        .track_net = false,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    tracker.recordAccess("key1", 123, 456);
+
+    try std.testing.expectEqual(@as(u64, 1), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 123), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_net_bytes); // NET not tracked
+}
+
+test "HotkeyTracker recordAccess with NET metric" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 1,
+        .track_cpu = false,
+        .track_net = true,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    tracker.recordAccess("key1", 123, 456);
+
+    try std.testing.expectEqual(@as(u64, 1), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_cpu_us); // CPU not tracked
+    try std.testing.expectEqual(@as(u64, 456), tracker.total_net_bytes);
+}
+
+test "HotkeyTracker recordAccess with both CPU and NET metrics" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 2,
+        .track_cpu = true,
+        .track_net = true,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    tracker.recordAccess("key1", 100, 200);
+    tracker.recordAccess("key2", 50, 150);
+    tracker.recordAccess("key3", 75, 100);
+
+    try std.testing.expectEqual(@as(u64, 3), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 225), tracker.total_cpu_us); // 100 + 50 + 75
+    try std.testing.expectEqual(@as(u64, 450), tracker.total_net_bytes); // 200 + 150 + 100
+}
+
+test "HotkeyTracker isExpired returns false when not active" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 1,
+        .track_cpu = true,
+        .track_net = false,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = 1000,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    // Not active, should return false regardless of duration
+    try std.testing.expect(!tracker.isExpired());
+}
+
+test "HotkeyTracker isExpired returns false when duration is null" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 1,
+        .track_cpu = true,
+        .track_net = false,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    tracker.start();
+
+    // Active but no duration set
+    try std.testing.expect(!tracker.isExpired());
+}
+
+test "HotkeyTracker state transitions: init -> start -> stop -> reset" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 2,
+        .track_cpu = true,
+        .track_net = true,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    // Initial state: not active, zero counters
+    try std.testing.expect(!tracker.is_active);
+    try std.testing.expectEqual(@as(u64, 0), tracker.keys_sampled);
+
+    // After start: active
+    tracker.start();
+    try std.testing.expect(tracker.is_active);
+
+    // Record some data
+    tracker.recordAccess("key1", 100, 200);
+    try std.testing.expectEqual(@as(u64, 1), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 100), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 200), tracker.total_net_bytes);
+
+    // After stop: inactive but data preserved
+    tracker.stop();
+    try std.testing.expect(!tracker.is_active);
+    try std.testing.expectEqual(@as(u64, 1), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 100), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 200), tracker.total_net_bytes);
+
+    // After reset: counters cleared
+    tracker.reset();
+    try std.testing.expectEqual(@as(u64, 0), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 0), tracker.total_net_bytes);
+}
+
+test "HotkeyTracker multiple recordAccess accumulates correctly" {
+    const allocator = std.testing.allocator;
+
+    const config = HotkeyTracker.TrackerConfig{
+        .metrics_count = 2,
+        .track_cpu = true,
+        .track_net = true,
+        .top_k = 10,
+        .sample_ratio = 100,
+        .duration_ms = null,
+    };
+
+    const tracker = try HotkeyTracker.init(allocator, config);
+    defer tracker.deinit();
+
+    // Record multiple accesses
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        tracker.recordAccess("key", 10, 20);
+    }
+
+    try std.testing.expectEqual(@as(u64, 10), tracker.keys_sampled);
+    try std.testing.expectEqual(@as(u64, 100), tracker.total_cpu_us);
+    try std.testing.expectEqual(@as(u64, 200), tracker.total_net_bytes);
 }
