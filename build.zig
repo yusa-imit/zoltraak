@@ -857,6 +857,17 @@ pub fn build(b: *std.Build) void {
     const run_hotkeys_tests = b.addRunArtifact(hotkeys_tests);
     integration_test_step.dependOn(&run_hotkeys_tests.step);
 
+    // HOTKEYS integration tests with HeavyKeeper (Iteration 272)
+    const hotkeys_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_hotkeys_integration.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_hotkeys_integration_tests = b.addRunArtifact(hotkeys_integration_tests);
+    integration_test_step.dependOn(&run_hotkeys_integration_tests.step);
+
     // Time Series integration tests
     const timeseries_tests = b.addTest(.{
         .root_module = b.createModule(.{

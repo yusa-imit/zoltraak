@@ -5,6 +5,7 @@ const blocking_mod = @import("blocking.zig");
 const slowlog_mod = @import("slowlog.zig");
 const latency_mod = @import("latency.zig");
 const memory_tracker_mod = @import("memory_tracker.zig");
+const heavykeeper_mod = @import("heavykeeper.zig");
 const acl_mod = @import("acl.zig");
 const cluster_mod = @import("cluster.zig");
 const sentinel_mod = @import("sentinel.zig");
@@ -624,8 +625,8 @@ fn inLexRange(member: []const u8, min: LexRange, max: LexRange) bool {
 }
 
 /// HotkeyTracker tracks frequently accessed keys for monitoring
-/// Phase 1: Stub implementation with basic counters
-/// Phase 2: Will integrate HeavyKeeper probabilistic data structure
+/// Phase 1: State management infrastructure (complete)
+/// Phase 2: HeavyKeeper probabilistic top-K tracking (current)
 pub const HotkeyTracker = struct {
     allocator: std.mem.Allocator,
     is_active: bool,
@@ -637,7 +638,10 @@ pub const HotkeyTracker = struct {
     duration_ms: ?u64, // Duration in milliseconds (null = indefinite)
     start_time_ms: i64, // Timestamp when tracking started
 
-    // Stub counters (will be replaced by HeavyKeeper in Phase 2)
+    // Phase 2: HeavyKeeper for probabilistic top-K tracking
+    heavy_keeper: *heavykeeper_mod.HeavyKeeper, // Top-K frequency tracker
+
+    // Aggregated metrics counters
     keys_sampled: u64, // Total number of key accesses sampled
     total_cpu_us: u64, // Total CPU microseconds tracked
     total_net_bytes: u64, // Total network bytes tracked
@@ -658,6 +662,17 @@ pub const HotkeyTracker = struct {
         const tracker = try allocator.create(HotkeyTracker);
         errdefer allocator.destroy(tracker);
 
+        // Initialize HeavyKeeper for top-K tracking
+        // Use width=1024, depth=4, decay=0.9 (standard parameters)
+        const heavy_keeper = try heavykeeper_mod.HeavyKeeper.init(
+            allocator,
+            config.top_k,
+            1024, // width
+            4, // depth
+            0.9, // decay
+        );
+        errdefer heavy_keeper.deinit();
+
         tracker.* = HotkeyTracker{
             .allocator = allocator,
             .is_active = false,
@@ -668,6 +683,7 @@ pub const HotkeyTracker = struct {
             .sample_ratio = config.sample_ratio,
             .duration_ms = config.duration_ms,
             .start_time_ms = 0, // Will be set in start()
+            .heavy_keeper = heavy_keeper,
             .keys_sampled = 0,
             .total_cpu_us = 0,
             .total_net_bytes = 0,
@@ -678,6 +694,7 @@ pub const HotkeyTracker = struct {
 
     /// Free HotkeyTracker resources
     pub fn deinit(self: *HotkeyTracker) void {
+        self.heavy_keeper.deinit();
         self.allocator.destroy(self);
     }
 
@@ -701,12 +718,17 @@ pub const HotkeyTracker = struct {
     }
 
     /// Record a key access with metrics
-    /// In stub phase, just accumulates counters
-    /// key: the key being accessed (unused in stub, will be used by HeavyKeeper in Phase 2)
+    /// Updates HeavyKeeper for top-K tracking and accumulates aggregate counters
+    /// key: the key being accessed
     /// cpu_us: CPU microseconds for this operation
     /// net_bytes: Network bytes for this operation
     pub fn recordAccess(self: *HotkeyTracker, key: []const u8, cpu_us: u64, net_bytes: u64) void {
-        _ = key; // Unused in stub implementation
+        // Add key to HeavyKeeper with weight 1 (one access)
+        _ = self.heavy_keeper.add(key, 1) catch |err| {
+            // Log error but don't crash (monitoring shouldn't break commands)
+            std.debug.print("HeavyKeeper.add error: {}\n", .{err});
+            return;
+        };
 
         if (self.track_cpu) {
             self.total_cpu_us += cpu_us;
@@ -727,6 +749,12 @@ pub const HotkeyTracker = struct {
         const now_ms = std.time.milliTimestamp();
         const elapsed_ms = now_ms - self.start_time_ms;
         return elapsed_ms >= self.duration_ms.?;
+    }
+
+    /// Get top-K hotkeys (caller owns returned slice and must free with allocator)
+    /// Returns error if HeavyKeeper list() fails
+    pub fn getTopKeys(self: *HotkeyTracker, allocator: std.mem.Allocator) ![]heavykeeper_mod.TopKItem {
+        return try self.heavy_keeper.list(allocator);
     }
 };
 
