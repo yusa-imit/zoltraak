@@ -74,6 +74,8 @@ pub const ClientInfo = struct {
     authenticated_user: ?[]const u8,
     /// Currently selected database (0-15, default 0)
     selected_db: u16,
+    /// Pending RESP3 push invalidation messages (queued for delivery on next command)
+    pending_invalidations: std.ArrayList([]u8),
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -94,6 +96,11 @@ pub const ClientInfo = struct {
             allocator.free(prefix);
         }
         self.tracking_prefixes.deinit(allocator);
+        // Free pending invalidation messages
+        for (self.pending_invalidations.items) |msg| {
+            allocator.free(msg);
+        }
+        self.pending_invalidations.deinit(allocator);
         allocator.free(self.addr);
         allocator.free(self.last_cmd);
         allocator.free(self.flags);
@@ -225,6 +232,7 @@ pub const ClientRegistry = struct {
             .client_repl_offset = 0, // Start at offset 0
             .authenticated_user = null, // Unauthenticated by default (will use "default" user)
             .selected_db = 0, // Start at database 0
+            .pending_invalidations = std.ArrayList([]u8){},
         };
 
         try self.clients.put(client_id, info);
@@ -830,6 +838,37 @@ pub const ClientRegistry = struct {
         }
     }
 
+    /// Queue a RESP3 push invalidation message for a client.
+    /// The message bytes are owned by the caller and must have been allocated
+    /// with the registry's allocator. The registry takes ownership.
+    pub fn queuePushMessage(self: *ClientRegistry, client_id: u64, message: []u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            try info.pending_invalidations.append(self.allocator, message);
+        } else {
+            // Client gone — free the message
+            self.allocator.free(message);
+        }
+    }
+
+    /// Take all pending invalidation messages for a client.
+    /// Returns an owned slice of message byte slices; caller must:
+    ///   - free each inner slice with self.allocator.free(msg)
+    ///   - free the outer slice with self.allocator.free(slice)
+    /// Returns null if client not found or has no pending messages.
+    pub fn takePendingInvalidations(self: *ClientRegistry, client_id: u64) ?[][]u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const info = self.clients.getPtr(client_id) orelse return null;
+        if (info.pending_invalidations.items.len == 0) return null;
+
+        const owned = info.pending_invalidations.toOwnedSlice(self.allocator) catch return null;
+        return owned;
+    }
+
     /// Enable/disable monitor mode for a client
     pub fn setMonitorMode(self: *ClientRegistry, client_id: u64, enabled: bool) void {
         self.mutex.lock();
@@ -970,9 +1009,9 @@ pub const ClientRegistry = struct {
     }
 };
 
-/// Helper function to notify clients about key invalidation
-/// This generates invalidation messages and cleans up the tracking table
-/// Note: Actual delivery of push messages happens at server.zig level
+/// Helper function to notify clients about key invalidation.
+/// Generates RESP3 push messages and queues them for delivery in server.zig.
+/// Removes the key from the tracking table so clients must re-read to re-track.
 pub fn notifyInvalidation(
     registry: *ClientRegistry,
     key: []const u8,
@@ -986,6 +1025,21 @@ pub fn notifyInvalidation(
             msg.deinit(allocator);
         }
         allocator.free(messages);
+    }
+
+    // Queue a RESP3 push invalidation message for each target client.
+    // The registry owns the allocated bytes; the client's pending queue will
+    // free them when the connection drains or the client disconnects.
+    for (messages) |msg| {
+        var w = Writer.init(registry.allocator);
+        defer w.deinit();
+        const keys_slice = [_][]const u8{msg.key};
+        const push_const = w.writePushInvalidation(&keys_slice) catch continue;
+        // Cast to mutable slice — we own this allocation and need []u8 for the queue
+        const push_bytes = @constCast(push_const);
+        registry.queuePushMessage(msg.client_id, push_bytes) catch {
+            registry.allocator.free(push_bytes);
+        };
     }
 
     // Remove key from tracking table (clients must re-read to re-track)
@@ -4368,4 +4422,71 @@ test "ClientRegistry - broadcastToMonitors with quote escaping" {
     // Check that quotes are escaped
     const msg = messages.items[0].message;
     try std.testing.expect(std.mem.indexOf(u8, msg, "val\\\"ue") != null);
+}
+
+test "ClientRegistry - queuePushMessage and takePendingInvalidations" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:1111", 1);
+    defer registry.unregisterClient(client_id);
+
+    // No pending messages initially
+    const none = registry.takePendingInvalidations(client_id);
+    try std.testing.expectEqual(@as(?[][]u8, null), none);
+
+    // Queue a message
+    const raw_msg = try allocator.dupe(u8, ">2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nfoo\r\n");
+    try registry.queuePushMessage(client_id, raw_msg);
+
+    // Take pending messages
+    const pending = registry.takePendingInvalidations(client_id);
+    try std.testing.expect(pending != null);
+    if (pending) |msgs| {
+        defer allocator.free(msgs);
+        try std.testing.expectEqual(@as(usize, 1), msgs.len);
+        defer allocator.free(msgs[0]);
+        try std.testing.expectEqualStrings(">2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nfoo\r\n", msgs[0]);
+    }
+
+    // Queue is now empty
+    const none2 = registry.takePendingInvalidations(client_id);
+    try std.testing.expectEqual(@as(?[][]u8, null), none2);
+}
+
+test "ClientRegistry - queuePushMessage for non-existent client frees message" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    // Queue message for a non-existent client — should free without leak
+    const raw_msg = try allocator.dupe(u8, ">2\r\n$10\r\ninvalidate\r\n*0\r\n");
+    try registry.queuePushMessage(9999, raw_msg);
+    // Testing allocator will catch if raw_msg is leaked
+}
+
+test "ClientRegistry - multiple pending invalidations drained in order" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:2222", 2);
+    defer registry.unregisterClient(client_id);
+
+    const msg1 = try allocator.dupe(u8, "msg1");
+    const msg2 = try allocator.dupe(u8, "msg2");
+    try registry.queuePushMessage(client_id, msg1);
+    try registry.queuePushMessage(client_id, msg2);
+
+    const pending = registry.takePendingInvalidations(client_id);
+    try std.testing.expect(pending != null);
+    if (pending) |msgs| {
+        defer allocator.free(msgs);
+        try std.testing.expectEqual(@as(usize, 2), msgs.len);
+        defer allocator.free(msgs[0]);
+        defer allocator.free(msgs[1]);
+        try std.testing.expectEqualStrings("msg1", msgs[0]);
+        try std.testing.expectEqualStrings("msg2", msgs[1]);
+    }
 }

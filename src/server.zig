@@ -618,6 +618,20 @@ pub const Server = struct {
                 break;
             }
 
+            // Deliver any pending RESP3 push invalidation messages that were
+            // queued during this command (e.g., a SET/DEL from another connection
+            // that this tracking client is subscribed to). In our single-threaded
+            // model, pending messages accumulate and are drained here.
+            if (self.client_registry.takePendingInvalidations(client_id)) |inv_msgs| {
+                defer self.client_registry.allocator.free(inv_msgs);
+                for (inv_msgs) |msg| {
+                    defer self.client_registry.allocator.free(msg);
+                    _ = connection.stream.write(msg) catch |err| {
+                        std.debug.print("Invalidation push write error: {any}\n", .{err});
+                    };
+                }
+            }
+
             // Deliver any pending pub/sub messages that were queued during
             // this command (e.g., a PUBLISH from another connection's cycle
             // that this subscriber is waiting for). In our single-threaded
