@@ -110,12 +110,10 @@ fn buildServerSection(
     try bw.writeAll("multiplexing_api:kqueue\r\n"); // Simplified for macOS/BSD
     try bw.writeAll("gcc_version:0.0.0\r\n");
     try bw.writeAll("process_id:");
-    if (@hasDecl(std.os.linux, "getpid")) {
+    if (comptime @import("builtin").os.tag == .linux) {
         try bw.print("{d}\r\n", .{std.os.linux.getpid()});
-    } else if (@hasDecl(std.c, "getpid")) {
-        try bw.print("{d}\r\n", .{std.c.getpid()});
     } else {
-        try bw.writeAll("1\r\n");
+        try bw.print("{d}\r\n", .{std.c.getpid()});
     }
     try bw.writeAll("run_id:zoltraak-instance-001\r\n");
     try bw.print("tcp_port:{d}\r\n", .{config.port});
@@ -154,23 +152,27 @@ fn buildMemorySection(
 ) !void {
     const bw = buf.writer(allocator);
 
-    // Calculate approximate memory usage
+    // Calculate approximate memory usage under mutex to prevent data races
     var total_memory: usize = 0;
-
-    // Count keys and estimate memory
     var key_count: usize = 0;
-    var iter = storage.data.iterator();
-    while (iter.next()) |entry| {
-        key_count += 1;
-        total_memory += entry.key_ptr.len; // Key size
-        total_memory += estimateValueMemory(entry.value_ptr.*); // Value size
+    {
+        storage.mutex.lock();
+        defer storage.mutex.unlock();
+        var iter = storage.data.iterator();
+        while (iter.next()) |entry| {
+            key_count += 1;
+            total_memory += entry.key_ptr.len;
+            total_memory += estimateValueMemory(entry.value_ptr.*);
+        }
     }
 
+    var fmt_buf1: [32]u8 = undefined;
+    var fmt_buf2: [32]u8 = undefined;
     try bw.writeAll("# Memory\r\n");
     try bw.print("used_memory:{d}\r\n", .{total_memory});
-    try bw.print("used_memory_human:{s}\r\n", .{try formatBytes(allocator, total_memory)});
-    try bw.print("used_memory_rss:{d}\r\n", .{total_memory * 2}); // Rough estimate
-    try bw.print("used_memory_rss_human:{s}\r\n", .{try formatBytes(allocator, total_memory * 2)});
+    try bw.print("used_memory_human:{s}\r\n", .{formatBytes(total_memory, &fmt_buf1)});
+    try bw.print("used_memory_rss:{d}\r\n", .{total_memory * 2});
+    try bw.print("used_memory_rss_human:{s}\r\n", .{formatBytes(total_memory * 2, &fmt_buf2)});
     try bw.writeAll("used_memory_peak:0\r\n");
     try bw.writeAll("used_memory_peak_human:0B\r\n");
     try bw.writeAll("used_memory_overhead:0\r\n");
@@ -319,15 +321,18 @@ fn buildKeyspaceSection(
 
     try bw.writeAll("# Keyspace\r\n");
 
-    // Count keys and keys with expiry
+    // Count keys and keys with expiry under mutex to prevent data races
     var total_keys: usize = 0;
     var keys_with_expiry: usize = 0;
-
-    var iter = storage.data.iterator();
-    while (iter.next()) |entry| {
-        total_keys += 1;
-        if (entry.value_ptr.*.getExpiration()) |_| {
-            keys_with_expiry += 1;
+    {
+        storage.mutex.lock();
+        defer storage.mutex.unlock();
+        var iter = storage.data.iterator();
+        while (iter.next()) |entry| {
+            total_keys += 1;
+            if (entry.value_ptr.*.getExpiration()) |_| {
+                keys_with_expiry += 1;
+            }
         }
     }
 
@@ -396,15 +401,15 @@ fn estimateValueMemory(value: storage_mod.Value) usize {
     };
 }
 
-fn formatBytes(allocator: std.mem.Allocator, bytes: usize) ![]const u8 {
+fn formatBytes(bytes: usize, buf: *[32]u8) []const u8 {
     if (bytes < 1024) {
-        return std.fmt.allocPrint(allocator, "{d}B", .{bytes});
+        return std.fmt.bufPrint(buf, "{d}B", .{bytes}) catch "?B";
     } else if (bytes < 1024 * 1024) {
-        return std.fmt.allocPrint(allocator, "{d}K", .{bytes / 1024});
+        return std.fmt.bufPrint(buf, "{d}K", .{bytes / 1024}) catch "?K";
     } else if (bytes < 1024 * 1024 * 1024) {
-        return std.fmt.allocPrint(allocator, "{d}M", .{bytes / (1024 * 1024)});
+        return std.fmt.bufPrint(buf, "{d}M", .{bytes / (1024 * 1024)}) catch "?M";
     } else {
-        return std.fmt.allocPrint(allocator, "{d}G", .{bytes / (1024 * 1024 * 1024)});
+        return std.fmt.bufPrint(buf, "{d}G", .{bytes / (1024 * 1024 * 1024)}) catch "?G";
     }
 }
 
