@@ -1463,6 +1463,10 @@ pub fn executeCommand(
                     break :blk try command_cmds.cmdCommandList(allocator, filter_by);
                 } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                     break :blk try command_cmds.cmdCommandHelp(allocator);
+                } else if (std.mem.eql(u8, subcmd_upper, "DOCS")) {
+                    const cmd_args = try extractBulkStrings(allocator, array[2..]);
+                    defer allocator.free(cmd_args);
+                    break :blk try command_cmds.cmdCommandDocs(allocator, cmd_args);
                 } else {
                     var w = Writer.init(allocator);
                     defer w.deinit();
