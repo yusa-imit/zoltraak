@@ -1569,6 +1569,24 @@ pub const Storage = struct {
         return std.meta.activeTag(entry.value_ptr.*);
     }
 
+    /// Get the LFU frequency counter for a key (for OBJECT FREQ)
+    /// Returns 0 if key doesn't exist or has no LFU data
+    pub fn getObjectFreq(self: *Storage, key: []const u8) u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.data.get(key) == null) return 0;
+        return self.lfu_counter.getCounter(key);
+    }
+
+    /// Get the idle time (seconds since last access) for a key (for OBJECT IDLETIME)
+    /// Returns null if key doesn't exist; returns 0 if key exists but has no LRU tracking
+    pub fn getObjectIdleTime(self: *Storage, key: []const u8) ?u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.data.get(key) == null) return null;
+        return self.lru_clock.getIdleTime(key) orelse 0;
+    }
+
     /// Set key to string value with optional expiration
     /// Overwrites existing value if key exists
     /// expires_at: Unix timestamp in milliseconds, null = no expiration

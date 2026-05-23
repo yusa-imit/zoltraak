@@ -1660,15 +1660,16 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         }
         return w.writeInteger(1);
     } else if (std.mem.eql(u8, sub_upper, "IDLETIME")) {
-        if (storage.getType(key) == null) {
+        const idle = storage.getObjectIdleTime(key) orelse {
             return w.writeError("ERR no such key");
-        }
-        return w.writeInteger(0);
+        };
+        return w.writeInteger(@intCast(idle));
     } else if (std.mem.eql(u8, sub_upper, "FREQ")) {
         if (storage.getType(key) == null) {
             return w.writeError("ERR no such key");
         }
-        return w.writeInteger(0);
+        const freq = storage.getObjectFreq(key);
+        return w.writeInteger(@intCast(freq));
     } else if (std.mem.eql(u8, sub_upper, "ENCODING")) {
         const vtype = storage.getType(key) orelse {
             return w.writeError("ERR no such key");
@@ -2380,4 +2381,70 @@ test "OBJECT ENCODING - list returns listpack for small lists" {
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("+listpack\r\n", result);
+}
+
+test "OBJECT FREQ - returns non-negative integer for existing key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "FREQ" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    // Should return integer (LFU counter, starts at 0)
+    try std.testing.expect(std.mem.startsWith(u8, result, ":"));
+    try std.testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "OBJECT FREQ - returns error for non-existing key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "FREQ" },
+        .{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "OBJECT IDLETIME - returns non-negative integer for existing key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "IDLETIME" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    // Should return integer (idle time in seconds, starts at 0)
+    try std.testing.expect(std.mem.startsWith(u8, result, ":"));
+    try std.testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "OBJECT IDLETIME - returns error for non-existing key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "IDLETIME" },
+        .{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
 }
