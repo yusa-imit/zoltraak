@@ -1680,20 +1680,40 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
         };
+        const hash_max_value: usize = blk: {
+            var cv = storage.config.get("hash-max-listpack-value") catch break :blk 64;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
+        };
         const list_max_entries: usize = blk: {
             var cv = storage.config.get("list-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
+        };
+        const list_max_value: usize = blk: {
+            var cv = storage.config.get("list-max-listpack-value") catch break :blk 64;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
         };
         const zset_max_entries: usize = blk: {
             var cv = storage.config.get("zset-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
         };
+        const zset_max_value: usize = blk: {
+            var cv = storage.config.get("zset-max-listpack-value") catch break :blk 64;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
+        };
         const set_max_listpack: usize = blk: {
             var cv = storage.config.get("set-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
+        };
+        const set_max_value: usize = blk: {
+            var cv = storage.config.get("set-max-listpack-value") catch break :blk 64;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
         };
         const encoding: []const u8 = switch (vtype) {
             .string => enc: {
@@ -1706,7 +1726,11 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             },
             .list => blk: {
                 const ln = storage.llen(key) orelse 0;
-                break :blk if (ln <= list_max_entries) "listpack" else "quicklist";
+                const max_elem = storage.getListMaxElementLength(key) orelse 0;
+                break :blk if (ln <= list_max_entries and max_elem <= list_max_value)
+                    "listpack"
+                else
+                    "quicklist";
             },
             .set => blk: {
                 // Use actual internal encoding for sets
@@ -1715,17 +1739,29 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                     .intset => "intset",
                     .hashmap => blk2: {
                         const sc = storage.scard(key) orelse 0;
-                        break :blk2 if (sc <= set_max_listpack) "listpack" else "hashtable";
+                        const max_member = storage.getSetMaxMemberLength(key) orelse 0;
+                        break :blk2 if (sc <= set_max_listpack and max_member <= set_max_value)
+                            "listpack"
+                        else
+                            "hashtable";
                     },
                 };
             },
             .hash => blk: {
                 const hl = storage.hlen(key) orelse 0;
-                break :blk if (hl <= hash_max_entries) "listpack" else "hashtable";
+                const max_elem = storage.getHashMaxElementLength(key) orelse 0;
+                break :blk if (hl <= hash_max_entries and max_elem <= hash_max_value)
+                    "listpack"
+                else
+                    "hashtable";
             },
             .sorted_set => blk: {
                 const zc = storage.zcard(key) orelse 0;
-                break :blk if (zc <= zset_max_entries) "listpack" else "skiplist";
+                const max_member = storage.getZsetMaxMemberLength(key) orelse 0;
+                break :blk if (zc <= zset_max_entries and max_member <= zset_max_value)
+                    "listpack"
+                else
+                    "skiplist";
             },
             .stream => "stream",
             .hyperloglog => "hyperloglog",
@@ -1738,7 +1774,8 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .t_digest => "tdigest",
             .vector_set => "hnsw",
         };
-        return w.writeSimpleString(encoding);
+        // Redis returns a bulk string for OBJECT ENCODING (not a simple string)
+        return w.writeBulkString(encoding);
     } else {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ERR unknown subcommand or wrong number of arguments for '{s}' command", .{subcommand}) catch "ERR unknown subcommand";
@@ -2279,7 +2316,8 @@ test "OBJECT ENCODING - string returns int for integer values" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("+int\r\n", result);
+    // Redis returns bulk string for OBJECT ENCODING
+    try std.testing.expectEqualStrings("$3\r\nint\r\n", result);
 }
 
 test "OBJECT ENCODING - string returns embstr for short strings" {
@@ -2295,7 +2333,7 @@ test "OBJECT ENCODING - string returns embstr for short strings" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("+embstr\r\n", result);
+    try std.testing.expectEqualStrings("$6\r\nembstr\r\n", result);
 }
 
 test "OBJECT ENCODING - set uses intset for integer-only small sets" {
@@ -2313,7 +2351,7 @@ test "OBJECT ENCODING - set uses intset for integer-only small sets" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("+intset\r\n", result);
+    try std.testing.expectEqualStrings("$6\r\nintset\r\n", result);
 }
 
 test "OBJECT ENCODING - set uses listpack for small non-integer sets" {
@@ -2331,7 +2369,7 @@ test "OBJECT ENCODING - set uses listpack for small non-integer sets" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("+listpack\r\n", result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
 }
 
 test "OBJECT ENCODING - hash returns listpack for small hashes" {
@@ -2348,7 +2386,7 @@ test "OBJECT ENCODING - hash returns listpack for small hashes" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("+listpack\r\n", result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
 }
 
 test "OBJECT ENCODING - missing key returns error" {
@@ -2380,7 +2418,83 @@ test "OBJECT ENCODING - list returns listpack for small lists" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("+listpack\r\n", result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
+}
+
+test "OBJECT ENCODING - hash switches to hashtable when element length exceeds threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a value that exceeds hash-max-listpack-value (64 bytes default)
+    const long_value = "x" ** 65;
+    _ = try storage.hset("bighash", &[_][]const u8{"field1"}, &[_][]const u8{long_value}, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "bighash" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nhashtable\r\n", result);
+}
+
+test "OBJECT ENCODING - sorted set switches to skiplist when member length exceeds threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add a member that exceeds zset-max-listpack-value (64 bytes default)
+    const long_member = "m" ** 65;
+    _ = try storage.zadd("bigzset", &[_]f64{1.0}, &[_][]const u8{long_member}, 0, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "bigzset" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nskiplist\r\n", result);
+}
+
+test "OBJECT ENCODING - list switches to quicklist when element length exceeds threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add an element that exceeds list-max-listpack-value (64 bytes default)
+    const long_elem = "e" ** 65;
+    _ = try storage.rpush("biglist", &[_][]const u8{long_elem}, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "biglist" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nquicklist\r\n", result);
+}
+
+test "OBJECT ENCODING - set switches to hashtable when member length exceeds threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add a non-integer member that exceeds set-max-listpack-value (64 bytes default)
+    const long_member = "s" ** 65;
+    _ = try storage.sadd("bigset", &[_][]const u8{long_member}, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "bigset" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nhashtable\r\n", result);
 }
 
 test "OBJECT FREQ - returns non-negative integer for existing key" {

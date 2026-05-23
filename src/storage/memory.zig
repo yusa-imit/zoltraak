@@ -1587,6 +1587,100 @@ pub const Storage = struct {
         return self.lru_clock.getIdleTime(key) orelse 0;
     }
 
+    /// Return the maximum field name or field value byte length for a hash key.
+    /// Used by OBJECT ENCODING to determine listpack vs hashtable encoding.
+    /// Returns null if key does not exist or is not a hash.
+    pub fn getHashMaxElementLength(self: *Storage, key: []const u8) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        const hv = switch (entry.value_ptr.*) {
+            .hash => |*h| h,
+            else => return null,
+        };
+
+        var max_len: usize = 0;
+        var it = hv.data.iterator();
+        while (it.next()) |kv| {
+            if (kv.key_ptr.*.len > max_len) max_len = kv.key_ptr.*.len;
+            if (kv.value_ptr.*.data.len > max_len) max_len = kv.value_ptr.*.data.len;
+        }
+        return max_len;
+    }
+
+    /// Return the maximum member byte length for a set key (hashmap encoding only).
+    /// Used by OBJECT ENCODING to determine listpack vs hashtable encoding.
+    /// Returns null if key does not exist, is not a set, or uses intset encoding.
+    pub fn getSetMaxMemberLength(self: *Storage, key: []const u8) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        const sv = switch (entry.value_ptr.*) {
+            .set => |*s| s,
+            else => return null,
+        };
+
+        if (sv.encoding != .hashmap) return null;
+
+        var max_len: usize = 0;
+        var it = sv.data.hashmap.keyIterator();
+        while (it.next()) |member| {
+            if (member.*.len > max_len) max_len = member.*.len;
+        }
+        return max_len;
+    }
+
+    /// Return the maximum member byte length for a sorted set key.
+    /// Used by OBJECT ENCODING to determine listpack vs skiplist encoding.
+    /// Returns null if key does not exist or is not a sorted set.
+    pub fn getZsetMaxMemberLength(self: *Storage, key: []const u8) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        const zv = switch (entry.value_ptr.*) {
+            .sorted_set => |*z| z,
+            else => return null,
+        };
+
+        var max_len: usize = 0;
+        var it = zv.members.keyIterator();
+        while (it.next()) |member| {
+            if (member.*.len > max_len) max_len = member.*.len;
+        }
+        return max_len;
+    }
+
+    /// Return the maximum element byte length for a list key.
+    /// Used by OBJECT ENCODING to determine listpack vs quicklist encoding.
+    /// Returns null if key does not exist or is not a list.
+    pub fn getListMaxElementLength(self: *Storage, key: []const u8) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        const lv = switch (entry.value_ptr.*) {
+            .list => |*l| l,
+            else => return null,
+        };
+
+        var max_len: usize = 0;
+        for (lv.data.items) |elem| {
+            if (elem.len > max_len) max_len = elem.len;
+        }
+        return max_len;
+    }
+
     /// Set key to string value with optional expiration
     /// Overwrites existing value if key exists
     /// expires_at: Unix timestamp in milliseconds, null = no expiration
