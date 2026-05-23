@@ -127,14 +127,22 @@ pub const Config = struct {
             .{ .name = "activedefrag-threshold-lower", .value = .{ .int = 10 }, .read_only = false }, // min fragmentation % to start defrag
             .{ .name = "activedefrag-threshold-upper", .value = .{ .int = 100 }, .read_only = false }, // max fragmentation % for aggressive defrag
 
-            // Internal encoding optimizations
-            .{ .name = "hash-max-listpack-entries", .value = .{ .int = 512 }, .read_only = false }, // max hash entries for listpack encoding
-            .{ .name = "hash-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max hash value size (bytes) for listpack
-            .{ .name = "list-max-listpack-entries", .value = .{ .int = 512 }, .read_only = false }, // max list entries for listpack encoding
+            // Internal encoding optimizations (Redis 8.x defaults)
+            .{ .name = "hash-max-listpack-entries", .value = .{ .int = 128 }, .read_only = false }, // max hash entries for listpack encoding
+            .{ .name = "hash-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max hash field/value size (bytes) for listpack
+            .{ .name = "list-max-listpack-entries", .value = .{ .int = 128 }, .read_only = false }, // max list entries for listpack encoding
             .{ .name = "list-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max list element size (bytes) for listpack
+            .{ .name = "list-max-listpack-size", .value = .{ .int = -2 }, .read_only = false }, // max listpack node size (-2 = 8kb)
             .{ .name = "zset-max-listpack-entries", .value = .{ .int = 128 }, .read_only = false }, // max sorted set entries for listpack encoding
-            .{ .name = "zset-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max sorted set element size (bytes) for listpack
+            .{ .name = "zset-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max sorted set member size (bytes) for listpack
             .{ .name = "set-max-intset-entries", .value = .{ .int = 512 }, .read_only = false }, // max set entries for intset encoding (integer-only)
+            .{ .name = "set-max-listpack-entries", .value = .{ .int = 128 }, .read_only = false }, // max set entries for listpack encoding
+            .{ .name = "set-max-listpack-value", .value = .{ .int = 64 }, .read_only = false }, // max set member size (bytes) for listpack
+            // Deprecated ziplist aliases (kept for backward compatibility)
+            .{ .name = "hash-max-ziplist-entries", .value = .{ .int = 128 }, .read_only = false }, // alias for hash-max-listpack-entries
+            .{ .name = "hash-max-ziplist-value", .value = .{ .int = 64 }, .read_only = false }, // alias for hash-max-listpack-value
+            .{ .name = "zset-max-ziplist-entries", .value = .{ .int = 128 }, .read_only = false }, // alias for zset-max-listpack-entries
+            .{ .name = "zset-max-ziplist-value", .value = .{ .int = 64 }, .read_only = false }, // alias for zset-max-listpack-value
 
             // TLS/SSL configuration (Phase 10) - These are stored in Storage.tls_config but exposed via CONFIG GET/SET
             .{ .name = "tls-port", .value = .{ .int = 0 }, .read_only = false }, // TLS port (0 = disabled)

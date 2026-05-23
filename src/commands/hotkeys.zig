@@ -274,74 +274,61 @@ pub fn cmdHotkeysGet(allocator: std.mem.Allocator, storage: *Storage, args: []co
     //   ]]
     // ]
 
-    var w = Writer.init(allocator);
-    defer w.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
 
     // Main array with 6 elements (metadata pairs)
-    try w.writer.writeAll("*6\r\n");
+    try buf.appendSlice(allocator, "*6\r\n");
 
     // status
-    try w.writer.writeAll("*2\r\n");
-    try w.writer.writeAll("$6\r\nstatus\r\n");
+    try buf.appendSlice(allocator, "*2\r\n$6\r\nstatus\r\n");
     if (tracker.is_active) {
-        try w.writer.writeAll("$6\r\nactive\r\n");
+        try buf.appendSlice(allocator, "$6\r\nactive\r\n");
     } else {
-        try w.writer.writeAll("$7\r\nstopped\r\n");
+        try buf.appendSlice(allocator, "$7\r\nstopped\r\n");
     }
 
     // start_time_ms
-    try w.writer.writeAll("*2\r\n");
-    try w.writer.writeAll("$13\r\nstart_time_ms\r\n");
-    var time_buf: [32]u8 = undefined;
-    const time_str = try std.fmt.bufPrint(&time_buf, "{d}", .{tracker.start_time_ms});
-    try w.writer.print(":{s}\r\n", .{time_str});
+    try buf.appendSlice(allocator, "*2\r\n$13\r\nstart_time_ms\r\n");
+    const time_line = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{tracker.start_time_ms});
+    defer allocator.free(time_line);
+    try buf.appendSlice(allocator, time_line);
 
     // keys_sampled
-    try w.writer.writeAll("*2\r\n");
-    try w.writer.writeAll("$12\r\nkeys_sampled\r\n");
-    var sampled_buf: [32]u8 = undefined;
-    const sampled_str = try std.fmt.bufPrint(&sampled_buf, "{d}", .{tracker.keys_sampled});
-    try w.writer.print(":{s}\r\n", .{sampled_str});
+    try buf.appendSlice(allocator, "*2\r\n$12\r\nkeys_sampled\r\n");
+    const sampled_line = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{tracker.keys_sampled});
+    defer allocator.free(sampled_line);
+    try buf.appendSlice(allocator, sampled_line);
 
     // total_cpu_us
-    try w.writer.writeAll("*2\r\n");
-    try w.writer.writeAll("$12\r\ntotal_cpu_us\r\n");
-    var cpu_buf: [32]u8 = undefined;
-    const cpu_str = try std.fmt.bufPrint(&cpu_buf, "{d}", .{tracker.total_cpu_us});
-    try w.writer.print(":{s}\r\n", .{cpu_str});
+    try buf.appendSlice(allocator, "*2\r\n$12\r\ntotal_cpu_us\r\n");
+    const cpu_line = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{tracker.total_cpu_us});
+    defer allocator.free(cpu_line);
+    try buf.appendSlice(allocator, cpu_line);
 
     // total_net_bytes
-    try w.writer.writeAll("*2\r\n");
-    try w.writer.writeAll("$15\r\ntotal_net_bytes\r\n");
-    var net_buf: [32]u8 = undefined;
-    const net_str = try std.fmt.bufPrint(&net_buf, "{d}", .{tracker.total_net_bytes});
-    try w.writer.print(":{s}\r\n", .{net_str});
+    try buf.appendSlice(allocator, "*2\r\n$15\r\ntotal_net_bytes\r\n");
+    const net_line = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{tracker.total_net_bytes});
+    defer allocator.free(net_line);
+    try buf.appendSlice(allocator, net_line);
 
-    // top_keys array
-    try w.writer.writeAll("*2\r\n");
-    try w.writer.writeAll("$8\r\ntop_keys\r\n");
-
-    // Array of [key, count] pairs
-    var keys_count_buf: [32]u8 = undefined;
-    const keys_count_str = try std.fmt.bufPrint(&keys_count_buf, "{d}", .{top_keys.len});
-    try w.writer.print("*{s}\r\n", .{keys_count_str});
+    // top_keys: ["top_keys", [[key, count], ...]]
+    try buf.appendSlice(allocator, "*2\r\n$8\r\ntop_keys\r\n");
+    const keys_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{top_keys.len});
+    defer allocator.free(keys_header);
+    try buf.appendSlice(allocator, keys_header);
 
     for (top_keys) |item| {
-        // Each item is array: [key, count]
-        try w.writer.writeAll("*2\r\n");
-
-        // key (bulk string)
-        var key_len_buf: [32]u8 = undefined;
-        const key_len_str = try std.fmt.bufPrint(&key_len_buf, "{d}", .{item.key.len});
-        try w.writer.print("${s}\r\n{s}\r\n", .{ key_len_str, item.key });
-
-        // count (integer)
-        var count_buf: [32]u8 = undefined;
-        const count_str = try std.fmt.bufPrint(&count_buf, "{d}", .{item.count});
-        try w.writer.print(":{s}\r\n", .{count_str});
+        try buf.appendSlice(allocator, "*2\r\n");
+        const key_line = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.key.len, item.key });
+        defer allocator.free(key_line);
+        try buf.appendSlice(allocator, key_line);
+        const count_line = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{item.count});
+        defer allocator.free(count_line);
+        try buf.appendSlice(allocator, count_line);
     }
 
-    return w.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// HOTKEYS RESET - Reset tracking and release resources

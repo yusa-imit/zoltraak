@@ -639,7 +639,7 @@ pub const HotkeyTracker = struct {
     start_time_ms: i64, // Timestamp when tracking started
 
     // Phase 2: HeavyKeeper for probabilistic top-K tracking
-    heavy_keeper: *heavykeeper_mod.HeavyKeeper, // Top-K frequency tracker
+    heavy_keeper: heavykeeper_mod.HeavyKeeper, // Top-K frequency tracker
 
     // Aggregated metrics counters
     keys_sampled: u64, // Total number of key accesses sampled
@@ -664,7 +664,7 @@ pub const HotkeyTracker = struct {
 
         // Initialize HeavyKeeper for top-K tracking
         // Use width=1024, depth=4, decay=0.9 (standard parameters)
-        const heavy_keeper = try heavykeeper_mod.HeavyKeeper.init(
+        var heavy_keeper = try heavykeeper_mod.HeavyKeeper.init(
             allocator,
             config.top_k,
             1024, // width
@@ -753,9 +753,10 @@ pub const HotkeyTracker = struct {
 
     /// Get top-K hotkeys (caller owns returned slice and must free with allocator)
     /// Returns error if HeavyKeeper list() fails
-    pub fn getTopKeys(self: *HotkeyTracker, allocator: std.mem.Allocator) ![]heavykeeper_mod.TopKItem {
+    pub fn getTopKeys(self: *HotkeyTracker, allocator: std.mem.Allocator) ![]heavykeeper_mod.HeavyKeeper.HotkeyItem {
         return try self.heavy_keeper.list(allocator);
     }
+
 };
 
 /// Thread-safe in-memory storage engine with TTL support
@@ -1534,6 +1535,21 @@ pub const Storage = struct {
     }
 
     /// Get type of value stored at key, or null if key doesn't exist
+    /// Return the internal encoding of a set key: intset or hashmap.
+    /// Returns null if key doesn't exist or is not a set.
+    pub fn getSetEncoding(self: *Storage, key: []const u8) ?Value.SetEncoding {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        return switch (entry.value_ptr.*) {
+            .set => |sv| sv.encoding,
+            else => null,
+        };
+    }
+
     pub fn getType(self: *Storage, key: []const u8) ?ValueType {
         self.mutex.lock();
         defer self.mutex.unlock();
