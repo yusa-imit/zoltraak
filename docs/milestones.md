@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 280 (470+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, **XADD NOMKSTREAM + MINID stream trimming (Iteration 280)** ✅, 2/5 zuda migrations, sailor v2.10.2 migrated)
+- **Iterations complete**: 281 (470+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, **XADD NOMKSTREAM + MINID stream trimming (Iteration 280)** ✅, **BITCOUNT BIT mode Redis 7.0 (Iteration 281)** ✅, 2/5 zuda migrations, sailor v2.10.2 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Post-Phase-18 Redis compatibility enhancements — XADD NOMKSTREAM + stream MINID trimming (Iteration 280) complete ✅
-- **Next milestone**: Iteration 281 (additional Redis compatibility fixes)
+- **Current phase**: Post-Phase-18 Redis compatibility enhancements — BITCOUNT BIT mode (Iteration 281) complete ✅
+- **Next milestone**: Iteration 282 (additional Redis compatibility fixes)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -18,6 +18,13 @@
 ---
 
 ## Active Milestones
+
+### Post-Phase-18 — Redis Compatibility Enhancements
+
+| Iteration | Feature | Status |
+|-----------|---------|--------|
+| 280 | XADD NOMKSTREAM + XTRIM MINID (Redis 7.x stream compatibility) | Done ✅ |
+| 281 | BITCOUNT BIT mode — `BITCOUNT key [start end [BYTE \| BIT]]` (Redis 7.0 range unit) | Done ✅ |
 
 ### Phase 12 — JSON Data Type (100% complete) ✅
 

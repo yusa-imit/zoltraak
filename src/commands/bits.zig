@@ -107,7 +107,7 @@ pub fn cmdGetbit(
     try RespWriter.writeInteger(writer, bit);
 }
 
-/// BITCOUNT key [start end]
+/// BITCOUNT key [start end [BYTE | BIT]]
 /// Count the number of set bits (population counting) in a string
 pub fn cmdBitcount(
     storage: *Storage,
@@ -115,28 +115,35 @@ pub fn cmdBitcount(
     writer: anytype,
     _: std.mem.Allocator,
 ) !void {
-    if (args.len != 2 and args.len != 4) {
+    if (args.len != 2 and args.len != 4 and args.len != 5) {
         try RespWriter.writeError(writer, "ERR wrong number of arguments for 'bitcount' command");
         return;
     }
 
     const key = args[1];
 
-    const start: ?i64 = if (args.len == 4) blk: {
+    const start: ?i64 = if (args.len >= 4) blk: {
         break :blk std.fmt.parseInt(i64, args[2], 10) catch {
             try RespWriter.writeError(writer, "ERR value is not an integer or out of range");
             return;
         };
     } else null;
 
-    const end: ?i64 = if (args.len == 4) blk: {
+    const end: ?i64 = if (args.len >= 4) blk: {
         break :blk std.fmt.parseInt(i64, args[3], 10) catch {
             try RespWriter.writeError(writer, "ERR value is not an integer or out of range");
             return;
         };
     } else null;
 
-    const count = storage.bitcount(key, start, end) catch |err| switch (err) {
+    const unit: memory.RangeUnit = if (args.len == 5) blk: {
+        if (std.ascii.eqlIgnoreCase(args[4], "BYTE")) break :blk .byte;
+        if (std.ascii.eqlIgnoreCase(args[4], "BIT")) break :blk .bit;
+        try RespWriter.writeError(writer, "ERR syntax error");
+        return;
+    } else .byte;
+
+    const count = storage.bitcount(key, start, end, unit) catch |err| switch (err) {
         error.WrongType => {
             try RespWriter.writeError(writer, "WRONGTYPE Operation against a key holding the wrong kind of value");
             return;

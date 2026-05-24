@@ -5693,7 +5693,8 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len != 2 and args.len != 4) {
+    // Valid forms: BITCOUNT key / BITCOUNT key start end / BITCOUNT key start end BYTE|BIT
+    if (args.len != 2 and args.len != 4 and args.len != 5) {
         return w.writeError("ERR wrong number of arguments for 'bitcount' command");
     }
 
@@ -5702,7 +5703,7 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         else => return w.writeError("ERR invalid key"),
     };
 
-    const start: ?i64 = if (args.len == 4) blk: {
+    const start: ?i64 = if (args.len >= 4) blk: {
         const start_str = switch (args[2]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR value is not an integer or out of range"),
@@ -5712,7 +5713,7 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         };
     } else null;
 
-    const end: ?i64 = if (args.len == 4) blk: {
+    const end: ?i64 = if (args.len >= 4) blk: {
         const end_str = switch (args[3]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR value is not an integer or out of range"),
@@ -5722,7 +5723,22 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         };
     } else null;
 
-    const count = storage.bitcount(key, start, end) catch |err| {
+    // Parse optional BYTE|BIT unit (Redis 7.0+)
+    const unit: storage_mod.RangeUnit = if (args.len == 5) blk: {
+        const unit_str = switch (args[4]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+        if (std.ascii.eqlIgnoreCase(unit_str, "BYTE")) {
+            break :blk .byte;
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "BIT")) {
+            break :blk .bit;
+        } else {
+            return w.writeError("ERR syntax error");
+        }
+    } else .byte;
+
+    const count = storage.bitcount(key, start, end, unit) catch |err| {
         if (err == error.WrongType) {
             return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
         }
@@ -6880,5 +6896,220 @@ test "commands - SUBSTR wrong number of arguments" {
     const result = try cmdSubstr(allocator, storage, &args);
     defer allocator.free(result);
 
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR wrong number of arguments") != null);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BITCOUNT BIT mode tests (Redis 7.0 — Iteration 281)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test "BITCOUNT - non-existent key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "BITCOUNT - full string popcount" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // 0xFF has 8 set bits
+    try storage.set("k", "\xFF", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":8\r\n", result);
+}
+
+test "BITCOUNT BYTE mode - byte range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // "\xFF\x00": byte 0 = 8 bits, byte 1 = 0 bits
+    try storage.set("k", "\xFF\x00", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "BYTE" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":8\r\n", result);
+}
+
+test "BITCOUNT BIT mode - bit range equals byte range for full byte" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // "\xFF": bits 0-7 should equal byte 0 BYTE mode
+    try storage.set("k", "\xFF", null);
+
+    // BYTE mode: BITCOUNT k 0 0 BYTE
+    const byte_args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "BYTE" },
+    };
+    const byte_result = try cmdBitcount(allocator, storage, &byte_args);
+    defer allocator.free(byte_result);
+
+    // BIT mode: BITCOUNT k 0 7 BIT (same 8 bits)
+    const bit_args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "7" },
+        RespValue{ .bulk_string = "BIT" },
+    };
+    const bit_result = try cmdBitcount(allocator, storage, &bit_args);
+    defer allocator.free(bit_result);
+
+    try std.testing.expectEqualStrings(":8\r\n", byte_result);
+    try std.testing.expectEqualStrings(":8\r\n", bit_result);
+}
+
+test "BITCOUNT BIT mode - single bit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // 0x80 = 1000 0000: only bit 0 (MSB) is set
+    try storage.set("k", "\x80", null);
+
+    // BITCOUNT k 0 0 BIT — only bit 0, which is set → 1
+    const args_set = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "BIT" },
+    };
+    const r_set = try cmdBitcount(allocator, storage, &args_set);
+    defer allocator.free(r_set);
+    try std.testing.expectEqualStrings(":1\r\n", r_set);
+
+    // BITCOUNT k 1 7 BIT — bits 1-7 of 0x80 are all 0 → 0
+    const args_clear = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "7" },
+        RespValue{ .bulk_string = "BIT" },
+    };
+    const r_clear = try cmdBitcount(allocator, storage, &args_clear);
+    defer allocator.free(r_clear);
+    try std.testing.expectEqualStrings(":0\r\n", r_clear);
+}
+
+test "BITCOUNT BIT mode - negative indices" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // "\xF0" = 1111 0000, 8 bits; bit -1 is bit 7 (last bit), which is 0
+    try storage.set("k", "\xF0", null);
+
+    // BITCOUNT k -4 -1 BIT — bits 4-7 (last 4 bits) of 0xF0 are 0 → 0
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "-4" },
+        RespValue{ .bulk_string = "-1" },
+        RespValue{ .bulk_string = "BIT" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "BITCOUNT BIT mode - cross-byte range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // "\xFF\xFF" = all bits set, 16 bits total
+    try storage.set("k", "\xFF\xFF", null);
+
+    // BITCOUNT k 4 11 BIT — bits 4-11 (8 bits, all set) → 8
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "4" },
+        RespValue{ .bulk_string = "11" },
+        RespValue{ .bulk_string = "BIT" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":8\r\n", result);
+}
+
+test "BITCOUNT - WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.lpush("mylist", &[_][]const u8{"value"});
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "mylist" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "WRONGTYPE") != null);
+}
+
+test "BITCOUNT - invalid unit string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("k", "hello", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "INVALID" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR syntax error") != null);
+}
+
+test "BITCOUNT - wrong argument count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // 3 args: BITCOUNT key start (end missing)
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITCOUNT" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdBitcount(allocator, storage, &args);
+    defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR wrong number of arguments") != null);
 }

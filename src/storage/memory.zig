@@ -8416,11 +8416,13 @@ pub const Storage = struct {
     }
 
     /// Count set bits (population count) in string
+    /// unit: RangeUnit.byte (default) or RangeUnit.bit (Redis 7.0+)
     pub fn bitcount(
         self: *Storage,
         key: []const u8,
         start: ?i64,
         end: ?i64,
+        unit: RangeUnit,
     ) error{WrongType}!i64 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -8434,23 +8436,62 @@ pub const Storage = struct {
                 .string => |sv| {
                     if (sv.data.len == 0) return 0;
 
-                    const len: i64 = @intCast(sv.data.len);
-                    const start_idx = if (start) |s| blk: {
-                        const idx = if (s < 0) len + s else s;
-                        break :blk @max(0, @min(idx, len - 1));
-                    } else 0;
-                    const end_idx = if (end) |e| blk: {
-                        const idx = if (e < 0) len + e else e;
-                        break :blk @max(0, @min(idx, len - 1));
-                    } else len - 1;
+                    const bit_len: i64 = @intCast(sv.data.len * 8);
+                    const byte_len: i64 = @intCast(sv.data.len);
 
-                    if (start_idx > end_idx) return 0;
+                    // Compute start/end as bit indices
+                    const start_bit: i64 = if (unit == .bit) blk: {
+                        if (start) |s| {
+                            const s_norm = if (s < 0) bit_len + s else s;
+                            break :blk @max(0, @min(s_norm, bit_len - 1));
+                        }
+                        break :blk 0;
+                    } else blk: {
+                        // BYTE mode: start is a byte index
+                        if (start) |s| {
+                            const s_norm = if (s < 0) byte_len + s else s;
+                            break :blk @max(0, @min(s_norm, byte_len - 1)) * 8;
+                        }
+                        break :blk 0;
+                    };
+
+                    const end_bit: i64 = if (unit == .bit) blk: {
+                        if (end) |e| {
+                            const e_norm = if (e < 0) bit_len + e else e;
+                            break :blk @max(0, @min(e_norm, bit_len - 1));
+                        }
+                        break :blk bit_len - 1;
+                    } else blk: {
+                        // BYTE mode: end is a byte index (inclusive)
+                        if (end) |e| {
+                            const e_norm = if (e < 0) byte_len + e else e;
+                            break :blk (@max(0, @min(e_norm, byte_len - 1)) + 1) * 8 - 1;
+                        }
+                        break :blk bit_len - 1;
+                    };
+
+                    if (start_bit > end_bit) return 0;
 
                     var count: i64 = 0;
-                    const start_u: usize = @intCast(start_idx);
-                    const end_u: usize = @intCast(end_idx);
-                    for (sv.data[start_u .. end_u + 1]) |byte| {
-                        count += @popCount(byte);
+
+                    if (unit == .byte) {
+                        // BYTE mode: start/end are byte-aligned — use fast @popCount path
+                        const start_byte: usize = @intCast(start_bit / 8);
+                        const end_byte: usize = @intCast(end_bit / 8);
+                        for (sv.data[start_byte .. end_byte + 1]) |b| {
+                            count += @popCount(b);
+                        }
+                    } else {
+                        // BIT mode: count set bits one at a time (MSB-first ordering)
+                        const start_u: usize = @intCast(start_bit);
+                        const end_u: usize = @intCast(end_bit);
+                        var bit_pos: usize = start_u;
+                        while (bit_pos <= end_u) : (bit_pos += 1) {
+                            const byte_idx = bit_pos / 8;
+                            const bit_offset: u3 = @intCast(bit_pos % 8);
+                            const current_bit: u1 = @intCast((sv.data[byte_idx] >> (7 - bit_offset)) & 1);
+                            count += current_bit;
+                        }
                     }
                     return count;
                 },
@@ -13451,4 +13492,122 @@ test "storage - xtrimByMaxlen with LIMIT respects deletion limit" {
     // Verify remaining count: 3
     const len = try storage.xlen("s");
     try std.testing.expectEqual(@as(?usize, 3), len);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bitcount BIT mode tests (Iteration 281 — Redis 7.0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test "storage - bitcount BYTE mode full string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k", "\xFF\x00", null);
+    // All bits in 0xFF = 8, all bits in 0x00 = 0 → total 8
+    const total = try storage.bitcount("k", null, null, .byte);
+    try std.testing.expectEqual(@as(i64, 8), total);
+}
+
+test "storage - bitcount BYTE mode range" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k", "\xFF\x00", null);
+    // Only byte 0 → 8 bits
+    const byte0 = try storage.bitcount("k", 0, 0, .byte);
+    try std.testing.expectEqual(@as(i64, 8), byte0);
+
+    // Only byte 1 → 0 bits
+    const byte1 = try storage.bitcount("k", 1, 1, .byte);
+    try std.testing.expectEqual(@as(i64, 0), byte1);
+}
+
+test "storage - bitcount BIT mode full byte" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k", "\xFF", null);
+    // BIT mode bits 0-7 = all 8 bits of 0xFF
+    const all = try storage.bitcount("k", 0, 7, .bit);
+    try std.testing.expectEqual(@as(i64, 8), all);
+}
+
+test "storage - bitcount BIT mode single bit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // 0x80 = 10000000: MSB set, rest clear
+    try storage.set("k", "\x80", null);
+
+    // Bit 0 (MSB) → 1
+    const msb = try storage.bitcount("k", 0, 0, .bit);
+    try std.testing.expectEqual(@as(i64, 1), msb);
+
+    // Bits 1-7 → 0
+    const rest = try storage.bitcount("k", 1, 7, .bit);
+    try std.testing.expectEqual(@as(i64, 0), rest);
+}
+
+test "storage - bitcount BIT mode cross-byte" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // "\xFF\xFF": all 16 bits set
+    try storage.set("k", "\xFF\xFF", null);
+
+    // Bits 4-11 (8 bits spanning both bytes, all set) → 8
+    const cross = try storage.bitcount("k", 4, 11, .bit);
+    try std.testing.expectEqual(@as(i64, 8), cross);
+}
+
+test "storage - bitcount BIT mode negative indices" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // 0xF0 = 11110000: bits 0-3 set, bits 4-7 clear
+    try storage.set("k", "\xF0", null);
+
+    // Bits -4 to -1 (bits 4-7, the clear bits) → 0
+    const clear_bits = try storage.bitcount("k", -4, -1, .bit);
+    try std.testing.expectEqual(@as(i64, 0), clear_bits);
+
+    // Bits -8 to -5 (bits 0-3, the set bits) → 4
+    const set_bits = try storage.bitcount("k", -8, -5, .bit);
+    try std.testing.expectEqual(@as(i64, 4), set_bits);
+}
+
+test "storage - bitcount BIT mode empty range returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k", "\xFF", null);
+    // start > end after normalization → 0
+    const empty = try storage.bitcount("k", 5, 3, .bit);
+    try std.testing.expectEqual(@as(i64, 0), empty);
+}
+
+test "storage - bitcount non-existent key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try storage.bitcount("nosuchkey", null, null, .byte);
+    try std.testing.expectEqual(@as(i64, 0), result);
+}
+
+test "storage - bitcount WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.lpush("mylist", &[_][]const u8{"value"});
+    const result = storage.bitcount("mylist", null, null, .byte);
+    try std.testing.expectError(error.WrongType, result);
 }
