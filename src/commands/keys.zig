@@ -1636,6 +1636,8 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             "    Return the idle time of the key <key>.",
             "REFCOUNT <key>",
             "    Return the reference count of the object stored at <key>.",
+            "VERSION <key>",
+            "    Return the number of times the value stored at <key> has been modified.",
         };
         var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, help_items.len);
         defer resp_values.deinit(allocator);
@@ -1776,6 +1778,11 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         };
         // Redis returns a bulk string for OBJECT ENCODING (not a simple string)
         return w.writeBulkString(encoding);
+    } else if (std.mem.eql(u8, sub_upper, "VERSION")) {
+        const version = storage.getKeyVersion(key) orelse {
+            return w.writeError("ERR no such key");
+        };
+        return w.writeInteger(@intCast(version));
     } else {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ERR unknown subcommand or wrong number of arguments for '{s}' command", .{subcommand}) catch "ERR unknown subcommand";
@@ -2561,4 +2568,170 @@ test "OBJECT IDLETIME - returns error for non-existing key" {
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+// ── OBJECT VERSION tests ──────────────────────────────────────────────────────
+
+test "OBJECT VERSION - returns 1 after first SET" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "VERSION" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+}
+
+test "OBJECT VERSION - increments on repeated writes" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("counter", "v1", null);
+    try storage.set("counter", "v2", null);
+    try storage.set("counter", "v3", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "VERSION" },
+        .{ .bulk_string = "counter" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":3\r\n", result);
+}
+
+test "OBJECT VERSION - returns error for non-existing key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "VERSION" },
+        .{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "OBJECT VERSION - version removed on DEL" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("delkey", "hello", null);
+    try storage.set("delkey", "world", null);
+
+    // Confirm version is 2
+    {
+        const args = [_]RespValue{
+            .{ .bulk_string = "OBJECT" },
+            .{ .bulk_string = "VERSION" },
+            .{ .bulk_string = "delkey" },
+        };
+        const result = try cmdObject(allocator, &storage, &args);
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings(":2\r\n", result);
+    }
+
+    // Delete the key
+    const keys = [_][]const u8{"delkey"};
+    _ = storage.del(&keys);
+
+    // Version should now be gone (error for non-existing key)
+    {
+        const args = [_]RespValue{
+            .{ .bulk_string = "OBJECT" },
+            .{ .bulk_string = "VERSION" },
+            .{ .bulk_string = "delkey" },
+        };
+        const result = try cmdObject(allocator, &storage, &args);
+        defer allocator.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    }
+}
+
+test "OBJECT VERSION - tracks HSET modifications" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "f1", "f2" };
+    const values = [_][]const u8{ "v1", "v2" };
+    _ = try storage.hset("myhash", &fields, &values, null);
+    _ = try storage.hset("myhash", &fields, &values, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "VERSION" },
+        .{ .bulk_string = "myhash" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "OBJECT VERSION - tracks LPUSH modifications" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const elems1 = [_][]const u8{"a"};
+    const elems2 = [_][]const u8{"b"};
+    _ = try storage.lpush("mylist", &elems1, null);
+    _ = try storage.lpush("mylist", &elems2, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "VERSION" },
+        .{ .bulk_string = "mylist" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "OBJECT VERSION - tracks ZADD modifications" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const scores = [_]f64{1.0};
+    const members = [_][]const u8{"member1"};
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "VERSION" },
+        .{ .bulk_string = "myzset" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    // Second ZADD with same member and score still bumps version
+    try std.testing.expect(std.mem.startsWith(u8, result, ":"));
+}
+
+test "OBJECT VERSION - HELP includes VERSION" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "HELP" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    // HELP returns an array containing "VERSION <key>" entry
+    try std.testing.expect(std.mem.indexOf(u8, result, "VERSION") != null);
 }

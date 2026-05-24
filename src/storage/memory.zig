@@ -790,6 +790,7 @@ pub const Storage = struct {
     module_store: ModuleStore, // Dynamically loaded modules (Phase 17)
     pubsub_state: ?*pubsub_mod.PubSub, // Optional pubsub state for firing notifications (set by server after init)
     hotkey_tracker: ?*HotkeyTracker, // Optional hotkeys tracking state (Phase 1)
+    key_versions: std.StringHashMap(u64), // Per-key modification counters (OBJECT VERSION, Redis 7.4)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -903,6 +904,7 @@ pub const Storage = struct {
             .module_store = try ModuleStore.init(allocator),
             .pubsub_state = null, // Will be set by server after init
             .hotkey_tracker = null, // Will be created on HOTKEYS START
+            .key_versions = std.StringHashMap(u64).init(allocator),
         };
 
         // Start background lazy free thread
@@ -1064,6 +1066,13 @@ pub const Storage = struct {
         if (self.hotkey_tracker) |tracker| {
             tracker.deinit();
         }
+
+        // Free key version counters
+        var kv_it = self.key_versions.iterator();
+        while (kv_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.key_versions.deinit();
 
         self.config.deinit();
 
@@ -1681,6 +1690,44 @@ pub const Storage = struct {
         return max_len;
     }
 
+    /// Return the modification version counter for a key (OBJECT VERSION).
+    /// Starts at 1 on first write, increments on each subsequent write.
+    /// Returns null if key does not exist or version is not tracked.
+    pub fn getKeyVersion(self: *Storage, key: []const u8) ?u64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.data.get(key) == null) return null;
+        return self.key_versions.get(key);
+    }
+
+    /// Increment the modification counter for a key.
+    /// Creates the counter starting at 1 if this is the first tracked write.
+    /// Caller must NOT hold self.mutex (this method acquires it internally through the call path).
+    /// This method is called while mutex is already held by the public write methods.
+    fn bumpKeyVersionLocked(self: *Storage, key: []const u8) void {
+        const gop = self.key_versions.getOrPut(key) catch return;
+        if (gop.found_existing) {
+            gop.value_ptr.* +%= 1; // wrapping add to avoid overflow
+        } else {
+            // New entry: duplicate key string for ownership
+            const owned_key = self.allocator.dupe(u8, key) catch {
+                // On OOM, remove the half-inserted entry
+                _ = self.key_versions.remove(key);
+                return;
+            };
+            gop.key_ptr.* = owned_key;
+            gop.value_ptr.* = 1;
+        }
+    }
+
+    /// Remove the version counter for a key (called on deletion).
+    /// Caller must hold self.mutex.
+    fn removeKeyVersionLocked(self: *Storage, key: []const u8) void {
+        if (self.key_versions.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+        }
+    }
+
     /// Set key to string value with optional expiration
     /// Overwrites existing value if key exists
     /// expires_at: Unix timestamp in milliseconds, null = no expiration
@@ -1712,6 +1759,7 @@ pub const Storage = struct {
 
             try self.data.put(owned_key, new_value);
         }
+        self.bumpKeyVersionLocked(key);
     }
 
     /// Atomically set multiple keys with optional shared expiration
@@ -1814,6 +1862,7 @@ pub const Storage = struct {
 
                 try self.data.put(owned_key, new_value);
             }
+            self.bumpKeyVersionLocked(key);
         }
 
         return true;
@@ -1871,6 +1920,7 @@ pub const Storage = struct {
         for (keys) |key| {
             if (self.data.fetchRemove(key)) |kv| {
                 self.cleanupLfuTracking(kv.key);
+                self.removeKeyVersionLocked(kv.key);
                 self.allocator.free(kv.key);
                 var value = kv.value;
                 value.deinit(self.allocator);
@@ -2000,6 +2050,7 @@ pub const Storage = struct {
                         errdefer self.allocator.free(owned_elem);
                         try list_val.data.insert(self.allocator, 0, owned_elem);
                     }
+                    self.bumpKeyVersionLocked(key);
                     return list_val.data.items.len;
                 },
                 else => return error.WrongType,
@@ -2036,6 +2087,7 @@ pub const Storage = struct {
                 },
             });
 
+            self.bumpKeyVersionLocked(key);
             return list.items.len;
         }
     }
@@ -2057,6 +2109,7 @@ pub const Storage = struct {
                         errdefer self.allocator.free(owned_elem);
                         try list_val.data.append(self.allocator, owned_elem);
                     }
+                    self.bumpKeyVersionLocked(key);
                     return list_val.data.items.len;
                 },
                 else => return error.WrongType,
@@ -2091,6 +2144,7 @@ pub const Storage = struct {
                 },
             });
 
+            self.bumpKeyVersionLocked(key);
             return list.items.len;
         }
     }
@@ -3123,6 +3177,7 @@ pub const Storage = struct {
                             });
                         }
                     }
+                    self.bumpKeyVersionLocked(key);
                     return added_count;
                 },
                 else => return error.WrongType,
@@ -3165,6 +3220,7 @@ pub const Storage = struct {
                 },
             });
 
+            self.bumpKeyVersionLocked(key);
             return added_count;
         }
     }
@@ -3543,6 +3599,7 @@ pub const Storage = struct {
                             changed_count += 1;
                         }
                     }
+                    self.bumpKeyVersionLocked(key);
                     return .{ .added = added_count, .changed = changed_count };
                 },
                 else => return error.WrongType,
@@ -3600,6 +3657,7 @@ pub const Storage = struct {
                 },
             });
 
+            self.bumpKeyVersionLocked(key);
             return .{ .added = added_count, .changed = changed_count };
         }
     }
