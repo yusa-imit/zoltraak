@@ -29,15 +29,15 @@ fn notifyStreamEvent(
     notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
 }
 
-/// XADD key <ID | *> field value [field value ...]
-/// Appends a new entry to a stream.
+/// XADD key [NOMKSTREAM] [MAXLEN|MINID [=|~] threshold [LIMIT count]] *|id field value [field value ...]
+/// Appends a new entry to a stream with optional trimming.
 /// ID can be "*" for auto-generation or explicit "ms-seq" format.
-/// Returns the ID of the added entry.
+/// Returns the ID of the added entry or nil if NOMKSTREAM and stream doesn't exist.
 pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len < 4 or (args.len - 3) % 2 != 0) {
+    if (args.len < 4) {
         return w.writeError("ERR wrong number of arguments for 'xadd' command");
     }
 
@@ -46,37 +46,183 @@ pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         else => return w.writeError("ERR invalid key"),
     };
 
-    const id_str = switch (args[2]) {
-        .bulk_string => |s| s,
-        else => return w.writeError("ERR invalid ID"),
-    };
+    // Parse options and find where the ID starts
+    var opts = storage_mod.XAddOptions{};
+    var idx: usize = 2;
 
-    // Extract field-value pairs
-    const num_fields = args.len - 3;
-    var fields = try std.ArrayList([]const u8).initCapacity(allocator, num_fields);
+    while (idx < args.len) {
+        const arg = switch (args[idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        if (std.ascii.eqlIgnoreCase(arg, "NOMKSTREAM")) {
+            opts.nomkstream = true;
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "MAXLEN")) {
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+
+            // Check for ~ or =
+            const threshold_arg = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+
+            const maxlen_str = if (std.mem.eql(u8, threshold_arg, "~")) blk: {
+                opts.approx = true;
+                idx += 1;
+                if (idx >= args.len) return w.writeError("ERR syntax error");
+                break :blk switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+            } else if (std.mem.eql(u8, threshold_arg, "=")) blk: {
+                idx += 1;
+                if (idx >= args.len) return w.writeError("ERR syntax error");
+                break :blk switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+            } else threshold_arg;
+
+            opts.maxlen = std.fmt.parseInt(usize, maxlen_str, 10) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            idx += 1;
+
+            // Check for LIMIT
+            if (idx < args.len) {
+                const next_arg = switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+                if (std.ascii.eqlIgnoreCase(next_arg, "LIMIT")) {
+                    idx += 1;
+                    if (idx >= args.len) return w.writeError("ERR syntax error");
+                    const limit_str = switch (args[idx]) {
+                        .bulk_string => |s| s,
+                        else => return w.writeError("ERR syntax error"),
+                    };
+                    opts.limit = std.fmt.parseInt(usize, limit_str, 10) catch {
+                        return w.writeError("ERR value is not an integer or out of range");
+                    };
+                    idx += 1;
+                }
+            }
+        } else if (std.ascii.eqlIgnoreCase(arg, "MINID")) {
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+
+            // Check for ~ or =
+            const threshold_arg = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+
+            const minid_str = if (std.mem.eql(u8, threshold_arg, "~")) blk: {
+                opts.approx = true;
+                idx += 1;
+                if (idx >= args.len) return w.writeError("ERR syntax error");
+                break :blk switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+            } else if (std.mem.eql(u8, threshold_arg, "=")) blk: {
+                idx += 1;
+                if (idx >= args.len) return w.writeError("ERR syntax error");
+                break :blk switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+            } else threshold_arg;
+
+            opts.minid_str = try allocator.dupe(u8, minid_str);
+            idx += 1;
+
+            // Check for LIMIT
+            if (idx < args.len) {
+                const next_arg = switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+                if (std.ascii.eqlIgnoreCase(next_arg, "LIMIT")) {
+                    idx += 1;
+                    if (idx >= args.len) return w.writeError("ERR syntax error");
+                    const limit_str = switch (args[idx]) {
+                        .bulk_string => |s| s,
+                        else => return w.writeError("ERR syntax error"),
+                    };
+                    opts.limit = std.fmt.parseInt(usize, limit_str, 10) catch {
+                        return w.writeError("ERR value is not an integer or out of range");
+                    };
+                    idx += 1;
+                }
+            }
+        } else {
+            // Not an option, must be ID
+            break;
+        }
+    }
+
+    // Now idx should point to the ID
+    if (idx >= args.len) {
+        if (opts.minid_str) |m| allocator.free(m);
+        return w.writeError("ERR syntax error");
+    }
+
+    const id_str = switch (args[idx]) {
+        .bulk_string => |s| s,
+        else => {
+            if (opts.minid_str) |m| allocator.free(m);
+            return w.writeError("ERR invalid ID");
+        },
+    };
+    idx += 1;
+
+    // Remaining args should be field-value pairs
+    if ((args.len - idx) % 2 != 0) {
+        if (opts.minid_str) |m| allocator.free(m);
+        return w.writeError("ERR wrong number of arguments for 'xadd' command");
+    }
+
+    var fields = try std.ArrayList([]const u8).initCapacity(allocator, args.len - idx);
     defer fields.deinit(allocator);
 
-    for (args[3..]) |arg| {
+    for (args[idx..]) |arg| {
         const field = switch (arg) {
             .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid field or value"),
+            else => {
+                if (opts.minid_str) |m| allocator.free(m);
+                return w.writeError("ERR invalid field or value");
+            },
         };
         try fields.append(allocator, field);
     }
 
     // Execute XADD
-    const id = storage.xadd(key, id_str, fields.items, null) catch |err| switch (err) {
-        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
-        error.InvalidStreamId => return w.writeError("ERR Invalid stream ID specified as stream command argument"),
-        error.StreamIdTooSmall => return w.writeError("ERR The ID specified in XADD is equal or smaller than the target stream top item"),
-        else => return err,
+    const id = storage.xadd(key, id_str, fields.items, null, opts) catch |err| {
+        if (opts.minid_str) |m| allocator.free(m);
+        return switch (err) {
+            error.WrongType => w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            error.InvalidStreamId => w.writeError("ERR Invalid stream ID specified as stream command argument"),
+            error.StreamIdTooSmall => w.writeError("ERR The ID specified in XADD is equal or smaller than the target stream top item"),
+            else => err,
+        };
     };
+
+    if (opts.minid_str) |m| allocator.free(m);
+
+    // Return nil if NOMKSTREAM and stream didn't exist
+    if (id == null) {
+        return w.writeNull();
+    }
 
     // Publish notification
     notifyStreamEvent(allocator, storage, ps, db_index, key, "xadd");
 
     // Format ID as bulk string
-    const id_formatted = try id.format(allocator);
+    const id_formatted = try id.?.format(allocator);
     defer allocator.free(id_formatted);
 
     return w.writeBulkString(id_formatted);
@@ -350,8 +496,8 @@ pub fn cmdXdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     return w.writeInteger(@intCast(deleted));
 }
 
-/// XTRIM key MAXLEN [~] count
-/// Trims the stream to approximately the specified length.
+/// XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]
+/// Trims the stream by length (MAXLEN) or by removing old entries (MINID).
 /// Returns number of entries deleted.
 pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
@@ -371,42 +517,128 @@ pub fn cmdXtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         else => return w.writeError("ERR syntax error"),
     };
 
-    if (!std.ascii.eqlIgnoreCase(strategy, "MAXLEN")) {
-        return w.writeError("ERR syntax error");
-    }
-
-    // Parse optional ~ (approximate) and maxlen value
     var idx: usize = 3;
-    const maxlen_arg = switch (args[idx]) {
-        .bulk_string => |s| s,
-        else => return w.writeError("ERR syntax error"),
-    };
+    var limit: ?usize = null;
 
-    // Skip ~ if present (we always trim exactly anyway)
-    const maxlen_str = if (std.mem.eql(u8, maxlen_arg, "~")) blk: {
-        idx += 1;
-        if (idx >= args.len) return w.writeError("ERR syntax error");
-        break :blk switch (args[idx]) {
+    if (std.ascii.eqlIgnoreCase(strategy, "MAXLEN")) {
+        // Parse optional ~ (approximate) and maxlen value
+        const maxlen_arg = switch (args[idx]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR syntax error"),
         };
-    } else maxlen_arg;
 
-    const maxlen = std.fmt.parseInt(usize, maxlen_str, 10) catch {
-        return w.writeError("ERR value is not an integer or out of range");
-    };
+        // Skip ~ or = if present
+        const maxlen_str = if (std.mem.eql(u8, maxlen_arg, "~")) blk: {
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+            break :blk switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, maxlen_arg, "=")) blk: {
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+            break :blk switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else maxlen_arg;
 
-    const deleted = storage.xtrim(key, maxlen) catch |err| switch (err) {
-        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
-        else => return err,
-    };
+        const maxlen = std.fmt.parseInt(usize, maxlen_str, 10) catch {
+            return w.writeError("ERR value is not an integer or out of range");
+        };
+        idx += 1;
 
-    // Publish notification if entries were trimmed (NEVER fire "del" for streams)
-    if (deleted > 0) {
-        notifyStreamEvent(allocator, storage, ps, db_index, key, "xtrim");
+        // Check for LIMIT
+        if (idx < args.len) {
+            const next_arg = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            if (std.ascii.eqlIgnoreCase(next_arg, "LIMIT")) {
+                idx += 1;
+                if (idx >= args.len) return w.writeError("ERR syntax error");
+                const limit_str = switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+                limit = std.fmt.parseInt(usize, limit_str, 10) catch {
+                    return w.writeError("ERR value is not an integer or out of range");
+                };
+            }
+        }
+
+        const deleted = storage.xtrimMaxlen(key, maxlen, limit) catch |err| switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
+        };
+
+        // Publish notification if entries were trimmed
+        if (deleted > 0) {
+            notifyStreamEvent(allocator, storage, ps, db_index, key, "xtrim");
+        }
+
+        return w.writeInteger(@intCast(deleted));
+    } else if (std.ascii.eqlIgnoreCase(strategy, "MINID")) {
+        // Parse optional ~ or = and minid value
+        const minid_arg = switch (args[idx]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR syntax error"),
+        };
+
+        // Skip ~ or = if present
+        const minid_str = if (std.mem.eql(u8, minid_arg, "~")) blk: {
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+            break :blk switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else if (std.mem.eql(u8, minid_arg, "=")) blk: {
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+            break :blk switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+        } else minid_arg;
+
+        idx += 1;
+
+        // Check for LIMIT
+        if (idx < args.len) {
+            const next_arg = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            if (std.ascii.eqlIgnoreCase(next_arg, "LIMIT")) {
+                idx += 1;
+                if (idx >= args.len) return w.writeError("ERR syntax error");
+                const limit_str = switch (args[idx]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR syntax error"),
+                };
+                limit = std.fmt.parseInt(usize, limit_str, 10) catch {
+                    return w.writeError("ERR value is not an integer or out of range");
+                };
+            }
+        }
+
+        const deleted = storage.xtrimMinid(key, minid_str, limit) catch |err| switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            error.InvalidStreamId => return w.writeError("ERR Invalid stream ID specified as stream command argument"),
+            else => return err,
+        };
+
+        // Publish notification if entries were trimmed
+        if (deleted > 0) {
+            notifyStreamEvent(allocator, storage, ps, db_index, key, "xtrim");
+        }
+
+        return w.writeInteger(@intCast(deleted));
+    } else {
+        return w.writeError("ERR syntax error");
     }
-
-    return w.writeInteger(@intCast(deleted));
 }
 
 /// XSETID key <ID | $> [ENTRIESADDED entries-added] [MAXDELETEDID max-deleted-id]
@@ -1592,4 +1824,297 @@ test "streams - XCFGSET no parameters" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR") != null);
+}
+
+test "streams - XADD NOMKSTREAM returns nil when stream doesn't exist" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Try to add to non-existent stream with NOMKSTREAM
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "nonexistent" },
+        RespValue{ .bulk_string = "NOMKSTREAM" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const result = try cmdXadd(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return nil (null bulk string)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$-1") != null);
+}
+
+test "streams - XADD NOMKSTREAM adds to existing stream" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream first
+    const create_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    _ = try cmdXadd(allocator, storage, &create_args);
+
+    // Add with NOMKSTREAM to existing stream
+    const add_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "NOMKSTREAM" },
+        RespValue{ .bulk_string = "2000-0" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdXadd(allocator, storage, &add_args);
+    defer allocator.free(result);
+
+    // Should return ID (not nil)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "2000-0") != null);
+}
+
+test "streams - XADD MAXLEN trims stream after adding" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entries without MAXLEN
+    var i: u32 = 1000;
+    while (i < 1005) : (i += 1) {
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = "XADD" },
+            RespValue{ .bulk_string = "s" },
+            try std.fmt.allocPrint(allocator, "{d}-0", .{i}),
+            RespValue{ .bulk_string = "x" },
+            RespValue{ .bulk_string = "y" },
+        };
+        _ = try cmdXadd(allocator, storage, &args);
+    }
+
+    // Now add with MAXLEN=3 (should trim to 3)
+    const trim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "MAXLEN" },
+        RespValue{ .bulk_string = "=" },
+        RespValue{ .bulk_string = "3" },
+        RespValue{ .bulk_string = "2000-0" },
+        RespValue{ .bulk_string = "p" },
+        RespValue{ .bulk_string = "q" },
+    };
+    _ = try cmdXadd(allocator, storage, &trim_args);
+
+    // Check length is 3
+    const len_args = [_]RespValue{
+        RespValue{ .bulk_string = "XLEN" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const len_result = try cmdXlen(allocator, storage, &len_args);
+    defer allocator.free(len_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, len_result, ":3") != null);
+}
+
+test "streams - XADD MINID trims old entries after adding" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entries at IDs 1000-0, 2000-0, 3000-0
+    const ids = [_][]const u8{ "1000-0", "2000-0", "3000-0" };
+    for (ids) |id| {
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = "XADD" },
+            RespValue{ .bulk_string = "s" },
+            RespValue{ .bulk_string = id },
+            RespValue{ .bulk_string = "f" },
+            RespValue{ .bulk_string = "v" },
+        };
+        _ = try cmdXadd(allocator, storage, &args);
+    }
+
+    // Add with MINID=2000-0 (should trim 1000-0)
+    const trim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "MINID" },
+        RespValue{ .bulk_string = "=" },
+        RespValue{ .bulk_string = "2000-0" },
+        RespValue{ .bulk_string = "4000-0" },
+        RespValue{ .bulk_string = "x" },
+        RespValue{ .bulk_string = "y" },
+    };
+    _ = try cmdXadd(allocator, storage, &trim_args);
+
+    // Check length is 3 (2000-0, 3000-0, 4000-0)
+    const len_args = [_]RespValue{
+        RespValue{ .bulk_string = "XLEN" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const len_result = try cmdXlen(allocator, storage, &len_args);
+    defer allocator.free(len_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, len_result, ":3") != null);
+}
+
+test "streams - XTRIM MINID removes entries with ID less than threshold" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entries
+    const ids = [_][]const u8{ "1000-0", "2000-0", "3000-0", "4000-0" };
+    for (ids) |id| {
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = "XADD" },
+            RespValue{ .bulk_string = "s" },
+            RespValue{ .bulk_string = id },
+            RespValue{ .bulk_string = "a" },
+            RespValue{ .bulk_string = "b" },
+        };
+        _ = try cmdXadd(allocator, storage, &args);
+    }
+
+    // XTRIM MINID 3000-0 should delete 1000-0 and 2000-0
+    const trim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XTRIM" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "MINID" },
+        RespValue{ .bulk_string = "=" },
+        RespValue{ .bulk_string = "3000-0" },
+    };
+    const result = try cmdXtrim(allocator, storage, &trim_args);
+    defer allocator.free(result);
+
+    // Should have deleted 2 entries
+    try std.testing.expect(std.mem.indexOf(u8, result, ":2") != null);
+
+    // Verify remaining entries: 3000-0 and 4000-0
+    const len_args = [_]RespValue{
+        RespValue{ .bulk_string = "XLEN" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const len_result = try cmdXlen(allocator, storage, &len_args);
+    defer allocator.free(len_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, len_result, ":2") != null);
+}
+
+test "streams - XTRIM MINID keeps entries at and above threshold" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entries
+    const ids = [_][]const u8{ "1000-0", "2000-0", "3000-0" };
+    for (ids) |id| {
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = "XADD" },
+            RespValue{ .bulk_string = "s" },
+            RespValue{ .bulk_string = id },
+            RespValue{ .bulk_string = "f" },
+            RespValue{ .bulk_string = "v" },
+        };
+        _ = try cmdXadd(allocator, storage, &args);
+    }
+
+    // XTRIM MINID 2000-1 should delete only 1000-0
+    const trim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XTRIM" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "MINID" },
+        RespValue{ .bulk_string = "=" },
+        RespValue{ .bulk_string = "2000-1" },
+    };
+    const result = try cmdXtrim(allocator, storage, &trim_args);
+    defer allocator.free(result);
+
+    // Should have deleted 1 entry
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1") != null);
+
+    // Verify remaining entries count: 2
+    const len_args = [_]RespValue{
+        RespValue{ .bulk_string = "XLEN" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const len_result = try cmdXlen(allocator, storage, &len_args);
+    defer allocator.free(len_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, len_result, ":2") != null);
+}
+
+test "streams - XTRIM MAXLEN still works correctly" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add 5 entries
+    var i: u32 = 1000;
+    while (i < 1005) : (i += 1) {
+        const id_str = try std.fmt.allocPrint(allocator, "{d}-0", .{i});
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = "XADD" },
+            RespValue{ .bulk_string = "s" },
+            RespValue{ .bulk_string = id_str },
+            RespValue{ .bulk_string = "x" },
+            RespValue{ .bulk_string = "y" },
+        };
+        _ = try cmdXadd(allocator, storage, &args);
+    }
+
+    // XTRIM MAXLEN 2 should keep only 2 newest
+    const trim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XTRIM" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "MAXLEN" },
+        RespValue{ .bulk_string = "=" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdXtrim(allocator, storage, &trim_args);
+    defer allocator.free(result);
+
+    // Should delete 3 entries
+    try std.testing.expect(std.mem.indexOf(u8, result, ":3") != null);
+}
+
+test "streams - XTRIM with LIMIT parameter" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add 5 entries
+    var i: u32 = 1000;
+    while (i < 1005) : (i += 1) {
+        const id_str = try std.fmt.allocPrint(allocator, "{d}-0", .{i});
+        const args = [_]RespValue{
+            RespValue{ .bulk_string = "XADD" },
+            RespValue{ .bulk_string = "s" },
+            RespValue{ .bulk_string = id_str },
+            RespValue{ .bulk_string = "f" },
+            RespValue{ .bulk_string = "v" },
+        };
+        _ = try cmdXadd(allocator, storage, &args);
+    }
+
+    // XTRIM MAXLEN ~ 1 LIMIT 2 should delete at most 2 entries
+    const trim_args = [_]RespValue{
+        RespValue{ .bulk_string = "XTRIM" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "MAXLEN" },
+        RespValue{ .bulk_string = "~" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "LIMIT" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdXtrim(allocator, storage, &trim_args);
+    defer allocator.free(result);
+
+    // Should delete exactly 2 due to LIMIT
+    try std.testing.expect(std.mem.indexOf(u8, result, ":2") != null);
 }

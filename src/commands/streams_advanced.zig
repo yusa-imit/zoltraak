@@ -86,7 +86,7 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             error.NoKey => {
                 if (mkstream) {
                     // Create empty stream first
-                    _ = try storage.xadd(key, "0-1", &[_][]const u8{ "placeholder", "value" }, null);
+                    _ = try storage.xadd(key, "0-1", &[_][]const u8{ "placeholder", "value" }, null, .{});
                     // Delete the placeholder entry
                     _ = try storage.xdel(key, &[_][]const u8{"0-1"});
                     // Now create the group
@@ -1564,8 +1564,8 @@ test "XACKDEL KEEPREF mode" {
     defer storage.deinit();
 
     // Create stream
-    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null);
-    _ = try storage.xadd("mystream", "1001-0", &[_][]const u8{ "field2", "value2" }, null);
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null, .{});
+    _ = try storage.xadd("mystream", "1001-0", &[_][]const u8{ "field2", "value2" }, null, .{});
 
     // Create consumer group
     try storage.xgroupCreate("mystream", "mygroup", "0");
@@ -1606,7 +1606,7 @@ test "XACKDEL ACKED mode with multiple groups" {
     defer storage.deinit();
 
     // Create stream
-    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null);
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null, .{});
 
     // Create two consumer groups
     try storage.xgroupCreate("mystream", "group1", "0");
@@ -1670,7 +1670,7 @@ test "XDELEX DELREF cleans dangling references" {
     defer storage.deinit();
 
     // Create stream
-    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null);
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null, .{});
 
     // Create consumer group and read
     try storage.xgroupCreate("mystream", "mygroup", "0");

@@ -70,6 +70,15 @@ pub const RangeUnit = enum {
     bit, // Redis 7.0+: start/end are bit indices
 };
 
+/// Options for XADD command (Redis 7.x+)
+pub const XAddOptions = struct {
+    nomkstream: bool = false, // If true, return null instead of creating stream
+    maxlen: ?usize = null, // Trim to at most this many entries
+    minid_str: ?[]const u8 = null, // Trim entries with ID strictly less than this
+    approx: bool = false, // ~ vs = (approximate/exact trimming)
+    limit: ?usize = null, // Max entries to delete per trimming call
+};
+
 /// Type of value stored in the key-value store
 pub const ValueType = enum {
     string,
@@ -8795,14 +8804,16 @@ pub const Storage = struct {
     // ── Stream operations ─────────────────────────────────────────────────────
 
     /// Add entry to stream with auto-generated or explicit ID.
-    /// Returns the assigned StreamId or error if ID is invalid.
+    /// Returns the assigned StreamId or null if NOMKSTREAM and key doesn't exist.
+    /// Other errors indicate invalid IDs or type mismatches.
     pub fn xadd(
         self: *Storage,
         key: []const u8,
         id_str: []const u8,
         fields: []const []const u8,
         expires_at: ?i64,
-    ) error{ WrongType, OutOfMemory, InvalidStreamId, StreamIdTooSmall, Overflow, InvalidCharacter }!Value.StreamId {
+        opts: XAddOptions,
+    ) error{ WrongType, OutOfMemory, InvalidStreamId, StreamIdTooSmall, Overflow, InvalidCharacter }!?Value.StreamId {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -8811,6 +8822,12 @@ pub const Storage = struct {
         // Get or create stream
         const entry = try self.data.getOrPut(key);
         if (!entry.found_existing) {
+            // Stream doesn't exist
+            if (opts.nomkstream) {
+                // NOMKSTREAM: return null without creating
+                return null;
+            }
+
             const owned_key = try self.allocator.dupe(u8, key);
             entry.key_ptr.* = owned_key;
             entry.value_ptr.* = Value{
@@ -8874,6 +8891,14 @@ pub const Storage = struct {
                 });
                 stream_val.last_id = id;
                 stream_val.entries_added += 1;
+
+                // Apply trimming if requested
+                if (opts.maxlen) |maxlen| {
+                    _ = try self.xtrimByMaxlen(key, maxlen, opts.limit);
+                }
+                if (opts.minid_str) |minid_str| {
+                    _ = try self.xtrimByMinId(key, minid_str, opts.limit);
+                }
 
                 return id;
             },
@@ -9087,16 +9112,14 @@ pub const Storage = struct {
         }
     }
 
-    /// Trim stream to approximately maxlen entries (using MAXLEN strategy).
-    /// Returns number of entries deleted.
-    pub fn xtrim(
+    /// Trim stream to at most maxlen entries (delete oldest entries).
+    /// Returns number of entries deleted. Does not respect limit when deleting.
+    fn xtrimByMaxlen(
         self: *Storage,
         key: []const u8,
         maxlen: usize,
+        limit: ?usize,
     ) !usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         const entry = self.data.getEntry(key) orelse return 0;
 
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
@@ -9113,7 +9136,10 @@ pub const Storage = struct {
                 const current_len = stream_val.entries.items.len;
                 if (current_len <= maxlen) return 0;
 
-                const to_delete = current_len - maxlen;
+                var to_delete = current_len - maxlen;
+                if (limit) |lim| {
+                    to_delete = @min(to_delete, lim);
+                }
 
                 // Delete oldest entries
                 for (0..to_delete) |_| {
@@ -9125,6 +9151,98 @@ pub const Storage = struct {
             },
             else => return error.WrongType,
         }
+    }
+
+    /// Trim stream to remove entries with ID strictly less than minid.
+    /// Returns number of entries deleted.
+    /// This is private and should only be called from xadd() which holds the lock.
+    fn xtrimByMinId(
+        self: *Storage,
+        key: []const u8,
+        minid_str: []const u8,
+        limit: ?usize,
+    ) !usize {
+        const minid = Value.StreamId.parse(minid_str, null) catch return error.InvalidStreamId;
+
+        const entry = self.data.getEntry(key) orelse return 0;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.removeKeyCleanup(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return 0;
+        }
+
+        switch (entry.value_ptr.*) {
+            .stream => |*stream_val| {
+                var deleted: usize = 0;
+                var i: usize = 0;
+
+                // Find the first entry with ID >= minid
+                while (i < stream_val.entries.items.len and stream_val.entries.items[i].id.lessThan(minid)) {
+                    i += 1;
+                    deleted += 1;
+
+                    // Respect LIMIT if provided
+                    if (limit) |lim| {
+                        if (deleted >= lim) break;
+                    }
+                }
+
+                // Delete entries from beginning up to index i
+                for (0..i) |_| {
+                    var removed = stream_val.entries.orderedRemove(0);
+                    removed.deinit(self.allocator);
+                }
+
+                return deleted;
+            },
+            else => return error.WrongType,
+        }
+    }
+
+    /// Trim stream to approximately maxlen entries (using MAXLEN strategy).
+    /// Returns number of entries deleted.
+    /// Public wrapper for backward compatibility and command dispatch.
+    pub fn xtrim(
+        self: *Storage,
+        key: []const u8,
+        maxlen: usize,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        return try self.xtrimByMaxlen(key, maxlen, null);
+    }
+
+    /// Public wrapper for xtrimByMaxlen with mutex.
+    /// Returns number of entries deleted.
+    pub fn xtrimMaxlen(
+        self: *Storage,
+        key: []const u8,
+        maxlen: usize,
+        limit: ?usize,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        return try self.xtrimByMaxlen(key, maxlen, limit);
+    }
+
+    /// Public wrapper for xtrimByMinId with mutex.
+    /// Returns number of entries deleted.
+    pub fn xtrimMinid(
+        self: *Storage,
+        key: []const u8,
+        minid_str: []const u8,
+        limit: ?usize,
+    ) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        return try self.xtrimByMinId(key, minid_str, limit);
     }
 
     /// Create a consumer group for a stream
@@ -12244,7 +12362,7 @@ test "storage - xadd creates stream with auto-generated ID" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "temp", "25", "humidity", "60" };
-    const id = try storage.xadd("weather", "*", &fields, null);
+    const id = try storage.xadd("weather", "*", &fields, null, .{});
 
     try std.testing.expect(id.ms > 0);
     try std.testing.expectEqual(@as(u64, 0), id.seq);
@@ -12256,7 +12374,7 @@ test "storage - xadd with explicit ID" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "field1", "value1" };
-    const id = try storage.xadd("mystream", "1234567890-0", &fields, null);
+    const id = try storage.xadd("mystream", "1234567890-0", &fields, null, .{});
 
     try std.testing.expectEqual(@as(i64, 1234567890), id.ms);
     try std.testing.expectEqual(@as(u64, 0), id.seq);
@@ -12268,10 +12386,10 @@ test "storage - xadd enforces ID ordering" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "1" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
 
     // Try to add earlier ID - should fail
-    const result = storage.xadd("s", "999-0", &fields, null);
+    const result = storage.xadd("s", "999-0", &fields, null, .{});
     try std.testing.expectError(error.StreamIdTooSmall, result);
 }
 
@@ -12281,9 +12399,9 @@ test "storage - xlen returns entry count" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "1" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
-    _ = try storage.xadd("s", "1001-0", &fields, null);
-    _ = try storage.xadd("s", "1002-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "1001-0", &fields, null, .{});
+    _ = try storage.xadd("s", "1002-0", &fields, null, .{});
 
     const len = (try storage.xlen("s")).?;
     try std.testing.expectEqual(@as(usize, 3), len);
@@ -12304,9 +12422,9 @@ test "storage - xrange returns entries in range" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "data", "x" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
-    _ = try storage.xadd("s", "2000-0", &fields, null);
-    _ = try storage.xadd("s", "3000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "3000-0", &fields, null, .{});
 
     const result = (try storage.xrange(allocator, "s", "1500-0", "2500-0", null)).?;
     defer allocator.free(result);
@@ -12321,8 +12439,8 @@ test "storage - xrange with - and + bounds" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "x", "y" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
-    _ = try storage.xadd("s", "2000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
 
     const result = (try storage.xrange(allocator, "s", "-", "+", null)).?;
     defer allocator.free(result);
@@ -12336,9 +12454,9 @@ test "storage - xrange with COUNT limit" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "b" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
-    _ = try storage.xadd("s", "2000-0", &fields, null);
-    _ = try storage.xadd("s", "3000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "3000-0", &fields, null, .{});
 
     const result = (try storage.xrange(allocator, "s", "-", "+", 2)).?;
     defer allocator.free(result);
@@ -12352,7 +12470,7 @@ test "storage - getType returns stream type" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "a", "1" };
-    _ = try storage.xadd("mystream", "*", &fields, null);
+    _ = try storage.xadd("mystream", "*", &fields, null, .{});
 
     try std.testing.expectEqual(ValueType.stream, storage.getType("mystream").?);
 }
@@ -12401,7 +12519,7 @@ test "storage - xinfoConsumers returns consumer list with timing fields" {
 
     // Create stream and group
     const fields = [_][]const u8{ "x", "1" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
     try storage.xgroupCreate("s", "g", "0");
 
     // Create consumer via XREADGROUP
@@ -12424,7 +12542,7 @@ test "storage - xinfoConsumers returns NOGROUP for missing group" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "x", "1" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
 
     const result = storage.xinfoConsumers(allocator, "s", "nogroup");
     try std.testing.expectError(error.NoGroup, result);
@@ -12437,9 +12555,9 @@ test "storage - xinfoGroups returns group list with lag" {
 
     // Create stream with 3 entries
     const fields = [_][]const u8{ "x", "1" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
-    _ = try storage.xadd("s", "1001-0", &fields, null);
-    _ = try storage.xadd("s", "1002-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "1001-0", &fields, null, .{});
+    _ = try storage.xadd("s", "1002-0", &fields, null, .{});
 
     // Create group starting at 0
     try storage.xgroupCreate("s", "g", "0");
@@ -12471,8 +12589,8 @@ test "storage - xinfoGroups lag is null for arbitrary start" {
     defer storage.deinit();
 
     const fields = [_][]const u8{ "x", "1" };
-    _ = try storage.xadd("s", "1000-0", &fields, null);
-    _ = try storage.xadd("s", "2000-0", &fields, null);
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
 
     // Create group at arbitrary position (not 0 or $)
     try storage.xgroupCreate("s", "g", "1500-0");
@@ -13233,4 +13351,104 @@ test "HotkeyTracker multiple recordAccess accumulates correctly" {
     try std.testing.expectEqual(@as(u64, 10), tracker.keys_sampled);
     try std.testing.expectEqual(@as(u64, 100), tracker.total_cpu_us);
     try std.testing.expectEqual(@as(u64, 200), tracker.total_net_bytes);
+}
+
+test "storage - xadd with NOMKSTREAM returns null when stream doesn't exist" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "a", "1" };
+    const opts = XAddOptions{ .nomkstream = true };
+    const result = try storage.xadd("nonexistent", "*", &fields, null, opts);
+
+    try std.testing.expectEqual(@as(?Value.StreamId, null), result);
+}
+
+test "storage - xadd with NOMKSTREAM adds when stream exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create stream first
+    const fields1 = [_][]const u8{ "a", "1" };
+    _ = try storage.xadd("mystream", "1000-0", &fields1, null, .{});
+
+    // Add with NOMKSTREAM to existing
+    const fields2 = [_][]const u8{ "b", "2" };
+    const opts = XAddOptions{ .nomkstream = true };
+    const result = try storage.xadd("mystream", "2000-0", &fields2, null, opts);
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(i64, 2000), result.?.ms);
+}
+
+test "storage - xtrimByMinId removes entries less than threshold" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add entries at 1000-0, 2000-0, 3000-0
+    const ids = [_][]const u8{ "1000-0", "2000-0", "3000-0" };
+    for (ids) |id| {
+        const fields = [_][]const u8{ "f", "v" };
+        _ = try storage.xadd("s", id, &fields, null, .{});
+    }
+
+    // Trim entries < 2500-0 (should remove 1000-0 and 2000-0)
+    const deleted = try storage.xtrimMinid("s", "2500-0", null);
+
+    try std.testing.expectEqual(@as(usize, 2), deleted);
+
+    // Verify remaining count
+    const len = try storage.xlen("s");
+    try std.testing.expectEqual(@as(?usize, 1), len);
+}
+
+test "storage - xtrimByMinId with LIMIT respects deletion limit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add 5 entries: 1000-0 through 5000-0
+    var i: u32 = 1000;
+    while (i <= 5000) : (i += 1000) {
+        const fields = [_][]const u8{ "f", "v" };
+        const id = try std.fmt.allocPrint(allocator, "{d}-0", .{i});
+        defer allocator.free(id);
+        _ = try storage.xadd("s", id, &fields, null, .{});
+    }
+
+    // Trim with LIMIT 2 (should delete at most 2)
+    const deleted = try storage.xtrimMinid("s", "3500-0", 2);
+
+    try std.testing.expectEqual(@as(usize, 2), deleted);
+
+    // Verify remaining count: 3 (3000-0, 4000-0, 5000-0)
+    const len = try storage.xlen("s");
+    try std.testing.expectEqual(@as(?usize, 3), len);
+}
+
+test "storage - xtrimByMaxlen with LIMIT respects deletion limit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add 5 entries
+    var i: u32 = 1000;
+    while (i <= 5000) : (i += 1000) {
+        const fields = [_][]const u8{ "f", "v" };
+        const id = try std.fmt.allocPrint(allocator, "{d}-0", .{i});
+        defer allocator.free(id);
+        _ = try storage.xadd("s", id, &fields, null, .{});
+    }
+
+    // Trim to 1 entry with LIMIT 2 (should delete at most 2)
+    const deleted = try storage.xtrimMaxlen("s", 1, 2);
+
+    try std.testing.expectEqual(@as(usize, 2), deleted);
+
+    // Verify remaining count: 3
+    const len = try storage.xlen("s");
+    try std.testing.expectEqual(@as(?usize, 3), len);
 }
