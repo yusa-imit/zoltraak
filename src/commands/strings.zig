@@ -1383,12 +1383,12 @@ pub fn executeCommand(
                 .databases = 1,
             };
 
-            // Build server stats
+            // Build server stats using real tracked values from Storage
             const server_stats = info_cmds.ServerStats{
-                .client_count = 1,  // TODO: track actual client count
-                .total_commands_processed = 0,  // TODO: track command count
-                .total_connections_received = 0,  // TODO: track connection count
-                .start_time_seconds = 0,  // TODO: track server start time
+                .client_count = client_registry.count(),
+                .total_commands_processed = storage.total_commands_processed.load(.monotonic),
+                .total_connections_received = storage.total_connections_received.load(.monotonic),
+                .start_time_seconds = storage.server_start_time,
             };
 
             if (repl) |r| {

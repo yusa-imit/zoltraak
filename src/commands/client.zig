@@ -516,6 +516,13 @@ pub const ClientRegistry = struct {
     }
 
     /// Mark a client for killing by ID
+    /// Return the number of currently connected clients (thread-safe)
+    pub fn count(self: *ClientRegistry) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.clients.count();
+    }
+
     pub fn markClientForKill(self: *ClientRegistry, client_id: u64) !void {
         self.mutex.lock();
         defer self.mutex.unlock();

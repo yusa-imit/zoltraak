@@ -791,6 +791,9 @@ pub const Storage = struct {
     pubsub_state: ?*pubsub_mod.PubSub, // Optional pubsub state for firing notifications (set by server after init)
     hotkey_tracker: ?*HotkeyTracker, // Optional hotkeys tracking state (Phase 1)
     key_versions: std.StringHashMap(u64), // Per-key modification counters (OBJECT VERSION, Redis 7.4)
+    server_start_time: i64, // Unix timestamp (seconds) when this server instance started
+    total_commands_processed: std.atomic.Value(u64), // Total commands processed since start
+    total_connections_received: std.atomic.Value(u64), // Total client connections received since start
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -905,6 +908,9 @@ pub const Storage = struct {
             .pubsub_state = null, // Will be set by server after init
             .hotkey_tracker = null, // Will be created on HOTKEYS START
             .key_versions = std.StringHashMap(u64).init(allocator),
+            .server_start_time = std.time.timestamp(),
+            .total_commands_processed = std.atomic.Value(u64).init(0),
+            .total_connections_received = std.atomic.Value(u64).init(0),
         };
 
         // Start background lazy free thread
@@ -946,6 +952,21 @@ pub const Storage = struct {
         while (!self.evicted_keys.compareAndSwapWeak(current, current + 1, .monotonic, .monotonic)) |new_current| {
             current = new_current;
         }
+    }
+
+    /// Increment the total commands processed counter atomically
+    pub fn incrementCommandsProcessed(self: *Storage) void {
+        _ = self.total_commands_processed.fetchAdd(1, .monotonic);
+    }
+
+    /// Increment the total connections received counter atomically
+    pub fn incrementConnectionsReceived(self: *Storage) void {
+        _ = self.total_connections_received.fetchAdd(1, .monotonic);
+    }
+
+    /// Get uptime in seconds since server start
+    pub fn getUptimeSeconds(self: *Storage) i64 {
+        return std.time.timestamp() - self.server_start_time;
     }
 
     /// Record the last access time for a key (in milliseconds) for LFU decay tracking

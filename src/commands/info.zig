@@ -122,7 +122,8 @@ fn buildServerSection(
     try bw.writeAll("hz:10\r\n");
     try bw.writeAll("configured_hz:10\r\n");
     try bw.writeAll("lru_clock:");
-    try bw.print("{d}\r\n", .{@as(u32, @truncate(@as(u64, @intCast(std.time.milliTimestamp())) / 1000))});
+    // Redis LRU clock: Unix time in seconds, truncated to 24 bits (modulo 2^24)
+    try bw.print("{d}\r\n", .{@as(u32, @intCast(@as(u64, @intCast(std.time.timestamp())) & 0xFFFFFF))});
     try bw.writeAll("executable:/Users/fn/Desktop/codespace/zoltraak/zig-out/bin/zoltraak\r\n");
     try bw.writeAll("config_file:\r\n");
     try bw.writeAll("\r\n");
@@ -572,4 +573,133 @@ test "INFO default shows multiple sections" {
     try std.testing.expect(std.mem.indexOf(u8, result, "# Replication") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "# CPU") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "# Keyspace") != null);
+}
+
+test "INFO server section uptime is reasonable (not Unix timestamp)" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    // Use real server start time (just now)
+    const now = std.time.timestamp();
+    const stats = ServerStats{
+        .client_count = 1,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = now,
+    };
+
+    const args = [_][]const u8{ "INFO", "SERVER" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    // uptime_in_seconds must be < 5 seconds (we just set start_time = now)
+    const uptime_line_start = std.mem.indexOf(u8, result, "uptime_in_seconds:") orelse unreachable;
+    const line_start = uptime_line_start + "uptime_in_seconds:".len;
+    var line_end = line_start;
+    while (line_end < result.len and result[line_end] != '\r') line_end += 1;
+    const uptime_str = result[line_start..line_end];
+    const uptime = try std.fmt.parseInt(i64, uptime_str, 10);
+
+    // Must be small (< 5s since we just started), NOT a Unix timestamp (which would be ~1.7B)
+    try std.testing.expect(uptime >= 0);
+    try std.testing.expect(uptime < 5);
+}
+
+test "INFO server section lru_clock is 24-bit truncated" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 1,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "SERVER" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    // lru_clock must be <= 2^24 - 1 = 16777215
+    const lru_start = std.mem.indexOf(u8, result, "lru_clock:") orelse unreachable;
+    const val_start = lru_start + "lru_clock:".len;
+    var val_end = val_start;
+    while (val_end < result.len and result[val_end] != '\r') val_end += 1;
+    const lru_str = result[val_start..val_end];
+    const lru_val = try std.fmt.parseInt(u32, lru_str, 10);
+
+    try std.testing.expect(lru_val <= 0xFFFFFF); // Must fit in 24 bits
+}
+
+test "INFO stats section shows real command/connection counts" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 3,
+        .total_commands_processed = 42,
+        .total_connections_received = 7,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "STATS" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_commands_processed:42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_connections_received:7") != null);
 }

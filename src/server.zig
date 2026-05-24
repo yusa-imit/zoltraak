@@ -414,6 +414,7 @@ pub const Server = struct {
 
             // Record connection statistics
             self.stats.recordConnection();
+            self.databases[0].incrementConnectionsReceived();
 
             // Handle connection
             self.handleConnection(connection) catch |err| {
@@ -594,6 +595,7 @@ pub const Server = struct {
 
             // Record command execution in statistics
             self.stats.recordCommand();
+            self.databases[0].incrementCommandsProcessed();
 
             // Update last command timestamp
             self.client_registry.updateLastCommand(client_id, cmd_name);
