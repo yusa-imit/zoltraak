@@ -728,7 +728,7 @@ pub fn executeCommand(
             break :blk try auth_cmds.cmdAuth(allocator, array, storage, client_registry, client_id);
         } else if (std.mem.eql(u8, cmd_upper, "HELLO")) {
             const args_slice = if (array.len > 1) array[1..] else array[0..0];
-            break :blk try server_cmds.cmdHello(allocator, client_registry, client_id, args_slice);
+            break :blk try server_cmds.cmdHello(allocator, client_registry, client_id, storage, args_slice);
         } else if (std.mem.eql(u8, cmd_upper, "ASKING")) {
             // Convert RespValue array to string args
             var args = try allocator.alloc([]const u8, array.len);
