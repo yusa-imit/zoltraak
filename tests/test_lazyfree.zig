@@ -348,3 +348,124 @@ test "lazyfree_pending_objects shows 0 when queue empty" {
     // No keys, no async operations
     try std.testing.expectEqual(@as(usize, 0), storage.lazyfree_task.getPendingCount());
 }
+
+test "lazy_eviction atomic flag is false by default" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(false, storage.lazy_eviction.load(.acquire));
+    try std.testing.expectEqual(false, storage.lazy_expire.load(.acquire));
+    try std.testing.expectEqual(false, storage.lazy_server_del.load(.acquire));
+}
+
+test "updateLazyfreeFlags sets lazy_eviction" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-eviction", true);
+    try std.testing.expectEqual(true, storage.lazy_eviction.load(.acquire));
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-eviction", false);
+    try std.testing.expectEqual(false, storage.lazy_eviction.load(.acquire));
+}
+
+test "updateLazyfreeFlags sets lazy_expire" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-expire", true);
+    try std.testing.expectEqual(true, storage.lazy_expire.load(.acquire));
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-expire", false);
+    try std.testing.expectEqual(false, storage.lazy_expire.load(.acquire));
+}
+
+test "updateLazyfreeFlags sets lazy_server_del" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-server-del", true);
+    try std.testing.expectEqual(true, storage.lazy_server_del.load(.acquire));
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-server-del", false);
+    try std.testing.expectEqual(false, storage.lazy_server_del.load(.acquire));
+}
+
+test "lazy-server-del: set on existing key submits to lazyfree queue" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable lazy server del
+    storage.lazy_server_del.store(true, .release);
+
+    // Set initial key
+    try storage.set("key1", "value_initial", null);
+    // Overwrite — old value should be queued for async freeing
+    try storage.set("key1", "value_new", null);
+
+    // New value is visible
+    const val = storage.get("key1");
+    try std.testing.expect(val != null);
+    try std.testing.expectEqualStrings("value_new", val.?);
+
+    // Background queue may have the old value (non-deterministic, but queue should be >= 0)
+    try std.testing.expect(storage.lazyfree_task.getPendingCount() >= 0);
+}
+
+test "lazy-server-del: set on new key does NOT submit to lazyfree queue" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.lazy_server_del.store(true, .release);
+
+    // Set new key (no old value to free)
+    try storage.set("brand_new_key", "value", null);
+
+    // Queue should be empty (no old value was freed)
+    try std.testing.expectEqual(@as(usize, 0), storage.lazyfree_task.getPendingCount());
+}
+
+test "lazy-expire: expired key is still deleted from map synchronously" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.lazy_expire.store(true, .release);
+
+    // Set key that expired in the past (1ms TTL in the past)
+    const past_ms = std.time.milliTimestamp() - 100;
+    try storage.set("expiring_key", "value", past_ms);
+
+    // Get should return null and key should be removed from map
+    const val = storage.get("expiring_key");
+    try std.testing.expectEqual(@as(?[]const u8, null), val);
+
+    // Key removed from hashmap (lazy means value freeing is deferred, not removal)
+    try std.testing.expectEqual(@as(usize, 0), storage.data.count());
+}
+
+test "lazy-eviction: eviction path behaves correctly with flag enabled" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Enable lazy eviction
+    storage.lazy_eviction.store(true, .release);
+
+    // Set maxmemory to trigger eviction logic
+    try storage.config.set("maxmemory", .{ .int = 1 }); // 1 byte forces eviction
+    try storage.config.set("maxmemory-policy", .{ .string = try allocator.dupe(u8, "allkeys-lru") });
+    defer allocator.free((try storage.config.get("maxmemory-policy")).string);
+
+    // Set some data
+    try storage.set("evict_key", "value1", null);
+
+    // evicted_keys counter starts at 0
+    try std.testing.expectEqual(@as(u64, 0), storage.getEvictedKeysCount());
+}

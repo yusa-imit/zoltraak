@@ -235,6 +235,15 @@ fn cmdConfigSet(
             // Parse the new flags and update Storage atomically
             const new_flags = notifications_mod.parseNotificationFlags(value);
             storage.notification_flags.store(new_flags, .release);
+        } else if (std.mem.eql(u8, param_lower, "lazyfree-lazy-expire") or
+            std.mem.eql(u8, param_lower, "lazyfree-lazy-eviction") or
+            std.mem.eql(u8, param_lower, "lazyfree-lazy-server-del"))
+        {
+            // Update lazyfree atomic flags so hot paths skip config lookup
+            const enabled = std.mem.eql(u8, value, "yes") or
+                std.mem.eql(u8, value, "1") or
+                std.mem.eql(u8, value, "true");
+            storage.updateLazyfreeFlags(param_lower, enabled);
         }
     }
 

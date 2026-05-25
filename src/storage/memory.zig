@@ -803,6 +803,9 @@ pub const Storage = struct {
     server_start_time: i64, // Unix timestamp (seconds) when this server instance started
     total_commands_processed: std.atomic.Value(u64), // Total commands processed since start
     total_connections_received: std.atomic.Value(u64), // Total client connections received since start
+    lazy_expire: std.atomic.Value(bool), // lazyfree-lazy-expire: async delete on expiry access
+    lazy_eviction: std.atomic.Value(bool), // lazyfree-lazy-eviction: async delete on maxmemory eviction
+    lazy_server_del: std.atomic.Value(bool), // lazyfree-lazy-server-del: async delete on key overwrite
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -920,6 +923,9 @@ pub const Storage = struct {
             .server_start_time = std.time.timestamp(),
             .total_commands_processed = std.atomic.Value(u64).init(0),
             .total_connections_received = std.atomic.Value(u64).init(0),
+            .lazy_expire = std.atomic.Value(bool).init(false),
+            .lazy_eviction = std.atomic.Value(bool).init(false),
+            .lazy_server_del = std.atomic.Value(bool).init(false),
         };
 
         // Start background lazy free thread
@@ -961,6 +967,67 @@ pub const Storage = struct {
         while (!self.evicted_keys.compareAndSwapWeak(current, current + 1, .monotonic, .monotonic)) |new_current| {
             current = new_current;
         }
+    }
+
+    /// Update lazyfree flags from config values.
+    /// Called by CONFIG SET handlers for the 3 lazyfree-lazy-* parameters.
+    pub fn updateLazyfreeFlags(self: *Storage, param: []const u8, enabled: bool) void {
+        if (std.mem.eql(u8, param, "lazyfree-lazy-expire")) {
+            self.lazy_expire.store(enabled, .release);
+        } else if (std.mem.eql(u8, param, "lazyfree-lazy-eviction")) {
+            self.lazy_eviction.store(enabled, .release);
+        } else if (std.mem.eql(u8, param, "lazyfree-lazy-server-del")) {
+            self.lazy_server_del.store(enabled, .release);
+        }
+    }
+
+    /// Submit a key+value pair to the lazyfree background task.
+    /// The key and value must already be removed from the hashmap.
+    /// On success, background thread takes ownership of both.
+    /// On failure, falls back to synchronous freeing.
+    fn submitLazyfreeOrFree(self: *Storage, owned_key: []const u8, value: Value) void {
+        const value_ptr = self.allocator.create(Value) catch {
+            self.allocator.free(owned_key);
+            var v = value;
+            v.deinit(self.allocator);
+            return;
+        };
+        value_ptr.* = value;
+        const work = LazyFreeWork{
+            .work_type = .free_key,
+            .key = owned_key,
+            .db_num = null,
+            .value_ptr = value_ptr,
+            .allocator = self.allocator,
+        };
+        self.lazyfree_task.submitWork(work) catch {
+            value_ptr.deinit(self.allocator);
+            self.allocator.destroy(value_ptr);
+            self.allocator.free(owned_key);
+        };
+    }
+
+    /// Submit a value (no key) to the lazyfree background task.
+    /// Used for lazy-server-del where the key stays in the hashmap with a new value.
+    /// On failure, falls back to synchronous freeing.
+    fn submitLazyfreeValueOrFree(self: *Storage, value: Value) void {
+        const value_ptr = self.allocator.create(Value) catch {
+            var v = value;
+            v.deinit(self.allocator);
+            return;
+        };
+        value_ptr.* = value;
+        const work = LazyFreeWork{
+            .work_type = .free_key,
+            .key = null,
+            .db_num = null,
+            .value_ptr = value_ptr,
+            .allocator = self.allocator,
+        };
+        self.lazyfree_task.submitWork(work) catch {
+            value_ptr.deinit(self.allocator);
+            self.allocator.destroy(value_ptr);
+        };
     }
 
     /// Increment the total commands processed counter atomically
@@ -1196,6 +1263,7 @@ pub const Storage = struct {
 
     /// Helper to delete a key and fire evicted notification
     /// Fires evicted event before deletion if notifications are enabled and pubsub available
+    /// When lazyfree-lazy-eviction is enabled, the value is freed asynchronously.
     /// Returns true if key was deleted, false otherwise
     fn deleteKeyWithEvictionNotification(self: *Storage, key: []const u8) bool {
         if (self.data.fetchRemove(key)) |kv| {
@@ -1215,10 +1283,15 @@ pub const Storage = struct {
             }
 
             self.cleanupLfuTracking(kv.key);
-            self.allocator.free(kv.key);
-            var value = kv.value;
-            value.deinit(self.allocator);
             self.incrementEvictedKeys(); // Increment evicted counter
+            if (self.lazy_eviction.load(.acquire)) {
+                // lazyfree-lazy-eviction: defer value freeing to background thread
+                self.submitLazyfreeOrFree(kv.key, kv.value);
+            } else {
+                self.allocator.free(kv.key);
+                var value = kv.value;
+                value.deinit(self.allocator);
+            }
             return true;
         }
         return false;
@@ -1778,10 +1851,16 @@ pub const Storage = struct {
 
         // Check if key already exists
         if (self.data.getEntry(key)) |entry| {
-            // Key exists - free old value and update
-            var old_value = entry.value_ptr.*;
-            old_value.deinit(self.allocator);
+            // Key exists - replace old value (lazily if lazy-server-del enabled)
+            const old_value = entry.value_ptr.*;
             entry.value_ptr.* = new_value;
+            if (self.lazy_server_del.load(.acquire)) {
+                // lazyfree-lazy-server-del: defer old value freeing to background thread
+                self.submitLazyfreeValueOrFree(old_value);
+            } else {
+                var v = old_value;
+                v.deinit(self.allocator);
+            }
         } else {
             // New key - copy key and insert
             const owned_key = try self.allocator.dupe(u8, key);
@@ -1924,12 +2003,18 @@ pub const Storage = struct {
                 }
             }
 
-            // Expired - delete and return null
+            // Expired - remove from hashmap then free key+value (sync or async)
             const owned_key = entry.key_ptr.*;
-            var value = entry.value_ptr.*;
+            const value = entry.value_ptr.*;
             _ = self.removeKeyCleanup(key);
-            self.allocator.free(owned_key);
-            value.deinit(self.allocator);
+            if (self.lazy_expire.load(.acquire)) {
+                // lazyfree-lazy-expire: defer freeing to background thread
+                self.submitLazyfreeOrFree(owned_key, value);
+            } else {
+                self.allocator.free(owned_key);
+                var v = value;
+                v.deinit(self.allocator);
+            }
             return null;
         }
 
