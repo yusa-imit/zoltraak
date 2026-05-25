@@ -500,9 +500,16 @@ pub fn cmdRestore(allocator: std.mem.Allocator, storage: *Storage, args: []const
 }
 
 /// COPY source destination [DB destination-db] [REPLACE]
-/// Copy a key to a new key.
+/// Copy a key to a new key (optionally to a different database).
 /// Returns 1 if source was copied, 0 if not (e.g., destination exists).
-pub fn cmdCopy(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdCopy(
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+    args: []const RespValue,
+    databases: []Storage,
+    num_databases: u16,
+    selected_db: u16,
+) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -522,6 +529,7 @@ pub fn cmdCopy(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Parse options
     var replace = false;
+    var dest_db: u16 = selected_db;
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
         const opt = switch (args[i]) {
@@ -531,15 +539,37 @@ pub fn cmdCopy(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         if (std.ascii.eqlIgnoreCase(opt, "REPLACE")) {
             replace = true;
         } else if (std.ascii.eqlIgnoreCase(opt, "DB")) {
-            i += 1; // skip DB value (we only have 1 database)
+            i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            // Ignore DB parameter since we're single-DB
+            const db_num = switch (args[i]) {
+                .bulk_string => |s| std.fmt.parseInt(i64, s, 10) catch {
+                    return w.writeError("ERR invalid DB index");
+                },
+                else => return w.writeError("ERR invalid DB index"),
+            };
+            if (db_num < 0 or db_num >= num_databases) {
+                return w.writeError("ERR DB index is out of range");
+            }
+            dest_db = @as(u16, @intCast(db_num));
         } else {
             return w.writeError("ERR syntax error");
         }
     }
 
-    const success = storage.copyKey(source, destination, replace) catch |err| {
+    // If destination is same database as source, use same-database copy
+    if (dest_db == selected_db) {
+        const success = storage.copyKey(source, destination, replace) catch |err| {
+            return switch (err) {
+                error.NoSuchKey => w.writeInteger(0),
+                else => w.writeError("ERR copy failed"),
+            };
+        };
+        return w.writeInteger(if (success) 1 else 0);
+    }
+
+    // Cross-database copy
+    const dest_storage = &databases[dest_db];
+    const success = storage.copyKeyToStorage(source, dest_storage, destination, replace) catch |err| {
         return switch (err) {
             error.NoSuchKey => w.writeInteger(0),
             else => w.writeError("ERR copy failed"),
@@ -2734,4 +2764,153 @@ test "OBJECT VERSION - HELP includes VERSION" {
     defer allocator.free(result);
     // HELP returns an array containing "VERSION <key>" entry
     try std.testing.expect(std.mem.indexOf(u8, result, "VERSION") != null);
+}
+
+test "COPY - basic same-database copy" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var databases = [_]Storage{storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage};
+    for (&databases[1..]) |*db| {
+        db.* = try Storage.init(allocator);
+    }
+    defer for (&databases[1..]) |*db| db.deinit();
+
+    try storage.set("mykey", "hello", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "newkey" },
+    };
+    const result = try cmdCopy(allocator, &storage, &args, &databases, 16, 0);
+    defer allocator.free(result);
+
+    // Expect integer 1 (success)
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Verify copy in same DB
+    const value = storage.get("newkey").?;
+    try std.testing.expectEqualStrings("hello", value);
+}
+
+test "COPY - cross-database copy with DB parameter" {
+    const allocator = std.testing.allocator;
+    var storage0 = try Storage.init(allocator);
+    defer storage0.deinit();
+    var storage1 = try Storage.init(allocator);
+    defer storage1.deinit();
+    var databases = [_]Storage{storage0, storage1, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined};
+    for (&databases[2..]) |*db| {
+        db.* = try Storage.init(allocator);
+    }
+    defer for (&databases[2..]) |*db| db.deinit();
+
+    try storage0.set("source", "value1", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "DB" },
+        .{ .bulk_string = "1" },
+    };
+    const result = try cmdCopy(allocator, &storage0, &args, &databases, 16, 0);
+    defer allocator.free(result);
+
+    // Expect integer 1 (success)
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Verify copy in database 1
+    const value = storage1.get("dest").?;
+    try std.testing.expectEqualStrings("value1", value);
+}
+
+test "COPY - cross-database with REPLACE" {
+    const allocator = std.testing.allocator;
+    var storage0 = try Storage.init(allocator);
+    defer storage0.deinit();
+    var storage1 = try Storage.init(allocator);
+    defer storage1.deinit();
+    var databases = [_]Storage{storage0, storage1, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined};
+    for (&databases[2..]) |*db| {
+        db.* = try Storage.init(allocator);
+    }
+    defer for (&databases[2..]) |*db| db.deinit();
+
+    try storage0.set("source", "new", null);
+    try storage1.set("dest", "old", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "DB" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "REPLACE" },
+    };
+    const result = try cmdCopy(allocator, &storage0, &args, &databases, 16, 0);
+    defer allocator.free(result);
+
+    // Expect integer 1 (success)
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Verify old value was replaced
+    const value = storage1.get("dest").?;
+    try std.testing.expectEqualStrings("new", value);
+}
+
+test "COPY - fails if destination exists without REPLACE" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var databases = [_]Storage{storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage};
+    for (&databases[1..]) |*db| {
+        db.* = try Storage.init(allocator);
+    }
+    defer for (&databases[1..]) |*db| db.deinit();
+
+    try storage.set("source", "value1", null);
+    try storage.set("dest", "value2", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+    };
+    const result = try cmdCopy(allocator, &storage, &args, &databases, 16, 0);
+    defer allocator.free(result);
+
+    // Expect integer 0 (destination exists)
+    try std.testing.expectEqualStrings(":0\r\n", result);
+
+    // Verify dest is unchanged
+    const value = storage.get("dest").?;
+    try std.testing.expectEqualStrings("value2", value);
+}
+
+test "COPY - invalid DB index returns error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var databases = [_]Storage{storage, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined};
+    for (&databases[1..]) |*db| {
+        db.* = try Storage.init(allocator);
+    }
+    defer for (&databases[1..]) |*db| db.deinit();
+
+    try storage.set("source", "value", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "COPY" },
+        .{ .bulk_string = "source" },
+        .{ .bulk_string = "dest" },
+        .{ .bulk_string = "DB" },
+        .{ .bulk_string = "999" },
+    };
+    const result = try cmdCopy(allocator, &storage, &args, &databases, 16, 0);
+    defer allocator.free(result);
+
+    // Expect error
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
 }

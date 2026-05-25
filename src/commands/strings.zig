@@ -887,7 +887,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "RESTORE")) {
             break :blk try keys_cmds.cmdRestore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "COPY")) {
-            break :blk try keys_cmds.cmdCopy(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try keys_cmds.cmdCopy(allocator, storage, array, databases, num_databases, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "TOUCH")) {
             break :blk try keys_cmds.cmdTouch(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "MOVE")) {

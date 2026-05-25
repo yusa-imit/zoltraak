@@ -6224,29 +6224,85 @@ pub const Storage = struct {
         return true;
     }
 
-    /// Deep copy a Value (helper for COPY command)
-    fn deepCopyValue(self: *Storage, value: Value) !Value {
+    /// Copy a key from this storage to another storage (cross-database).
+    /// source_key: key to copy from (in this storage)
+    /// dest: destination storage
+    /// dest_key: key to copy to (in destination storage)
+    /// replace: if true, overwrite destination; if false, fail if destination exists.
+    /// Returns true if copy succeeded, false if destination exists and replace=false.
+    pub fn copyKeyToStorage(self: *Storage, source_key: []const u8, dest: *Storage, dest_key: []const u8, replace: bool) !bool {
+        // Step 1: Lock source, read value, deep copy to dest allocator, unlock source
+        var copied_value: Value = undefined;
+        {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
+            // Check source exists and is not expired
+            const src_entry = self.data.get(source_key) orelse return error.NoSuchKey;
+            const now = getCurrentTimestamp();
+            if (src_entry.isExpired(now)) return error.NoSuchKey;
+
+            // Deep copy using destination storage's allocator
+            copied_value = try deepCopyValueWithAllocator(dest.allocator, src_entry);
+            errdefer copied_value.deinit(dest.allocator);
+        }
+
+        // Step 2: Lock dest, check/insert value, unlock dest
+        dest.mutex.lock();
+        defer dest.mutex.unlock();
+
+        // Check destination
+        if (!replace) {
+            if (dest.data.get(dest_key)) |dst| {
+                const now = getCurrentTimestamp();
+                if (!dst.isExpired(now)) {
+                    // Destination exists and is not expired, return false and clean up copied value
+                    copied_value.deinit(dest.allocator);
+                    return false;
+                }
+            }
+        }
+
+        // Remove old destination if exists
+        if (dest.data.fetchRemove(dest_key)) |kv| {
+            dest.allocator.free(kv.key);
+            var old_value = kv.value;
+            old_value.deinit(dest.allocator);
+        }
+
+        // Insert copied value
+        const owned_dest_key = try dest.allocator.dupe(u8, dest_key);
+        errdefer dest.allocator.free(owned_dest_key);
+        try dest.data.put(owned_dest_key, copied_value);
+
+        return true;
+    }
+
+    /// Deep copy a Value using an explicit allocator.
+    /// Used by COPY command with cross-database support.
+    /// The returned Value's memory is owned by the provided allocator.
+    fn deepCopyValueWithAllocator(alloc: std.mem.Allocator, value: Value) !Value {
         return switch (value) {
             .string => |s| blk: {
-                const data_copy = try self.allocator.dupe(u8, s.data);
+                const data_copy = try alloc.dupe(u8, s.data);
                 break :blk Value{ .string = .{ .data = data_copy, .expires_at = s.expires_at } };
             },
             .list => |l| blk: {
                 var list_copy = std.ArrayList([]const u8){};
                 errdefer {
-                    for (list_copy.items) |elem| self.allocator.free(elem);
-                    list_copy.deinit(self.allocator);
+                    for (list_copy.items) |elem| alloc.free(elem);
+                    list_copy.deinit(alloc);
                 }
                 for (l.data.items) |elem| {
-                    const elem_copy = try self.allocator.dupe(u8, elem);
-                    try list_copy.append(self.allocator, elem_copy);
+                    const elem_copy = try alloc.dupe(u8, elem);
+                    try list_copy.append(alloc, elem_copy);
                 }
                 break :blk Value{ .list = .{ .data = list_copy, .expires_at = l.expires_at } };
             },
             .set => |s| blk: {
                 switch (s.encoding) {
                     .intset => {
-                        var intset = intset_mod.IntSet.init(self.allocator);
+                        var intset = intset_mod.IntSet.init(alloc);
                         errdefer intset.deinit();
 
                         var i: usize = 0;
@@ -6258,15 +6314,15 @@ pub const Storage = struct {
                         break :blk Value{ .set = .{ .encoding = .intset, .data = .{ .intset = intset }, .expires_at = s.expires_at } };
                     },
                     .hashmap => {
-                        var set_copy = std.StringHashMap(void).init(self.allocator);
+                        var set_copy = std.StringHashMap(void).init(alloc);
                         errdefer {
                             var it = set_copy.keyIterator();
-                            while (it.next()) |k| self.allocator.free(k.*);
+                            while (it.next()) |k| alloc.free(k.*);
                             set_copy.deinit();
                         }
                         var it = s.data.hashmap.keyIterator();
                         while (it.next()) |k| {
-                            const key_copy = try self.allocator.dupe(u8, k.*);
+                            const key_copy = try alloc.dupe(u8, k.*);
                             try set_copy.put(key_copy, {});
                         }
                         break :blk Value{ .set = .{ .encoding = .hashmap, .data = .{ .hashmap = set_copy }, .expires_at = s.expires_at } };
@@ -6274,20 +6330,20 @@ pub const Storage = struct {
                 }
             },
             .hash => |h| blk: {
-                var hash_copy = std.StringHashMap(Value.FieldValue).init(self.allocator);
+                var hash_copy = std.StringHashMap(Value.FieldValue).init(alloc);
                 errdefer {
                     var it = hash_copy.iterator();
                     while (it.next()) |e| {
-                        self.allocator.free(e.key_ptr.*);
+                        alloc.free(e.key_ptr.*);
                         var field_val = e.value_ptr.*;
-                        field_val.deinit(self.allocator);
+                        field_val.deinit(alloc);
                     }
                     hash_copy.deinit();
                 }
                 var it = h.data.iterator();
                 while (it.next()) |e| {
-                    const field_copy = try self.allocator.dupe(u8, e.key_ptr.*);
-                    const val_copy = try self.allocator.dupe(u8, e.value_ptr.*.data);
+                    const field_copy = try alloc.dupe(u8, e.key_ptr.*);
+                    const val_copy = try alloc.dupe(u8, e.value_ptr.*.data);
                     try hash_copy.put(field_copy, Value.FieldValue{
                         .data = val_copy,
                         .expires_at = e.value_ptr.*.expires_at, // Preserve field expiration
@@ -6296,20 +6352,20 @@ pub const Storage = struct {
                 break :blk Value{ .hash = .{ .data = hash_copy, .expires_at = h.expires_at } };
             },
             .sorted_set => |z| blk: {
-                var members_copy = std.StringHashMap(f64).init(self.allocator);
+                var members_copy = std.StringHashMap(f64).init(alloc);
                 var sorted_list_copy = std.ArrayList(Value.ScoredMember){};
 
                 errdefer {
                     var it = members_copy.keyIterator();
-                    while (it.next()) |k| self.allocator.free(k.*);
+                    while (it.next()) |k| alloc.free(k.*);
                     members_copy.deinit();
-                    sorted_list_copy.deinit(self.allocator);
+                    sorted_list_copy.deinit(alloc);
                 }
 
                 for (z.sorted_list.items) |scored| {
-                    const member_copy = try self.allocator.dupe(u8, scored.member);
+                    const member_copy = try alloc.dupe(u8, scored.member);
                     try members_copy.put(member_copy, scored.score);
-                    try sorted_list_copy.append(self.allocator, .{ .score = scored.score, .member = member_copy });
+                    try sorted_list_copy.append(alloc, .{ .score = scored.score, .member = member_copy });
                 }
 
                 break :blk Value{ .sorted_set = .{ .members = members_copy, .sorted_list = sorted_list_copy, .expires_at = z.expires_at } };
@@ -6317,23 +6373,23 @@ pub const Storage = struct {
             .stream => |st| blk: {
                 var entries_copy = std.ArrayList(Value.StreamEntry){};
                 errdefer {
-                    for (entries_copy.items) |*e| e.deinit(self.allocator);
-                    entries_copy.deinit(self.allocator);
+                    for (entries_copy.items) |*e| e.deinit(alloc);
+                    entries_copy.deinit(alloc);
                 }
 
                 for (st.entries.items) |e| {
                     var fields_copy = std.ArrayList([]const u8){};
                     errdefer {
-                        for (fields_copy.items) |item| self.allocator.free(item);
-                        fields_copy.deinit(self.allocator);
+                        for (fields_copy.items) |item| alloc.free(item);
+                        fields_copy.deinit(alloc);
                     }
 
                     for (e.fields.items) |item| {
-                        const item_copy = try self.allocator.dupe(u8, item);
-                        try fields_copy.append(self.allocator, item_copy);
+                        const item_copy = try alloc.dupe(u8, item);
+                        try fields_copy.append(alloc, item_copy);
                     }
 
-                    try entries_copy.append(self.allocator, .{
+                    try entries_copy.append(alloc, .{
                         .id = e.id,
                         .fields = fields_copy,
                     });
@@ -6343,7 +6399,7 @@ pub const Storage = struct {
                     .entries = entries_copy,
                     .last_id = st.last_id,
                     .expires_at = st.expires_at,
-                    .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
+                    .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(alloc),
                     .entries_added = st.entries_added,
                     .max_deleted_entry_id = st.max_deleted_entry_id,
                 } };
@@ -6357,50 +6413,47 @@ pub const Storage = struct {
             },
             .json => |j| blk: {
                 // Deep clone JSON tree
-
-                const cloned_root = try j.root.clone(self.allocator);
+                const cloned_root = try j.root.clone(alloc);
                 break :blk Value{ .json = .{
                     .root = cloned_root,
                     .expires_at = j.expires_at,
-                    .allocator = self.allocator,
+                    .allocator = alloc,
                 } };
             },
             .timeseries => |ts| blk: {
                 // Time series deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .timeseries = ts };
             },
             .bloom => |b| blk: {
                 // Bloom filter deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .bloom = b };
             },
             .cuckoo => |c| blk: {
                 // Cuckoo filter deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .cuckoo = c };
             },
             .count_min_sketch => |cms| blk: {
                 // Count-Min Sketch deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .count_min_sketch = cms };
             },
             .top_k => |tk| blk: {
                 // Top-K deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .top_k = tk };
             },
             .t_digest => |td| blk: {
                 // T-Digest deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .t_digest = td };
             },
             .vector_set => |vs| blk: {
                 // Vector set deep copy not yet implemented
-                // For now, return the original (stub for COPY command)
                 break :blk Value{ .vector_set = vs };
             },
         };
+    }
+
+    /// Deep copy a Value (helper for COPY command)
+    fn deepCopyValue(self: *Storage, value: Value) !Value {
+        return try deepCopyValueWithAllocator(self.allocator, value);
     }
 
     /// Touch one or more keys (update last access time - currently a stub).
@@ -8476,8 +8529,8 @@ pub const Storage = struct {
 
                     if (unit == .byte) {
                         // BYTE mode: start/end are byte-aligned — use fast @popCount path
-                        const start_byte: usize = @intCast(start_bit / 8);
-                        const end_byte: usize = @intCast(end_bit / 8);
+                        const start_byte: usize = @intCast(@divTrunc(start_bit, 8));
+                        const end_byte: usize = @intCast(@divTrunc(end_bit, 8));
                         for (sv.data[start_byte .. end_byte + 1]) |b| {
                             count += @popCount(b);
                         }
@@ -12773,6 +12826,113 @@ test "storage - copy with replace overwrites" {
 
     const value = storage.get("dest").?;
     try std.testing.expectEqualStrings("new_value", value);
+}
+
+test "storage - copy key to different storage (cross-database)" {
+    const allocator = std.testing.allocator;
+    var storage1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage1.deinit();
+    var storage2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage2.deinit();
+
+    try storage1.set("mykey", "hello", null);
+
+    const success = try storage1.copyKeyToStorage("mykey", &storage2, "mykey", false);
+    try std.testing.expect(success);
+
+    // Verify in destination storage
+    const value = storage2.get("mykey").?;
+    try std.testing.expectEqualStrings("hello", value);
+
+    // Verify source still exists
+    const source_value = storage1.get("mykey").?;
+    try std.testing.expectEqualStrings("hello", source_value);
+}
+
+test "storage - cross-database copy fails if destination exists" {
+    const allocator = std.testing.allocator;
+    var storage1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage1.deinit();
+    var storage2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage2.deinit();
+
+    try storage1.set("source", "value1", null);
+    try storage2.set("dest", "value2", null);
+
+    const success = try storage1.copyKeyToStorage("source", &storage2, "dest", false);
+    try std.testing.expect(!success);
+
+    // Destination should be unchanged
+    const value = storage2.get("dest").?;
+    try std.testing.expectEqualStrings("value2", value);
+}
+
+test "storage - cross-database copy with replace overwrites" {
+    const allocator = std.testing.allocator;
+    var storage1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage1.deinit();
+    var storage2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage2.deinit();
+
+    try storage1.set("source", "new_value", null);
+    try storage2.set("dest", "old_value", null);
+
+    const success = try storage1.copyKeyToStorage("source", &storage2, "dest", true);
+    try std.testing.expect(success);
+
+    const value = storage2.get("dest").?;
+    try std.testing.expectEqualStrings("new_value", value);
+}
+
+test "storage - cross-database copy list" {
+    const allocator = std.testing.allocator;
+    var storage1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage1.deinit();
+    var storage2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage2.deinit();
+
+    const items = [_][]const u8{ "a", "b", "c" };
+    _ = try storage1.lpush("mylist", &items);
+
+    const success = try storage1.copyKeyToStorage("mylist", &storage2, "mylist", false);
+    try std.testing.expect(success);
+
+    // Verify list in destination
+    const list_len = storage2.llen("mylist") catch 0;
+    try std.testing.expectEqual(@as(usize, 3), list_len);
+}
+
+test "storage - cross-database copy hash" {
+    const allocator = std.testing.allocator;
+    var storage1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage1.deinit();
+    var storage2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage2.deinit();
+
+    const fields = [_][]const u8{ "f1", "f2" };
+    const values = [_][]const u8{ "v1", "v2" };
+    _ = try storage1.hset("myhash", &fields, &values, null);
+
+    const success = try storage1.copyKeyToStorage("myhash", &storage2, "myhash", false);
+    try std.testing.expect(success);
+
+    // Verify hash in destination
+    if (storage2.hget("myhash", "f1")) |val| {
+        try std.testing.expectEqualStrings("v1", val);
+    } else {
+        try std.testing.expect(false); // Should not reach here
+    }
+}
+
+test "storage - cross-database copy nonexistent key returns error" {
+    const allocator = std.testing.allocator;
+    var storage1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage1.deinit();
+    var storage2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage2.deinit();
+
+    const result = storage1.copyKeyToStorage("nonexistent", &storage2, "dest", false);
+    try std.testing.expectError(error.NoSuchKey, result);
 }
 
 test "storage - touch counts existing keys" {
