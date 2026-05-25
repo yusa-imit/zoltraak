@@ -1408,7 +1408,8 @@ pub fn executeCommand(
         }
         // Configuration commands
         else if (std.mem.eql(u8, cmd_upper, "CONFIG")) {
-            break :blk try config_cmds.executeConfigCommand(allocator, storage, array);
+            const config_proto = getClientProtocol(client_registry, client_id);
+            break :blk try config_cmds.executeConfigCommand(allocator, storage, array, config_proto);
         }
         // Command introspection
         else if (std.mem.eql(u8, cmd_upper, "COMMAND")) {
@@ -2856,6 +2857,12 @@ pub fn executeCommand(
                 break :blk try acl_cmds.cmdACLDeluser(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "CAT")) {
                 break :blk try acl_cmds.cmdACLCat(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "LOG")) {
+                break :blk try acl_cmds.cmdACLLog(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "SAVE")) {
+                break :blk try acl_cmds.cmdACLSave(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
+                break :blk try acl_cmds.cmdACLLoad(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try acl_cmds.cmdACLHelp(allocator, array[1..]);
             } else {

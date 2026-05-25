@@ -1796,7 +1796,8 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                     "skiplist";
             },
             .stream => "stream",
-            .hyperloglog => "hyperloglog",
+            // HyperLogLog is stored as a string internally in Redis; dense format is "raw"
+            .hyperloglog => "raw",
             .json => "json",
             .timeseries => "timeseries",
             .bloom => "bloom",

@@ -4,11 +4,14 @@ const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const config_mod = @import("../storage/config.zig");
 const notifications_mod = @import("../storage/notifications.zig");
+const client_mod = @import("client.zig");
 
 const RespValue = protocol.RespValue;
+const MapPair = writer_mod.MapPair;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const Config = config_mod.Config;
+const RespProtocol = client_mod.RespProtocol;
 
 /// Execute CONFIG subcommand
 /// Caller owns returned memory and must free it
@@ -16,6 +19,7 @@ pub fn executeConfigCommand(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const RespValue,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     if (args.len < 2) {
         var w = Writer.init(allocator);
@@ -36,7 +40,7 @@ pub fn executeConfigCommand(
     defer allocator.free(subcmd_upper);
 
     if (std.mem.eql(u8, subcmd_upper, "GET")) {
-        return cmdConfigGet(allocator, storage, args);
+        return cmdConfigGet(allocator, storage, args, protocol_version);
     } else if (std.mem.eql(u8, subcmd_upper, "SET")) {
         return cmdConfigSet(allocator, storage, args);
     } else if (std.mem.eql(u8, subcmd_upper, "REWRITE")) {
@@ -53,11 +57,13 @@ pub fn executeConfigCommand(
 }
 
 /// CONFIG GET pattern [pattern ...]
-/// Returns array of [parameter, value, parameter, value, ...]
+/// RESP2: Returns flat array [parameter, value, parameter, value, ...]
+/// RESP3: Returns map {parameter: value, ...}
 fn cmdConfigGet(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const RespValue,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     if (args.len < 3) {
         var w = Writer.init(allocator);
@@ -117,7 +123,24 @@ fn cmdConfigGet(
         }
     }
 
-    // Build RESP array manually
+    // RESP3: return as map, RESP2: return as flat array
+    if (protocol_version == .RESP3) {
+        // Build map pairs (results is name0, value0, name1, value1, ...)
+        const pair_count = results.items.len / 2;
+        var pairs = try allocator.alloc(MapPair, pair_count);
+        defer allocator.free(pairs);
+        for (0..pair_count) |i| {
+            pairs[i] = MapPair{
+                .key = RespValue{ .bulk_string = results.items[i * 2] },
+                .value = RespValue{ .bulk_string = results.items[i * 2 + 1] },
+            };
+        }
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return w.writeMap(pairs);
+    }
+
+    // Build RESP2 flat array manually
     var buffer = std.ArrayList(u8){};
     errdefer buffer.deinit(allocator);
 
@@ -365,7 +388,7 @@ test "CONFIG GET single parameter" {
         RespValue{ .bulk_string = "maxmemory" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Response should be array with 2 elements: ["maxmemory", "0"]
@@ -386,7 +409,7 @@ test "CONFIG GET with wildcard pattern" {
         RespValue{ .bulk_string = "maxmemory*" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should match maxmemory and maxmemory-policy
@@ -407,7 +430,7 @@ test "CONFIG GET all parameters" {
         RespValue{ .bulk_string = "*" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should contain multiple parameters
@@ -430,7 +453,7 @@ test "CONFIG SET valid parameter" {
         RespValue{ .bulk_string = "1073741824" },
     };
 
-    const set_response = try executeConfigCommand(allocator, storage, &set_args);
+    const set_response = try executeConfigCommand(allocator, storage, &set_args, .RESP2);
     defer allocator.free(set_response);
 
     try testing.expect(std.mem.indexOf(u8, set_response, "OK") != null);
@@ -442,7 +465,7 @@ test "CONFIG SET valid parameter" {
         RespValue{ .bulk_string = "maxmemory" },
     };
 
-    const get_response = try executeConfigCommand(allocator, storage, &get_args);
+    const get_response = try executeConfigCommand(allocator, storage, &get_args, .RESP2);
     defer allocator.free(get_response);
 
     try testing.expect(std.mem.indexOf(u8, get_response, "1073741824") != null);
@@ -462,7 +485,7 @@ test "CONFIG SET read-only parameter fails" {
         RespValue{ .bulk_string = "8080" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return error
@@ -484,7 +507,7 @@ test "CONFIG SET invalid value fails" {
         RespValue{ .bulk_string = "not-a-number" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return error
@@ -507,7 +530,7 @@ test "CONFIG SET multiple parameters" {
         RespValue{ .bulk_string = "60" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "OK") != null);
@@ -520,7 +543,7 @@ test "CONFIG SET multiple parameters" {
         RespValue{ .bulk_string = "timeout" },
     };
 
-    const get_response = try executeConfigCommand(allocator, storage, &get_args);
+    const get_response = try executeConfigCommand(allocator, storage, &get_args, .RESP2);
     defer allocator.free(get_response);
 
     try testing.expect(std.mem.indexOf(u8, get_response, "2048") != null);
@@ -539,7 +562,7 @@ test "CONFIG RESETSTAT returns OK" {
         RespValue{ .bulk_string = "RESETSTAT" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "OK") != null);
@@ -557,7 +580,7 @@ test "CONFIG HELP returns help text" {
         RespValue{ .bulk_string = "HELP" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should contain help text
@@ -579,7 +602,7 @@ test "CONFIG with invalid subcommand" {
         RespValue{ .bulk_string = "INVALID" },
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "ERR") != null);
@@ -599,7 +622,7 @@ test "CONFIG GET case insensitive" {
         RespValue{ .bulk_string = "MaxMemory" }, // mixed case param
     };
 
-    const response = try executeConfigCommand(allocator, storage, &args);
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
@@ -634,7 +657,7 @@ test "CONFIG SET boolean parameter" {
             RespValue{ .bulk_string = tc.value },
         };
 
-        const set_response = try executeConfigCommand(allocator, storage, &set_args);
+        const set_response = try executeConfigCommand(allocator, storage, &set_args, .RESP2);
         defer allocator.free(set_response);
 
         var get_args = [_]RespValue{
@@ -643,7 +666,7 @@ test "CONFIG SET boolean parameter" {
             RespValue{ .bulk_string = "appendonly" },
         };
 
-        const get_response = try executeConfigCommand(allocator, storage, &get_args);
+        const get_response = try executeConfigCommand(allocator, storage, &get_args, .RESP2);
         defer allocator.free(get_response);
 
         try testing.expect(std.mem.indexOf(u8, get_response, tc.expected) != null);
@@ -664,7 +687,7 @@ test "CONFIG REWRITE creates config file" {
         RespValue{ .bulk_string = "4096" },
     };
 
-    const set_response = try executeConfigCommand(allocator, storage, &set_args);
+    const set_response = try executeConfigCommand(allocator, storage, &set_args, .RESP2);
     defer allocator.free(set_response);
 
     // Build command: CONFIG REWRITE
@@ -673,7 +696,7 @@ test "CONFIG REWRITE creates config file" {
         RespValue{ .bulk_string = "REWRITE" },
     };
 
-    const rewrite_response = try executeConfigCommand(allocator, storage, &rewrite_args);
+    const rewrite_response = try executeConfigCommand(allocator, storage, &rewrite_args, .RESP2);
     defer allocator.free(rewrite_response);
 
     try testing.expect(std.mem.indexOf(u8, rewrite_response, "OK") != null);
@@ -694,4 +717,86 @@ test "CONFIG REWRITE creates config file" {
 
     try testing.expect(std.mem.indexOf(u8, content, "maxmemory") != null);
     try testing.expect(std.mem.indexOf(u8, content, "4096") != null);
+}
+
+test "CONFIG GET RESP3 returns map format" {
+    const allocator = testing.allocator;
+
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var args = [_]RespValue{
+        RespValue{ .bulk_string = "CONFIG" },
+        RespValue{ .bulk_string = "GET" },
+        RespValue{ .bulk_string = "maxmemory" },
+    };
+
+    // RESP3 should return map format starting with %
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // RESP3 map starts with %
+    try testing.expect(response[0] == '%');
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
+}
+
+test "CONFIG GET RESP2 returns flat array format" {
+    const allocator = testing.allocator;
+
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var args = [_]RespValue{
+        RespValue{ .bulk_string = "CONFIG" },
+        RespValue{ .bulk_string = "GET" },
+        RespValue{ .bulk_string = "maxmemory" },
+    };
+
+    // RESP2 should return flat array starting with *
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    // RESP2 array starts with *
+    try testing.expect(response[0] == '*');
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
+}
+
+test "CONFIG GET RESP3 wildcard returns map" {
+    const allocator = testing.allocator;
+
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var args = [_]RespValue{
+        RespValue{ .bulk_string = "CONFIG" },
+        RespValue{ .bulk_string = "GET" },
+        RespValue{ .bulk_string = "maxmemory*" },
+    };
+
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // RESP3 map starts with %, contains maxmemory and maxmemory-policy
+    try testing.expect(response[0] == '%');
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "maxmemory-policy") != null);
+}
+
+test "CONFIG GET RESP3 empty result returns empty map" {
+    const allocator = testing.allocator;
+
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var args = [_]RespValue{
+        RespValue{ .bulk_string = "CONFIG" },
+        RespValue{ .bulk_string = "GET" },
+        RespValue{ .bulk_string = "nonexistent-parameter-xyz" },
+    };
+
+    const response = try executeConfigCommand(allocator, storage, &args, .RESP3);
+    defer allocator.free(response);
+
+    // RESP3 empty map: %0\r\n
+    try testing.expectEqualStrings("%0\r\n", response);
 }

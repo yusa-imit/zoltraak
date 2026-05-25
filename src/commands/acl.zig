@@ -612,6 +612,62 @@ pub fn cmdACLHelp(
     return buffer.toOwnedSlice(allocator);
 }
 
+/// ACL LOG [count | RESET] — Return or clear ACL security log entries
+/// Returns array of recent ACL violations; RESET clears the log.
+pub fn cmdACLLog(
+    allocator: Allocator,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len == 1) {
+        // ACL LOG — return empty array (no violations logged in stub)
+        return w.writeArray(&[_]RespValue{});
+    }
+
+    const subcmd = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid argument for 'acl log' command"),
+    };
+
+    var subcmd_upper_buf: [16]u8 = undefined;
+    const subcmd_upper = std.ascii.upperString(&subcmd_upper_buf, subcmd[0..@min(subcmd.len, 16)]);
+
+    if (std.mem.eql(u8, subcmd_upper, "RESET")) {
+        return w.writeOK();
+    }
+
+    // ACL LOG <count> — return empty array (no violations tracked)
+    const count = std.fmt.parseInt(u64, subcmd, 10) catch {
+        return w.writeError("ERR Invalid arguments");
+    };
+    _ = count;
+    return w.writeArray(&[_]RespValue{});
+}
+
+/// ACL SAVE — Persist current ACL rules to the ACL file
+/// Returns +OK (stub: no file write in single-node mode)
+pub fn cmdACLSave(
+    allocator: Allocator,
+    _: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeOK();
+}
+
+/// ACL LOAD — Reload ACL rules from the ACL file
+/// Returns +OK (stub: ACL file not configured in single-node mode)
+pub fn cmdACLLoad(
+    allocator: Allocator,
+    _: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeOK();
+}
+
 // Unit tests
 test "ACL WHOAMI returns default" {
     const allocator = std.testing.allocator;
@@ -683,6 +739,80 @@ test "ACL DELUSER cannot delete default" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "-ERR") != null);
+}
+
+test "ACL LOG returns empty array by default" {
+    const allocator = std.testing.allocator;
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+    };
+
+    const result = try cmdACLLog(allocator, &args);
+    defer allocator.free(result);
+
+    // Empty array: *0\r\n
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "ACL LOG RESET returns OK" {
+    const allocator = std.testing.allocator;
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+        RespValue{ .bulk_string = "RESET" },
+    };
+
+    const result = try cmdACLLog(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
+}
+
+test "ACL LOG with count returns empty array" {
+    const allocator = std.testing.allocator;
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+        RespValue{ .bulk_string = "10" },
+    };
+
+    const result = try cmdACLLog(allocator, &args);
+    defer allocator.free(result);
+
+    // Empty array (no violations logged)
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "ACL SAVE returns OK" {
+    const allocator = std.testing.allocator;
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "SAVE" },
+    };
+
+    const result = try cmdACLSave(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
+}
+
+test "ACL LOAD returns OK" {
+    const allocator = std.testing.allocator;
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOAD" },
+    };
+
+    const result = try cmdACLLoad(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
 }
 
 test "ACL CAT lists categories" {
