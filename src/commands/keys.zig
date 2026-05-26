@@ -794,7 +794,9 @@ fn cmdExpireatImpl(
         else => return w.writeError("ERR value is not an integer or out of range"),
     };
 
-    if (unix_time <= 0) {
+    // Negative Unix timestamps are invalid; 0 and positive are accepted even if in the past
+    // (a past timestamp immediately expires the key, matching Redis behavior)
+    if (unix_time < 0) {
         var buf: [64]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "ERR invalid expire time in '{s}' command", .{cmd_name}) catch "ERR invalid expire time";
         return w.writeError(msg);
@@ -2914,4 +2916,83 @@ test "COPY - invalid DB index returns error" {
 
     // Expect error
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+// ── EXPIREAT compatibility tests ──────────────────────────────────────────────
+
+test "EXPIREAT - negative timestamp returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+
+    // Use PubSub for notification support
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIREAT" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "-1" },
+    };
+    const result = try cmdExpireat(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    // Negative timestamp should return error
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "EXPIREAT - zero timestamp (epoch) expires key immediately" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // unix_time = 0 = epoch (Jan 1, 1970) = past = should expire key
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIREAT" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "0" },
+    };
+    const result = try cmdExpireat(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    // Should succeed (return :1)
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Key should now be expired (get returns null)
+    const val = storage.get("mykey");
+    try std.testing.expectEqual(@as(?[]const u8, null), val);
+}
+
+test "EXPIREAT - positive past timestamp expires key immediately" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // unix_time = 1000 seconds = 1970-01-01 00:16:40 = definitely in the past
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIREAT" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "1000" },
+    };
+    const result = try cmdExpireat(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    // Should succeed (return :1)
+    try std.testing.expectEqualStrings(":1\r\n", result);
+
+    // Key should be expired on next read
+    const val = storage.get("mykey");
+    try std.testing.expectEqual(@as(?[]const u8, null), val);
 }

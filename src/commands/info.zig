@@ -242,8 +242,8 @@ fn buildStatsSection(
     try bw.writeAll("expired_keys:0\r\n");
     try bw.print("evicted_keys:{d}\r\n", .{storage.getEvictedKeysCount()});
     try bw.print("lazyfree_pending_objects:{d}\r\n", .{storage.lazyfree_task.getPendingCount()});
-    try bw.writeAll("keyspace_hits:0\r\n");
-    try bw.writeAll("keyspace_misses:0\r\n");
+    try bw.print("keyspace_hits:{d}\r\n", .{storage.getKeyspaceHits()});
+    try bw.print("keyspace_misses:{d}\r\n", .{storage.getKeyspaceMisses()});
     try bw.writeAll("pubsub_channels:0\r\n");
     try bw.writeAll("pubsub_patterns:0\r\n");
     try bw.writeAll("latest_fork_usec:0\r\n");
@@ -702,4 +702,47 @@ test "INFO stats section shows real command/connection counts" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "total_commands_processed:42") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "total_connections_received:7") != null);
+}
+
+test "INFO stats section shows keyspace hits and misses" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Simulate some GET hits and misses
+    try storage.set("k1", "v1", null);
+    _ = storage.get("k1");      // hit
+    _ = storage.get("missing"); // miss
+    _ = storage.get("missing"); // miss
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 1,
+        .total_commands_processed = 3,
+        .total_connections_received = 1,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "STATS" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "keyspace_hits:1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "keyspace_misses:2") != null);
 }

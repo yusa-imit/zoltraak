@@ -806,6 +806,8 @@ pub const Storage = struct {
     lazy_expire: std.atomic.Value(bool), // lazyfree-lazy-expire: async delete on expiry access
     lazy_eviction: std.atomic.Value(bool), // lazyfree-lazy-eviction: async delete on maxmemory eviction
     lazy_server_del: std.atomic.Value(bool), // lazyfree-lazy-server-del: async delete on key overwrite
+    keyspace_hits: std.atomic.Value(u64), // Successful key lookups (used by INFO stats)
+    keyspace_misses: std.atomic.Value(u64), // Failed key lookups (used by INFO stats)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -926,6 +928,8 @@ pub const Storage = struct {
             .lazy_expire = std.atomic.Value(bool).init(false),
             .lazy_eviction = std.atomic.Value(bool).init(false),
             .lazy_server_del = std.atomic.Value(bool).init(false),
+            .keyspace_hits = std.atomic.Value(u64).init(0),
+            .keyspace_misses = std.atomic.Value(u64).init(0),
         };
 
         // Start background lazy free thread
@@ -1043,6 +1047,32 @@ pub const Storage = struct {
     /// Get uptime in seconds since server start
     pub fn getUptimeSeconds(self: *Storage) i64 {
         return std.time.timestamp() - self.server_start_time;
+    }
+
+    /// Increment keyspace_hits counter (successful key lookup)
+    pub fn incrementKeyspaceHits(self: *Storage) void {
+        _ = self.keyspace_hits.fetchAdd(1, .monotonic);
+    }
+
+    /// Increment keyspace_misses counter (failed key lookup)
+    pub fn incrementKeyspaceMisses(self: *Storage) void {
+        _ = self.keyspace_misses.fetchAdd(1, .monotonic);
+    }
+
+    /// Get current keyspace_hits count
+    pub fn getKeyspaceHits(self: *Storage) u64 {
+        return self.keyspace_hits.load(.monotonic);
+    }
+
+    /// Get current keyspace_misses count
+    pub fn getKeyspaceMisses(self: *Storage) u64 {
+        return self.keyspace_misses.load(.monotonic);
+    }
+
+    /// Reset keyspace hit/miss statistics (called by CONFIG RESETSTAT)
+    pub fn resetKeyspaceStats(self: *Storage) void {
+        self.keyspace_hits.store(0, .monotonic);
+        self.keyspace_misses.store(0, .monotonic);
     }
 
     /// Record the last access time for a key (in milliseconds) for LFU decay tracking
@@ -1979,12 +2009,16 @@ pub const Storage = struct {
 
     /// Get string value for key
     /// Returns null if key doesn't exist, is expired, or is not a string
-    /// Expired keys are lazily deleted
+    /// Expired keys are lazily deleted.
+    /// Tracks keyspace_hits/misses: hit when string found, miss when key absent or expired.
     pub fn get(self: *Storage, key: []const u8) ?[]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const entry = self.data.getEntry(key) orelse return null;
+        const entry = self.data.getEntry(key) orelse {
+            _ = self.keyspace_misses.fetchAdd(1, .monotonic);
+            return null;
+        };
 
         // Check expiration
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
@@ -2015,13 +2049,17 @@ pub const Storage = struct {
                 var v = value;
                 v.deinit(self.allocator);
             }
+            _ = self.keyspace_misses.fetchAdd(1, .monotonic);
             return null;
         }
 
-        // Check type
+        // Check type — only strings count as hits for the GET command path
         return switch (entry.value_ptr.*) {
-            .string => |s| s.data,
-            else => null,
+            .string => |s| blk: {
+                _ = self.keyspace_hits.fetchAdd(1, .monotonic);
+                break :blk s.data;
+            },
+            else => null, // WRONGTYPE — do not track as hit or miss (will return WRONGTYPE error)
         };
     }
 
@@ -2051,7 +2089,10 @@ pub const Storage = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const entry = self.data.getEntry(key) orelse return false;
+        const entry = self.data.getEntry(key) orelse {
+            _ = self.keyspace_misses.fetchAdd(1, .monotonic);
+            return false;
+        };
 
         // Check expiration
         if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
@@ -2076,9 +2117,11 @@ pub const Storage = struct {
             _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
+            _ = self.keyspace_misses.fetchAdd(1, .monotonic);
             return false;
         }
 
+        _ = self.keyspace_hits.fetchAdd(1, .monotonic);
         return true;
     }
 
@@ -13855,4 +13898,89 @@ test "storage - bitcount WRONGTYPE error" {
     try storage.lpush("mylist", &[_][]const u8{"value"});
     const result = storage.bitcount("mylist", null, null, .byte);
     try std.testing.expectError(error.WrongType, result);
+}
+
+// ── Keyspace hits/misses tracking tests ──────────────────────────────────────
+
+test "keyspace hits - GET on existing string key increments hit counter" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+    const initial_hits = storage.getKeyspaceHits();
+    const initial_misses = storage.getKeyspaceMisses();
+
+    _ = storage.get("mykey");
+
+    try std.testing.expectEqual(initial_hits + 1, storage.getKeyspaceHits());
+    try std.testing.expectEqual(initial_misses, storage.getKeyspaceMisses());
+}
+
+test "keyspace misses - GET on non-existent key increments miss counter" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const initial_hits = storage.getKeyspaceHits();
+    const initial_misses = storage.getKeyspaceMisses();
+
+    _ = storage.get("nosuchkey");
+
+    try std.testing.expectEqual(initial_hits, storage.getKeyspaceHits());
+    try std.testing.expectEqual(initial_misses + 1, storage.getKeyspaceMisses());
+}
+
+test "keyspace hits/misses - multiple GETs accumulate correctly" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k1", "v1", null);
+    try storage.set("k2", "v2", null);
+
+    _ = storage.get("k1");   // hit
+    _ = storage.get("k2");   // hit
+    _ = storage.get("k3");   // miss
+    _ = storage.get("k4");   // miss
+    _ = storage.get("k5");   // miss
+
+    try std.testing.expectEqual(@as(u64, 2), storage.getKeyspaceHits());
+    try std.testing.expectEqual(@as(u64, 3), storage.getKeyspaceMisses());
+}
+
+test "keyspace stats - resetKeyspaceStats clears both counters" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+    _ = storage.get("mykey");
+    _ = storage.get("nosuchkey");
+
+    // Verify counters are non-zero
+    try std.testing.expect(storage.getKeyspaceHits() > 0);
+    try std.testing.expect(storage.getKeyspaceMisses() > 0);
+
+    storage.resetKeyspaceStats();
+
+    try std.testing.expectEqual(@as(u64, 0), storage.getKeyspaceHits());
+    try std.testing.expectEqual(@as(u64, 0), storage.getKeyspaceMisses());
+}
+
+test "keyspace hits - GET on expired key counts as miss" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set with expiry far in the past (1 ms after epoch = already expired)
+    const past_time_ms: i64 = 1;
+    try storage.set("expiredkey", "value", past_time_ms);
+
+    const initial_misses = storage.getKeyspaceMisses();
+
+    // Attempt to GET the expired key — should count as miss
+    _ = storage.get("expiredkey");
+
+    try std.testing.expectEqual(initial_misses + 1, storage.getKeyspaceMisses());
 }
