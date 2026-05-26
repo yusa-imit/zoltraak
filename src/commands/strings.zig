@@ -155,6 +155,7 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
         "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
         "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE", "TS.QUERYINDEX", "TS.INFO",
         "VCARD", "VDIM", "VEMB", "VISMEMBER", "VRANDMEMBER", "VGETATTR", "VINFO", "VSIM", "VRANGE", "VLINKS",
+        "EVAL_RO", "EVALSHA_RO", "FCALL_RO",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -1538,6 +1539,16 @@ pub fn executeCommand(
             defer allocator.free(args);
             const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
             break :blk try scripting_cmds.cmdEvalSHA(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state, databases, num_databases);
+        } else if (std.mem.eql(u8, cmd_upper, "EVAL_RO")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
+            break :blk try scripting_cmds.cmdEvalRo(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state, databases, num_databases);
+        } else if (std.mem.eql(u8, cmd_upper, "EVALSHA_RO")) {
+            const args = try extractBulkStrings(allocator, array[1..]);
+            defer allocator.free(args);
+            const resp_version = @intFromEnum(getClientProtocol(client_registry, client_id));
+            break :blk try scripting_cmds.cmdEvalShaRo(allocator, storage, script_store, args, resp_version, aof, ps, subscriber_id, tx, repl, my_port, replica_stream, replica_idx, client_registry, client_id, shutdown_state, databases, num_databases);
         } else if (std.mem.eql(u8, cmd_upper, "SCRIPT")) {
             if (array.len < 2) {
                 var w = Writer.init(allocator);
