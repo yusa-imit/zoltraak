@@ -82,6 +82,15 @@ pub fn cmdInfo(
     if (show_all or show_default or std.mem.eql(u8, section, "KEYSPACE")) {
         try buildKeyspaceSection(&buf, allocator, storage);
     }
+    if (show_all or std.mem.eql(u8, section, "COMMANDSTATS")) {
+        try buildCommandstatsSection(&buf, allocator, storage);
+    }
+    if (show_all or std.mem.eql(u8, section, "ERRORSTATS")) {
+        try buildErrorstatsSection(&buf, allocator, storage);
+    }
+    if (show_all or std.mem.eql(u8, section, "LATENCYSTATS")) {
+        try buildLatencystatsSection(&buf, allocator);
+    }
 
     const info = try buf.toOwnedSlice(allocator);
     defer allocator.free(info);
@@ -341,6 +350,62 @@ fn buildKeyspaceSection(
         try bw.print("db0:keys={d},expires={d},avg_ttl=0\r\n", .{ total_keys, keys_with_expiry });
     }
 
+    try bw.writeAll("\r\n");
+}
+
+fn buildCommandstatsSection(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+) !void {
+    const bw = buf.writer(allocator);
+    try bw.writeAll("# Commandstats\r\n");
+
+    const snapshot = try storage.snapshotCommandStats(allocator);
+    defer allocator.free(snapshot);
+
+    for (snapshot) |item| {
+        const name_lower = try std.ascii.allocLowerString(allocator, item.name);
+        defer allocator.free(name_lower);
+
+        const usec_per_call: f64 = if (item.entry.calls > 0)
+            @as(f64, @floatFromInt(item.entry.usec)) / @as(f64, @floatFromInt(item.entry.calls))
+        else
+            0.0;
+
+        try bw.print(
+            "cmdstat_{s}:calls={d},usec={d},usec_per_call={d:.2},rejected_calls={d},failed_calls={d}\r\n",
+            .{ name_lower, item.entry.calls, item.entry.usec, usec_per_call, item.entry.rejected_calls, item.entry.failed_calls },
+        );
+    }
+
+    try bw.writeAll("\r\n");
+}
+
+fn buildErrorstatsSection(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    storage: *Storage,
+) !void {
+    const bw = buf.writer(allocator);
+    try bw.writeAll("# Errorstats\r\n");
+
+    const snapshot = try storage.snapshotErrorStats(allocator);
+    defer allocator.free(snapshot);
+
+    for (snapshot) |item| {
+        try bw.print("errorstat_{s}:count={d}\r\n", .{ item.error_type, item.count });
+    }
+
+    try bw.writeAll("\r\n");
+}
+
+fn buildLatencystatsSection(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) !void {
+    const bw = buf.writer(allocator);
+    try bw.writeAll("# Latencystats\r\n");
     try bw.writeAll("\r\n");
 }
 
@@ -745,4 +810,166 @@ test "INFO stats section shows keyspace hits and misses" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "keyspace_hits:1") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "keyspace_misses:2") != null);
+}
+
+test "INFO commandstats section is empty when no commands recorded" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "COMMANDSTATS" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Commandstats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cmdstat_") == null);
+}
+
+test "INFO commandstats section shows recorded commands" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordCommandStat("GET", 15);
+    storage.recordCommandStat("GET", 25);
+    storage.recordCommandStat("SET", 10);
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 1,
+        .total_commands_processed = 3,
+        .total_connections_received = 1,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "COMMANDSTATS" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "cmdstat_get:calls=2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cmdstat_set:calls=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "usec=40") != null); // GET: 15+25
+}
+
+test "INFO errorstats section shows recorded errors" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordErrorStat("ERR");
+    storage.recordErrorStat("ERR");
+    storage.recordErrorStat("WRONGTYPE");
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 1,
+        .total_commands_processed = 3,
+        .total_connections_received = 1,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "ERRORSTATS" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Errorstats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "errorstat_ERR:count=2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "errorstat_WRONGTYPE:count=1") != null);
+}
+
+test "INFO ALL includes commandstats and errorstats sections" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordCommandStat("PING", 5);
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "900 1 300 10 60 10000",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+
+    const stats = ServerStats{
+        .client_count = 1,
+        .total_commands_processed = 1,
+        .total_connections_received = 1,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "ALL" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Commandstats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Errorstats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Latencystats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cmdstat_ping:calls=1") != null);
 }

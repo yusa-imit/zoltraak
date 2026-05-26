@@ -331,6 +331,7 @@ fn cmdConfigResetStat(
 
     storage.config.resetStats();
     storage.resetKeyspaceStats();
+    storage.resetCommandStats();
 
     var w = Writer.init(allocator);
     defer w.deinit();

@@ -57,6 +57,17 @@ pub const LazyFreeWorkType = lazyfree_mod.LazyFreeWorkType;
 pub const DefragTask = defrag_mod.DefragTask;
 pub const ModuleStore = modules_mod.ModuleStore;
 
+/// Per-command call statistics tracked for INFO commandstats
+pub const CommandStatEntry = struct {
+    calls: u64 = 0,
+    usec: u64 = 0,
+    rejected_calls: u64 = 0,
+    failed_calls: u64 = 0,
+};
+
+pub const CommandStatSnapshot = struct { name: []const u8, entry: CommandStatEntry };
+pub const ErrorStatSnapshot = struct { error_type: []const u8, count: u64 };
+
 /// Mode for XACKDEL and XDELEX commands
 pub const XRefMode = enum {
     keepref, // Default: preserve PEL references
@@ -808,6 +819,10 @@ pub const Storage = struct {
     lazy_server_del: std.atomic.Value(bool), // lazyfree-lazy-server-del: async delete on key overwrite
     keyspace_hits: std.atomic.Value(u64), // Successful key lookups (used by INFO stats)
     keyspace_misses: std.atomic.Value(u64), // Failed key lookups (used by INFO stats)
+    command_stats_mutex: std.Thread.Mutex, // Protects command_stats
+    command_stats: std.StringHashMapUnmanaged(CommandStatEntry), // Per-command call statistics
+    error_stats_mutex: std.Thread.Mutex, // Protects error_stats
+    error_stats: std.StringHashMapUnmanaged(u64), // Per-error-type occurrence counts
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -930,6 +945,10 @@ pub const Storage = struct {
             .lazy_server_del = std.atomic.Value(bool).init(false),
             .keyspace_hits = std.atomic.Value(u64).init(0),
             .keyspace_misses = std.atomic.Value(u64).init(0),
+            .command_stats_mutex = std.Thread.Mutex{},
+            .command_stats = std.StringHashMapUnmanaged(CommandStatEntry){},
+            .error_stats_mutex = std.Thread.Mutex{},
+            .error_stats = std.StringHashMapUnmanaged(u64){},
         };
 
         // Start background lazy free thread
@@ -1075,6 +1094,92 @@ pub const Storage = struct {
         self.keyspace_misses.store(0, .monotonic);
     }
 
+    /// Record a command invocation for INFO commandstats.
+    /// Increments calls and usec for the named command.
+    pub fn recordCommandStat(self: *Storage, name: []const u8, usec: u64) void {
+        self.command_stats_mutex.lock();
+        defer self.command_stats_mutex.unlock();
+
+        const gop = self.command_stats.getOrPut(self.allocator, name) catch return;
+        if (!gop.found_existing) {
+            const owned = self.allocator.dupe(u8, name) catch {
+                _ = self.command_stats.remove(name);
+                return;
+            };
+            gop.key_ptr.* = owned;
+            gop.value_ptr.* = CommandStatEntry{};
+        }
+        gop.value_ptr.calls += 1;
+        gop.value_ptr.usec += usec;
+    }
+
+    /// Record an error response type for INFO errorstats.
+    /// error_type is the prefix word from the RESP error string (e.g. "ERR", "WRONGTYPE").
+    pub fn recordErrorStat(self: *Storage, error_type: []const u8) void {
+        self.error_stats_mutex.lock();
+        defer self.error_stats_mutex.unlock();
+
+        const gop = self.error_stats.getOrPut(self.allocator, error_type) catch return;
+        if (!gop.found_existing) {
+            const owned = self.allocator.dupe(u8, error_type) catch {
+                _ = self.error_stats.remove(error_type);
+                return;
+            };
+            gop.key_ptr.* = owned;
+            gop.value_ptr.* = 0;
+        }
+        gop.value_ptr.* += 1;
+    }
+
+    /// Reset command and error statistics (called by CONFIG RESETSTAT).
+    pub fn resetCommandStats(self: *Storage) void {
+        {
+            self.command_stats_mutex.lock();
+            defer self.command_stats_mutex.unlock();
+            var it = self.command_stats.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.calls = 0;
+                entry.value_ptr.usec = 0;
+                entry.value_ptr.rejected_calls = 0;
+                entry.value_ptr.failed_calls = 0;
+            }
+        }
+        {
+            self.error_stats_mutex.lock();
+            defer self.error_stats_mutex.unlock();
+            var it = self.error_stats.valueIterator();
+            while (it.next()) |v| {
+                v.* = 0;
+            }
+        }
+    }
+
+    /// Snapshot command stats for INFO commandstats (caller must free the slice).
+    pub fn snapshotCommandStats(self: *Storage, allocator: std.mem.Allocator) ![]CommandStatSnapshot {
+        self.command_stats_mutex.lock();
+        defer self.command_stats_mutex.unlock();
+
+        var result = try std.ArrayList(CommandStatSnapshot).initCapacity(allocator, self.command_stats.count());
+        var it = self.command_stats.iterator();
+        while (it.next()) |kv| {
+            try result.append(allocator, CommandStatSnapshot{ .name = kv.key_ptr.*, .entry = kv.value_ptr.* });
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Snapshot error stats for INFO errorstats (caller must free the slice).
+    pub fn snapshotErrorStats(self: *Storage, allocator: std.mem.Allocator) ![]ErrorStatSnapshot {
+        self.error_stats_mutex.lock();
+        defer self.error_stats_mutex.unlock();
+
+        var result = try std.ArrayList(ErrorStatSnapshot).initCapacity(allocator, self.error_stats.count());
+        var it = self.error_stats.iterator();
+        while (it.next()) |kv| {
+            try result.append(allocator, ErrorStatSnapshot{ .error_type = kv.key_ptr.*, .count = kv.value_ptr.* });
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
     /// Record the last access time for a key (in milliseconds) for LFU decay tracking
     /// Should be called when a key is accessed
     pub fn setKeyAccessTime(self: *Storage, key: []const u8, time_ms: i64) !void {
@@ -1200,6 +1305,24 @@ pub const Storage = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.key_versions.deinit();
+
+        // Free command stats map (keys are owned)
+        {
+            var cs_it = self.command_stats.iterator();
+            while (cs_it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+            }
+            self.command_stats.deinit(self.allocator);
+        }
+
+        // Free error stats map (keys are owned)
+        {
+            var es_it = self.error_stats.iterator();
+            while (es_it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+            }
+            self.error_stats.deinit(self.allocator);
+        }
 
         self.config.deinit();
 
@@ -13983,4 +14106,90 @@ test "keyspace hits - GET on expired key counts as miss" {
     _ = storage.get("expiredkey");
 
     try std.testing.expectEqual(initial_misses + 1, storage.getKeyspaceMisses());
+}
+
+test "commandstats - recordCommandStat increments calls and usec" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordCommandStat("GET", 10);
+    storage.recordCommandStat("GET", 20);
+    storage.recordCommandStat("SET", 5);
+
+    const snap = try storage.snapshotCommandStats(allocator);
+    defer allocator.free(snap);
+
+    var found_get = false;
+    var found_set = false;
+    for (snap) |item| {
+        if (std.mem.eql(u8, item.name, "GET")) {
+            try std.testing.expectEqual(@as(u64, 2), item.entry.calls);
+            try std.testing.expectEqual(@as(u64, 30), item.entry.usec);
+            found_get = true;
+        }
+        if (std.mem.eql(u8, item.name, "SET")) {
+            try std.testing.expectEqual(@as(u64, 1), item.entry.calls);
+            try std.testing.expectEqual(@as(u64, 5), item.entry.usec);
+            found_set = true;
+        }
+    }
+    try std.testing.expect(found_get);
+    try std.testing.expect(found_set);
+}
+
+test "commandstats - resetCommandStats zeroes all entries" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordCommandStat("GET", 100);
+    storage.recordCommandStat("SET", 50);
+    storage.resetCommandStats();
+
+    const snap = try storage.snapshotCommandStats(allocator);
+    defer allocator.free(snap);
+
+    for (snap) |item| {
+        try std.testing.expectEqual(@as(u64, 0), item.entry.calls);
+        try std.testing.expectEqual(@as(u64, 0), item.entry.usec);
+    }
+}
+
+test "errorstats - recordErrorStat increments count per type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordErrorStat("ERR");
+    storage.recordErrorStat("ERR");
+    storage.recordErrorStat("WRONGTYPE");
+
+    const snap = try storage.snapshotErrorStats(allocator);
+    defer allocator.free(snap);
+
+    var err_count: u64 = 0;
+    var wt_count: u64 = 0;
+    for (snap) |item| {
+        if (std.mem.eql(u8, item.error_type, "ERR")) err_count = item.count;
+        if (std.mem.eql(u8, item.error_type, "WRONGTYPE")) wt_count = item.count;
+    }
+    try std.testing.expectEqual(@as(u64, 2), err_count);
+    try std.testing.expectEqual(@as(u64, 1), wt_count);
+}
+
+test "errorstats - resetCommandStats zeroes error counts" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.recordErrorStat("ERR");
+    storage.resetCommandStats();
+
+    const snap = try storage.snapshotErrorStats(allocator);
+    defer allocator.free(snap);
+
+    for (snap) |item| {
+        try std.testing.expectEqual(@as(u64, 0), item.count);
+    }
 }

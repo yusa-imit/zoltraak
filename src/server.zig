@@ -567,7 +567,8 @@ pub const Server = struct {
             const selected_db = self.client_registry.getSelectedDb(client_id);
             const storage = &self.databases[@intCast(selected_db)];
 
-            // Execute command
+            // Execute command — capture timing for commandstats
+            const cmd_start_usec = std.time.microTimestamp();
             const response = commands.executeCommand(
                 arena_allocator,
                 storage,
@@ -592,6 +593,21 @@ pub const Server = struct {
                 _ = connection.stream.write(error_response) catch break;
                 continue;
             };
+            const cmd_elapsed_usec: u64 = @intCast(@max(0, std.time.microTimestamp() - cmd_start_usec));
+
+            // Record per-command statistics for INFO commandstats
+            if (cmd_name.len > 0) {
+                storage.recordCommandStat(cmd_name, cmd_elapsed_usec);
+            }
+
+            // Record error type for INFO errorstats if response is a RESP error
+            if (response.len > 1 and response[0] == '-') {
+                const after_dash = response[1..];
+                const space_pos = std.mem.indexOfAny(u8, after_dash, " \r\n") orelse after_dash.len;
+                if (space_pos > 0) {
+                    storage.recordErrorStat(after_dash[0..space_pos]);
+                }
+            }
 
             // Record command execution in statistics
             self.stats.recordCommand();
