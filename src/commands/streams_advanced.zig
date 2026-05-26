@@ -1186,15 +1186,17 @@ pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []co
             }
             mut_entries.deinit(allocator);
         }
+        var del_ids = result.deleted_ids;
+        del_ids.deinit(allocator);
     }
 
     // Format response manually using RESP protocol
-    // Response format: [next_cursor, [entries...]]
+    // Response format (Redis 7.0+): [next_cursor, [entries...], [deleted_ids...]]
     var result_buf = std.ArrayList(u8){};
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
-    try result_writer.writeAll("*2\r\n");
+    try result_writer.writeAll("*3\r\n");
 
     // Next cursor
     try result_writer.print("${d}\r\n{s}\r\n", .{ result.next_cursor.len, result.next_cursor });
@@ -1220,6 +1222,14 @@ pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []co
         }
     } else {
         try result_writer.writeAll("*0\r\n");
+    }
+
+    // Deleted IDs (entries in PEL that no longer exist in stream)
+    try result_writer.print("*{d}\r\n", .{result.deleted_ids.items.len});
+    for (result.deleted_ids.items) |del_id| {
+        const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ del_id.ms, del_id.seq });
+        defer allocator.free(id_str);
+        try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
     }
 
     return result_buf.toOwnedSlice(allocator);
@@ -1340,6 +1350,122 @@ test "XAUTOCLAIM basic functionality" {
     defer allocator.free(xautoclaim_result);
 
     try std.testing.expect(std.mem.indexOf(u8, xautoclaim_result, "1000-0") != null);
+    // Verify 3-element response format (Redis 7.0+): [cursor, entries, deleted_ids]
+    try std.testing.expect(std.mem.startsWith(u8, xautoclaim_result, "*3\r\n"));
+}
+
+test "XAUTOCLAIM returns 3-element array with empty deleted_ids when none deleted" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add entry, read it, then autoclaim (without XDEL)
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "2000-0" },
+        RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const xadd_r = try streams.cmdXadd(allocator, &storage, &xadd_args);
+    defer allocator.free(xadd_r);
+
+    const xgroup_args = [_]RespValue{
+        RespValue{ .bulk_string = "XGROUP" }, RespValue{ .bulk_string = "CREATE" },
+        RespValue{ .bulk_string = "s" },       RespValue{ .bulk_string = "g" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const xgroup_r = try cmdXgroup(allocator, &storage, &xgroup_args);
+    defer allocator.free(xgroup_r);
+
+    const xrg_args = [_]RespValue{
+        RespValue{ .bulk_string = "XREADGROUP" }, RespValue{ .bulk_string = "GROUP" },
+        RespValue{ .bulk_string = "g" },          RespValue{ .bulk_string = "c1" },
+        RespValue{ .bulk_string = "STREAMS" },    RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = ">" },
+    };
+    const xrg_r = try cmdXreadgroup(allocator, &storage, &xrg_args);
+    defer allocator.free(xrg_r);
+
+    std.Thread.sleep(std.time.ns_per_ms * 5);
+
+    const xac_args = [_]RespValue{
+        RespValue{ .bulk_string = "XAUTOCLAIM" }, RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "g" },          RespValue{ .bulk_string = "c2" },
+        RespValue{ .bulk_string = "0" },          RespValue{ .bulk_string = "0-0" },
+    };
+    const xac_r = try cmdXautoclaim(allocator, &storage, &xac_args);
+    defer allocator.free(xac_r);
+
+    // Should start with *3 (3-element array)
+    try std.testing.expect(std.mem.startsWith(u8, xac_r, "*3\r\n"));
+    // Third element should be empty array *0
+    try std.testing.expect(std.mem.indexOf(u8, xac_r, "*0\r\n") != null);
+}
+
+test "XAUTOCLAIM deleted_ids contains XDEL'd pending entries" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add two entries
+    const xadd1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" }, RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "3000-0" }, RespValue{ .bulk_string = "k" }, RespValue{ .bulk_string = "v1" },
+    };
+    const xadd1_r = try streams.cmdXadd(allocator, &storage, &xadd1);
+    defer allocator.free(xadd1_r);
+
+    const xadd2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" }, RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "3001-0" }, RespValue{ .bulk_string = "k" }, RespValue{ .bulk_string = "v2" },
+    };
+    const xadd2_r = try streams.cmdXadd(allocator, &storage, &xadd2);
+    defer allocator.free(xadd2_r);
+
+    // Create group and read both
+    const xgroup_args = [_]RespValue{
+        RespValue{ .bulk_string = "XGROUP" }, RespValue{ .bulk_string = "CREATE" },
+        RespValue{ .bulk_string = "s" },       RespValue{ .bulk_string = "g" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const xgroup_r = try cmdXgroup(allocator, &storage, &xgroup_args);
+    defer allocator.free(xgroup_r);
+
+    const xrg_args = [_]RespValue{
+        RespValue{ .bulk_string = "XREADGROUP" }, RespValue{ .bulk_string = "GROUP" },
+        RespValue{ .bulk_string = "g" },          RespValue{ .bulk_string = "c1" },
+        RespValue{ .bulk_string = "COUNT" },      RespValue{ .bulk_string = "10" },
+        RespValue{ .bulk_string = "STREAMS" },    RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = ">" },
+    };
+    const xrg_r = try cmdXreadgroup(allocator, &storage, &xrg_args);
+    defer allocator.free(xrg_r);
+
+    // XDEL first entry — now 3000-0 is in PEL but not in stream
+    const xdel_args = [_]RespValue{
+        RespValue{ .bulk_string = "XDEL" }, RespValue{ .bulk_string = "s" }, RespValue{ .bulk_string = "3000-0" },
+    };
+    const xdel_r = try streams.cmdXdel(allocator, &storage, &xdel_args);
+    defer allocator.free(xdel_r);
+
+    std.Thread.sleep(std.time.ns_per_ms * 5);
+
+    // XAUTOCLAIM — should claim 3001-0 and report 3000-0 as deleted
+    const xac_args = [_]RespValue{
+        RespValue{ .bulk_string = "XAUTOCLAIM" }, RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "g" },          RespValue{ .bulk_string = "c2" },
+        RespValue{ .bulk_string = "0" },          RespValue{ .bulk_string = "0-0" },
+    };
+    const xac_r = try cmdXautoclaim(allocator, &storage, &xac_args);
+    defer allocator.free(xac_r);
+
+    // 3-element response
+    try std.testing.expect(std.mem.startsWith(u8, xac_r, "*3\r\n"));
+    // The claimed entry 3001-0 should appear
+    try std.testing.expect(std.mem.indexOf(u8, xac_r, "3001-0") != null);
+    // The deleted entry 3000-0 should appear in the third element
+    try std.testing.expect(std.mem.indexOf(u8, xac_r, "3000-0") != null);
 }
 
 /// XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]

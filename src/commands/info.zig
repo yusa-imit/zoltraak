@@ -32,7 +32,7 @@ pub const ServerStats = struct {
 /// INFO [section]
 ///
 /// Returns detailed information about the Redis-compatible server.
-/// Supported sections: server, clients, memory, persistence, stats, replication, cpu, keyspace, all, default
+/// Supported sections: server, clients, memory, persistence, stats, replication, cpu, modules, cluster, keyspace, commandstats, errorstats, latencystats, all, default
 ///
 /// Iteration 30: Comprehensive INFO implementation with all major sections.
 pub fn cmdInfo(
@@ -78,6 +78,12 @@ pub fn cmdInfo(
     }
     if (show_all or show_default or std.mem.eql(u8, section, "CPU")) {
         try buildCpuSection(&buf, allocator);
+    }
+    if (show_all or show_default or std.mem.eql(u8, section, "MODULES")) {
+        try buildModulesSection(&buf, allocator);
+    }
+    if (show_all or show_default or std.mem.eql(u8, section, "CLUSTER")) {
+        try buildClusterSection(&buf, allocator);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "KEYSPACE")) {
         try buildKeyspaceSection(&buf, allocator, storage);
@@ -406,6 +412,25 @@ fn buildLatencystatsSection(
 ) !void {
     const bw = buf.writer(allocator);
     try bw.writeAll("# Latencystats\r\n");
+    try bw.writeAll("\r\n");
+}
+
+fn buildModulesSection(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) !void {
+    const bw = buf.writer(allocator);
+    try bw.writeAll("# Modules\r\n");
+    try bw.writeAll("\r\n");
+}
+
+fn buildClusterSection(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+) !void {
+    const bw = buf.writer(allocator);
+    try bw.writeAll("# Cluster\r\n");
+    try bw.writeAll("cluster_enabled:0\r\n");
     try bw.writeAll("\r\n");
 }
 
@@ -972,4 +997,96 @@ test "INFO ALL includes commandstats and errorstats sections" {
     try std.testing.expect(std.mem.indexOf(u8, result, "# Errorstats") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "# Latencystats") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "cmdstat_ping:calls=1") != null);
+}
+
+test "INFO cluster section appears in default and all" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    // INFO default must include cluster section
+    const default_args = [_][]const u8{ "INFO", "default" };
+    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &default_args);
+    defer allocator.free(default_result);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "# Cluster") != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "cluster_enabled:0") != null);
+
+    // INFO all must also include cluster section
+    const all_args = [_][]const u8{ "INFO", "all" };
+    const all_result = try cmdInfo(allocator, &storage, &repl, config, stats, &all_args);
+    defer allocator.free(all_result);
+    try std.testing.expect(std.mem.indexOf(u8, all_result, "# Cluster") != null);
+
+    // INFO cluster specifically
+    const cluster_args = [_][]const u8{ "INFO", "cluster" };
+    const cluster_result = try cmdInfo(allocator, &storage, &repl, config, stats, &cluster_args);
+    defer allocator.free(cluster_result);
+    try std.testing.expect(std.mem.indexOf(u8, cluster_result, "# Cluster") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cluster_result, "cluster_enabled:0") != null);
+    // cluster section should not include server section
+    try std.testing.expect(std.mem.indexOf(u8, cluster_result, "redis_version:") == null);
+}
+
+test "INFO modules section appears in default and all" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    // INFO default must include modules section
+    const default_args = [_][]const u8{ "INFO", "default" };
+    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &default_args);
+    defer allocator.free(default_result);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "# Modules") != null);
+
+    // INFO modules specifically
+    const modules_args = [_][]const u8{ "INFO", "modules" };
+    const modules_result = try cmdInfo(allocator, &storage, &repl, config, stats, &modules_args);
+    defer allocator.free(modules_result);
+    try std.testing.expect(std.mem.indexOf(u8, modules_result, "# Modules") != null);
 }

@@ -10451,7 +10451,8 @@ pub const Storage = struct {
     }
 
     /// Auto-claim old pending messages in a consumer group
-    /// Returns (claimed entries, next cursor)
+    /// Returns (claimed entries, next cursor, deleted IDs)
+    /// deleted_ids: IDs that were in PEL but no longer exist in the stream (cleaned up automatically)
     pub fn xautoclaim(
         self: *Storage,
         allocator: std.mem.Allocator,
@@ -10462,7 +10463,7 @@ pub const Storage = struct {
         start: []const u8,
         count: usize,
         justid: bool,
-    ) !struct { entries: ?std.ArrayList(Value.StreamEntry), next_cursor: []const u8 } {
+    ) !struct { entries: ?std.ArrayList(Value.StreamEntry), next_cursor: []const u8, deleted_ids: std.ArrayList(Value.StreamId) } {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -10495,6 +10496,10 @@ pub const Storage = struct {
                 // Update last_attempted_time for every XAUTOCLAIM call
                 consumer_entry.value_ptr.last_attempted_time = current_time;
                 var result = std.ArrayList(Value.StreamEntry){};
+                var deleted_ids = std.ArrayList(Value.StreamId){};
+                errdefer deleted_ids.deinit(allocator);
+                var deleted_indices = std.ArrayList(usize){};
+                errdefer deleted_indices.deinit(allocator);
                 var claimed_count: usize = 0;
                 var next_id_str: []const u8 = "0-0";
 
@@ -10505,7 +10510,7 @@ pub const Storage = struct {
                     Value.StreamId.parse(start, null) catch Value.StreamId{ .ms = 0, .seq = 0 };
 
                 // Scan through pending entries looking for old ones
-                for (group_ptr.pending.items) |*pending| {
+                for (group_ptr.pending.items, 0..) |*pending, pending_idx| {
                     // Skip entries before start cursor
                     if (pending.id.lessThan(start_id) or pending.id.equals(start_id)) {
                         continue;
@@ -10533,6 +10538,10 @@ pub const Storage = struct {
                     }
 
                     if (stream_entry == null) {
+                        // Entry exists in PEL but was deleted from stream via XDEL.
+                        // Collect for removal and report to caller (Redis 7.0+ behavior).
+                        try deleted_ids.append(allocator, pending.id);
+                        try deleted_indices.append(allocator, pending_idx);
                         continue;
                     }
 
@@ -10580,6 +10589,27 @@ pub const Storage = struct {
                     claimed_count += 1;
                 }
 
+                // Remove deleted entries from PEL in reverse order (preserves earlier indices).
+                // Also remove from the original consumer's pending list.
+                var di = deleted_indices.items.len;
+                while (di > 0) {
+                    di -= 1;
+                    const del_idx = deleted_indices.items[di];
+                    const del_pending = group_ptr.pending.items[del_idx];
+                    if (group_ptr.consumers.getPtr(del_pending.consumer)) |old_consumer_ptr| {
+                        var ci: usize = 0;
+                        while (ci < old_consumer_ptr.pending.items.len) : (ci += 1) {
+                            if (old_consumer_ptr.pending.items[ci].equals(del_pending.id)) {
+                                _ = old_consumer_ptr.pending.orderedRemove(ci);
+                                break;
+                            }
+                        }
+                    }
+                    self.allocator.free(del_pending.consumer);
+                    _ = group_ptr.pending.orderedRemove(del_idx);
+                }
+                deleted_indices.deinit(allocator);
+
                 // Update last_successful_time if any messages were claimed
                 if (claimed_count > 0) {
                     consumer_entry.value_ptr.last_successful_time = current_time;
@@ -10588,6 +10618,7 @@ pub const Storage = struct {
                 return .{
                     .entries = if (result.items.len > 0) result else null,
                     .next_cursor = next_id_str,
+                    .deleted_ids = deleted_ids,
                 };
             },
             else => return error.WrongType,
