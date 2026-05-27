@@ -197,7 +197,14 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
             notifyZsetEvent(allocator, storage, ps, db_index, key, "zadd");
         }
 
-        // Return current score (may be old_score if GT/LT blocked the update)
+        // When GT/LT blocks the update (no add or change), return null per Redis spec.
+        // This matches Redis behavior: ZADD key GT INCR -5 member when member score >= new_score
+        // returns nil, not the current score.
+        const has_gt_lt = (options & (8 | 16)) != 0;
+        if (has_gt_lt and result.added == 0 and result.changed == 0 and member_exists) {
+            return w.writeNull();
+        }
+
         const final_score = storage.zscore(key, member) orelse new_score;
         var score_buf: [64]u8 = undefined;
         const score_str_out = try std.fmt.bufPrint(&score_buf, "{d}", .{final_score});
@@ -1956,6 +1963,68 @@ test "cmdZadd - INCR with multiple pairs returns error" {
     const r = try cmdZadd(allocator, storage, &args, ps, 0);
     defer allocator.free(r);
     try std.testing.expect(std.mem.startsWith(u8, r, "-ERR"));
+}
+
+test "cmdZadd - INCR with GT returns null when condition not met" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Add member with score 10
+    const init_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "10" }, .{ .bulk_string = "m" },
+    };
+    _ = try cmdZadd(allocator, storage, &init_args, ps, 0);
+
+    // GT INCR -5: new_score=5, 5 < 10, GT condition NOT met → return null
+    const gt_incr = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "GT" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "-5" }, .{ .bulk_string = "m" },
+    };
+    const r = try cmdZadd(allocator, storage, &gt_incr, ps, 0);
+    defer allocator.free(r);
+    // Redis returns null bulk string when GT blocks INCR
+    try std.testing.expectEqualStrings("$-1\r\n", r);
+
+    // Score should still be 10
+    const score = storage.zscore("zs", "m");
+    try std.testing.expectEqual(@as(?f64, 10.0), score);
+}
+
+test "cmdZadd - INCR with LT returns null when condition not met" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Add member with score 5
+    const init_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    _ = try cmdZadd(allocator, storage, &init_args, ps, 0);
+
+    // LT INCR 3: new_score=8, 8 > 5, LT condition NOT met → return null
+    const lt_incr = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "LT" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+    };
+    const r = try cmdZadd(allocator, storage, &lt_incr, ps, 0);
+    defer allocator.free(r);
+    // Redis returns null bulk string when LT blocks INCR
+    try std.testing.expectEqualStrings("$-1\r\n", r);
+
+    // Score should still be 5
+    const score = storage.zscore("zs", "m");
+    try std.testing.expectEqual(@as(?f64, 5.0), score);
 }
 
 test "cmdZrem - remove members" {
