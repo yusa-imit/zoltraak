@@ -2487,9 +2487,9 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         else => return w.writeError("ERR syntax error"),
     };
 
-    const pop_min = if (std.mem.eql(u8, modifier, "MIN"))
+    const pop_min = if (std.ascii.eqlIgnoreCase(modifier, "MIN"))
         true
-    else if (std.mem.eql(u8, modifier, "MAX"))
+    else if (std.ascii.eqlIgnoreCase(modifier, "MAX"))
         false
     else
         return w.writeError("ERR syntax error");
@@ -2504,7 +2504,7 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             .bulk_string => |s| s,
             else => return w.writeError("ERR syntax error"),
         };
-        if (!std.mem.eql(u8, count_keyword, "COUNT")) {
+        if (!std.ascii.eqlIgnoreCase(count_keyword, "COUNT")) {
             return w.writeError("ERR syntax error");
         }
         const count_str = switch (args[modifier_idx + 2]) {
@@ -2640,9 +2640,9 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         else => return w.writeError("ERR syntax error"),
     };
 
-    const pop_min = if (std.mem.eql(u8, modifier, "MIN"))
+    const pop_min = if (std.ascii.eqlIgnoreCase(modifier, "MIN"))
         true
-    else if (std.mem.eql(u8, modifier, "MAX"))
+    else if (std.ascii.eqlIgnoreCase(modifier, "MAX"))
         false
     else
         return w.writeError("ERR syntax error");
@@ -2657,7 +2657,7 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .bulk_string => |s| s,
             else => return w.writeError("ERR syntax error"),
         };
-        if (!std.mem.eql(u8, count_keyword, "COUNT")) {
+        if (!std.ascii.eqlIgnoreCase(count_keyword, "COUNT")) {
             return w.writeError("ERR syntax error");
         }
         const count_str = switch (args[modifier_idx + 2]) {
@@ -4779,4 +4779,71 @@ test "ZRANGE unified - BYLEX error on mixed-score sorted set" {
     // Note: Redis allows BYLEX even with mixed scores, but only compares members with same score
     // This test validates that the implementation handles this case (may succeed or error)
     try std.testing.expect(result.len > 0);
+}
+
+test "sorted_sets - ZMPOP accepts lowercase modifier" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Setup: add members to sorted set
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "1.0" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2.0" },
+        RespValue{ .bulk_string = "b" },
+    };
+    const setup_result = try cmdZadd(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test ZMPOP with lowercase "min"
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZMPOP" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "min" },
+    };
+    const result = try cmdZmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should return the key and the popped member
+    try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\na\r\n") != null);
+}
+
+test "sorted_sets - ZMPOP accepts lowercase COUNT keyword" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const setup_args = [_]RespValue{
+        RespValue{ .bulk_string = "ZADD" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "1.0" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "2.0" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "3.0" },
+        RespValue{ .bulk_string = "c" },
+    };
+    const setup_result = try cmdZadd(allocator, storage, &setup_args);
+    defer allocator.free(setup_result);
+
+    // Test ZMPOP with lowercase "max" and lowercase "count"
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ZMPOP" },
+        RespValue{ .bulk_string = "1" },
+        RespValue{ .bulk_string = "myzset" },
+        RespValue{ .bulk_string = "MAX" },
+        RespValue{ .bulk_string = "count" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdZmpop(allocator, storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nc\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb\r\n") != null);
 }

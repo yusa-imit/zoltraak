@@ -3961,12 +3961,12 @@ fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
         } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
             if (args.len < 4) return w.writeError("ERR syntax error");
             const ts = parseInteger(args[3]) catch return w.writeError("ERR value is not an integer or out of range");
-            if (ts <= 0) return w.writeError("ERR invalid expire time in 'getex' command");
+            if (ts < 0) return w.writeError("ERR invalid expire time in 'getex' command");
             expires_at = ts * 1000;
         } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
             if (args.len < 4) return w.writeError("ERR syntax error");
             const ts = parseInteger(args[3]) catch return w.writeError("ERR value is not an integer or out of range");
-            if (ts <= 0) return w.writeError("ERR invalid expire time in 'getex' command");
+            if (ts < 0) return w.writeError("ERR invalid expire time in 'getex' command");
             expires_at = ts;
         } else {
             return w.writeError("ERR syntax error");
@@ -7374,4 +7374,77 @@ test "BITCOUNT - wrong argument count" {
     const result = try cmdBitcount(allocator, storage, &args);
     defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR wrong number of arguments") != null);
+}
+
+test "commands - GETEX EXAT 0 expires key immediately (not an error)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set a key first
+    _ = try storage.set(allocator, "mykey", "hello", null, false, false, false, false);
+
+    // GETEX with EXAT 0 (epoch) should return the value, not an error
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETEX" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "EXAT" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdGetex(allocator, storage, &args, ps, 0);
+    defer allocator.free(result);
+
+    // Should return the value, not an error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "hello") != null);
+}
+
+test "commands - GETEX PXAT 0 expires key immediately (not an error)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.set(allocator, "mykey2", "world", null, false, false, false, false);
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETEX" },
+        RespValue{ .bulk_string = "mykey2" },
+        RespValue{ .bulk_string = "PXAT" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdGetex(allocator, storage, &args, ps, 0);
+    defer allocator.free(result);
+
+    // Should return the value, not an error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "world") != null);
+}
+
+test "commands - GETEX EXAT negative is still an error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.set(allocator, "mykey3", "data", null, false, false, false, false);
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETEX" },
+        RespValue{ .bulk_string = "mykey3" },
+        RespValue{ .bulk_string = "EXAT" },
+        RespValue{ .bulk_string = "-1" },
+    };
+    const result = try cmdGetex(allocator, storage, &args, ps, 0);
+    defer allocator.free(result);
+
+    // Negative timestamp should return an error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR invalid expire time") != null);
 }
