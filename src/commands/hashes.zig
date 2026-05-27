@@ -543,9 +543,15 @@ pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []
         return w.writeError("ERR value is not a valid float");
     };
 
+    // Reject NaN and infinity as increment value
+    if (std.math.isNan(increment) or std.math.isInf(increment)) {
+        return w.writeError("ERR increment would produce NaN or Infinity");
+    }
+
     const new_value = storage.hincrbyfloat(allocator, key, field, increment) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         error.InvalidValue => return w.writeError("ERR hash value is not a valid float"),
+        error.NanOrInfinity => return w.writeError("ERR increment would produce NaN or Infinity"),
         else => return err,
     };
 

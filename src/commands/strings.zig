@@ -3778,15 +3778,21 @@ fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const
         return w.writeError("ERR value is not a valid float");
     };
 
+    // Reject NaN and infinity before calling storage (gives better error message)
+    if (std.math.isNan(delta) or std.math.isInf(delta)) {
+        return w.writeError("ERR increment would produce NaN or Infinity");
+    }
+
     const new_val = storage.incrbyfloat(key, delta) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         error.NotFloat => return w.writeError("ERR value is not a valid float"),
+        error.NanOrInfinity => return w.writeError("ERR increment would produce NaN or Infinity"),
         else => return err,
     };
 
-    // Format response: strip unnecessary trailing zeros but keep at least one decimal
+    // Format matching storage's formatFloat (decimal, no trailing zeros)
     var buf: [64]u8 = undefined;
-    const formatted = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch unreachable;
+    const formatted = try std.fmt.bufPrint(&buf, "{d}", .{new_val});
     return w.writeBulkString(formatted);
 }
 

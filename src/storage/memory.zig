@@ -4352,6 +4352,10 @@ pub const Storage = struct {
         field: []const u8,
         increment: f64,
     ) !f64 {
+        if (std.math.isNan(increment) or std.math.isInf(increment)) {
+            return error.NanOrInfinity;
+        }
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -4361,7 +4365,9 @@ pub const Storage = struct {
                     const field_val = hash_val.data.get(field);
                     const current_str = if (field_val) |fv| fv.data else "0";
                     const current = std.fmt.parseFloat(f64, current_str) catch return error.InvalidValue;
+                    if (std.math.isNan(current) or std.math.isInf(current)) return error.InvalidValue;
                     const new_value = current + increment;
+                    if (std.math.isNan(new_value) or std.math.isInf(new_value)) return error.NanOrInfinity;
 
                     // Format with enough precision, trim trailing zeros
                     var buf: [64]u8 = undefined;
@@ -5834,6 +5840,11 @@ pub const Storage = struct {
     /// Increment a string value by a float delta. Creates key at "0" if missing.
     /// Returns the new value, or error.WrongType / error.NotFloat.
     pub fn incrbyfloat(self: *Storage, key: []const u8, delta: f64) !f64 {
+        // Reject NaN and infinity as delta values immediately
+        if (std.math.isNan(delta) or std.math.isInf(delta)) {
+            return error.NanOrInfinity;
+        }
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -5850,7 +5861,11 @@ pub const Storage = struct {
             } else {
                 switch (entry.value_ptr.*) {
                     .string => |*sv| {
-                        current = std.fmt.parseFloat(f64, sv.data) catch return error.NotFloat;
+                        const parsed = std.fmt.parseFloat(f64, sv.data) catch return error.NotFloat;
+                        if (std.math.isNan(parsed) or std.math.isInf(parsed)) {
+                            return error.NanOrInfinity;
+                        }
+                        current = parsed;
                         current_exp = sv.expires_at;
                     },
                     else => return error.WrongType,
@@ -5860,9 +5875,14 @@ pub const Storage = struct {
 
         const new_val = current + delta;
 
-        // Format new value (trim trailing zeros like Redis)
+        // Reject NaN and infinity as result
+        if (std.math.isNan(new_val) or std.math.isInf(new_val)) {
+            return error.NanOrInfinity;
+        }
+
+        // Format new value matching Redis: use decimal notation, strip trailing zeros
         var buf: [64]u8 = undefined;
-        const new_str = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch unreachable;
+        const new_str = formatFloat(&buf, new_val);
         const owned_str = try self.allocator.dupe(u8, new_str);
         errdefer self.allocator.free(owned_str);
 
