@@ -60,9 +60,10 @@ fn parseScore(s: []const u8) !f64 {
     }
 }
 
-/// ZADD key [NX|XX] [CH] score member [score member ...]
-/// Sets members with scores in a sorted set
+/// ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]
+/// Sets members with scores in a sorted set (Redis 6.2.0+: GT/LT/INCR options)
 /// Returns integer - count of new members added (or changed if CH flag set)
+/// With INCR: returns new score as bulk string (or null if condition not met)
 pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -76,8 +77,10 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         else => return w.writeError("ERR invalid key"),
     };
 
-    // Parse options (NX, XX, CH)
+    // Parse options (NX, XX, CH, GT, LT, INCR)
+    // Bit layout: 0=NX, 1=XX, 2=CH, 3=GT, 4=LT
     var options: u8 = 0;
+    var incr_flag = false;
     var arg_idx: usize = 2;
 
     while (arg_idx < args.len) {
@@ -86,17 +89,23 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
             else => break,
         };
 
-        const upper_arg = try std.ascii.allocUpperString(allocator, arg_str);
-        defer allocator.free(upper_arg);
-
-        if (std.mem.eql(u8, upper_arg, "NX")) {
+        if (std.ascii.eqlIgnoreCase(arg_str, "NX")) {
             options |= 1;
             arg_idx += 1;
-        } else if (std.mem.eql(u8, upper_arg, "XX")) {
+        } else if (std.ascii.eqlIgnoreCase(arg_str, "XX")) {
             options |= 2;
             arg_idx += 1;
-        } else if (std.mem.eql(u8, upper_arg, "CH")) {
+        } else if (std.ascii.eqlIgnoreCase(arg_str, "CH")) {
             options |= 4;
+            arg_idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg_str, "GT")) {
+            options |= 8;
+            arg_idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg_str, "LT")) {
+            options |= 16;
+            arg_idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg_str, "INCR")) {
+            incr_flag = true;
             arg_idx += 1;
         } else {
             break; // Not an option, must be score
@@ -107,11 +116,24 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     if ((options & 1) != 0 and (options & 2) != 0) {
         return w.writeError("ERR XX and NX options at the same time are not compatible");
     }
+    // Validate GT and LT are not both set
+    if ((options & 8) != 0 and (options & 16) != 0) {
+        return w.writeError("ERR GT, LT, and NX options at the same time are not compatible");
+    }
+    // Validate NX is not used with GT or LT
+    if ((options & 1) != 0 and ((options & 8) != 0 or (options & 16) != 0)) {
+        return w.writeError("ERR GT, LT, and NX options at the same time are not compatible");
+    }
 
     // Validate score-member pairs
     const remaining = args.len - arg_idx;
     if (remaining == 0 or remaining % 2 != 0) {
         return w.writeError("ERR syntax error");
+    }
+
+    // INCR mode: only one score-member pair allowed
+    if (incr_flag and remaining != 2) {
+        return w.writeError("ERR INCR option supports a single increment-element pair");
     }
 
     const pair_count = remaining / 2;
@@ -137,6 +159,49 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
         try scores.append(allocator, score);
         try members.append(allocator, member);
+    }
+
+    // INCR mode: compute old_score + increment, then do ZADD with new_score
+    if (incr_flag) {
+        const incr = scores.items[0];
+        const member = members.items[0];
+
+        // Get current score (null if member doesn't exist)
+        const old_score_opt = storage.zscore(key, member);
+        const old_score = old_score_opt orelse 0.0;
+        const member_exists = old_score_opt != null;
+
+        // NX: only add new members — return null if member exists
+        if ((options & 1) != 0 and member_exists) {
+            return w.writeNull();
+        }
+        // XX: only update existing — return null if member doesn't exist
+        if ((options & 2) != 0 and !member_exists) {
+            return w.writeNull();
+        }
+
+        const new_score = old_score + incr;
+        var new_scores = [_]f64{new_score};
+        var new_members = [_][]const u8{member};
+
+        // Pass GT/LT flags but strip NX/XX (already checked above)
+        const incr_options = options & ~@as(u8, 1 | 2);
+        const result = storage.zadd(key, &new_scores, &new_members, incr_options, null) catch |err| {
+            if (err == error.WrongType) {
+                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            }
+            return err;
+        };
+
+        if (result.added > 0 or result.changed > 0) {
+            notifyZsetEvent(allocator, storage, ps, db_index, key, "zadd");
+        }
+
+        // Return current score (may be old_score if GT/LT blocked the update)
+        const final_score = storage.zscore(key, member) orelse new_score;
+        var score_buf: [64]u8 = undefined;
+        const score_str_out = try std.fmt.bufPrint(&score_buf, "{d}", .{final_score});
+        return w.writeBulkString(score_str_out);
     }
 
     // Execute ZADD
@@ -1660,6 +1725,237 @@ test "cmdZadd - WRONGTYPE error" {
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-WRONGTYPE"));
+}
+
+test "cmdZadd - GT option updates only when new score is greater" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Add initial member with score 5
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    _ = try cmdZadd(allocator, storage, &add_args, ps, 0);
+
+    // GT with higher score should update (5 → 10)
+    const gt_high = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "GT" },
+        .{ .bulk_string = "10" }, .{ .bulk_string = "m" },
+    };
+    const r1 = try cmdZadd(allocator, storage, &gt_high, ps, 0);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":0\r\n", r1); // added=0 (not a new element)
+
+    // Verify score is now 10
+    const score_high = storage.zscore("zs", "m");
+    try std.testing.expectEqual(@as(?f64, 10.0), score_high);
+
+    // GT with lower score should NOT update (10 → 3)
+    const gt_low = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "GT" },
+        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+    };
+    const r2 = try cmdZadd(allocator, storage, &gt_low, ps, 0);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":0\r\n", r2);
+
+    // Verify score is still 10
+    const score_unchanged = storage.zscore("zs", "m");
+    try std.testing.expectEqual(@as(?f64, 10.0), score_unchanged);
+}
+
+test "cmdZadd - LT option updates only when new score is less" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Add initial member with score 5
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    _ = try cmdZadd(allocator, storage, &add_args, ps, 0);
+
+    // LT with lower score should update (5 → 2)
+    const lt_low = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "LT" },
+        .{ .bulk_string = "2" }, .{ .bulk_string = "m" },
+    };
+    const r1 = try cmdZadd(allocator, storage, &lt_low, ps, 0);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":0\r\n", r1);
+
+    // Verify score is now 2
+    const score_low = storage.zscore("zs", "m");
+    try std.testing.expectEqual(@as(?f64, 2.0), score_low);
+
+    // LT with higher score should NOT update (2 → 7)
+    const lt_high = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "LT" },
+        .{ .bulk_string = "7" }, .{ .bulk_string = "m" },
+    };
+    const r2 = try cmdZadd(allocator, storage, &lt_high, ps, 0);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":0\r\n", r2);
+
+    // Verify score is still 2
+    const score_unchanged = storage.zscore("zs", "m");
+    try std.testing.expectEqual(@as(?f64, 2.0), score_unchanged);
+}
+
+test "cmdZadd - GT adds new members regardless" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // GT should still add new members (no existing score to compare)
+    const gt_new = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "GT" },
+        .{ .bulk_string = "3" }, .{ .bulk_string = "newmember" },
+    };
+    const r = try cmdZadd(allocator, storage, &gt_new, ps, 0);
+    defer allocator.free(r);
+    try std.testing.expectEqualStrings(":1\r\n", r); // 1 new member added
+
+    const score = storage.zscore("zs", "newmember");
+    try std.testing.expectEqual(@as(?f64, 3.0), score);
+}
+
+test "cmdZadd - INCR mode works like ZINCRBY" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // INCR on new member: starts at 0 + 5 = 5
+    const incr_new = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    const r1 = try cmdZadd(allocator, storage, &incr_new, ps, 0);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings("$1\r\n5\r\n", r1); // bulk string "5"
+
+    // INCR on existing member: 5 + 3 = 8
+    const incr_existing = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+    };
+    const r2 = try cmdZadd(allocator, storage, &incr_existing, ps, 0);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings("$1\r\n8\r\n", r2); // bulk string "8"
+}
+
+test "cmdZadd - INCR with NX returns null if member exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Add member first
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    _ = try cmdZadd(allocator, storage, &add_args, ps, 0);
+
+    // INCR NX on existing member: should return null
+    const incr_nx = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "NX" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+    };
+    const r = try cmdZadd(allocator, storage, &incr_nx, ps, 0);
+    defer allocator.free(r);
+    try std.testing.expectEqualStrings("$-1\r\n", r); // null bulk string
+}
+
+test "cmdZadd - INCR with XX returns null if member does not exist" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    // INCR XX on nonexistent member: should return null
+    const incr_xx = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "XX" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" }, .{ .bulk_string = "newmember" },
+    };
+    const r = try cmdZadd(allocator, storage, &incr_xx, ps, 0);
+    defer allocator.free(r);
+    try std.testing.expectEqualStrings("$-1\r\n", r); // null bulk string
+}
+
+test "cmdZadd - GT and LT are incompatible" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "GT" }, .{ .bulk_string = "LT" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    const r = try cmdZadd(allocator, storage, &args, ps, 0);
+    defer allocator.free(r);
+    try std.testing.expect(std.mem.startsWith(u8, r, "-ERR"));
+}
+
+test "cmdZadd - NX and GT are incompatible" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
+        .{ .bulk_string = "NX" }, .{ .bulk_string = "GT" },
+        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+    };
+    const r = try cmdZadd(allocator, storage, &args, ps, 0);
+    defer allocator.free(r);
+    try std.testing.expect(std.mem.startsWith(u8, r, "-ERR"));
+}
+
+test "cmdZadd - INCR with multiple pairs returns error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "1" }, .{ .bulk_string = "a" },
+        .{ .bulk_string = "2" }, .{ .bulk_string = "b" },
+    };
+    const r = try cmdZadd(allocator, storage, &args, ps, 0);
+    defer allocator.free(r);
+    try std.testing.expect(std.mem.startsWith(u8, r, "-ERR"));
 }
 
 test "cmdZrem - remove members" {

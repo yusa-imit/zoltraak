@@ -3837,6 +3837,8 @@ pub const Storage = struct {
 
         const nx_flag = (options & 1) != 0;
         const xx_flag = (options & 2) != 0;
+        const gt_flag = (options & 8) != 0;
+        const lt_flag = (options & 16) != 0;
         var added_count: usize = 0;
         var changed_count: usize = 0;
 
@@ -3848,6 +3850,11 @@ pub const Storage = struct {
                         if (zset.members.get(member)) |old_score| {
                             // Member exists
                             if (nx_flag) continue; // NX: skip existing
+
+                            // GT: only update if new score > old score
+                            if (gt_flag and score <= old_score) continue;
+                            // LT: only update if new score < old score
+                            if (lt_flag and score >= old_score) continue;
 
                             if (old_score != score) {
                                 // Remove old entry from sorted list
