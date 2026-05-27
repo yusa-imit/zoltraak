@@ -42,6 +42,8 @@ pub fn cmdInfo(
     config: ServerConfig,
     stats: ServerStats,
     args: []const []const u8,
+    databases: ?[]Storage,
+    num_databases: u16,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -59,7 +61,7 @@ pub fn cmdInfo(
 
     // Build the requested sections
     if (show_all or show_default or std.mem.eql(u8, section, "SERVER")) {
-        try buildServerSection(&buf, allocator, config, stats.start_time_seconds);
+        try buildServerSection(&buf, allocator, config, stats.start_time_seconds, num_databases);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "CLIENTS")) {
         try buildClientsSection(&buf, allocator, stats.client_count);
@@ -86,7 +88,7 @@ pub fn cmdInfo(
         try buildClusterSection(&buf, allocator);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "KEYSPACE")) {
-        try buildKeyspaceSection(&buf, allocator, storage);
+        try buildKeyspaceSection(&buf, allocator, storage, databases, num_databases);
     }
     if (show_all or std.mem.eql(u8, section, "COMMANDSTATS")) {
         try buildCommandstatsSection(&buf, allocator, storage);
@@ -108,6 +110,7 @@ fn buildServerSection(
     allocator: std.mem.Allocator,
     config: ServerConfig,
     start_time_seconds: i64,
+    num_databases: u16,
 ) !void {
     const bw = buf.writer(allocator);
 
@@ -122,7 +125,7 @@ fn buildServerSection(
     try bw.writeAll("\r\n");
     try bw.writeAll("arch_bits:");
     try bw.print("{d}\r\n", .{@bitSizeOf(usize)});
-    try bw.writeAll("multiplexing_api:kqueue\r\n"); // Simplified for macOS/BSD
+    try bw.writeAll("multiplexing_api:kqueue\r\n");
     try bw.writeAll("gcc_version:0.0.0\r\n");
     try bw.writeAll("process_id:");
     if (comptime @import("builtin").os.tag == .linux) {
@@ -139,8 +142,9 @@ fn buildServerSection(
     try bw.writeAll("lru_clock:");
     // Redis LRU clock: Unix time in seconds, truncated to 24 bits (modulo 2^24)
     try bw.print("{d}\r\n", .{@as(u32, @intCast(@as(u64, @intCast(std.time.timestamp())) & 0xFFFFFF))});
-    try bw.writeAll("executable:/Users/fn/Desktop/codespace/zoltraak/zig-out/bin/zoltraak\r\n");
+    try bw.writeAll("executable:./zig-out/bin/zoltraak\r\n");
     try bw.writeAll("config_file:\r\n");
+    try bw.print("databases:{d}\r\n", .{num_databases});
     try bw.writeAll("\r\n");
 }
 
@@ -332,28 +336,72 @@ fn buildKeyspaceSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     storage: *Storage,
+    databases: ?[]Storage,
+    num_databases: u16,
 ) !void {
     const bw = buf.writer(allocator);
 
     try bw.writeAll("# Keyspace\r\n");
 
-    // Count keys and keys with expiry under mutex to prevent data races
-    var total_keys: usize = 0;
-    var keys_with_expiry: usize = 0;
-    {
+    const now_ms = std.time.milliTimestamp();
+
+    if (databases) |dbs| {
+        // Show stats for all databases that have data
+        const db_count: usize = @min(num_databases, dbs.len);
+        for (dbs[0..db_count], 0..) |*db, db_idx| {
+            var total_keys: usize = 0;
+            var keys_with_expiry: usize = 0;
+            var ttl_sum: i64 = 0;
+
+            db.mutex.lock();
+            var iter = db.data.iterator();
+            while (iter.next()) |entry| {
+                total_keys += 1;
+                if (entry.value_ptr.*.getExpiration()) |exp_ms| {
+                    keys_with_expiry += 1;
+                    const remaining = exp_ms - now_ms;
+                    if (remaining > 0) {
+                        ttl_sum += remaining;
+                    }
+                }
+            }
+            db.mutex.unlock();
+
+            if (total_keys > 0) {
+                const avg_ttl: u64 = if (keys_with_expiry > 0)
+                    @intCast(@divTrunc(ttl_sum, @as(i64, @intCast(keys_with_expiry))))
+                else
+                    0;
+                try bw.print("db{d}:keys={d},expires={d},avg_ttl={d}\r\n", .{ db_idx, total_keys, keys_with_expiry, avg_ttl });
+            }
+        }
+    } else {
+        // Fallback: only the single storage passed in (db0)
+        var total_keys: usize = 0;
+        var keys_with_expiry: usize = 0;
+        var ttl_sum: i64 = 0;
+
         storage.mutex.lock();
-        defer storage.mutex.unlock();
         var iter = storage.data.iterator();
         while (iter.next()) |entry| {
             total_keys += 1;
-            if (entry.value_ptr.*.getExpiration()) |_| {
+            if (entry.value_ptr.*.getExpiration()) |exp_ms| {
                 keys_with_expiry += 1;
+                const remaining = exp_ms - now_ms;
+                if (remaining > 0) {
+                    ttl_sum += remaining;
+                }
             }
         }
-    }
+        storage.mutex.unlock();
 
-    if (total_keys > 0) {
-        try bw.print("db0:keys={d},expires={d},avg_ttl=0\r\n", .{ total_keys, keys_with_expiry });
+        if (total_keys > 0) {
+            const avg_ttl: u64 = if (keys_with_expiry > 0)
+                @intCast(@divTrunc(ttl_sum, @as(i64, @intCast(keys_with_expiry))))
+            else
+                0;
+            try bw.print("db0:keys={d},expires={d},avg_ttl={d}\r\n", .{ total_keys, keys_with_expiry, avg_ttl });
+        }
     }
 
     try bw.writeAll("\r\n");
@@ -536,7 +584,7 @@ test "INFO server section" {
     };
 
     const args = [_][]const u8{ "INFO", "SERVER" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Server") != null);
@@ -574,7 +622,7 @@ test "INFO clients section" {
     };
 
     const args = [_][]const u8{ "INFO", "CLIENTS" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Clients") != null);
@@ -615,7 +663,7 @@ test "INFO keyspace section with data" {
     };
 
     const args = [_][]const u8{ "INFO", "KEYSPACE" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Keyspace") != null);
@@ -652,7 +700,7 @@ test "INFO default shows multiple sections" {
     };
 
     const args = [_][]const u8{"INFO"};
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Server") != null);
@@ -697,7 +745,7 @@ test "INFO server section uptime is reasonable (not Unix timestamp)" {
     };
 
     const args = [_][]const u8{ "INFO", "SERVER" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     // uptime_in_seconds must be < 5 seconds (we just set start_time = now)
@@ -743,7 +791,7 @@ test "INFO server section lru_clock is 24-bit truncated" {
     };
 
     const args = [_][]const u8{ "INFO", "SERVER" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     // lru_clock must be <= 2^24 - 1 = 16777215
@@ -787,7 +835,7 @@ test "INFO stats section shows real command/connection counts" {
     };
 
     const args = [_][]const u8{ "INFO", "STATS" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "total_commands_processed:42") != null);
@@ -830,7 +878,7 @@ test "INFO stats section shows keyspace hits and misses" {
     };
 
     const args = [_][]const u8{ "INFO", "STATS" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "keyspace_hits:1") != null);
@@ -867,7 +915,7 @@ test "INFO commandstats section is empty when no commands recorded" {
     };
 
     const args = [_][]const u8{ "INFO", "COMMANDSTATS" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Commandstats") != null);
@@ -908,7 +956,7 @@ test "INFO commandstats section shows recorded commands" {
     };
 
     const args = [_][]const u8{ "INFO", "COMMANDSTATS" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "cmdstat_get:calls=2") != null);
@@ -950,7 +998,7 @@ test "INFO errorstats section shows recorded errors" {
     };
 
     const args = [_][]const u8{ "INFO", "ERRORSTATS" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Errorstats") != null);
@@ -990,7 +1038,7 @@ test "INFO ALL includes commandstats and errorstats sections" {
     };
 
     const args = [_][]const u8{ "INFO", "ALL" };
-    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args);
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "# Commandstats") != null);
@@ -1029,20 +1077,20 @@ test "INFO cluster section appears in default and all" {
 
     // INFO default must include cluster section
     const default_args = [_][]const u8{ "INFO", "default" };
-    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &default_args);
+    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &default_args, null, 1);
     defer allocator.free(default_result);
     try std.testing.expect(std.mem.indexOf(u8, default_result, "# Cluster") != null);
     try std.testing.expect(std.mem.indexOf(u8, default_result, "cluster_enabled:0") != null);
 
     // INFO all must also include cluster section
     const all_args = [_][]const u8{ "INFO", "all" };
-    const all_result = try cmdInfo(allocator, &storage, &repl, config, stats, &all_args);
+    const all_result = try cmdInfo(allocator, &storage, &repl, config, stats, &all_args, null, 1);
     defer allocator.free(all_result);
     try std.testing.expect(std.mem.indexOf(u8, all_result, "# Cluster") != null);
 
     // INFO cluster specifically
     const cluster_args = [_][]const u8{ "INFO", "cluster" };
-    const cluster_result = try cmdInfo(allocator, &storage, &repl, config, stats, &cluster_args);
+    const cluster_result = try cmdInfo(allocator, &storage, &repl, config, stats, &cluster_args, null, 1);
     defer allocator.free(cluster_result);
     try std.testing.expect(std.mem.indexOf(u8, cluster_result, "# Cluster") != null);
     try std.testing.expect(std.mem.indexOf(u8, cluster_result, "cluster_enabled:0") != null);
@@ -1080,13 +1128,179 @@ test "INFO modules section appears in default and all" {
 
     // INFO default must include modules section
     const default_args = [_][]const u8{ "INFO", "default" };
-    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &default_args);
+    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &default_args, null, 1);
     defer allocator.free(default_result);
     try std.testing.expect(std.mem.indexOf(u8, default_result, "# Modules") != null);
 
     // INFO modules specifically
     const modules_args = [_][]const u8{ "INFO", "modules" };
-    const modules_result = try cmdInfo(allocator, &storage, &repl, config, stats, &modules_args);
+    const modules_result = try cmdInfo(allocator, &storage, &repl, config, stats, &modules_args, null, 1);
     defer allocator.free(modules_result);
     try std.testing.expect(std.mem.indexOf(u8, modules_result, "# Modules") != null);
+}
+
+test "INFO keyspace shows avg_ttl for keys with expiry" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add a key with 10-second TTL (expires_at in ms)
+    const expire_at = std.time.milliTimestamp() + 10_000; // 10 seconds in the future
+    try storage.set("mykey", "value", expire_at);
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "keyspace" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Keyspace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "db0:keys=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "expires=1") != null);
+    // avg_ttl should be close to 10000 ms (9000–10000 range is acceptable)
+    try std.testing.expect(std.mem.indexOf(u8, result, "avg_ttl=0") == null);
+}
+
+test "INFO keyspace avg_ttl is 0 when no keys have expiry" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add a key WITHOUT TTL
+    try storage.set("mykey", "value", null);
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "keyspace" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "db0:keys=1,expires=0,avg_ttl=0") != null);
+}
+
+test "INFO keyspace multi-database shows all non-empty databases" {
+    const allocator = std.testing.allocator;
+
+    // Create three databases
+    var db0 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer db0.deinit();
+    var db1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer db1.deinit();
+    var db2 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer db2.deinit();
+
+    // Add a key to db0 and db2 (but NOT db1)
+    try db0.set("key0", "val0", null);
+    try db2.set("key2", "val2", null);
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // Use the actual storages directly as a slice (not copies)
+    var dbs = [3]Storage{ db0, db1, db2 };
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 3,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "keyspace" };
+    const result = try cmdInfo(allocator, &db0, &repl, config, stats, &args, &dbs, 3);
+    defer allocator.free(result);
+
+    // db0 and db2 should appear, db1 should not
+    try std.testing.expect(std.mem.indexOf(u8, result, "db0:keys=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "db1:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "db2:keys=1") != null);
+}
+
+test "INFO server section shows correct databases count" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "server" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 16);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "databases:16") != null);
 }

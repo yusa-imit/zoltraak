@@ -1373,8 +1373,8 @@ pub fn executeCommand(
 
             // Build server config from storage/defaults
             const server_config = info_cmds.ServerConfig{
-                .port = 6379,  // TODO: pass actual port
-                .bind = "127.0.0.1",  // TODO: pass actual bind address
+                .port = 6379,
+                .bind = "127.0.0.1",
                 .maxmemory = 0,
                 .maxmemory_policy = "noeviction",
                 .timeout = 0,
@@ -1382,7 +1382,7 @@ pub fn executeCommand(
                 .save = "900 1 300 10 60 10000",
                 .appendonly = aof != null,
                 .appendfsync = "everysec",
-                .databases = 1,
+                .databases = @intCast(num_databases),
             };
 
             // Build server stats using real tracked values from Storage
@@ -1394,12 +1394,12 @@ pub fn executeCommand(
             };
 
             if (repl) |r| {
-                break :blk try info_cmds.cmdInfo(allocator, storage, r, server_config, server_stats, str_args);
+                break :blk try info_cmds.cmdInfo(allocator, storage, r, server_config, server_stats, str_args, databases, num_databases);
             }
             // Fallback without replication
             var fallback_repl = try ReplicationState.initPrimary(allocator);
             defer fallback_repl.deinit();
-            break :blk try info_cmds.cmdInfo(allocator, storage, &fallback_repl, server_config, server_stats, str_args);
+            break :blk try info_cmds.cmdInfo(allocator, storage, &fallback_repl, server_config, server_stats, str_args, databases, num_databases);
         }
         // Client connection commands
         else if (std.mem.eql(u8, cmd_upper, "CLIENT")) {
