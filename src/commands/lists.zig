@@ -185,11 +185,11 @@ pub fn cmdLpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute LPOP
     const result = (try storage.lpop(allocator, key, count)) orelse {
-        // Key doesn't exist or is not a list
+        // Key doesn't exist or is not a list — Redis returns nil (null array when count given)
         if (!has_count_param) {
             return w.writeNull();
         } else {
-            return w.writeArray(&[_]RespValue{});
+            return w.writeArray(null);
         }
     };
     defer {
@@ -267,11 +267,11 @@ pub fn cmdRpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute RPOP
     const result = (try storage.rpop(allocator, key, count)) orelse {
-        // Key doesn't exist or is not a list
+        // Key doesn't exist or is not a list — Redis returns nil (null array when count given)
         if (!has_count_param) {
             return w.writeNull();
         } else {
-            return w.writeArray(&[_]RespValue{});
+            return w.writeArray(null);
         }
     };
     defer {
