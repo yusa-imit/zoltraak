@@ -3229,6 +3229,8 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     var expires_at: ?i64 = null;
     var nx = false;
     var xx = false;
+    var get_flag = false;
+    var keepttl = false;
 
     // Parse options
     var i: usize = 3;
@@ -3242,7 +3244,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         defer allocator.free(opt_upper);
 
         if (std.mem.eql(u8, opt_upper, "EX")) {
-            if (expires_at != null) {
+            if (expires_at != null or keepttl) {
                 return w.writeError("ERR syntax error");
             }
             i += 1;
@@ -3257,7 +3259,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             }
             expires_at = Storage.getCurrentTimestamp() + (seconds * 1000);
         } else if (std.mem.eql(u8, opt_upper, "PX")) {
-            if (expires_at != null) {
+            if (expires_at != null or keepttl) {
                 return w.writeError("ERR syntax error");
             }
             i += 1;
@@ -3271,6 +3273,41 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
                 return w.writeError("ERR invalid expire time in 'set' command");
             }
             expires_at = Storage.getCurrentTimestamp() + milliseconds;
+        } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
+            if (expires_at != null or keepttl) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const unix_sec = parseInteger(args[i]) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            if (unix_sec <= 0) {
+                return w.writeError("ERR invalid expire time in 'set' command");
+            }
+            expires_at = unix_sec * 1000; // convert seconds to milliseconds
+        } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
+            if (expires_at != null or keepttl) {
+                return w.writeError("ERR syntax error");
+            }
+            i += 1;
+            if (i >= args.len) {
+                return w.writeError("ERR syntax error");
+            }
+            const unix_ms = parseInteger(args[i]) catch {
+                return w.writeError("ERR value is not an integer or out of range");
+            };
+            if (unix_ms <= 0) {
+                return w.writeError("ERR invalid expire time in 'set' command");
+            }
+            expires_at = unix_ms;
+        } else if (std.mem.eql(u8, opt_upper, "KEEPTTL")) {
+            if (expires_at != null) {
+                return w.writeError("ERR syntax error");
+            }
+            keepttl = true;
         } else if (std.mem.eql(u8, opt_upper, "NX")) {
             if (xx) {
                 return w.writeError("ERR syntax error");
@@ -3281,24 +3318,49 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
                 return w.writeError("ERR syntax error");
             }
             xx = true;
+        } else if (std.mem.eql(u8, opt_upper, "GET")) {
+            get_flag = true;
         } else {
             return w.writeError("ERR syntax error");
         }
     }
 
-    // Check NX condition
-    if (nx and storage.exists(key)) {
-        return w.writeNull(); // $-1\r\n
+    // GET option: retrieve old value before applying NX/XX/SET logic.
+    // Returns WRONGTYPE if key exists as a non-string type.
+    var old_value_buf: ?[]u8 = null;
+    defer if (old_value_buf) |buf| allocator.free(buf);
+
+    if (get_flag) {
+        const entry = storage.getStringWithExpiry(key) catch {
+            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        };
+        if (entry) |e| {
+            old_value_buf = try allocator.dupe(u8, e.value);
+        }
     }
 
-    // Check XX condition
+    // Check NX condition (key must NOT exist)
+    if (nx and storage.exists(key)) {
+        return if (get_flag) w.writeBulkString(old_value_buf) else w.writeNull();
+    }
+
+    // Check XX condition (key MUST exist)
     if (xx and !storage.exists(key)) {
-        return w.writeNull(); // $-1\r\n
+        return if (get_flag) w.writeNull() else w.writeNull();
+    }
+
+    // Resolve expiry: KEEPTTL preserves existing TTL, otherwise use computed expires_at
+    var final_expires_at: ?i64 = expires_at;
+    if (keepttl) {
+        if (storage.getStringWithExpiry(key) catch null) |e| {
+            final_expires_at = e.expires_at;
+        }
+        // If key doesn't exist or is wrong type, KEEPTTL sets no expiry (new key)
     }
 
     // Execute SET
     const was_new = !storage.exists(key);
-    try storage.set(key, value, expires_at);
+    try storage.set(key, value, final_expires_at);
 
     // Notify clients about key invalidation (generate messages and cleanup tracking)
     client_cmds.notifyInvalidation(client_registry, key, client_id, allocator) catch |err| {
@@ -3311,7 +3373,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .new, "new");
     }
 
-    return w.writeOK();
+    return if (get_flag) w.writeBulkString(old_value_buf) else w.writeOK();
 }
 
 /// GET key
@@ -5195,6 +5257,181 @@ test "commands - SET with negative expiration" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("-ERR invalid expire time in 'set' command\r\n", result);
+}
+
+test "commands - SET with GET returns nil when key missing" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "newkey" },
+        RespValue{ .bulk_string = "value1" },
+        RespValue{ .bulk_string = "GET" },
+    };
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    // SET succeeds but old value was nil
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+    // Key was actually set
+    try std.testing.expectEqualStrings("value1", storage.get("newkey").?);
+}
+
+test "commands - SET with GET returns old value" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    try storage.set("mykey", "old", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "new" },
+        RespValue{ .bulk_string = "GET" },
+    };
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$3\r\nold\r\n", result);
+    try std.testing.expectEqualStrings("new", storage.get("mykey").?);
+}
+
+test "commands - SET with NX GET returns old value without setting" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    try storage.set("mykey", "existing", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "new" },
+        RespValue{ .bulk_string = "NX" },
+        RespValue{ .bulk_string = "GET" },
+    };
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    // Returns old value, but SET is blocked by NX
+    try std.testing.expectEqualStrings("$8\r\nexisting\r\n", result);
+    // Key unchanged
+    try std.testing.expectEqualStrings("existing", storage.get("mykey").?);
+}
+
+test "commands - SET with KEEPTTL preserves expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const future = Storage.getCurrentTimestamp() + 5000;
+    try storage.set("mykey", "old", future);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "new" },
+        RespValue{ .bulk_string = "KEEPTTL" },
+    };
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    // Value updated
+    try std.testing.expectEqualStrings("new", storage.get("mykey").?);
+    // Expiry preserved
+    const entry = try storage.getStringWithExpiry("mykey");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqual(future, entry.?.expires_at.?);
+}
+
+test "commands - SET with EXAT sets absolute expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const future_sec: i64 = @divTrunc(Storage.getCurrentTimestamp(), 1000) + 3600;
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "val" },
+        RespValue{ .bulk_string = "EXAT" },
+        RespValue{ .bulk_string = try std.fmt.allocPrint(allocator, "{d}", .{future_sec}) },
+    };
+    defer allocator.free(args[4].bulk_string);
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    const entry = try storage.getStringWithExpiry("mykey");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqual(future_sec * 1000, entry.?.expires_at.?);
+}
+
+test "commands - SET with PXAT sets absolute ms expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const future_ms: i64 = Storage.getCurrentTimestamp() + 3_600_000;
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "val" },
+        RespValue{ .bulk_string = "PXAT" },
+        RespValue{ .bulk_string = try std.fmt.allocPrint(allocator, "{d}", .{future_ms}) },
+    };
+    defer allocator.free(args[4].bulk_string);
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    const entry = try storage.getStringWithExpiry("mykey");
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqual(future_ms, entry.?.expires_at.?);
+}
+
+test "commands - SET KEEPTTL with EX returns syntax error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "mykey" },
+        RespValue{ .bulk_string = "val" },
+        RespValue{ .bulk_string = "EX" },
+        RespValue{ .bulk_string = "100" },
+        RespValue{ .bulk_string = "KEEPTTL" },
+    };
+    const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("-ERR syntax error\r\n", result);
 }
 
 test "commands - GET existing key" {

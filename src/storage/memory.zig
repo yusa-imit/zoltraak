@@ -2186,6 +2186,25 @@ pub const Storage = struct {
         };
     }
 
+    /// Get string value and expiration for SET GET/KEEPTTL options.
+    /// Returns error.WrongType if the key exists and is not a string.
+    /// Returns null if the key does not exist or has expired.
+    pub fn getStringWithExpiry(self: *Storage, key: []const u8) error{WrongType}!?struct { value: []const u8, expires_at: ?i64 } {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return null;
+        }
+
+        return switch (entry.value_ptr.*) {
+            .string => |s| .{ .value = s.data, .expires_at = s.expires_at },
+            else => error.WrongType,
+        };
+    }
+
     /// Delete one or more keys
     /// Returns count of keys actually deleted (non-existent keys are ignored)
     pub fn del(self: *Storage, keys: []const []const u8) usize {
@@ -14230,4 +14249,60 @@ test "errorstats - resetCommandStats zeroes error counts" {
     for (snap) |item| {
         try std.testing.expectEqual(@as(u64, 0), item.count);
     }
+}
+
+test "getStringWithExpiry - returns null for missing key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try storage.getStringWithExpiry("nokey");
+    try std.testing.expect(result == null);
+}
+
+test "getStringWithExpiry - returns value and null expiry for string without TTL" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("mykey", "hello", null);
+    const result = try storage.getStringWithExpiry("mykey");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("hello", result.?.value);
+    try std.testing.expect(result.?.expires_at == null);
+}
+
+test "getStringWithExpiry - returns value and expiry for string with TTL" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const future = Storage.getCurrentTimestamp() + 5000;
+    try storage.set("mykey", "world", future);
+    const result = try storage.getStringWithExpiry("mykey");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("world", result.?.value);
+    try std.testing.expect(result.?.expires_at != null);
+    try std.testing.expectEqual(future, result.?.expires_at.?);
+}
+
+test "getStringWithExpiry - returns WrongType for non-string key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.lpush("listkey", &[_][]const u8{"a"}, true);
+    const result = storage.getStringWithExpiry("listkey");
+    try std.testing.expectError(error.WrongType, result);
+}
+
+test "getStringWithExpiry - returns null for expired key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const past = Storage.getCurrentTimestamp() - 1000;
+    try storage.set("mykey", "expired", past);
+    const result = try storage.getStringWithExpiry("mykey");
+    try std.testing.expect(result == null);
 }
