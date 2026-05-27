@@ -439,7 +439,7 @@ pub fn cmdDump(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// Create a key associated with a value that is obtained via DUMP.
 /// ttl: time-to-live in milliseconds, 0 means no expiry
 /// REPLACE: replace existing key
-/// ABSTTL: ttl is absolute Unix timestamp (not implemented)
+/// ABSTTL: ttl is absolute Unix timestamp in milliseconds
 pub fn cmdRestore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -467,6 +467,7 @@ pub fn cmdRestore(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
     // Parse options
     var replace = false;
+    var absttl = false;
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
         const opt = switch (args[i]) {
@@ -475,20 +476,18 @@ pub fn cmdRestore(allocator: std.mem.Allocator, storage: *Storage, args: []const
         };
         if (std.ascii.eqlIgnoreCase(opt, "REPLACE")) {
             replace = true;
-        } else if (std.ascii.eqlIgnoreCase(opt, "ABSTTL") or
-            std.ascii.eqlIgnoreCase(opt, "IDLETIME") or
+        } else if (std.ascii.eqlIgnoreCase(opt, "ABSTTL")) {
+            absttl = true;
+        } else if (std.ascii.eqlIgnoreCase(opt, "IDLETIME") or
             std.ascii.eqlIgnoreCase(opt, "FREQ"))
         {
-            // Skip unsupported options and their values
-            if (std.ascii.eqlIgnoreCase(opt, "IDLETIME") or std.ascii.eqlIgnoreCase(opt, "FREQ")) {
-                i += 1; // skip the value
-            }
+            i += 1; // skip the value
         } else {
             return w.writeError("ERR syntax error");
         }
     }
 
-    storage.restoreValue(key, serialized, ttl_ms, replace) catch |err| {
+    storage.restoreValue(key, serialized, ttl_ms, replace, absttl) catch |err| {
         return switch (err) {
             error.KeyAlreadyExists => w.writeError("BUSYKEY Target key name already exists"),
             error.InvalidDumpPayload, error.DumpChecksumMismatch, error.UnknownDumpType => w.writeError("ERR DUMP payload version or checksum are wrong"),

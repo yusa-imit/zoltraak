@@ -6252,7 +6252,9 @@ pub const Storage = struct {
     /// Deserialize and restore a value from RDB format (for RESTORE command).
     /// ttl_ms: 0 = no expiration, >0 = expiration in milliseconds from now
     /// replace: if true, overwrite existing key; if false, fail if key exists
-    pub fn restoreValue(self: *Storage, key: []const u8, serialized: []const u8, ttl_ms: i64, replace: bool) !void {
+    /// absttl: when true, ttl_ms is an absolute Unix timestamp in milliseconds (RESTORE ABSTTL option).
+    /// When false (default), ttl_ms is a relative TTL in milliseconds.
+    pub fn restoreValue(self: *Storage, key: []const u8, serialized: []const u8, ttl_ms: i64, replace: bool, absttl: bool) !void {
         if (serialized.len < 6) return error.InvalidDumpPayload; // type + exp_flag + crc (min)
 
         // Verify checksum
@@ -6280,7 +6282,13 @@ pub const Storage = struct {
 
         // Override with ttl_ms if provided
         if (ttl_ms > 0) {
-            expires_at = getCurrentTimestamp() + ttl_ms;
+            if (absttl) {
+                // ABSTTL: ttl_ms is absolute Unix timestamp in milliseconds
+                expires_at = ttl_ms;
+            } else {
+                // Default: ttl_ms is relative TTL in milliseconds
+                expires_at = getCurrentTimestamp() + ttl_ms;
+            }
         } else if (ttl_ms == 0) {
             expires_at = null;
         }
@@ -12928,7 +12936,7 @@ test "storage - dump and restore string" {
     const dump = (try storage.dumpValue(allocator, "mykey")).?;
     defer allocator.free(dump);
 
-    try storage.restoreValue("newkey", dump, 0, false);
+    try storage.restoreValue("newkey", dump, 0, false, false);
 
     const value = storage.get("newkey").?;
     try std.testing.expectEqualStrings("hello", value);
@@ -13046,7 +13054,7 @@ test "storage - dump and restore list" {
     const dump = (try storage.dumpValue(allocator, "mylist")).?;
     defer allocator.free(dump);
 
-    try storage.restoreValue("newlist", dump, 0, false);
+    try storage.restoreValue("newlist", dump, 0, false, false);
 
     const len = storage.llen("newlist").?;
     try std.testing.expectEqual(@as(usize, 3), len);
@@ -13063,7 +13071,7 @@ test "storage - dump and restore with TTL" {
     defer allocator.free(dump);
 
     // Restore with 1 hour TTL
-    try storage.restoreValue("newkey", dump, 3600 * 1000, false);
+    try storage.restoreValue("newkey", dump, 3600 * 1000, false, false);
 
     const value = storage.get("newkey").?;
     try std.testing.expectEqualStrings("value", value);
@@ -13085,7 +13093,7 @@ test "storage - restore fails if key exists" {
     defer allocator.free(dump);
 
     // Should fail without replace flag
-    const result = storage.restoreValue("key2", dump, 0, false);
+    const result = storage.restoreValue("key2", dump, 0, false, false);
     try std.testing.expectError(error.KeyAlreadyExists, result);
 }
 
@@ -13101,10 +13109,50 @@ test "storage - restore with replace overwrites" {
     defer allocator.free(dump);
 
     // Should succeed with replace flag
-    try storage.restoreValue("key2", dump, 0, true);
+    try storage.restoreValue("key2", dump, 0, true, false);
 
     const value = storage.get("key2").?;
     try std.testing.expectEqualStrings("value1", value);
+}
+
+test "storage - restore with ABSTTL uses absolute timestamp" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("src", "absttl_val", null);
+    const dump = (try storage.dumpValue(allocator, "src")).?;
+    defer allocator.free(dump);
+
+    // Use a far-future absolute timestamp (year 2100)
+    const far_future_ms: i64 = 4102444800000; // 2100-01-01 00:00:00 UTC in ms
+    try storage.restoreValue("dst_absttl", dump, far_future_ms, false, true);
+
+    const value = storage.get("dst_absttl").?;
+    try std.testing.expectEqualStrings("absttl_val", value);
+
+    // TTL should be large (close to far_future_ms - now)
+    const ttl = storage.getTtlMs("dst_absttl");
+    try std.testing.expect(ttl > 0);
+    try std.testing.expect(ttl > 1000 * 60 * 60 * 24 * 365); // more than 1 year remaining
+}
+
+test "storage - restore ABSTTL with past timestamp expires key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("src2", "expired_val", null);
+    const dump = (try storage.dumpValue(allocator, "src2")).?;
+    defer allocator.free(dump);
+
+    // Past timestamp (year 2000)
+    const past_ms: i64 = 946684800000; // 2000-01-01 00:00:00 UTC in ms
+    try storage.restoreValue("dst_expired", dump, past_ms, false, true);
+
+    // Key should be expired (not accessible)
+    const value = storage.get("dst_expired");
+    try std.testing.expect(value == null);
 }
 
 test "storage - copy key" {
