@@ -1475,7 +1475,7 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 }
 
-/// HEXPIRE key seconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// HEXPIRE key seconds [NX|XX|GT|LT] FIELDS numfields field [field ...]
 /// Set expiration time for hash fields
 /// Returns array of integers (1 if set, 0 if not, -2 if field doesn't exist)
 pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
@@ -1499,16 +1499,39 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    // Parse FIELDS keyword
-    const fields_keyword = switch (args[3]) {
+    // Parse optional NX|XX|GT|LT before FIELDS keyword
+    var options: u8 = 0;
+    var fields_idx: usize = 3;
+    const arg3 = switch (args[3]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
+        options = 1; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
+        options = 2; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
+        options = 4; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
+        options = 8; fields_idx = 4;
+    } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
-    const numfields_str = switch (args[4]) {
+    if (args.len <= fields_idx + 1) {
+        return w.writeError("ERR wrong number of arguments for 'hexpire' command");
+    }
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[fields_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[fields_idx + 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid numfields"),
     };
@@ -1516,7 +1539,8 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    if (args.len < 5 + numfields) {
+    const data_start = fields_idx + 2;
+    if (args.len < data_start + numfields) {
         return w.writeError("ERR wrong number of arguments for 'hexpire' command");
     }
 
@@ -1524,32 +1548,12 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
     var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
     defer fields.deinit(allocator);
 
-    for (5..5 + numfields) |i| {
+    for (data_start..data_start + numfields) |i| {
         const field = switch (args[i]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR invalid field"),
         };
         try fields.append(allocator, field);
-    }
-
-    // Parse options (NX|XX|GT|LT)
-    var options: u8 = 0;
-    if (args.len > 5 + numfields) {
-        const option = switch (args[5 + numfields]) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR syntax error"),
-        };
-        if (std.mem.eql(u8, option, "NX")) {
-            options = 1;
-        } else if (std.mem.eql(u8, option, "XX")) {
-            options = 2;
-        } else if (std.mem.eql(u8, option, "GT")) {
-            options = 4;
-        } else if (std.mem.eql(u8, option, "LT")) {
-            options = 8;
-        } else {
-            return w.writeError("ERR syntax error");
-        }
     }
 
     // Calculate expiration time in milliseconds
@@ -1590,7 +1594,7 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
     return w.writeArray(resp_values.items);
 }
 
-/// HPEXPIRE key milliseconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// HPEXPIRE key milliseconds [NX|XX|GT|LT] FIELDS numfields field [field ...]
 /// Set expiration time for hash fields in milliseconds
 pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
@@ -1613,16 +1617,39 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    // Parse FIELDS keyword
-    const fields_keyword = switch (args[3]) {
+    // Parse optional NX|XX|GT|LT before FIELDS keyword
+    var options: u8 = 0;
+    var fields_idx: usize = 3;
+    const arg3 = switch (args[3]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
+        options = 1; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
+        options = 2; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
+        options = 4; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
+        options = 8; fields_idx = 4;
+    } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
-    const numfields_str = switch (args[4]) {
+    if (args.len <= fields_idx + 1) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpire' command");
+    }
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[fields_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[fields_idx + 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid numfields"),
     };
@@ -1630,7 +1657,8 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    if (args.len < 5 + numfields) {
+    const data_start = fields_idx + 2;
+    if (args.len < data_start + numfields) {
         return w.writeError("ERR wrong number of arguments for 'hpexpire' command");
     }
 
@@ -1638,32 +1666,12 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
     defer fields.deinit(allocator);
 
-    for (5..5 + numfields) |i| {
+    for (data_start..data_start + numfields) |i| {
         const field = switch (args[i]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR invalid field"),
         };
         try fields.append(allocator, field);
-    }
-
-    // Parse options (NX|XX|GT|LT)
-    var options: u8 = 0;
-    if (args.len > 5 + numfields) {
-        const option = switch (args[5 + numfields]) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR syntax error"),
-        };
-        if (std.mem.eql(u8, option, "NX")) {
-            options = 1;
-        } else if (std.mem.eql(u8, option, "XX")) {
-            options = 2;
-        } else if (std.mem.eql(u8, option, "GT")) {
-            options = 4;
-        } else if (std.mem.eql(u8, option, "LT")) {
-            options = 8;
-        } else {
-            return w.writeError("ERR syntax error");
-        }
     }
 
     // Calculate expiration time in milliseconds
@@ -1700,7 +1708,7 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     return w.writeArray(resp_values.items);
 }
 
-/// HEXPIREAT key unix-time-seconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// HEXPIREAT key unix-time-seconds [NX|XX|GT|LT] FIELDS numfields field [field ...]
 /// Set expiration time for hash fields at absolute Unix timestamp (seconds)
 pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
@@ -1723,16 +1731,39 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    // Parse FIELDS keyword
-    const fields_keyword = switch (args[3]) {
+    // Parse optional NX|XX|GT|LT before FIELDS keyword
+    var options: u8 = 0;
+    var fields_idx: usize = 3;
+    const arg3 = switch (args[3]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
+        options = 1; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
+        options = 2; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
+        options = 4; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
+        options = 8; fields_idx = 4;
+    } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
-    const numfields_str = switch (args[4]) {
+    if (args.len <= fields_idx + 1) {
+        return w.writeError("ERR wrong number of arguments for 'hexpireat' command");
+    }
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[fields_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[fields_idx + 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid numfields"),
     };
@@ -1740,7 +1771,8 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    if (args.len < 5 + numfields) {
+    const data_start = fields_idx + 2;
+    if (args.len < data_start + numfields) {
         return w.writeError("ERR wrong number of arguments for 'hexpireat' command");
     }
 
@@ -1748,32 +1780,12 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
     var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
     defer fields.deinit(allocator);
 
-    for (5..5 + numfields) |i| {
+    for (data_start..data_start + numfields) |i| {
         const field = switch (args[i]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR invalid field"),
         };
         try fields.append(allocator, field);
-    }
-
-    // Parse options
-    var options: u8 = 0;
-    if (args.len > 5 + numfields) {
-        const option = switch (args[5 + numfields]) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR syntax error"),
-        };
-        if (std.mem.eql(u8, option, "NX")) {
-            options = 1;
-        } else if (std.mem.eql(u8, option, "XX")) {
-            options = 2;
-        } else if (std.mem.eql(u8, option, "GT")) {
-            options = 4;
-        } else if (std.mem.eql(u8, option, "LT")) {
-            options = 8;
-        } else {
-            return w.writeError("ERR syntax error");
-        }
     }
 
     const expires_at_ms = unix_time_seconds * 1000;
@@ -1807,7 +1819,7 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
     return w.writeArray(resp_values.items);
 }
 
-/// HPEXPIREAT key unix-time-milliseconds FIELDS numfields field [field ...] [NX|XX|GT|LT]
+/// HPEXPIREAT key unix-time-milliseconds [NX|XX|GT|LT] FIELDS numfields field [field ...]
 /// Set expiration time for hash fields at absolute Unix timestamp (milliseconds)
 pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
@@ -1830,16 +1842,39 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    // Parse FIELDS keyword
-    const fields_keyword = switch (args[3]) {
+    // Parse optional NX|XX|GT|LT before FIELDS keyword
+    var options: u8 = 0;
+    var fields_idx: usize = 3;
+    const arg3 = switch (args[3]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
+        options = 1; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
+        options = 2; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
+        options = 4; fields_idx = 4;
+    } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
+        options = 8; fields_idx = 4;
+    } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
-    const numfields_str = switch (args[4]) {
+    if (args.len <= fields_idx + 1) {
+        return w.writeError("ERR wrong number of arguments for 'hpexpireat' command");
+    }
+
+    // Parse FIELDS keyword
+    const fields_keyword = switch (args[fields_idx]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR syntax error"),
+    };
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
+        return w.writeError("ERR syntax error");
+    }
+
+    const numfields_str = switch (args[fields_idx + 1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid numfields"),
     };
@@ -1847,7 +1882,8 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    if (args.len < 5 + numfields) {
+    const data_start = fields_idx + 2;
+    if (args.len < data_start + numfields) {
         return w.writeError("ERR wrong number of arguments for 'hpexpireat' command");
     }
 
@@ -1855,32 +1891,12 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
     var fields = try std.ArrayList([]const u8).initCapacity(allocator, numfields);
     defer fields.deinit(allocator);
 
-    for (5..5 + numfields) |i| {
+    for (data_start..data_start + numfields) |i| {
         const field = switch (args[i]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR invalid field"),
         };
         try fields.append(allocator, field);
-    }
-
-    // Parse options
-    var options: u8 = 0;
-    if (args.len > 5 + numfields) {
-        const option = switch (args[5 + numfields]) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR syntax error"),
-        };
-        if (std.mem.eql(u8, option, "NX")) {
-            options = 1;
-        } else if (std.mem.eql(u8, option, "XX")) {
-            options = 2;
-        } else if (std.mem.eql(u8, option, "GT")) {
-            options = 4;
-        } else if (std.mem.eql(u8, option, "LT")) {
-            options = 8;
-        } else {
-            return w.writeError("ERR syntax error");
-        }
     }
 
     const updated_count = storage.hexpire(key, fields.items, unix_time_ms, options) catch |err| {
@@ -1933,7 +1949,7 @@ pub fn cmdHpersist(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
@@ -2012,7 +2028,7 @@ pub fn cmdHttpl(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
@@ -2075,7 +2091,7 @@ pub fn cmdHpttl(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
@@ -2138,7 +2154,7 @@ pub fn cmdHexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []c
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
@@ -2201,7 +2217,7 @@ pub fn cmdHpexpiretime(allocator: std.mem.Allocator, storage: *Storage, args: []
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
@@ -2264,7 +2280,7 @@ pub fn cmdHgetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
 
@@ -2356,20 +2372,20 @@ pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             else => return w.writeError("ERR syntax error"),
         };
 
-        if (std.mem.eql(u8, arg, "FIELDS")) {
+        if (std.ascii.eqlIgnoreCase(arg, "FIELDS")) {
             break; // Found FIELDS keyword, stop parsing options
         }
 
-        if (std.mem.eql(u8, arg, "EX") or std.mem.eql(u8, arg, "PX") or
-            std.mem.eql(u8, arg, "EXAT") or std.mem.eql(u8, arg, "PXAT") or
-            std.mem.eql(u8, arg, "PERSIST"))
+        if (std.ascii.eqlIgnoreCase(arg, "EX") or std.ascii.eqlIgnoreCase(arg, "PX") or
+            std.ascii.eqlIgnoreCase(arg, "EXAT") or std.ascii.eqlIgnoreCase(arg, "PXAT") or
+            std.ascii.eqlIgnoreCase(arg, "PERSIST"))
         {
             if (has_expiration_option) {
                 return w.writeError("ERR EX, PX, EXAT, PXAT, and PERSIST are mutually exclusive");
             }
             has_expiration_option = true;
 
-            if (std.mem.eql(u8, arg, "PERSIST")) {
+            if (std.ascii.eqlIgnoreCase(arg, "PERSIST")) {
                 expires_at_ms = null;
                 arg_idx += 1;
             } else {
@@ -2390,13 +2406,13 @@ pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                     return w.writeError("ERR invalid expire time");
                 }
 
-                if (std.mem.eql(u8, arg, "EX")) {
+                if (std.ascii.eqlIgnoreCase(arg, "EX")) {
                     expires_at_ms = Storage.getCurrentTimestamp() + (time_value * 1000);
-                } else if (std.mem.eql(u8, arg, "PX")) {
+                } else if (std.ascii.eqlIgnoreCase(arg, "PX")) {
                     expires_at_ms = Storage.getCurrentTimestamp() + time_value;
-                } else if (std.mem.eql(u8, arg, "EXAT")) {
+                } else if (std.ascii.eqlIgnoreCase(arg, "EXAT")) {
                     expires_at_ms = time_value * 1000;
-                } else if (std.mem.eql(u8, arg, "PXAT")) {
+                } else if (std.ascii.eqlIgnoreCase(arg, "PXAT")) {
                     expires_at_ms = time_value;
                 }
 
@@ -2416,7 +2432,7 @@ pub fn cmdHgetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
     arg_idx += 1;
@@ -2518,34 +2534,34 @@ pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             else => return w.writeError("ERR syntax error"),
         };
 
-        if (std.mem.eql(u8, arg, "FIELDS")) {
+        if (std.ascii.eqlIgnoreCase(arg, "FIELDS")) {
             break; // Found FIELDS keyword, stop parsing options
         }
 
-        if (std.mem.eql(u8, arg, "FNX")) {
+        if (std.ascii.eqlIgnoreCase(arg, "FNX")) {
             if (has_conditional) {
                 return w.writeError("ERR FNX and FXX are mutually exclusive");
             }
             fnx = true;
             has_conditional = true;
             arg_idx += 1;
-        } else if (std.mem.eql(u8, arg, "FXX")) {
+        } else if (std.ascii.eqlIgnoreCase(arg, "FXX")) {
             if (has_conditional) {
                 return w.writeError("ERR FNX and FXX are mutually exclusive");
             }
             fxx = true;
             has_conditional = true;
             arg_idx += 1;
-        } else if (std.mem.eql(u8, arg, "EX") or std.mem.eql(u8, arg, "PX") or
-            std.mem.eql(u8, arg, "EXAT") or std.mem.eql(u8, arg, "PXAT") or
-            std.mem.eql(u8, arg, "KEEPTTL"))
+        } else if (std.ascii.eqlIgnoreCase(arg, "EX") or std.ascii.eqlIgnoreCase(arg, "PX") or
+            std.ascii.eqlIgnoreCase(arg, "EXAT") or std.ascii.eqlIgnoreCase(arg, "PXAT") or
+            std.ascii.eqlIgnoreCase(arg, "KEEPTTL"))
         {
             if (has_expiration_option) {
                 return w.writeError("ERR EX, PX, EXAT, PXAT, and KEEPTTL are mutually exclusive");
             }
             has_expiration_option = true;
 
-            if (std.mem.eql(u8, arg, "KEEPTTL")) {
+            if (std.ascii.eqlIgnoreCase(arg, "KEEPTTL")) {
                 keep_ttl = true;
                 arg_idx += 1;
             } else {
@@ -2566,13 +2582,13 @@ pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                     return w.writeError("ERR invalid expire time");
                 }
 
-                if (std.mem.eql(u8, arg, "EX")) {
+                if (std.ascii.eqlIgnoreCase(arg, "EX")) {
                     expires_at_ms = Storage.getCurrentTimestamp() + (time_value * 1000);
-                } else if (std.mem.eql(u8, arg, "PX")) {
+                } else if (std.ascii.eqlIgnoreCase(arg, "PX")) {
                     expires_at_ms = Storage.getCurrentTimestamp() + time_value;
-                } else if (std.mem.eql(u8, arg, "EXAT")) {
+                } else if (std.ascii.eqlIgnoreCase(arg, "EXAT")) {
                     expires_at_ms = time_value * 1000;
-                } else if (std.mem.eql(u8, arg, "PXAT")) {
+                } else if (std.ascii.eqlIgnoreCase(arg, "PXAT")) {
                     expires_at_ms = time_value;
                 }
 
@@ -2592,7 +2608,7 @@ pub fn cmdHsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         .bulk_string => |s| s,
         else => return w.writeError("ERR syntax error"),
     };
-    if (!std.mem.eql(u8, fields_keyword, "FIELDS")) {
+    if (!std.ascii.eqlIgnoreCase(fields_keyword, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
     arg_idx += 1;

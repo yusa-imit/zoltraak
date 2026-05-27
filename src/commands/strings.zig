@@ -3284,7 +3284,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             const unix_sec = parseInteger(args[i]) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
-            if (unix_sec <= 0) {
+            if (unix_sec < 0) {
                 return w.writeError("ERR invalid expire time in 'set' command");
             }
             expires_at = unix_sec * 1000; // convert seconds to milliseconds
@@ -3299,7 +3299,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             const unix_ms = parseInteger(args[i]) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
-            if (unix_ms <= 0) {
+            if (unix_ms < 0) {
                 return w.writeError("ERR invalid expire time in 'set' command");
             }
             expires_at = unix_ms;
@@ -7446,5 +7446,79 @@ test "commands - GETEX EXAT negative is still an error" {
     defer allocator.free(result);
 
     // Negative timestamp should return an error
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR invalid expire time") != null);
+}
+
+test "commands - SET EXAT 0 expires key immediately (not an error)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const cr = try @import("../server.zig").ClientRegistry.init(allocator);
+    defer cr.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "setexatkey" },
+        RespValue{ .bulk_string = "value" },
+        RespValue{ .bulk_string = "EXAT" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdSet(allocator, storage, &args, ps, cr, 0, .resp2);
+    defer allocator.free(result);
+
+    // timestamp=0 (epoch, past) is valid — key should be set and immediately expired
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "commands - SET PXAT 0 expires key immediately (not an error)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const cr = try @import("../server.zig").ClientRegistry.init(allocator);
+    defer cr.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "setpxatkey" },
+        RespValue{ .bulk_string = "value" },
+        RespValue{ .bulk_string = "PXAT" },
+        RespValue{ .bulk_string = "0" },
+    };
+    const result = try cmdSet(allocator, storage, &args, ps, cr, 0, .resp2);
+    defer allocator.free(result);
+
+    // timestamp=0 (epoch, past) is valid — key should be set and immediately expired
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "commands - SET EXAT negative is still an error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const ps = try @import("../storage/pubsub.zig").PubSub.init(allocator);
+    defer ps.deinit();
+
+    const cr = try @import("../server.zig").ClientRegistry.init(allocator);
+    defer cr.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SET" },
+        RespValue{ .bulk_string = "setexatneg" },
+        RespValue{ .bulk_string = "value" },
+        RespValue{ .bulk_string = "EXAT" },
+        RespValue{ .bulk_string = "-1" },
+    };
+    const result = try cmdSet(allocator, storage, &args, ps, cr, 0, .resp2);
+    defer allocator.free(result);
+
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR invalid expire time") != null);
 }

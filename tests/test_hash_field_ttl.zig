@@ -3,16 +3,19 @@ const testing = std.testing;
 const protocol = @import("../src/protocol/parser.zig");
 const hashes = @import("../src/commands/hashes.zig");
 const storage_mod = @import("../src/storage/memory.zig");
+const pubsub_mod = @import("../src/storage/pubsub.zig");
 
 const RespValue = protocol.RespValue;
 const Storage = storage_mod.Storage;
+const PubSub = pubsub_mod.PubSub;
 
 test "HEXPIRE - set expiration on hash fields" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash with fields
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -23,7 +26,6 @@ test "HEXPIRE - set expiration on hash fields" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration on field1 for 10 seconds
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -32,10 +34,9 @@ test "HEXPIRE - set expiration on hash fields" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    const response = try hashes.cmdHexpire(allocator, storage, &expire_args);
+    const response = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
     defer allocator.free(response);
 
-    // Should return array with 1 (field expiration set)
     try testing.expect(std.mem.indexOf(u8, response, "*1") != null);
 }
 
@@ -43,8 +44,9 @@ test "HPEXPIRE - set expiration on hash fields in milliseconds" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash with fields
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -53,7 +55,6 @@ test "HPEXPIRE - set expiration on hash fields in milliseconds" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration for 5000ms
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HPEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -62,7 +63,7 @@ test "HPEXPIRE - set expiration on hash fields in milliseconds" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    const response = try hashes.cmdHpexpire(allocator, storage, &expire_args);
+    const response = try hashes.cmdHpexpire(allocator, storage, &expire_args, &ps, 0);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "*1") != null);
@@ -72,8 +73,9 @@ test "HPERSIST - remove expiration from hash fields" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash with fields
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -82,7 +84,6 @@ test "HPERSIST - remove expiration from hash fields" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration first
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -91,9 +92,8 @@ test "HPERSIST - remove expiration from hash fields" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    _ = try hashes.cmdHexpire(allocator, storage, &expire_args);
+    _ = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
 
-    // Now remove expiration
     const persist_args = [_]RespValue{
         .{ .bulk_string = "HPERSIST" },
         .{ .bulk_string = "myhash" },
@@ -101,10 +101,9 @@ test "HPERSIST - remove expiration from hash fields" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    const response = try hashes.cmdHpersist(allocator, storage, &persist_args);
+    const response = try hashes.cmdHpersist(allocator, storage, &persist_args, &ps, 0);
     defer allocator.free(response);
 
-    // Should return array with 1 (expiration removed)
     try testing.expect(std.mem.indexOf(u8, response, "*1") != null);
 }
 
@@ -112,8 +111,9 @@ test "HTTL - get TTL in seconds for hash fields" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash with fields
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -124,7 +124,6 @@ test "HTTL - get TTL in seconds for hash fields" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration on field1
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -133,9 +132,8 @@ test "HTTL - get TTL in seconds for hash fields" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    _ = try hashes.cmdHexpire(allocator, storage, &expire_args);
+    _ = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
 
-    // Get TTL for both fields
     const ttl_args = [_]RespValue{
         .{ .bulk_string = "HTTL" },
         .{ .bulk_string = "myhash" },
@@ -147,17 +145,17 @@ test "HTTL - get TTL in seconds for hash fields" {
     const response = try hashes.cmdHttpl(allocator, storage, &ttl_args);
     defer allocator.free(response);
 
-    // Should return array with 2 integers
+    // Array with 2 integers: field1 has TTL ~10s, field2 has -1 (no expiry)
     try testing.expect(std.mem.indexOf(u8, response, "*2") != null);
-    // field1 should have TTL > 0, field2 should be -1 (no expiry)
 }
 
 test "HPTTL - get TTL in milliseconds for hash fields" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash with fields
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -166,7 +164,6 @@ test "HPTTL - get TTL in milliseconds for hash fields" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HPEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -175,9 +172,8 @@ test "HPTTL - get TTL in milliseconds for hash fields" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    _ = try hashes.cmdHpexpire(allocator, storage, &expire_args);
+    _ = try hashes.cmdHpexpire(allocator, storage, &expire_args, &ps, 0);
 
-    // Get TTL
     const ttl_args = [_]RespValue{
         .{ .bulk_string = "HPTTL" },
         .{ .bulk_string = "myhash" },
@@ -195,8 +191,9 @@ test "HEXPIREAT - set expiration at absolute timestamp (seconds)" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -205,8 +202,7 @@ test "HEXPIREAT - set expiration at absolute timestamp (seconds)" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration at future timestamp
-    const future_ts = std.time.timestamp() + 3600; // 1 hour from now
+    const future_ts = std.time.timestamp() + 3600;
     var ts_buf: [32]u8 = undefined;
     const ts_str = try std.fmt.bufPrint(&ts_buf, "{d}", .{future_ts});
 
@@ -218,7 +214,7 @@ test "HEXPIREAT - set expiration at absolute timestamp (seconds)" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    const response = try hashes.cmdHexpireat(allocator, storage, &expire_args);
+    const response = try hashes.cmdHexpireat(allocator, storage, &expire_args, &ps, 0);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "*1") != null);
@@ -228,8 +224,9 @@ test "HPEXPIREAT - set expiration at absolute timestamp (milliseconds)" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -238,8 +235,7 @@ test "HPEXPIREAT - set expiration at absolute timestamp (milliseconds)" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration at future timestamp (ms)
-    const future_ts = std.time.milliTimestamp() + 3600000; // 1 hour from now
+    const future_ts = std.time.milliTimestamp() + 3600000;
     var ts_buf: [32]u8 = undefined;
     const ts_str = try std.fmt.bufPrint(&ts_buf, "{d}", .{future_ts});
 
@@ -251,7 +247,7 @@ test "HPEXPIREAT - set expiration at absolute timestamp (milliseconds)" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    const response = try hashes.cmdHpexpireat(allocator, storage, &expire_args);
+    const response = try hashes.cmdHpexpireat(allocator, storage, &expire_args, &ps, 0);
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "*1") != null);
@@ -261,8 +257,9 @@ test "HEXPIRETIME - get expiration timestamp in seconds" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -271,7 +268,6 @@ test "HEXPIRETIME - get expiration timestamp in seconds" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -280,9 +276,8 @@ test "HEXPIRETIME - get expiration timestamp in seconds" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    _ = try hashes.cmdHexpire(allocator, storage, &expire_args);
+    _ = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
 
-    // Get expiration time
     const time_args = [_]RespValue{
         .{ .bulk_string = "HEXPIRETIME" },
         .{ .bulk_string = "myhash" },
@@ -300,8 +295,9 @@ test "HPEXPIRETIME - get expiration timestamp in milliseconds" {
     const allocator = testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
-    // Create hash
     const set_args = [_]RespValue{
         .{ .bulk_string = "HSET" },
         .{ .bulk_string = "myhash" },
@@ -310,7 +306,6 @@ test "HPEXPIRETIME - get expiration timestamp in milliseconds" {
     };
     _ = try hashes.cmdHset(allocator, storage, &set_args);
 
-    // Set expiration
     const expire_args = [_]RespValue{
         .{ .bulk_string = "HPEXPIRE" },
         .{ .bulk_string = "myhash" },
@@ -319,9 +314,8 @@ test "HPEXPIRETIME - get expiration timestamp in milliseconds" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "field1" },
     };
-    _ = try hashes.cmdHpexpire(allocator, storage, &expire_args);
+    _ = try hashes.cmdHpexpire(allocator, storage, &expire_args, &ps, 0);
 
-    // Get expiration time
     const time_args = [_]RespValue{
         .{ .bulk_string = "HPEXPIRETIME" },
         .{ .bulk_string = "myhash" },
@@ -333,4 +327,187 @@ test "HPEXPIRETIME - get expiration timestamp in milliseconds" {
     defer allocator.free(response);
 
     try testing.expect(std.mem.indexOf(u8, response, "*1") != null);
+}
+
+// --- Tests for Iteration 297: NX/XX/GT/LT options before FIELDS keyword ---
+
+test "HEXPIRE - NX option before FIELDS (set only if no TTL)" {
+    const allocator = testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try hashes.cmdHset(allocator, storage, &set_args);
+
+    // NX: set TTL only if field has no TTL
+    const expire_args = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "NX" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
+    defer allocator.free(response);
+
+    // Should return 1 (TTL was set because field had no expiry)
+    try testing.expect(std.mem.indexOf(u8, response, ":1") != null);
+}
+
+test "HEXPIRE - XX option before FIELDS (set only if has TTL)" {
+    const allocator = testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try hashes.cmdHset(allocator, storage, &set_args);
+
+    // XX: field has no TTL, so condition fails
+    const expire_args = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "XX" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
+    defer allocator.free(response);
+
+    // Should return 0 (condition not met — no existing TTL)
+    try testing.expect(std.mem.indexOf(u8, response, ":0") != null);
+}
+
+test "HEXPIRE - GT option before FIELDS (set only if new TTL greater)" {
+    const allocator = testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try hashes.cmdHset(allocator, storage, &set_args);
+
+    // Set initial TTL of 10 seconds
+    const expire_args1 = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "10" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    _ = try hashes.cmdHexpire(allocator, storage, &expire_args1, &ps, 0);
+
+    // GT with 60s (greater than 10s) — should succeed
+    const expire_args2 = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "GT" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try hashes.cmdHexpire(allocator, storage, &expire_args2, &ps, 0);
+    defer allocator.free(response);
+
+    // Should return 1 (new TTL is greater)
+    try testing.expect(std.mem.indexOf(u8, response, ":1") != null);
+}
+
+test "HEXPIRE - LT option before FIELDS (set only if new TTL less)" {
+    const allocator = testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try hashes.cmdHset(allocator, storage, &set_args);
+
+    // Set initial TTL of 60 seconds
+    const expire_args1 = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    _ = try hashes.cmdHexpire(allocator, storage, &expire_args1, &ps, 0);
+
+    // LT with 10s (less than 60s) — should succeed
+    const expire_args2 = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "10" },
+        .{ .bulk_string = "LT" },
+        .{ .bulk_string = "FIELDS" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try hashes.cmdHexpire(allocator, storage, &expire_args2, &ps, 0);
+    defer allocator.free(response);
+
+    // Should return 1 (new TTL is less)
+    try testing.expect(std.mem.indexOf(u8, response, ":1") != null);
+}
+
+test "HEXPIRE - case-insensitive FIELDS keyword" {
+    const allocator = testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const set_args = [_]RespValue{
+        .{ .bulk_string = "HSET" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "field1" },
+        .{ .bulk_string = "value1" },
+    };
+    _ = try hashes.cmdHset(allocator, storage, &set_args);
+
+    // Use lowercase "fields" keyword
+    const expire_args = [_]RespValue{
+        .{ .bulk_string = "HEXPIRE" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "60" },
+        .{ .bulk_string = "fields" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "field1" },
+    };
+    const response = try hashes.cmdHexpire(allocator, storage, &expire_args, &ps, 0);
+    defer allocator.free(response);
+
+    // Should succeed with case-insensitive FIELDS
+    try testing.expect(std.mem.indexOf(u8, response, ":1") != null);
 }
