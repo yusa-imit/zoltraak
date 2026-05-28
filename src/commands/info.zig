@@ -186,8 +186,27 @@ fn buildMemorySection(
         }
     }
 
+    // Read maxmemory from config (0 = unlimited)
+    const maxmemory: i64 = blk: {
+        var cv = storage.config.get("maxmemory") catch break :blk 0;
+        defer cv.deinit(allocator);
+        break :blk switch (cv) { .int => |i| i, else => 0 };
+    };
+    // Read maxmemory-policy from config
+    const maxmemory_policy: []const u8 = blk: {
+        var cv = storage.config.get("maxmemory-policy") catch break :blk try allocator.dupe(u8, "noeviction");
+        defer cv.deinit(allocator);
+        break :blk switch (cv) {
+            .string => |s| try allocator.dupe(u8, s),
+            else => try allocator.dupe(u8, "noeviction"),
+        };
+    };
+    defer allocator.free(maxmemory_policy);
+
     var fmt_buf1: [32]u8 = undefined;
     var fmt_buf2: [32]u8 = undefined;
+    var fmt_buf3: [32]u8 = undefined;
+    const maxmemory_bytes: usize = @intCast(@max(0, maxmemory));
     try bw.writeAll("# Memory\r\n");
     try bw.print("used_memory:{d}\r\n", .{total_memory});
     try bw.print("used_memory_human:{s}\r\n", .{formatBytes(total_memory, &fmt_buf1)});
@@ -200,9 +219,9 @@ fn buildMemorySection(
     try bw.writeAll("used_memory_dataset:0\r\n");
     try bw.print("total_system_memory:{d}\r\n", .{1024 * 1024 * 1024}); // Placeholder: 1GB
     try bw.writeAll("total_system_memory_human:1G\r\n");
-    try bw.writeAll("maxmemory:0\r\n");
-    try bw.writeAll("maxmemory_human:0B\r\n");
-    try bw.writeAll("maxmemory_policy:noeviction\r\n");
+    try bw.print("maxmemory:{d}\r\n", .{maxmemory_bytes});
+    try bw.print("maxmemory_human:{s}\r\n", .{if (maxmemory_bytes == 0) "0B" else formatBytes(maxmemory_bytes, &fmt_buf3)});
+    try bw.print("maxmemory_policy:{s}\r\n", .{maxmemory_policy});
     try bw.writeAll("mem_fragmentation_ratio:1.00\r\n");
     try bw.writeAll("mem_allocator:zig\r\n");
     try bw.writeAll("\r\n");
@@ -1303,4 +1322,119 @@ test "INFO server section shows correct databases count" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "databases:16") != null);
+}
+
+test "INFO memory section shows default maxmemory:0 and maxmemory_policy:noeviction" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Memory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory:0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory_human:0B\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory_policy:noeviction\r\n") != null);
+}
+
+test "INFO memory section reflects CONFIG SET maxmemory" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set maxmemory to 1GB
+    try storage.config.set("maxmemory", "1073741824");
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory:1073741824\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory_human:1G\r\n") != null);
+}
+
+test "INFO memory section reflects CONFIG SET maxmemory-policy" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set maxmemory-policy to allkeys-lru
+    try storage.config.set("maxmemory-policy", "allkeys-lru");
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory_policy:allkeys-lru\r\n") != null);
 }
