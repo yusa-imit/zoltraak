@@ -819,6 +819,8 @@ pub const Storage = struct {
     lazy_server_del: std.atomic.Value(bool), // lazyfree-lazy-server-del: async delete on key overwrite
     keyspace_hits: std.atomic.Value(u64), // Successful key lookups (used by INFO stats)
     keyspace_misses: std.atomic.Value(u64), // Failed key lookups (used by INFO stats)
+    expired_keys: std.atomic.Value(u64), // Total keys expired (lazy + active) since start
+    run_id: [40]u8, // Server instance run ID (40 hex chars, random at startup)
     command_stats_mutex: std.Thread.Mutex, // Protects command_stats
     command_stats: std.StringHashMapUnmanaged(CommandStatEntry), // Per-command call statistics
     error_stats_mutex: std.Thread.Mutex, // Protects error_stats
@@ -854,9 +856,15 @@ pub const Storage = struct {
         var cluster_state = ClusterState.init(allocator);
         errdefer cluster_state.deinit();
 
-        // Generate a 40-character node ID (hex string of 20 bytes)
+        // Generate random IDs: server run_id + cluster node_id (both 40-char hex strings)
         var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.microTimestamp())));
         var random = prng.random();
+
+        var run_id: [40]u8 = undefined;
+        for (0..20) |i| {
+            const byte = random.int(u8);
+            _ = std.fmt.bufPrint(run_id[i * 2 .. i * 2 + 2], "{x:0>2}", .{byte}) catch unreachable;
+        }
 
         var node_id: [40]u8 = undefined;
         for (0..20) |i| {
@@ -945,6 +953,8 @@ pub const Storage = struct {
             .lazy_server_del = std.atomic.Value(bool).init(false),
             .keyspace_hits = std.atomic.Value(u64).init(0),
             .keyspace_misses = std.atomic.Value(u64).init(0),
+            .expired_keys = std.atomic.Value(u64).init(0),
+            .run_id = run_id,
             .command_stats_mutex = std.Thread.Mutex{},
             .command_stats = std.StringHashMapUnmanaged(CommandStatEntry){},
             .error_stats_mutex = std.Thread.Mutex{},
@@ -1092,6 +1102,16 @@ pub const Storage = struct {
     pub fn resetKeyspaceStats(self: *Storage) void {
         self.keyspace_hits.store(0, .monotonic);
         self.keyspace_misses.store(0, .monotonic);
+    }
+
+    /// Increment expired_keys counter (called on lazy and active expiration)
+    pub fn incrementExpiredKeys(self: *Storage) void {
+        _ = self.expired_keys.fetchAdd(1, .monotonic);
+    }
+
+    /// Get total expired keys count since server start
+    pub fn getExpiredKeysCount(self: *Storage) u64 {
+        return self.expired_keys.load(.monotonic);
     }
 
     /// Record a command invocation for INFO commandstats.
@@ -2173,6 +2193,7 @@ pub const Storage = struct {
                 v.deinit(self.allocator);
             }
             _ = self.keyspace_misses.fetchAdd(1, .monotonic);
+            _ = self.expired_keys.fetchAdd(1, .monotonic);
             return null;
         }
 
@@ -2311,6 +2332,7 @@ pub const Storage = struct {
                 self.allocator.free(kv.key);
                 var value = kv.value;
                 value.deinit(self.allocator);
+                _ = self.expired_keys.fetchAdd(1, .monotonic);
                 count += 1;
             }
         }
@@ -14373,4 +14395,49 @@ test "getStringWithExpiry - returns null for expired key" {
     try storage.set("mykey", "expired", past);
     const result = try storage.getStringWithExpiry("mykey");
     try std.testing.expect(result == null);
+}
+
+test "storage - expired_keys counter increments on lazy expiration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), storage.getExpiredKeysCount());
+
+    const past = Storage.getCurrentTimestamp() - 1000;
+    try storage.set("key1", "val1", past);
+    try storage.set("key2", "val2", past);
+
+    // Accessing expired keys triggers lazy deletion and increments the counter
+    _ = storage.get("key1");
+    try std.testing.expectEqual(@as(u64, 1), storage.getExpiredKeysCount());
+    _ = storage.get("key2");
+    try std.testing.expectEqual(@as(u64, 2), storage.getExpiredKeysCount());
+}
+
+test "storage - expired_keys counter increments on active expiration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const past = Storage.getCurrentTimestamp() - 1000;
+    try storage.set("key1", "val1", past);
+    try storage.set("key2", "val2", past);
+
+    // evictExpired sweeps all keys and counts expired ones
+    const count = storage.evictExpired();
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(u64, 2), storage.getExpiredKeysCount());
+}
+
+test "storage - run_id is 40 hex chars" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(usize, 40), storage.run_id.len);
+    for (storage.run_id) |c| {
+        const is_hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
+        try std.testing.expect(is_hex);
+    }
 }

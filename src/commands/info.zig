@@ -61,7 +61,7 @@ pub fn cmdInfo(
 
     // Build the requested sections
     if (show_all or show_default or std.mem.eql(u8, section, "SERVER")) {
-        try buildServerSection(&buf, allocator, config, stats.start_time_seconds, num_databases);
+        try buildServerSection(&buf, allocator, config, storage, stats.start_time_seconds, num_databases);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "CLIENTS")) {
         try buildClientsSection(&buf, allocator, stats.client_count);
@@ -109,10 +109,25 @@ fn buildServerSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     config: ServerConfig,
+    storage: *Storage,
     start_time_seconds: i64,
     num_databases: u16,
 ) !void {
     const bw = buf.writer(allocator);
+
+    // Read hz from config (default 10, may be changed via CONFIG SET hz)
+    const hz_val = storage.config.get("hz") catch null;
+    const hz: i64 = if (hz_val) |v| switch (v) {
+        .int => |n| n,
+        else => 10,
+    } else 10;
+
+    const builtin = @import("builtin");
+    const multiplexing_api = comptime switch (builtin.os.tag) {
+        .linux => "epoll",
+        .macos, .freebsd, .openbsd, .netbsd, .dragonfly => "kqueue",
+        else => "select",
+    };
 
     try bw.writeAll("# Server\r\n");
     try bw.writeAll("redis_version:7.2.0\r\n");
@@ -121,11 +136,11 @@ fn buildServerSection(
     try bw.writeAll("redis_build_id:zoltraak\r\n");
     try bw.writeAll("redis_mode:standalone\r\n");
     try bw.writeAll("os:");
-    try bw.writeAll(@tagName(@import("builtin").os.tag));
+    try bw.writeAll(@tagName(builtin.os.tag));
     try bw.writeAll("\r\n");
     try bw.writeAll("arch_bits:");
     try bw.print("{d}\r\n", .{@bitSizeOf(usize)});
-    try bw.writeAll("multiplexing_api:kqueue\r\n");
+    try bw.print("multiplexing_api:{s}\r\n", .{multiplexing_api});
     try bw.writeAll("gcc_version:0.0.0\r\n");
     try bw.writeAll("process_id:");
     if (comptime @import("builtin").os.tag == .linux) {
@@ -133,12 +148,12 @@ fn buildServerSection(
     } else {
         try bw.print("{d}\r\n", .{std.c.getpid()});
     }
-    try bw.writeAll("run_id:zoltraak-instance-001\r\n");
+    try bw.print("run_id:{s}\r\n", .{&storage.run_id});
     try bw.print("tcp_port:{d}\r\n", .{config.port});
     try bw.print("uptime_in_seconds:{d}\r\n", .{std.time.timestamp() - start_time_seconds});
     try bw.print("uptime_in_days:{d}\r\n", .{@divTrunc(std.time.timestamp() - start_time_seconds, 86400)});
-    try bw.writeAll("hz:10\r\n");
-    try bw.writeAll("configured_hz:10\r\n");
+    try bw.print("hz:{d}\r\n", .{hz});
+    try bw.print("configured_hz:{d}\r\n", .{hz});
     try bw.writeAll("lru_clock:");
     // Redis LRU clock: Unix time in seconds, truncated to 24 bits (modulo 2^24)
     try bw.print("{d}\r\n", .{@as(u32, @intCast(@as(u64, @intCast(std.time.timestamp())) & 0xFFFFFF))});
@@ -277,13 +292,19 @@ fn buildStatsSection(
     try bw.writeAll("sync_full:0\r\n");
     try bw.writeAll("sync_partial_ok:0\r\n");
     try bw.writeAll("sync_partial_err:0\r\n");
-    try bw.writeAll("expired_keys:0\r\n");
+    try bw.print("expired_keys:{d}\r\n", .{storage.getExpiredKeysCount()});
     try bw.print("evicted_keys:{d}\r\n", .{storage.getEvictedKeysCount()});
     try bw.print("lazyfree_pending_objects:{d}\r\n", .{storage.lazyfree_task.getPendingCount()});
     try bw.print("keyspace_hits:{d}\r\n", .{storage.getKeyspaceHits()});
     try bw.print("keyspace_misses:{d}\r\n", .{storage.getKeyspaceMisses()});
-    try bw.writeAll("pubsub_channels:0\r\n");
-    try bw.writeAll("pubsub_patterns:0\r\n");
+    // Pub/Sub channel and pattern counts from live state
+    if (storage.pubsub_state) |ps| {
+        try bw.print("pubsub_channels:{d}\r\n", .{ps.totalChannelCount()});
+        try bw.print("pubsub_patterns:{d}\r\n", .{ps.totalPatternCount()});
+    } else {
+        try bw.writeAll("pubsub_channels:0\r\n");
+        try bw.writeAll("pubsub_patterns:0\r\n");
+    }
     try bw.writeAll("latest_fork_usec:0\r\n");
     try bw.writeAll("\r\n");
 }
@@ -1437,4 +1458,111 @@ test "INFO memory section reflects CONFIG SET maxmemory-policy" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "maxmemory_policy:allkeys-lru\r\n") != null);
+}
+
+test "INFO server section run_id is 40 hex chars" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "server" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    // run_id: must appear with exactly 40 hex chars
+    const run_id_prefix = "run_id:";
+    const pos = std.mem.indexOf(u8, result, run_id_prefix) orelse return error.TestExpectedRunId;
+    const id_start = pos + run_id_prefix.len;
+    try std.testing.expect(id_start + 40 <= result.len);
+    for (result[id_start .. id_start + 40]) |c| {
+        try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
+    }
+    // run_id must not be the old hardcoded value
+    try std.testing.expect(std.mem.indexOf(u8, result, "run_id:zoltraak-instance-001") == null);
+}
+
+test "INFO server section hz reads from config" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set hz to 25 via config
+    try storage.config.set("hz", "25");
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "server" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "hz:25\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "configured_hz:25\r\n") != null);
+}
+
+test "INFO stats section expired_keys counter" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Simulate 3 expired key events
+    storage.incrementExpiredKeys();
+    storage.incrementExpiredKeys();
+    storage.incrementExpiredKeys();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "stats" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "expired_keys:3\r\n") != null);
+}
+
+test "INFO server section multiplexing_api is platform-appropriate" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "server" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    // Must contain multiplexing_api: field with a valid value
+    const builtin = @import("builtin");
+    const expected_api = comptime switch (builtin.os.tag) {
+        .linux => "multiplexing_api:epoll\r\n",
+        .macos, .freebsd, .openbsd, .netbsd, .dragonfly => "multiplexing_api:kqueue\r\n",
+        else => "multiplexing_api:select\r\n",
+    };
+    try std.testing.expect(std.mem.indexOf(u8, result, expected_api) != null);
+}
+
+test "Storage run_id is unique across instances" {
+    const allocator = std.testing.allocator;
+    var s1 = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer s1.deinit();
+    var s2 = try Storage.init(allocator, 6380, "127.0.0.1");
+    defer s2.deinit();
+
+    // Two instances should have different run_ids (extremely unlikely to collide)
+    try std.testing.expect(!std.mem.eql(u8, &s1.run_id, &s2.run_id));
+
+    // Each run_id must be 40 valid hex chars
+    for (s1.run_id) |c| {
+        try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
+    }
 }

@@ -431,6 +431,11 @@ pub const PubSub = struct {
         return state.patterns.count();
     }
 
+    /// Return the total number of active channel subscriptions (distinct channels with subscribers).
+    pub fn totalChannelCount(self: *PubSub) usize {
+        return self.channels.count();
+    }
+
     /// Return the total number of active pattern subscriptions across all subscribers.
     pub fn totalPatternCount(self: *PubSub) usize {
         return self.patterns.count();
