@@ -8,6 +8,7 @@ pub const CommandInfo = struct {
     first_key: i32,
     last_key: i32,
     step: i32,
+    acl_categories: []const []const u8 = &.{},
 };
 
 /// All supported commands with their metadata
@@ -663,13 +664,173 @@ pub fn cmdCommandHelp(allocator: std.mem.Allocator) ![]const u8 {
     return buf.toOwnedSlice(allocator);
 }
 
-/// Write command info in Redis format
+/// Derive ACL categories from command flags and name for Redis 7.0+ format.
+/// Returns a stack-allocated slice of category strings.
+fn deriveAclCategories(allocator: std.mem.Allocator, cmd: CommandInfo) ![]const []const u8 {
+    var cats = std.ArrayList([]const u8){};
+    errdefer cats.deinit(allocator);
+
+    // Access direction from flags
+    var has_read = false;
+    var has_write = false;
+    var has_admin = false;
+    var has_fast = false;
+    var has_pubsub = false;
+    var has_scripting = false;
+    var has_sortedset = false;
+    var has_string = false;
+    var has_list = false;
+    var has_set = false;
+    var has_hash = false;
+    var has_hyperloglog = false;
+    var has_geo = false;
+    const has_bitmap = false;
+    var has_stream = false;
+    var has_cluster = false;
+    var has_server = false;
+    var has_transactions = false;
+    var has_connection = false;
+    var has_generic = false;
+    var has_dangerous = false;
+
+    for (cmd.flags) |flag| {
+        if (std.mem.eql(u8, flag, "readonly")) has_read = true;
+        if (std.mem.eql(u8, flag, "write")) has_write = true;
+        if (std.mem.eql(u8, flag, "admin")) has_admin = true;
+        if (std.mem.eql(u8, flag, "fast")) has_fast = true;
+        if (std.mem.eql(u8, flag, "pubsub")) has_pubsub = true;
+        if (std.mem.eql(u8, flag, "scripting")) has_scripting = true;
+        if (std.mem.eql(u8, flag, "dangerous")) has_dangerous = true;
+    }
+
+    // If explicit acl_categories are provided, use those instead
+    if (cmd.acl_categories.len > 0) {
+        for (cmd.acl_categories) |cat| {
+            try cats.append(allocator, cat);
+        }
+        return cats.toOwnedSlice(allocator);
+    }
+
+    // Derive data type category from command name prefix
+    const name_lower = try std.ascii.allocLowerString(allocator, cmd.name);
+    defer allocator.free(name_lower);
+
+    if (std.mem.startsWith(u8, name_lower, "z") or
+        std.mem.eql(u8, name_lower, "zadd") or
+        std.mem.eql(u8, name_lower, "zrem"))
+    {
+        has_sortedset = true;
+    } else if (std.mem.startsWith(u8, name_lower, "h") and !std.mem.eql(u8, name_lower, "hello")) {
+        has_hash = true;
+    } else if (std.mem.startsWith(u8, name_lower, "s") and !std.mem.eql(u8, name_lower, "set") and
+        !std.mem.eql(u8, name_lower, "setex") and !std.mem.eql(u8, name_lower, "setnx") and
+        !std.mem.eql(u8, name_lower, "setrange") and !std.mem.eql(u8, name_lower, "subscribe") and
+        !std.mem.eql(u8, name_lower, "ssubscribe") and !std.mem.eql(u8, name_lower, "sunsubscribe") and
+        !std.mem.startsWith(u8, name_lower, "sort") and !std.mem.eql(u8, name_lower, "spublish"))
+    {
+        has_set = true;
+    } else if (std.mem.startsWith(u8, name_lower, "l") and !std.mem.eql(u8, name_lower, "lolwut")) {
+        has_list = true;
+    } else if (std.mem.startsWith(u8, name_lower, "geo")) {
+        has_geo = true;
+    } else if (std.mem.startsWith(u8, name_lower, "pfadd") or
+        std.mem.startsWith(u8, name_lower, "pfcount") or
+        std.mem.startsWith(u8, name_lower, "pfmerge"))
+    {
+        has_hyperloglog = true;
+    } else if (std.mem.startsWith(u8, name_lower, "x")) {
+        has_stream = true;
+    } else if (std.mem.startsWith(u8, name_lower, "cluster")) {
+        has_cluster = true;
+    } else if (std.mem.eql(u8, name_lower, "multi") or std.mem.eql(u8, name_lower, "exec") or
+        std.mem.eql(u8, name_lower, "discard") or std.mem.eql(u8, name_lower, "watch") or
+        std.mem.eql(u8, name_lower, "unwatch"))
+    {
+        has_transactions = true;
+    } else if (std.mem.eql(u8, name_lower, "publish") or std.mem.eql(u8, name_lower, "subscribe") or
+        std.mem.eql(u8, name_lower, "unsubscribe") or std.mem.eql(u8, name_lower, "psubscribe") or
+        std.mem.eql(u8, name_lower, "punsubscribe") or std.mem.eql(u8, name_lower, "spublish") or
+        std.mem.eql(u8, name_lower, "ssubscribe") or std.mem.eql(u8, name_lower, "sunsubscribe"))
+    {
+        has_pubsub = true;
+    } else if (std.mem.eql(u8, name_lower, "select") or std.mem.eql(u8, name_lower, "ping") or
+        std.mem.eql(u8, name_lower, "quit") or std.mem.eql(u8, name_lower, "auth") or
+        std.mem.eql(u8, name_lower, "hello") or std.mem.eql(u8, name_lower, "reset"))
+    {
+        has_connection = true;
+    } else if (std.mem.startsWith(u8, name_lower, "client") or std.mem.startsWith(u8, name_lower, "acl") or
+        std.mem.startsWith(u8, name_lower, "config") or std.mem.startsWith(u8, name_lower, "info") or
+        std.mem.startsWith(u8, name_lower, "debug") or std.mem.startsWith(u8, name_lower, "slowlog") or
+        std.mem.startsWith(u8, name_lower, "command") or std.mem.startsWith(u8, name_lower, "latency") or
+        std.mem.eql(u8, name_lower, "save") or std.mem.eql(u8, name_lower, "bgsave") or
+        std.mem.eql(u8, name_lower, "bgrewriteaof") or std.mem.eql(u8, name_lower, "flushdb") or
+        std.mem.eql(u8, name_lower, "flushall") or std.mem.eql(u8, name_lower, "dbsize") or
+        std.mem.eql(u8, name_lower, "lastsave") or std.mem.eql(u8, name_lower, "replicaof") or
+        std.mem.eql(u8, name_lower, "slaveof") or std.mem.eql(u8, name_lower, "role") or
+        std.mem.eql(u8, name_lower, "shutdown") or std.mem.eql(u8, name_lower, "time") or
+        std.mem.eql(u8, name_lower, "lolwut") or std.mem.eql(u8, name_lower, "failover") or
+        std.mem.eql(u8, name_lower, "wait") or std.mem.eql(u8, name_lower, "waitaof") or
+        std.mem.eql(u8, name_lower, "swapdb") or std.mem.eql(u8, name_lower, "monitor"))
+    {
+        has_server = true;
+    } else if (std.mem.startsWith(u8, name_lower, "set") or std.mem.eql(u8, name_lower, "get") or
+        std.mem.eql(u8, name_lower, "getset") or std.mem.eql(u8, name_lower, "getdel") or
+        std.mem.eql(u8, name_lower, "getex") or std.mem.eql(u8, name_lower, "mset") or
+        std.mem.eql(u8, name_lower, "mget") or std.mem.eql(u8, name_lower, "msetnx") or
+        std.mem.eql(u8, name_lower, "strlen") or std.mem.startsWith(u8, name_lower, "incr") or
+        std.mem.startsWith(u8, name_lower, "decr") or std.mem.eql(u8, name_lower, "append") or
+        std.mem.eql(u8, name_lower, "getrange") or std.mem.eql(u8, name_lower, "substr") or
+        std.mem.startsWith(u8, name_lower, "bit") or std.mem.eql(u8, name_lower, "lcs"))
+    {
+        has_string = true;
+    } else {
+        has_generic = true;
+    }
+
+    // Add access direction category
+    if (has_read) try cats.append(allocator, "@read");
+    if (has_write) try cats.append(allocator, "@write");
+    if (has_admin) try cats.append(allocator, "@admin");
+    if (has_dangerous) try cats.append(allocator, "@dangerous");
+
+    // Add speed category
+    if (has_fast) {
+        try cats.append(allocator, "@fast");
+    } else if (has_read or has_write) {
+        try cats.append(allocator, "@slow");
+    }
+
+    // Add data type category
+    if (has_string) try cats.append(allocator, "@string");
+    if (has_list) try cats.append(allocator, "@list");
+    if (has_set) try cats.append(allocator, "@set");
+    if (has_sortedset) try cats.append(allocator, "@sortedset");
+    if (has_hash) try cats.append(allocator, "@hash");
+    if (has_hyperloglog) try cats.append(allocator, "@hyperloglog");
+    if (has_geo) try cats.append(allocator, "@geo");
+    if (has_stream) try cats.append(allocator, "@stream");
+    if (has_bitmap and !has_string) try cats.append(allocator, "@bitmap");
+    if (has_pubsub) try cats.append(allocator, "@pubsub");
+    if (has_scripting) try cats.append(allocator, "@scripting");
+    if (has_transactions) try cats.append(allocator, "@transactions");
+    if (has_cluster) try cats.append(allocator, "@cluster");
+    if (has_server) try cats.append(allocator, "@server");
+    if (has_connection) try cats.append(allocator, "@connection");
+    if (has_generic) try cats.append(allocator, "@keyspace");
+
+    return cats.toOwnedSlice(allocator);
+}
+
+/// Write command info in Redis 7.0+ 10-element format
 fn writeCommandInfo(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), cmd: CommandInfo) !void {
+    // Redis 7.0+ format: 10 elements
+    // 1. name, 2. arity, 3. flags, 4. first_key, 5. last_key, 6. step,
+    // 7. acl_categories, 8. tips, 9. key_specifications, 10. subcommands
     try buf.append(allocator, '*');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{6});
+    try std.fmt.format(buf.writer(allocator), "{d}", .{10});
     try buf.appendSlice(allocator, "\r\n");
 
-    // 1. Command name
+    // 1. Command name (bulk string)
     try writeBulkString(allocator, buf, cmd.name);
 
     // 2. Arity
@@ -677,12 +838,14 @@ fn writeCommandInfo(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), cmd: 
     try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.arity});
     try buf.appendSlice(allocator, "\r\n");
 
-    // 3. Flags
+    // 3. Flags (array of simple strings using + prefix as Redis does)
     try buf.append(allocator, '*');
     try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.flags.len});
     try buf.appendSlice(allocator, "\r\n");
     for (cmd.flags) |flag| {
-        try writeBulkString(allocator, buf, flag);
+        try buf.append(allocator, '+');
+        try buf.appendSlice(allocator, flag);
+        try buf.appendSlice(allocator, "\r\n");
     }
 
     // 4. First key position
@@ -699,6 +862,27 @@ fn writeCommandInfo(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), cmd: 
     try buf.append(allocator, ':');
     try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.step});
     try buf.appendSlice(allocator, "\r\n");
+
+    // 7. ACL categories (array of simple strings)
+    const acl_cats = try deriveAclCategories(allocator, cmd);
+    defer allocator.free(acl_cats);
+    try buf.append(allocator, '*');
+    try std.fmt.format(buf.writer(allocator), "{d}", .{acl_cats.len});
+    try buf.appendSlice(allocator, "\r\n");
+    for (acl_cats) |cat| {
+        try buf.append(allocator, '+');
+        try buf.appendSlice(allocator, cat);
+        try buf.appendSlice(allocator, "\r\n");
+    }
+
+    // 8. Tips (empty array — not yet populated)
+    try buf.appendSlice(allocator, "*0\r\n");
+
+    // 9. Key specifications (empty array — not yet populated)
+    try buf.appendSlice(allocator, "*0\r\n");
+
+    // 10. Subcommands (empty array — not yet populated)
+    try buf.appendSlice(allocator, "*0\r\n");
 }
 
 /// Write a bulk string to buffer
@@ -748,6 +932,105 @@ test "command metadata" {
         try expect(cmd.name.len > 0);
         try expect(cmd.arity != 0);
     }
+}
+
+test "COMMAND INFO - returns 10-element format for Redis 7.0+" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"get"};
+    const result = try cmdCommandInfo(allocator, &args);
+    defer allocator.free(result);
+
+    // Outer array: *1 (one command result)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    // Inner: *10 (10 elements per command)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*10\r\n") != null);
+    // Element 1: name as bulk string
+    try std.testing.expect(std.mem.indexOf(u8, result, "$3\r\nget\r\n") != null);
+    // Element 8-10: trailing empty arrays for tips/key_specs/subcommands
+    try std.testing.expect(std.mem.indexOf(u8, result, "*0\r\n") != null);
+}
+
+test "COMMAND INFO - flags as simple strings with + prefix" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"get"};
+    const result = try cmdCommandInfo(allocator, &args);
+    defer allocator.free(result);
+
+    // Flags should use simple string format (+readonly, +fast)
+    try std.testing.expect(std.mem.indexOf(u8, result, "+readonly\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "+fast\r\n") != null);
+}
+
+test "COMMAND INFO - acl_categories populated" {
+    const allocator = std.testing.allocator;
+
+    // GET command should have @read and @string categories
+    const get_args = [_][]const u8{"get"};
+    const get_result = try cmdCommandInfo(allocator, &get_args);
+    defer allocator.free(get_result);
+    try std.testing.expect(std.mem.indexOf(u8, get_result, "@read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, get_result, "@string") != null);
+
+    // SET command should have @write
+    const set_args = [_][]const u8{"set"};
+    const set_result = try cmdCommandInfo(allocator, &set_args);
+    defer allocator.free(set_result);
+    try std.testing.expect(std.mem.indexOf(u8, set_result, "@write") != null);
+}
+
+test "COMMAND INFO - write command has @write category" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"hset"};
+    const result = try cmdCommandInfo(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "@write") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "@hash") != null);
+}
+
+test "COMMAND INFO - unknown command returns nil bulk string" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"nonexistent_xyz_command"};
+    const result = try cmdCommandInfo(allocator, &args);
+    defer allocator.free(result);
+
+    // Should return *1\r\n$-1\r\n (nil bulk string for unknown command)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$-1\r\n") != null);
+}
+
+test "COMMAND INFO - list commands returns multiple 10-element entries" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{ "get", "set" };
+    const result = try cmdCommandInfo(allocator, &args);
+    defer allocator.free(result);
+
+    // Outer array: *2 (two command results)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    // Both should have 10-element format
+    var count: usize = 0;
+    var remaining = result;
+    while (std.mem.indexOf(u8, remaining, "*10\r\n")) |pos| {
+        count += 1;
+        remaining = remaining[pos + 5 ..];
+    }
+    try std.testing.expect(count == 2);
+}
+
+test "COMMAND - deriveAclCategories for server commands" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"flushdb"};
+    const result = try cmdCommandInfo(allocator, &args);
+    defer allocator.free(result);
+
+    // FLUSHDB should have @write and @server categories
+    try std.testing.expect(std.mem.indexOf(u8, result, "@write") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "@server") != null);
 }
 
 test "pattern matching" {
