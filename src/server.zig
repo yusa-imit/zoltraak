@@ -466,9 +466,7 @@ pub const Server = struct {
     fn handleConnection(self: *Server, connection: std.net.Server.Connection) !void {
         defer connection.stream.close();
 
-        std.debug.print("Client connected from {any}\n", .{connection.address});
-
-        // Format address for client registry
+        // Format address for client registry and logging
         var addr_buf: [256]u8 = undefined;
         const addr_str = blk: {
             // Extract IP and port from sockaddr_in (network byte order)
@@ -485,6 +483,8 @@ pub const Server = struct {
             };
             break :blk formatted;
         };
+
+        std.debug.print("Client connected from {s}\n", .{addr_str});
 
         // Register client connection
         const client_id = try self.client_registry.registerClient(addr_str, connection.stream.handle);

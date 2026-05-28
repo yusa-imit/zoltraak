@@ -1,6 +1,38 @@
 const std = @import("std");
 const glob = @import("../utils/glob.zig");
 
+/// Parse a memory size value with optional unit suffix.
+/// Supports: plain integers, and suffixes b, k/kb, m/mb, g/gb, t/tb (case-insensitive).
+/// Returns bytes as i64. Returns error.InvalidValue for unparseable input.
+pub fn parseMemoryValue(s: []const u8) !i64 {
+    if (s.len == 0) return error.InvalidValue;
+    const lower = blk: {
+        var buf: [64]u8 = undefined;
+        if (s.len > buf.len) break :blk s;
+        break :blk std.ascii.lowerString(&buf, s);
+    };
+    // Find where digits end and suffix begins
+    var i: usize = 0;
+    if (i < lower.len and (lower[i] == '-' or lower[i] == '+')) i += 1;
+    while (i < lower.len and lower[i] >= '0' and lower[i] <= '9') i += 1;
+    const num_part = lower[0..i];
+    const suf_part = lower[i..];
+    const base = std.fmt.parseInt(i64, num_part, 10) catch return error.InvalidValue;
+    const multiplier: i64 = if (suf_part.len == 0 or std.mem.eql(u8, suf_part, "b"))
+        1
+    else if (std.mem.eql(u8, suf_part, "k") or std.mem.eql(u8, suf_part, "kb"))
+        1024
+    else if (std.mem.eql(u8, suf_part, "m") or std.mem.eql(u8, suf_part, "mb"))
+        1024 * 1024
+    else if (std.mem.eql(u8, suf_part, "g") or std.mem.eql(u8, suf_part, "gb"))
+        1024 * 1024 * 1024
+    else if (std.mem.eql(u8, suf_part, "t") or std.mem.eql(u8, suf_part, "tb"))
+        1024 * 1024 * 1024 * 1024
+    else
+        return error.InvalidValue;
+    return std.math.mul(i64, base, multiplier) catch return error.InvalidValue;
+}
+
 /// Configuration parameter value types
 pub const ConfigValue = union(enum) {
     string: []const u8,
@@ -165,6 +197,50 @@ pub const Config = struct {
             .{ .name = "tls-client-key-file", .value = .{ .string = "" }, .read_only = false }, // Client key file (outbound)
             .{ .name = "tls-client-key-file-pass", .value = .{ .string = "" }, .read_only = false }, // Client key password
             .{ .name = "tls-allowlisted-certs", .value = .{ .string = "" }, .read_only = false }, // Allowlisted cert paths (Redis 7.2+)
+
+            // Server performance tuning (commonly used by clients and monitoring tools)
+            .{ .name = "hz", .value = .{ .int = 10 }, .read_only = false }, // Server background task frequency (1-500)
+            .{ .name = "dynamic-hz", .value = .{ .bool = true }, .read_only = false }, // Adaptive hz based on client count
+            .{ .name = "aof-use-rdb-preamble", .value = .{ .bool = true }, .read_only = false }, // Use RDB preamble for AOF
+            .{ .name = "activerehashing", .value = .{ .bool = true }, .read_only = false }, // Enable active rehashing of the main dictionaries
+            .{ .name = "no-appendfsync-on-rewrite", .value = .{ .bool = false }, .read_only = false }, // Don't fsync during BGSAVE/BGREWRITEAOF
+            .{ .name = "latency-tracking", .value = .{ .bool = true }, .read_only = false }, // Enable latency tracking
+            .{ .name = "latency-tracking-info-percentiles", .value = .{ .string = "50 99 99.9" }, .read_only = false }, // Percentiles for latency tracking
+            .{ .name = "proto-max-bulk-len", .value = .{ .int = 536870912 }, .read_only = false }, // Max bulk string length (512mb default)
+            .{ .name = "client-query-buffer-limit", .value = .{ .int = 1073741824 }, .read_only = false }, // Client query buffer limit (1gb default)
+            .{ .name = "maxclients", .value = .{ .int = 10000 }, .read_only = false }, // Max number of connected clients
+            .{ .name = "tcp-backlog", .value = .{ .int = 511 }, .read_only = false }, // TCP listen backlog
+            .{ .name = "bind-source-addr", .value = .{ .string = "" }, .read_only = false }, // Source bind address
+            .{ .name = "repl-backlog-size", .value = .{ .int = 1048576 }, .read_only = false }, // Replication backlog size (1mb default)
+            .{ .name = "repl-backlog-ttl", .value = .{ .int = 3600 }, .read_only = false }, // Replication backlog TTL (seconds)
+            .{ .name = "min-replicas-to-write", .value = .{ .int = 0 }, .read_only = false }, // Min replicas for writes (0 = disabled)
+            .{ .name = "min-slaves-to-write", .value = .{ .int = 0 }, .read_only = false }, // Alias for min-replicas-to-write
+            .{ .name = "min-replicas-max-lag", .value = .{ .int = 10 }, .read_only = false }, // Max lag for replica writes (seconds)
+            .{ .name = "min-slaves-max-lag", .value = .{ .int = 10 }, .read_only = false }, // Alias for min-replicas-max-lag
+            .{ .name = "list-max-ziplist-size", .value = .{ .int = -2 }, .read_only = false }, // Alias for list-max-listpack-size
+            .{ .name = "close-on-slave-write", .value = .{ .bool = true }, .read_only = false }, // Close on replica write (legacy param)
+            .{ .name = "repl-diskless-sync", .value = .{ .bool = true }, .read_only = false }, // Diskless replication sync
+            .{ .name = "repl-diskless-sync-delay", .value = .{ .int = 5 }, .read_only = false }, // Delay before diskless sync (seconds)
+            .{ .name = "repl-diskless-sync-max-replicas", .value = .{ .int = 0 }, .read_only = false }, // Max replicas for diskless sync
+            .{ .name = "repl-diskless-load", .value = .{ .string = "disabled" }, .read_only = false }, // Diskless replica load mode
+            .{ .name = "repl-timeout", .value = .{ .int = 60 }, .read_only = false }, // Replication timeout (seconds)
+            .{ .name = "repl-ping-replica-period", .value = .{ .int = 10 }, .read_only = false }, // Replica ping period (seconds)
+            .{ .name = "repl-ping-slave-period", .value = .{ .int = 10 }, .read_only = false }, // Alias for repl-ping-replica-period
+            .{ .name = "logfile", .value = .{ .string = "" }, .read_only = false }, // Log file path (empty = stdout)
+            .{ .name = "loglevel", .value = .{ .string = "notice" }, .read_only = false }, // Log level (debug/verbose/notice/warning)
+            .{ .name = "syslog-enabled", .value = .{ .bool = false }, .read_only = false }, // Enable syslog
+            .{ .name = "crash-log-enabled", .value = .{ .bool = true }, .read_only = false }, // Enable crash log
+            .{ .name = "crash-memlog-enabled", .value = .{ .bool = true }, .read_only = false }, // Enable memory log on crash
+            .{ .name = "use-exit-on-panic", .value = .{ .bool = false }, .read_only = false }, // Use exit() on panic instead of abort()
+            .{ .name = "disable-thp", .value = .{ .bool = true }, .read_only = false }, // Disable Transparent Huge Pages
+            .{ .name = "lua-replicate-commands", .value = .{ .bool = true }, .read_only = false }, // Replicate Lua script effects
+            .{ .name = "lazyfree-lazy-expire-on-snapshot", .value = .{ .bool = false }, .read_only = false }, // Lazy expire during snapshot
+            .{ .name = "tracking-table-max-keys", .value = .{ .int = 0 }, .read_only = false }, // Max keys in client tracking table (0 = unlimited)
+            .{ .name = "rdb-save-incremental-fsync", .value = .{ .bool = true }, .read_only = false }, // Incremental fsync during RDB save
+            .{ .name = "aof-rewrite-incremental-fsync", .value = .{ .bool = true }, .read_only = false }, // Incremental fsync during AOF rewrite
+            .{ .name = "jemalloc-bg-thread", .value = .{ .bool = true }, .read_only = false }, // Enable jemalloc background thread
+            .{ .name = "io-threads", .value = .{ .int = 1 }, .read_only = false }, // Number of I/O threads
+            .{ .name = "io-threads-do-reads", .value = .{ .bool = false }, .read_only = false }, // Allow I/O threads to read
         };
 
         for (defaults) |def| {
@@ -399,7 +475,15 @@ pub const Config = struct {
                 break :blk ConfigValue{ .string = dup };
             },
             .int => blk: {
-                const parsed = std.fmt.parseInt(i64, value_str, 10) catch return error.InvalidValue;
+                // Memory parameters accept size suffixes (kb, mb, gb, tb)
+                const is_memory_param = std.mem.eql(u8, name_lower, "maxmemory") or
+                    std.mem.eql(u8, name_lower, "proto-max-bulk-len") or
+                    std.mem.eql(u8, name_lower, "client-query-buffer-limit") or
+                    std.mem.eql(u8, name_lower, "repl-backlog-size");
+                const parsed = if (is_memory_param)
+                    parseMemoryValue(value_str) catch return error.InvalidValue
+                else
+                    std.fmt.parseInt(i64, value_str, 10) catch return error.InvalidValue;
                 // Validate range for specific parameters
                 if (std.mem.eql(u8, name_lower, "maxmemory") or
                     std.mem.eql(u8, name_lower, "timeout") or
@@ -415,6 +499,12 @@ pub const Config = struct {
                 } else if (std.mem.eql(u8, name_lower, "lfu-decay-time")) {
                     // Must be non-negative
                     if (parsed < 0) return error.InvalidValue;
+                } else if (std.mem.eql(u8, name_lower, "hz")) {
+                    // Hz must be between 1 and 500
+                    if (parsed < 1 or parsed > 500) return error.InvalidValue;
+                } else if (std.mem.eql(u8, name_lower, "maxclients")) {
+                    // Maxclients must be at least 1
+                    if (parsed < 1) return error.InvalidValue;
                 }
                 break :blk ConfigValue{ .int = parsed };
             },
@@ -791,4 +881,95 @@ test "Config.set validates lfu-decay-time (non-negative)" {
 
     // Invalid: -1
     try std.testing.expectError(error.InvalidValue, config.set("lfu-decay-time", "-1"));
+}
+
+test "parseMemoryValue - plain integers" {
+    try std.testing.expectEqual(@as(i64, 0), try parseMemoryValue("0"));
+    try std.testing.expectEqual(@as(i64, 1024), try parseMemoryValue("1024"));
+    try std.testing.expectEqual(@as(i64, 536870912), try parseMemoryValue("536870912"));
+}
+
+test "parseMemoryValue - size suffixes" {
+    try std.testing.expectEqual(@as(i64, 1024), try parseMemoryValue("1kb"));
+    try std.testing.expectEqual(@as(i64, 1024), try parseMemoryValue("1KB"));
+    try std.testing.expectEqual(@as(i64, 1024), try parseMemoryValue("1k"));
+    try std.testing.expectEqual(@as(i64, 1024 * 1024), try parseMemoryValue("1mb"));
+    try std.testing.expectEqual(@as(i64, 1024 * 1024), try parseMemoryValue("1MB"));
+    try std.testing.expectEqual(@as(i64, 1024 * 1024), try parseMemoryValue("1m"));
+    try std.testing.expectEqual(@as(i64, 1024 * 1024 * 1024), try parseMemoryValue("1gb"));
+    try std.testing.expectEqual(@as(i64, 1024 * 1024 * 1024), try parseMemoryValue("1GB"));
+    try std.testing.expectEqual(@as(i64, 1024 * 1024 * 1024), try parseMemoryValue("1g"));
+    try std.testing.expectEqual(@as(i64, 100 * 1024 * 1024), try parseMemoryValue("100mb"));
+    try std.testing.expectEqual(@as(i64, 512 * 1024 * 1024), try parseMemoryValue("512mb"));
+}
+
+test "parseMemoryValue - invalid input" {
+    try std.testing.expectError(error.InvalidValue, parseMemoryValue(""));
+    try std.testing.expectError(error.InvalidValue, parseMemoryValue("abc"));
+    try std.testing.expectError(error.InvalidValue, parseMemoryValue("1xb"));
+    try std.testing.expectError(error.InvalidValue, parseMemoryValue("mb"));
+}
+
+test "Config.set hz parameter" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Valid: 10 (default)
+    const val = try config.get("hz");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("10", val.?);
+
+    // Valid: set to 100
+    try config.set("hz", "100");
+    const val2 = try config.get("hz");
+    defer if (val2) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("100", val2.?);
+
+    // Invalid: 0 (below minimum)
+    try std.testing.expectError(error.InvalidValue, config.set("hz", "0"));
+
+    // Invalid: 501 (above maximum)
+    try std.testing.expectError(error.InvalidValue, config.set("hz", "501"));
+}
+
+test "Config.set maxmemory with size suffixes" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Set with mb suffix
+    try config.set("maxmemory", "100mb");
+    const val = try config.get("maxmemory");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("104857600", val.?); // 100 * 1024 * 1024
+
+    // Set with gb suffix
+    try config.set("maxmemory", "1gb");
+    const val2 = try config.get("maxmemory");
+    defer if (val2) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("1073741824", val2.?); // 1 * 1024 * 1024 * 1024
+
+    // Set with plain integer
+    try config.set("maxmemory", "1073741824");
+    const val3 = try config.get("maxmemory");
+    defer if (val3) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("1073741824", val3.?);
+}
+
+test "Config.set dynamic-hz boolean parameter" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Default: yes
+    const val = try config.get("dynamic-hz");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", val.?);
+
+    // Set to no
+    try config.set("dynamic-hz", "no");
+    const val2 = try config.get("dynamic-hz");
+    defer if (val2) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("no", val2.?);
 }
