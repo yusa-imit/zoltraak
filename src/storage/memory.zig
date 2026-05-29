@@ -834,6 +834,7 @@ pub const Storage = struct {
     command_stats: std.StringHashMapUnmanaged(CommandStatEntry), // Per-command call statistics
     error_stats_mutex: std.Thread.Mutex, // Protects error_stats
     error_stats: std.StringHashMapUnmanaged(u64), // Per-error-type occurrence counts
+    dirty_count: std.atomic.Value(u64), // Write operations since last RDB save (rdb_changes_since_last_save)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -968,6 +969,7 @@ pub const Storage = struct {
             .command_stats = std.StringHashMapUnmanaged(CommandStatEntry){},
             .error_stats_mutex = std.Thread.Mutex{},
             .error_stats = std.StringHashMapUnmanaged(u64){},
+            .dirty_count = std.atomic.Value(u64).init(0),
         };
 
         // Start background lazy free thread
@@ -2078,6 +2080,7 @@ pub const Storage = struct {
             try self.data.put(owned_key, new_value);
         }
         self.bumpKeyVersionLocked(key);
+        self.incrementDirty(1);
     }
 
     /// Atomically set multiple keys with optional shared expiration
@@ -2279,6 +2282,7 @@ pub const Storage = struct {
                 count += 1;
             }
         }
+        if (count > 0) self.incrementDirty(@intCast(count));
         return count;
     }
 
@@ -2409,6 +2413,7 @@ pub const Storage = struct {
                         try list_val.data.insert(self.allocator, 0, owned_elem);
                     }
                     self.bumpKeyVersionLocked(key);
+                    self.incrementDirty(1);
                     return list_val.data.items.len;
                 },
                 else => return error.WrongType,
@@ -2446,6 +2451,7 @@ pub const Storage = struct {
             });
 
             self.bumpKeyVersionLocked(key);
+            self.incrementDirty(1);
             return list.items.len;
         }
     }
@@ -2468,6 +2474,7 @@ pub const Storage = struct {
                         try list_val.data.append(self.allocator, owned_elem);
                     }
                     self.bumpKeyVersionLocked(key);
+                    self.incrementDirty(1);
                     return list_val.data.items.len;
                 },
                 else => return error.WrongType,
@@ -2503,6 +2510,7 @@ pub const Storage = struct {
             });
 
             self.bumpKeyVersionLocked(key);
+            self.incrementDirty(1);
             return list.items.len;
         }
     }
@@ -3164,7 +3172,9 @@ pub const Storage = struct {
                                     // Non-integer - must promote to hashmap
                                     try set_val.promoteToHashmap(self.allocator);
                                     // Retry adding all remaining members as hashmap
-                                    return try self.saddHashmap(set_val, members, &added_count, 0);
+                                    const result = try self.saddHashmap(set_val, members, &added_count, 0);
+                                    if (result > 0) self.incrementDirty(1);
+                                    return result;
                                 };
 
                                 // Add to intset
@@ -3180,14 +3190,18 @@ pub const Storage = struct {
                                             const remaining_added = try self.saddHashmap(set_val, members_left, &added_count, added_count);
                                             added_count = remaining_added;
                                         }
+                                        if (added_count > 0) self.incrementDirty(1);
                                         return added_count;
                                     }
                                 }
                             }
+                            if (added_count > 0) self.incrementDirty(1);
                             return added_count;
                         },
                         .hashmap => {
-                            return try self.saddHashmap(set_val, members, &added_count, 0);
+                            const result = try self.saddHashmap(set_val, members, &added_count, 0);
+                            if (result > 0) self.incrementDirty(1);
+                            return result;
                         },
                     }
                 },
@@ -3263,6 +3277,7 @@ pub const Storage = struct {
                 });
             }
 
+            if (added_count > 0) self.incrementDirty(1);
             return added_count;
         }
     }
@@ -3536,6 +3551,7 @@ pub const Storage = struct {
                         }
                     }
                     self.bumpKeyVersionLocked(key);
+                    self.incrementDirty(1);
                     return added_count;
                 },
                 else => return error.WrongType,
@@ -3579,6 +3595,7 @@ pub const Storage = struct {
             });
 
             self.bumpKeyVersionLocked(key);
+            self.incrementDirty(1);
             return added_count;
         }
     }
@@ -3965,6 +3982,7 @@ pub const Storage = struct {
                         }
                     }
                     self.bumpKeyVersionLocked(key);
+                    if (added_count > 0 or changed_count > 0) self.incrementDirty(1);
                     return .{ .added = added_count, .changed = changed_count };
                 },
                 else => return error.WrongType,
@@ -4023,6 +4041,7 @@ pub const Storage = struct {
             });
 
             self.bumpKeyVersionLocked(key);
+            if (added_count > 0) self.incrementDirty(1);
             return .{ .added = added_count, .changed = changed_count };
         }
     }
@@ -11042,11 +11061,22 @@ pub const Storage = struct {
         return self.last_save_time;
     }
 
-    /// Update the last save time to current Unix timestamp
+    /// Update the last save time to current Unix timestamp and reset dirty counter
     pub fn updateLastSaveTime(self: *Storage) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.last_save_time = @divFloor(std.time.milliTimestamp(), 1000);
+        _ = self.dirty_count.store(0, .monotonic);
+    }
+
+    /// Return the number of write operations since the last successful RDB save
+    pub fn getDirtyCount(self: *const Storage) u64 {
+        return self.dirty_count.load(.monotonic);
+    }
+
+    /// Increment the dirty counter by n (called on each key-modifying operation)
+    fn incrementDirty(self: *Storage, n: u64) void {
+        _ = self.dirty_count.fetchAdd(n, .monotonic);
     }
 
     /// Get consumer information for a group (XINFO CONSUMERS)
@@ -14539,4 +14569,80 @@ test "storage - run_id is 40 hex chars" {
         const is_hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
         try std.testing.expect(is_hex);
     }
+}
+
+test "storage - dirty_count increments on set()" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), storage.getDirtyCount());
+
+    try storage.set("k1", "v1", null);
+    try std.testing.expectEqual(@as(u64, 1), storage.getDirtyCount());
+
+    try storage.set("k1", "v2", null); // overwrite
+    try std.testing.expectEqual(@as(u64, 2), storage.getDirtyCount());
+
+    try storage.set("k2", "v2", null);
+    try std.testing.expectEqual(@as(u64, 3), storage.getDirtyCount());
+}
+
+test "storage - dirty_count increments on del()" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("a", "1", null);
+    try storage.set("b", "2", null);
+    _ = storage.getDirtyCount(); // reset mental state after 2 sets
+
+    const before = storage.getDirtyCount();
+    _ = storage.del(&[_][]const u8{ "a", "b" });
+    try std.testing.expectEqual(before + 2, storage.getDirtyCount());
+
+    // del of non-existent key should NOT increment
+    const after_del_existing = storage.getDirtyCount();
+    _ = storage.del(&[_][]const u8{"nonexistent"});
+    try std.testing.expectEqual(after_del_existing, storage.getDirtyCount());
+}
+
+test "storage - dirty_count resets after updateLastSaveTime()" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("k1", "v1", null);
+    try storage.set("k2", "v2", null);
+    try std.testing.expect(storage.getDirtyCount() > 0);
+
+    storage.updateLastSaveTime();
+    try std.testing.expectEqual(@as(u64, 0), storage.getDirtyCount());
+
+    // Writes after save increment again
+    try storage.set("k3", "v3", null);
+    try std.testing.expectEqual(@as(u64, 1), storage.getDirtyCount());
+}
+
+test "storage - dirty_count increments on lpush()" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const before = storage.getDirtyCount();
+    _ = try storage.lpush("mylist", &[_][]const u8{ "a", "b" }, null);
+    try std.testing.expectEqual(before + 1, storage.getDirtyCount());
+
+    _ = try storage.lpush("mylist", &[_][]const u8{"c"}, null);
+    try std.testing.expectEqual(before + 2, storage.getDirtyCount());
+}
+
+test "storage - dirty_count increments on hset()" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const before = storage.getDirtyCount();
+    _ = try storage.hset("myhash", &[_][]const u8{"f1"}, &[_][]const u8{"v1"}, null);
+    try std.testing.expectEqual(before + 1, storage.getDirtyCount());
 }

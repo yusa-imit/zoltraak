@@ -70,7 +70,7 @@ pub fn cmdInfo(
         try buildMemorySection(&buf, allocator, storage);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "PERSISTENCE")) {
-        try buildPersistenceSection(&buf, allocator, config);
+        try buildPersistenceSection(&buf, allocator, config, storage);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "STATS")) {
         try buildStatsSection(&buf, allocator, stats.total_commands_processed, stats.total_connections_received, storage);
@@ -246,14 +246,18 @@ fn buildPersistenceSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     config: ServerConfig,
+    storage: *Storage,
 ) !void {
     const bw = buf.writer(allocator);
 
+    const dirty = storage.getDirtyCount();
+    const last_save = storage.getLastSaveTime();
+
     try bw.writeAll("# Persistence\r\n");
     try bw.writeAll("loading:0\r\n");
-    try bw.writeAll("rdb_changes_since_last_save:0\r\n");
+    try bw.print("rdb_changes_since_last_save:{d}\r\n", .{dirty});
     try bw.writeAll("rdb_bgsave_in_progress:0\r\n");
-    try bw.writeAll("rdb_last_save_time:0\r\n");
+    try bw.print("rdb_last_save_time:{d}\r\n", .{last_save});
     try bw.writeAll("rdb_last_bgsave_status:ok\r\n");
     try bw.writeAll("rdb_last_bgsave_time_sec:0\r\n");
     try bw.writeAll("rdb_current_bgsave_time_sec:-1\r\n");
@@ -1565,4 +1569,125 @@ test "Storage run_id is unique across instances" {
     for (s1.run_id) |c| {
         try std.testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
     }
+}
+
+test "INFO persistence section shows rdb_last_save_time:0 initially" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "persistence" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "rdb_last_save_time:0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "rdb_changes_since_last_save:0\r\n") != null);
+}
+
+test "INFO persistence section shows real dirty count after writes" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    // Make 3 write operations
+    try storage.set("k1", "v1", null);
+    try storage.set("k2", "v2", null);
+    try storage.set("k3", "v3", null);
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "persistence" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    // dirty count should be 3
+    try std.testing.expect(std.mem.indexOf(u8, result, "rdb_changes_since_last_save:3\r\n") != null);
+}
+
+test "INFO persistence section rdb_changes_since_last_save resets after save" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    try storage.set("k1", "v1", null);
+    try storage.set("k2", "v2", null);
+
+    // Simulate a successful save
+    storage.updateLastSaveTime();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "persistence" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    // dirty count should be 0 after save
+    try std.testing.expect(std.mem.indexOf(u8, result, "rdb_changes_since_last_save:0\r\n") != null);
+    // rdb_last_save_time should now be non-zero
+    try std.testing.expect(std.mem.indexOf(u8, result, "rdb_last_save_time:0\r\n") == null);
 }
