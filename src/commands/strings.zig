@@ -1388,6 +1388,7 @@ pub fn executeCommand(
             // Build server stats using real tracked values from Storage
             const server_stats = info_cmds.ServerStats{
                 .client_count = client_registry.count(),
+                .tracking_clients = client_registry.countTrackingClients(),
                 .total_commands_processed = storage.total_commands_processed.load(.monotonic),
                 .total_connections_received = storage.total_connections_received.load(.monotonic),
                 .start_time_seconds = storage.server_start_time,

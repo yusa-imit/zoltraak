@@ -835,6 +835,7 @@ pub const Storage = struct {
     error_stats_mutex: std.Thread.Mutex, // Protects error_stats
     error_stats: std.StringHashMapUnmanaged(u64), // Per-error-type occurrence counts
     dirty_count: std.atomic.Value(u64), // Write operations since last RDB save (rdb_changes_since_last_save)
+    peak_memory: std.atomic.Value(usize), // Peak memory usage in bytes (used by INFO memory used_memory_peak)
 
     /// Initialize a new storage instance with runtime configuration.
     ///
@@ -970,6 +971,7 @@ pub const Storage = struct {
             .error_stats_mutex = std.Thread.Mutex{},
             .error_stats = std.StringHashMapUnmanaged(u64){},
             .dirty_count = std.atomic.Value(u64).init(0),
+            .peak_memory = std.atomic.Value(usize).init(0),
         };
 
         // Start background lazy free thread
@@ -11077,6 +11079,23 @@ pub const Storage = struct {
     /// Increment the dirty counter by n (called on each key-modifying operation)
     fn incrementDirty(self: *Storage, n: u64) void {
         _ = self.dirty_count.fetchAdd(n, .monotonic);
+    }
+
+    /// Update peak memory usage if current > stored peak (called from INFO memory section)
+    pub fn updatePeakMemory(self: *Storage, current_bytes: usize) void {
+        var current_peak = self.peak_memory.load(.monotonic);
+        while (current_bytes > current_peak) {
+            if (self.peak_memory.cmpxchgWeak(current_peak, current_bytes, .monotonic, .monotonic)) |updated| {
+                current_peak = updated;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Get peak memory usage in bytes
+    pub fn getPeakMemory(self: *const Storage) usize {
+        return self.peak_memory.load(.monotonic);
     }
 
     /// Get consumer information for a group (XINFO CONSUMERS)

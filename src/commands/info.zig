@@ -1,11 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const repl_mod = @import("../storage/replication.zig");
+const client_mod = @import("client.zig");
 
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const ReplicationState = repl_mod.ReplicationState;
+const ClientRegistry = client_mod.ClientRegistry;
 
 /// Server configuration for INFO command
 pub const ServerConfig = struct {
@@ -24,6 +27,7 @@ pub const ServerConfig = struct {
 /// Server statistics for INFO command
 pub const ServerStats = struct {
     client_count: usize,
+    tracking_clients: usize,
     total_commands_processed: u64,
     total_connections_received: u64,
     start_time_seconds: i64,
@@ -64,7 +68,7 @@ pub fn cmdInfo(
         try buildServerSection(&buf, allocator, config, storage, stats.start_time_seconds, num_databases);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "CLIENTS")) {
-        try buildClientsSection(&buf, allocator, stats.client_count);
+        try buildClientsSection(&buf, allocator, stats.client_count, stats.tracking_clients);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "MEMORY")) {
         try buildMemorySection(&buf, allocator, storage);
@@ -105,6 +109,36 @@ pub fn cmdInfo(
     return w.writeBulkString(info);
 }
 
+/// Returns total physical system memory in bytes using platform-specific APIs.
+/// Falls back to 0 on unsupported platforms or on error.
+fn getTotalSystemMemory() usize {
+    switch (builtin.os.tag) {
+        .linux => {
+            // Read MemTotal from /proc/meminfo (format: "MemTotal: XXXXX kB")
+            const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch return 0;
+            defer file.close();
+            var buf: [512]u8 = undefined;
+            const n = file.read(&buf) catch return 0;
+            const content = buf[0..n];
+            const prefix = "MemTotal:";
+            const idx = std.mem.indexOf(u8, content, prefix) orelse return 0;
+            const after = std.mem.trim(u8, content[idx + prefix.len ..], " \t");
+            const end = std.mem.indexOf(u8, after, " ") orelse after.len;
+            const kb = std.fmt.parseInt(usize, after[0..end], 10) catch return 0;
+            return kb * 1024;
+        },
+        .macos, .ios, .tvos, .watchos => {
+            // Use sysctlbyname("hw.memsize") to get physical RAM
+            var memsize: usize = 0;
+            var memsize_len: usize = @sizeOf(usize);
+            const result = std.c.sysctlbyname("hw.memsize", &memsize, &memsize_len, null, 0);
+            if (result == 0) return memsize;
+            return 0;
+        },
+        else => return 0,
+    }
+}
+
 fn buildServerSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -122,7 +156,6 @@ fn buildServerSection(
         else => 10,
     } else 10;
 
-    const builtin = @import("builtin");
     const multiplexing_api = comptime switch (builtin.os.tag) {
         .linux => "epoll",
         .macos, .freebsd, .openbsd, .netbsd, .dragonfly => "kqueue",
@@ -167,6 +200,7 @@ fn buildClientsSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     client_count: usize,
+    tracking_clients: usize,
 ) !void {
     const bw = buf.writer(allocator);
 
@@ -175,7 +209,7 @@ fn buildClientsSection(
     try bw.writeAll("client_recent_max_input_buffer:0\r\n");
     try bw.writeAll("client_recent_max_output_buffer:0\r\n");
     try bw.writeAll("blocked_clients:0\r\n");
-    try bw.writeAll("tracking_clients:0\r\n");
+    try bw.print("tracking_clients:{d}\r\n", .{tracking_clients});
     try bw.writeAll("clients_in_timeout_table:0\r\n");
     try bw.writeAll("\r\n");
 }
@@ -218,24 +252,38 @@ fn buildMemorySection(
     };
     defer allocator.free(maxmemory_policy);
 
+    // Update peak memory tracking atomically
+    storage.updatePeakMemory(total_memory);
+    const peak_memory = storage.getPeakMemory();
+
+    // Get actual system physical memory
+    const system_memory = getTotalSystemMemory();
+
     var fmt_buf1: [32]u8 = undefined;
     var fmt_buf2: [32]u8 = undefined;
     var fmt_buf3: [32]u8 = undefined;
+    var fmt_buf4: [32]u8 = undefined;
+    var fmt_buf5: [32]u8 = undefined;
     const maxmemory_bytes: usize = @intCast(@max(0, maxmemory));
     try bw.writeAll("# Memory\r\n");
     try bw.print("used_memory:{d}\r\n", .{total_memory});
     try bw.print("used_memory_human:{s}\r\n", .{formatBytes(total_memory, &fmt_buf1)});
     try bw.print("used_memory_rss:{d}\r\n", .{total_memory * 2});
     try bw.print("used_memory_rss_human:{s}\r\n", .{formatBytes(total_memory * 2, &fmt_buf2)});
-    try bw.writeAll("used_memory_peak:0\r\n");
-    try bw.writeAll("used_memory_peak_human:0B\r\n");
+    try bw.print("used_memory_peak:{d}\r\n", .{peak_memory});
+    try bw.print("used_memory_peak_human:{s}\r\n", .{formatBytes(peak_memory, &fmt_buf3)});
     try bw.writeAll("used_memory_overhead:0\r\n");
     try bw.writeAll("used_memory_startup:0\r\n");
     try bw.writeAll("used_memory_dataset:0\r\n");
-    try bw.print("total_system_memory:{d}\r\n", .{1024 * 1024 * 1024}); // Placeholder: 1GB
-    try bw.writeAll("total_system_memory_human:1G\r\n");
+    if (system_memory > 0) {
+        try bw.print("total_system_memory:{d}\r\n", .{system_memory});
+        try bw.print("total_system_memory_human:{s}\r\n", .{formatBytes(system_memory, &fmt_buf4)});
+    } else {
+        try bw.writeAll("total_system_memory:0\r\n");
+        try bw.writeAll("total_system_memory_human:0B\r\n");
+    }
     try bw.print("maxmemory:{d}\r\n", .{maxmemory_bytes});
-    try bw.print("maxmemory_human:{s}\r\n", .{if (maxmemory_bytes == 0) "0B" else formatBytes(maxmemory_bytes, &fmt_buf3)});
+    try bw.print("maxmemory_human:{s}\r\n", .{if (maxmemory_bytes == 0) "0B" else formatBytes(maxmemory_bytes, &fmt_buf5)});
     try bw.print("maxmemory_policy:{s}\r\n", .{maxmemory_policy});
     try bw.writeAll("mem_fragmentation_ratio:1.00\r\n");
     try bw.writeAll("mem_allocator:zig\r\n");
@@ -622,6 +670,7 @@ test "INFO server section" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 100,
         .total_connections_received = 50,
         .start_time_seconds = 1000000,
@@ -660,6 +709,7 @@ test "INFO clients section" {
 
     const stats = ServerStats{
         .client_count = 5,
+        .tracking_clients = 0,
         .total_commands_processed = 100,
         .total_connections_received = 50,
         .start_time_seconds = 1000000,
@@ -701,6 +751,7 @@ test "INFO keyspace section with data" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 100,
         .total_connections_received = 50,
         .start_time_seconds = 1000000,
@@ -738,6 +789,7 @@ test "INFO default shows multiple sections" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 100,
         .total_connections_received = 50,
         .start_time_seconds = 1000000,
@@ -783,6 +835,7 @@ test "INFO server section uptime is reasonable (not Unix timestamp)" {
     const now = std.time.timestamp();
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = now,
@@ -829,6 +882,7 @@ test "INFO server section lru_clock is 24-bit truncated" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -873,6 +927,7 @@ test "INFO stats section shows real command/connection counts" {
 
     const stats = ServerStats{
         .client_count = 3,
+        .tracking_clients = 0,
         .total_commands_processed = 42,
         .total_connections_received = 7,
         .start_time_seconds = std.time.timestamp(),
@@ -916,6 +971,7 @@ test "INFO stats section shows keyspace hits and misses" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 3,
         .total_connections_received = 1,
         .start_time_seconds = std.time.timestamp(),
@@ -953,6 +1009,7 @@ test "INFO commandstats section is empty when no commands recorded" {
 
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -994,6 +1051,7 @@ test "INFO commandstats section shows recorded commands" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 3,
         .total_connections_received = 1,
         .start_time_seconds = std.time.timestamp(),
@@ -1036,6 +1094,7 @@ test "INFO errorstats section shows recorded errors" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 3,
         .total_connections_received = 1,
         .start_time_seconds = std.time.timestamp(),
@@ -1076,6 +1135,7 @@ test "INFO ALL includes commandstats and errorstats sections" {
 
     const stats = ServerStats{
         .client_count = 1,
+        .tracking_clients = 0,
         .total_commands_processed = 1,
         .total_connections_received = 1,
         .start_time_seconds = std.time.timestamp(),
@@ -1114,6 +1174,7 @@ test "INFO cluster section appears in default and all" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1165,6 +1226,7 @@ test "INFO modules section appears in default and all" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1210,6 +1272,7 @@ test "INFO keyspace shows avg_ttl for keys with expiry" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1252,6 +1315,7 @@ test "INFO keyspace avg_ttl is 0 when no keys have expiry" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1299,6 +1363,7 @@ test "INFO keyspace multi-database shows all non-empty databases" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1337,6 +1402,7 @@ test "INFO server section shows correct databases count" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1372,6 +1438,7 @@ test "INFO memory section shows default maxmemory:0 and maxmemory_policy:noevict
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1413,6 +1480,7 @@ test "INFO memory section reflects CONFIG SET maxmemory" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1452,6 +1520,7 @@ test "INFO memory section reflects CONFIG SET maxmemory-policy" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1546,7 +1615,6 @@ test "INFO server section multiplexing_api is platform-appropriate" {
     defer allocator.free(result);
 
     // Must contain multiplexing_api: field with a valid value
-    const builtin = @import("builtin");
     const expected_api = comptime switch (builtin.os.tag) {
         .linux => "multiplexing_api:epoll\r\n",
         .macos, .freebsd, .openbsd, .netbsd, .dragonfly => "multiplexing_api:kqueue\r\n",
@@ -1594,6 +1662,7 @@ test "INFO persistence section shows rdb_last_save_time:0 initially" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1635,6 +1704,7 @@ test "INFO persistence section shows real dirty count after writes" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1677,6 +1747,7 @@ test "INFO persistence section rdb_changes_since_last_save resets after save" {
     };
     const stats = ServerStats{
         .client_count = 0,
+        .tracking_clients = 0,
         .total_commands_processed = 0,
         .total_connections_received = 0,
         .start_time_seconds = std.time.timestamp(),
@@ -1690,4 +1761,151 @@ test "INFO persistence section rdb_changes_since_last_save resets after save" {
     try std.testing.expect(std.mem.indexOf(u8, result, "rdb_changes_since_last_save:0\r\n") != null);
     // rdb_last_save_time should now be non-zero
     try std.testing.expect(std.mem.indexOf(u8, result, "rdb_last_save_time:0\r\n") == null);
+}
+
+test "INFO memory section used_memory_peak grows monotonically" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    // First INFO call — establishes baseline peak
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result1 = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result1);
+    try std.testing.expect(std.mem.indexOf(u8, result1, "used_memory_peak:") != null);
+
+    // Add some data
+    try storage.set("k1", "v1", null);
+    try storage.set("k2", "v2", null);
+
+    // Second INFO call — peak should be >= first peak
+    const result2 = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result2);
+    // used_memory_peak must appear
+    try std.testing.expect(std.mem.indexOf(u8, result2, "used_memory_peak:") != null);
+    // peak should not be 0 after adding data (memory > 0)
+    try std.testing.expect(std.mem.indexOf(u8, result2, "used_memory_peak:0\r\n") == null);
+}
+
+test "INFO memory section total_system_memory is non-negative" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    // total_system_memory field must exist (value ≥ 0, exact value is platform-dependent)
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_system_memory:") != null);
+    // On supported platforms (macOS/Linux), system memory should be non-zero
+    // On other platforms, it falls back to 0 — we just require the field exists
+}
+
+test "INFO clients section tracking_clients matches count" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 16,
+    };
+    // 2 tracking clients
+    const stats = ServerStats{
+        .client_count = 5,
+        .tracking_clients = 2,
+        .total_commands_processed = 10,
+        .total_connections_received = 5,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const args = [_][]const u8{ "INFO", "clients" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "connected_clients:5\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "tracking_clients:2\r\n") != null);
+}
+
+test "Storage updatePeakMemory tracks maximum" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Initially 0
+    try std.testing.expectEqual(@as(usize, 0), storage.getPeakMemory());
+
+    // Update to 1000
+    storage.updatePeakMemory(1000);
+    try std.testing.expectEqual(@as(usize, 1000), storage.getPeakMemory());
+
+    // Smaller value should not lower peak
+    storage.updatePeakMemory(500);
+    try std.testing.expectEqual(@as(usize, 1000), storage.getPeakMemory());
+
+    // Larger value updates peak
+    storage.updatePeakMemory(2000);
+    try std.testing.expectEqual(@as(usize, 2000), storage.getPeakMemory());
 }

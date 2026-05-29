@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 304 (480+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-304 complete ✅, 2/5 zuda migrations, sailor v2.13.0 migrated)
+- **Iterations complete**: 306 (480+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-306 complete ✅, 2/5 zuda migrations, sailor v2.13.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-305 complete ✅
-- **Next milestone**: Iteration 306 (additional Redis compatibility fixes)
+- **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-306 complete ✅
+- **Next milestone**: Iteration 307 (additional Redis compatibility fixes)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -40,6 +40,7 @@
 | 303 | OBJECT ENCODING stat-neutral string peek — `peekStringEncoding()` avoids spurious keyspace_hits increment; fixes LRU-eviction accuracy for OBJECT ENCODING on string keys | Done ✅ |
 | 304 | XADD partial auto-seq ID (`ms-*`) — `StreamId.parse()` now handles `"ms-*"` format where ms is fixed and seq is auto-generated; seq increments within same ms, resets for new ms, rejects older ms; 5 storage unit tests + 4 command tests | Done ✅ |
 | 305 | INFO persistence accuracy — `rdb_changes_since_last_save` tracks actual write count via `dirty_count` atomic counter (incremented in set/del/lpush/rpush/hset/sadd/zadd, reset on `updateLastSaveTime()`); `rdb_last_save_time` reads from `storage.getLastSaveTime()` instead of hardcoded 0; 5 storage unit tests + 3 INFO command tests | Done ✅ |
+| 306 | INFO memory/clients accuracy — `total_system_memory` reads real system RAM via `sysctlbyname("hw.memsize")` on macOS and `/proc/meminfo` on Linux (previously hardcoded 1GB); `used_memory_peak` tracked via `peak_memory: std.atomic.Value(usize)` in Storage, updated atomically on each `INFO memory` call; `tracking_clients` in `# Clients` section counts clients with `CLIENT TRACKING ON` enabled (via `ClientRegistry.countTrackingClients()`); added `getTotalSystemMemory()` platform helper; added `ServerStats.tracking_clients` field; 4 new unit tests (peak grows monotonically, total_system_memory non-negative, tracking_clients count, updatePeakMemory monotonicity) | Done ✅ |
 
 ### Phase 12 — JSON Data Type (100% complete) ✅
 

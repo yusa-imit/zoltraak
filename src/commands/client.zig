@@ -523,6 +523,18 @@ pub const ClientRegistry = struct {
         return self.clients.count();
     }
 
+    /// Count clients with CLIENT TRACKING enabled (for INFO clients tracking_clients)
+    pub fn countTrackingClients(self: *ClientRegistry) usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var n: usize = 0;
+        var it = self.clients.valueIterator();
+        while (it.next()) |info| {
+            if (info.tracking_enabled) n += 1;
+        }
+        return n;
+    }
+
     pub fn markClientForKill(self: *ClientRegistry, client_id: u64) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
