@@ -299,7 +299,7 @@ pub const Value = union(ValueType) {
         ms: i64,
         seq: u64,
 
-        /// Parse ID from string like "1234567890-0" or "*" for auto-generation
+        /// Parse ID from string like "1234567890-0", "ms-*" (partial auto-seq), or "*" (full auto)
         pub fn parse(s: []const u8, last_id: ?StreamId) !StreamId {
             if (std.mem.eql(u8, s, "*")) {
                 // Auto-generate ID based on current time
@@ -309,10 +309,19 @@ pub const Value = union(ValueType) {
                 return StreamId{ .ms = ms, .seq = seq };
             }
 
-            // Parse "ms-seq" format
+            // Parse "ms-seq" or "ms-*" (partial auto-seq) format
             const dash = std.mem.indexOf(u8, s, "-") orelse return error.InvalidStreamId;
             const ms = try std.fmt.parseInt(i64, s[0..dash], 10);
-            const seq = try std.fmt.parseInt(u64, s[dash + 1 ..], 10);
+            const seq_str = s[dash + 1 ..];
+            if (std.mem.eql(u8, seq_str, "*")) {
+                // Partial ID: ms is given, seq is auto-generated
+                const seq = if (last_id) |lid|
+                    (if (ms == lid.ms) lid.seq + 1 else 0)
+                else
+                    0;
+                return StreamId{ .ms = ms, .seq = seq };
+            }
+            const seq = try std.fmt.parseInt(u64, seq_str, 10);
             return StreamId{ .ms = ms, .seq = seq };
         }
 
@@ -12869,6 +12878,69 @@ test "storage - xadd enforces ID ordering" {
 
     // Try to add earlier ID - should fail
     const result = storage.xadd("s", "999-0", &fields, null, .{});
+    try std.testing.expectError(error.StreamIdTooSmall, result);
+}
+
+test "storage - xadd with partial auto-seq ID (ms-*)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "field", "value" };
+    // Use a fixed ms with auto seq
+    const id = try storage.xadd("mystream", "1700000000-*", &fields, null, .{});
+
+    try std.testing.expectEqual(@as(i64, 1700000000), id.ms);
+    try std.testing.expectEqual(@as(u64, 0), id.seq);
+}
+
+test "storage - xadd partial auto-seq increments seq when same ms" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "f", "v" };
+    // Insert explicit entry at ms=5000 seq=2
+    _ = try storage.xadd("s", "5000-2", &fields, null, .{});
+    // Now partial ID with same ms — should get seq=3
+    const id = try storage.xadd("s", "5000-*", &fields, null, .{});
+    try std.testing.expectEqual(@as(i64, 5000), id.ms);
+    try std.testing.expectEqual(@as(u64, 3), id.seq);
+}
+
+test "storage - xadd partial auto-seq resets seq for new ms" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "f", "v" };
+    _ = try storage.xadd("s", "5000-7", &fields, null, .{});
+    // Different ms — seq resets to 0
+    const id = try storage.xadd("s", "6000-*", &fields, null, .{});
+    try std.testing.expectEqual(@as(i64, 6000), id.ms);
+    try std.testing.expectEqual(@as(u64, 0), id.seq);
+}
+
+test "storage - xadd partial auto-seq on empty stream starts at 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "f", "v" };
+    const id = try storage.xadd("newstream", "9999-*", &fields, null, .{});
+    try std.testing.expectEqual(@as(i64, 9999), id.ms);
+    try std.testing.expectEqual(@as(u64, 0), id.seq);
+}
+
+test "storage - xadd partial auto-seq enforces ms ordering" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "f", "v" };
+    _ = try storage.xadd("s", "9000-5", &fields, null, .{});
+    // Older ms-* should fail
+    const result = storage.xadd("s", "8000-*", &fields, null, .{});
     try std.testing.expectError(error.StreamIdTooSmall, result);
 }
 

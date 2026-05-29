@@ -862,6 +862,125 @@ test "streams - XADD rejects smaller ID" {
     try std.testing.expect(std.mem.indexOf(u8, r2, "smaller") != null);
 }
 
+test "streams - XADD with partial auto-seq ID (ms-*)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "1700000000-*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+
+    const result = try cmdXadd(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    // Should return "1700000000-0"
+    try std.testing.expect(std.mem.indexOf(u8, result, "1700000000-0") != null);
+}
+
+test "streams - XADD partial auto-seq increments within same ms" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "5000-2" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &args1, &ps, 0);
+    defer allocator.free(r1);
+
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "5000-*" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const r2 = try cmdXadd(allocator, storage, &args2, &ps, 0);
+    defer allocator.free(r2);
+
+    // Should return "5000-3"
+    try std.testing.expect(std.mem.indexOf(u8, r2, "5000-3") != null);
+}
+
+test "streams - XADD partial auto-seq with new ms resets to 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "5000-7" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &args1, &ps, 0);
+    defer allocator.free(r1);
+
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "6000-*" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const r2 = try cmdXadd(allocator, storage, &args2, &ps, 0);
+    defer allocator.free(r2);
+
+    // Should return "6000-0"
+    try std.testing.expect(std.mem.indexOf(u8, r2, "6000-0") != null);
+}
+
+test "streams - XADD partial auto-seq rejects older ms" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "9000-5" },
+        RespValue{ .bulk_string = "a" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &args1, &ps, 0);
+    defer allocator.free(r1);
+
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "8000-*" },
+        RespValue{ .bulk_string = "b" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const r2 = try cmdXadd(allocator, storage, &args2, &ps, 0);
+    defer allocator.free(r2);
+
+    // Should return an error about smaller ID
+    try std.testing.expect(std.mem.indexOf(u8, r2, "smaller") != null);
+}
+
 test "streams - XLEN returns count" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
