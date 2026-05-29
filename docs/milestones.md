@@ -3,7 +3,7 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 302 (480+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-302 complete ✅, 2/5 zuda migrations, sailor v2.10.2 migrated)
+- **Iterations complete**: 302 (480+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-302 complete ✅, 2/5 zuda migrations, sailor v2.13.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-302 complete ✅
 - **Next milestone**: Iteration 303 (additional Redis compatibility fixes)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v2.10.2 (latest, all migrations through v2.10.2 complete — AI/ML capabilities + bug fixes)
+- **Sailor library**: v2.13.0 (latest, all migrations through v2.13.0 complete — MiddlewareStore, ThunkStore, UndoStore, StatePersist, ReactiveList)
 
 ---
 
@@ -219,9 +219,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v2.10.2 (build.zig.zon)
-- **Latest available**: v2.10.2
-- **Migration status**: All versions through v2.10.2 migrated.
+- **Current in zoltraak**: v2.13.0 (build.zig.zon)
+- **Latest available**: v2.13.0
+- **Migration status**: All versions through v2.13.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -258,6 +258,9 @@
 | v2.10.0 | AI/ML capabilities: LLM Integration Layer (TokenBudget, RateLimiter, PromptTemplate, ResponseStreamWidget, LlmClient, 35 tests 70% pass rate), Smart Autocomplete (context-aware, multi-source, learning patterns, 52 tests), Layout Intelligence (AI-assisted analysis, responsiveness checking, accessibility recommendations, 52 tests), Natural Language Commands (CommandParser 11 intent types, context-aware disambiguation, semantic search, 59 tests) — backward compatible, zero breaking changes, privacy-first (API keys optional) | Done |
 | v2.10.1 | Test suite stability (patch): Fixed timing-sensitive tests (advanced_profiler sleep durations microseconds→milliseconds), documented HTTP mocking limitations (12 skipped tests), corrected error handling for HTTP stub — zero functional changes, zero breaking changes, 4426/4478 tests (98.8%) | Done |
 | v2.10.2 | Natural language commands bug fixes (patch): Fixed Zig 0.15 API compatibility (tokenize→tokenizeScalar, BoundedArray removal, toOwnedSlice parameter), fixed meaningless tests (59 tests now validate Intent types instead of string contents) — zero functional changes, zero breaking changes, 4426/4478 tests (98.8%) | Done |
+| v2.11.0 | (skipped — direct upgrade to v2.12.0) | N/A |
+| v2.12.0 | Reactive State Management: Signal(T) reactive values with change detection, Store reducer pattern (Redux-style), reactive widgets (ReactiveGauge/Text/Counter bound to signals) — backward compatible, zero breaking changes | Done |
+| v2.13.0 | Store Middleware & Async Actions: MiddlewareStore (action intercept pipeline), ThunkStore (async action sequencing), UndoStore (time-travel undo/redo, configurable history depth), StatePersist (pluggable save/load serialization), ReactiveList widget (Signal-bound list) — backward compatible, zero breaking changes | Done |
 
 ### zuda Library
 
