@@ -6,7 +6,7 @@
 - **Iterations complete**: 302 (480+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-302 complete ✅, 2/5 zuda migrations, sailor v2.13.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
 - **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-302 complete ✅
-- **Next milestone**: Iteration 303 (additional Redis compatibility fixes)
+- **Next milestone**: Iteration 304 (additional Redis compatibility fixes)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -37,6 +37,7 @@
 | 294 | INCRBYFLOAT/HINCRBYFLOAT NaN/Infinity handling + duplicate formatFloat fix | Done ✅ |
 | 295 | Case-insensitive LMPOP/ZMPOP direction keywords + GETEX EXAT/PXAT timestamp=0 fix | Done ✅ |
 | 296 | LPOP/RPOP null array (`*-1\r\n`) for non-existent key with count parameter | Done ✅ |
+| 303 | OBJECT ENCODING stat-neutral string peek — `peekStringEncoding()` avoids spurious keyspace_hits increment; fixes LRU-eviction accuracy for OBJECT ENCODING on string keys | Done ✅ |
 
 ### Phase 12 — JSON Data Type (100% complete) ✅
 

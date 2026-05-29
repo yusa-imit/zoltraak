@@ -1854,6 +1854,33 @@ pub const Storage = struct {
         return std.meta.activeTag(entry.value_ptr.*);
     }
 
+    /// Peek at a string value's encoding category without updating keyspace stats or LRU.
+    /// Returns "int" / "embstr" / "raw", or null if the key does not exist / is not a string.
+    /// Used by OBJECT ENCODING to avoid spurious keyspace_hits increments.
+    pub fn peekStringEncoding(self: *Storage, key: []const u8) ?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            const owned_key = entry.key_ptr.*;
+            var value = entry.value_ptr.*;
+            _ = self.removeKeyCleanup(key);
+            self.allocator.free(owned_key);
+            value.deinit(self.allocator);
+            return null;
+        }
+
+        return switch (entry.value_ptr.*) {
+            .string => |s| {
+                if (std.fmt.parseInt(i64, s.data, 10)) |_| return "int" else |_| {}
+                return if (s.data.len <= 44) "embstr" else "raw";
+            },
+            else => null,
+        };
+    }
+
     /// Get the LFU frequency counter for a key (for OBJECT FREQ)
     /// Returns 0 if key doesn't exist or has no LFU data
     pub fn getObjectFreq(self: *Storage, key: []const u8) u8 {

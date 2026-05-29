@@ -1750,12 +1750,9 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         };
         const encoding: []const u8 = switch (vtype) {
             .string => enc: {
-                const val = storage.get(key);
-                if (val) |v| {
-                    if (std.fmt.parseInt(i64, v, 10)) |_| break :enc "int" else |_| {}
-                    break :enc if (v.len <= 44) "embstr" else "raw";
-                }
-                break :enc "embstr";
+                // Use peekStringEncoding to avoid spurious keyspace_hits increments (OBJECT
+                // ENCODING is a metadata inspection command, not a data access).
+                break :enc storage.peekStringEncoding(key) orelse "embstr";
             },
             .list => blk: {
                 const ln = storage.llen(key) orelse 0;
@@ -2994,4 +2991,54 @@ test "EXPIREAT - positive past timestamp expires key immediately" {
     // Key should be expired on next read
     const val = storage.get("mykey");
     try std.testing.expectEqual(@as(?[]const u8, null), val);
+}
+
+test "OBJECT ENCODING - does not update keyspace_hits counter" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("mystr", "hello", null);
+    const hits_before = storage.getKeyspaceHits();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "mystr" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$6\r\nembstr\r\n", result);
+    // OBJECT ENCODING must not count as a keyspace hit
+    try std.testing.expectEqual(hits_before, storage.getKeyspaceHits());
+}
+
+test "peekStringEncoding - raw for strings longer than 44 bytes" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("bigstr", "A" ** 45, null);
+    const enc = storage.peekStringEncoding("bigstr");
+    try std.testing.expectEqualStrings("raw", enc orelse "");
+}
+
+test "peekStringEncoding - int for numeric strings" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("numkey", "-9999", null);
+    const enc = storage.peekStringEncoding("numkey");
+    try std.testing.expectEqualStrings("int", enc orelse "");
+}
+
+test "peekStringEncoding - null for non-existent key" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const enc = storage.peekStringEncoding("nosuchkey");
+    try std.testing.expectEqual(@as(?[]const u8, null), enc);
 }
