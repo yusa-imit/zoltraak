@@ -484,32 +484,105 @@ pub const ClientRegistry = struct {
 
         var it = self.clients.valueIterator();
         while (it.next()) |info| {
-            // Apply filters if specified
+            // Apply type filter: "normal" | "pubsub" | "replica" | "master"
             if (filter_type) |ft| {
-                if (std.mem.eql(u8, ft, "normal")) {
-                    // Only show normal clients (all our clients for now)
-                } else {
-                    // Skip clients that don't match filter
+                if (std.ascii.eqlIgnoreCase(ft, "normal")) {
+                    // normal: non-pubsub, non-replica clients
+                } else if (std.ascii.eqlIgnoreCase(ft, "pubsub")) {
+                    // pubsub: clients in subscribe mode — skip for now (no per-client sub state here)
+                    continue;
+                } else if (std.ascii.eqlIgnoreCase(ft, "replica") or std.ascii.eqlIgnoreCase(ft, "slave")) {
+                    // replica: replication clients — none tracked here
+                    continue;
+                } else if (std.ascii.eqlIgnoreCase(ft, "master")) {
+                    // master: outbound connections — none tracked here
                     continue;
                 }
             }
 
             const age_sec = @divFloor(now - info.connected_at, 1000);
             const idle_sec = @divFloor(now - info.last_cmd_at, 1000);
-
-            // Format: id=<id> addr=<addr> fd=<fd> name=<name> age=<age> idle=<idle> flags=<flags> db=<db> sub=0 psub=0 cmd=<cmd>
             const name_str = info.name orelse "";
-            try buf.writer(allocator).print("id={d} addr={s} fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 cmd={s}\n", .{
-                info.id,
-                info.addr,
-                info.fd,
-                name_str,
-                age_sec,
-                idle_sec,
-                info.flags,
-                info.selected_db,
-                info.last_cmd,
-            });
+            const lib_name_str = info.lib_name orelse "";
+            const lib_ver_str = info.lib_ver orelse "";
+            const user_str = if (info.authenticated_user) |u| u else "default";
+            const redir: i64 = if (info.tracking_enabled and info.tracking_redirect > 0)
+                info.tracking_redirect
+            else
+                -1;
+
+            // Redis 7.x full CLIENT LIST format
+            try buf.writer(allocator).print(
+                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d}\n",
+                .{
+                    info.id,
+                    info.addr,
+                    info.fd,
+                    name_str,
+                    age_sec,
+                    idle_sec,
+                    info.flags,
+                    info.selected_db,
+                    info.last_cmd,
+                    user_str,
+                    lib_name_str,
+                    lib_ver_str,
+                    redir,
+                    @intFromEnum(info.protocol),
+                },
+            );
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Format CLIENT LIST output for specific client IDs only (Redis 7.0+ CLIENT LIST ID filter)
+    pub fn formatClientListByIds(
+        self: *ClientRegistry,
+        allocator: std.mem.Allocator,
+        ids: []const u64,
+    ) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+
+        const now = std.time.milliTimestamp();
+
+        for (ids) |target_id| {
+            const info = self.clients.get(target_id) orelse continue;
+
+            const age_sec = @divFloor(now - info.connected_at, 1000);
+            const idle_sec = @divFloor(now - info.last_cmd_at, 1000);
+            const name_str = info.name orelse "";
+            const lib_name_str = info.lib_name orelse "";
+            const lib_ver_str = info.lib_ver orelse "";
+            const user_str = if (info.authenticated_user) |u| u else "default";
+            const redir: i64 = if (info.tracking_enabled and info.tracking_redirect > 0)
+                info.tracking_redirect
+            else
+                -1;
+
+            try buf.writer(allocator).print(
+                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d}\n",
+                .{
+                    info.id,
+                    info.addr,
+                    info.fd,
+                    name_str,
+                    age_sec,
+                    idle_sec,
+                    info.flags,
+                    info.selected_db,
+                    info.last_cmd,
+                    user_str,
+                    lib_name_str,
+                    lib_ver_str,
+                    redir,
+                    @intFromEnum(info.protocol),
+                },
+            );
         }
 
         return buf.toOwnedSlice(allocator);
@@ -1157,16 +1230,18 @@ fn cmdClientSetname(
 }
 
 /// CLIENT LIST - List all client connections
+/// Syntax: CLIENT LIST [TYPE normal|master|replica|pubsub] [ID id [id ...]]
 fn cmdClientList(
     allocator: std.mem.Allocator,
     registry: *ClientRegistry,
     args: []const RespValue,
 ) ![]const u8 {
-    // Parse optional TYPE filter
     var filter_type: ?[]const u8 = null;
+    var id_filter = std.ArrayList(u64){};
+    defer id_filter.deinit(allocator);
 
     var i: usize = 1;
-    while (i < args.len) : (i += 2) {
+    while (i < args.len) {
         const option = switch (args[i]) {
             .bulk_string => |s| s,
             else => {
@@ -1177,13 +1252,14 @@ fn cmdClientList(
         };
 
         if (std.ascii.eqlIgnoreCase(option, "TYPE")) {
-            if (i + 1 >= args.len) {
+            i += 1;
+            if (i >= args.len) {
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 return w.writeError("ERR syntax error");
             }
 
-            const type_value = switch (args[i + 1]) {
+            const type_value = switch (args[i]) {
                 .bulk_string => |s| s,
                 else => {
                     var w = Writer.init(allocator);
@@ -1192,7 +1268,6 @@ fn cmdClientList(
                 },
             };
 
-            // Validate TYPE value - only "normal", "master", "replica", "pubsub" are valid
             if (!std.ascii.eqlIgnoreCase(type_value, "normal") and
                 !std.ascii.eqlIgnoreCase(type_value, "master") and
                 !std.ascii.eqlIgnoreCase(type_value, "replica") and
@@ -1208,6 +1283,30 @@ fn cmdClientList(
             }
 
             filter_type = type_value;
+            i += 1;
+        } else if (std.ascii.eqlIgnoreCase(option, "ID")) {
+            // Consume all following numeric IDs until next keyword or end
+            i += 1;
+            if (i >= args.len) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                return w.writeError("ERR syntax error");
+            }
+            while (i < args.len) {
+                const id_str = switch (args[i]) {
+                    .bulk_string => |s| s,
+                    else => break,
+                };
+                // Stop if the token looks like a keyword (TYPE or ID)
+                if (std.ascii.eqlIgnoreCase(id_str, "TYPE") or std.ascii.eqlIgnoreCase(id_str, "ID")) break;
+                const id_val = std.fmt.parseInt(u64, id_str, 10) catch {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    return w.writeError("ERR value is not an integer or out of range");
+                };
+                try id_filter.append(allocator, id_val);
+                i += 1;
+            }
         } else {
             var w = Writer.init(allocator);
             defer w.deinit();
@@ -1215,7 +1314,10 @@ fn cmdClientList(
         }
     }
 
-    const list_output = try registry.formatClientList(allocator, filter_type);
+    const list_output = if (id_filter.items.len > 0)
+        try registry.formatClientListByIds(allocator, id_filter.items)
+    else
+        try registry.formatClientList(allocator, filter_type);
     defer allocator.free(list_output);
 
     var w = Writer.init(allocator);
@@ -1252,12 +1354,19 @@ fn cmdClientInfo(
     const age_sec = @divFloor(now - info.connected_at, 1000);
     const idle_sec = @divFloor(now - info.last_cmd_at, 1000);
     const name_str = info.name orelse "";
+    const lib_name_str = info.lib_name orelse "";
+    const lib_ver_str = info.lib_ver orelse "";
+    const user_str = if (info.authenticated_user) |u| u else "default";
+    const redir: i64 = if (info.tracking_enabled and info.tracking_redirect > 0)
+        info.tracking_redirect
+    else
+        -1;
 
     var buf = std.ArrayList(u8){};
     defer buf.deinit(allocator);
 
-    // Format: id=<id> addr=<addr> fd=<fd> name=<name> age=<age> idle=<idle> flags=<flags> db=0 sub=0 psub=0 cmd=<cmd>
-    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db=0 sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=0 rbp=0 obl=0 oll=0 omem=0 tot-mem=0 events= cmd={s} user=default redir=-1 resp={d}", .{
+    // Redis 7.x full CLIENT INFO format (same as CLIENT LIST line for this client)
+    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d}", .{
         info.id,
         info.addr,
         info.fd,
@@ -1265,7 +1374,12 @@ fn cmdClientInfo(
         age_sec,
         idle_sec,
         info.flags,
+        info.selected_db,
         info.last_cmd,
+        user_str,
+        lib_name_str,
+        lib_ver_str,
+        redir,
         @intFromEnum(info.protocol),
     });
 
@@ -4508,4 +4622,147 @@ test "ClientRegistry - multiple pending invalidations drained in order" {
         try std.testing.expectEqualStrings("msg1", msgs[0]);
         try std.testing.expectEqualStrings("msg2", msgs[1]);
     }
+}
+
+test "CLIENT LIST - includes resp field" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    registry.setProtocol(client_id, .RESP3);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
+    const args_slice = try args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "resp=3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "ssub=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "multi=-1") != null);
+}
+
+test "CLIENT LIST - includes user and library fields" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    try registry.setLibName(client_id, "redis-py");
+    try registry.setLibVer(client_id, "4.5.1");
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
+    const args_slice = try args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "library-name=redis-py") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "library-ver=4.5.1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "user=default") != null);
+}
+
+test "CLIENT INFO - includes library fields after SETINFO" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // Set lib-name
+    var set_args = std.ArrayList(RespValue){};
+    try set_args.append(arena.allocator(), RespValue{ .bulk_string = "SETINFO" });
+    try set_args.append(arena.allocator(), RespValue{ .bulk_string = "LIB-NAME" });
+    try set_args.append(arena.allocator(), RespValue{ .bulk_string = "ioredis" });
+    const set_slice = try set_args.toOwnedSlice(arena.allocator());
+    const set_resp = try cmdClient(allocator, &registry, client_id, set_slice, &blocking_queue);
+    defer allocator.free(set_resp);
+
+    // Get CLIENT INFO
+    var info_args = std.ArrayList(RespValue){};
+    try info_args.append(arena.allocator(), RespValue{ .bulk_string = "INFO" });
+    const info_slice = try info_args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client_id, info_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "library-name=ioredis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "library-ver=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "resp=2") != null);
+}
+
+test "CLIENT LIST - redir=-1 when tracking disabled" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
+    const args_slice = try args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "redir=-1") != null);
+}
+
+test "CLIENT LIST ID filter - returns only specified clients" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client1 = try registry.registerClient("127.0.0.1:11111", 41);
+    const client2 = try registry.registerClient("127.0.0.1:22222", 42);
+    const client3 = try registry.registerClient("127.0.0.1:33333", 43);
+    _ = client3;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var id1_buf: [20]u8 = undefined;
+    var id2_buf: [20]u8 = undefined;
+    const id1_str = std.fmt.bufPrint(&id1_buf, "{d}", .{client1}) catch unreachable;
+    const id2_str = std.fmt.bufPrint(&id2_buf, "{d}", .{client2}) catch unreachable;
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "ID" });
+    try args.append(arena.allocator(), RespValue{ .bulk_string = id1_str });
+    try args.append(arena.allocator(), RespValue{ .bulk_string = id2_str });
+    const args_slice = try args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    // Should include client1 and client2 but NOT client3
+    try std.testing.expect(std.mem.indexOf(u8, response, "127.0.0.1:11111") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "127.0.0.1:22222") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "127.0.0.1:33333") == null);
 }
