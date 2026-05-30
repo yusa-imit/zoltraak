@@ -51,6 +51,8 @@ pub const LazyFreeTask = struct {
     allocator: std.mem.Allocator,
     /// Condition variable for signaling work
     cond: std.Thread.Condition,
+    /// Total objects freed by background lazy freeing (for INFO lazyfreed_objects)
+    freed_objects: std.atomic.Value(u64),
 
     /// Initialize lazy free task
     pub fn init(allocator: std.mem.Allocator) !LazyFreeTask {
@@ -64,6 +66,7 @@ pub const LazyFreeTask = struct {
             .running = std.atomic.Value(bool).init(false),
             .allocator = allocator,
             .cond = std.Thread.Condition{},
+            .freed_objects = std.atomic.Value(u64).init(0),
         };
     }
 
@@ -145,8 +148,6 @@ pub const LazyFreeTask = struct {
 
     /// Process a single work item
     fn processWork(self: *LazyFreeTask, work: *LazyFreeWork) void {
-        _ = self;
-
         switch (work.work_type) {
             .free_key => {
                 // Free the value
@@ -158,6 +159,7 @@ pub const LazyFreeTask = struct {
                     work.allocator.destroy(value);
                     // Set to null to prevent double-free in deinit()
                     work.value_ptr = null;
+                    _ = self.freed_objects.fetchAdd(1, .monotonic);
                 }
             },
             .flush_db, .flush_all => {
@@ -173,6 +175,12 @@ pub const LazyFreeTask = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.queue.items.len;
+    }
+
+    /// Get total number of objects freed by the background task
+    /// Used for INFO lazyfreed_objects
+    pub fn getFreedCount(self: *LazyFreeTask) u64 {
+        return self.freed_objects.load(.monotonic);
     }
 };
 

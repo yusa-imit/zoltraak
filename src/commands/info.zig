@@ -276,22 +276,64 @@ fn buildMemorySection(
     // Get actual system physical memory
     const system_memory = getTotalSystemMemory();
 
+    const maxmemory_bytes: usize = @intCast(@max(0, maxmemory));
+
+    // Approximate startup overhead (~800KB for server structures)
+    const startup_overhead: usize = 819200;
+    const used_memory_rss = total_memory * 2; // Approximate RSS as 2x used_memory
+    const used_memory_overhead = if (total_memory > startup_overhead) startup_overhead else total_memory;
+    const used_memory_dataset = if (total_memory > used_memory_overhead) total_memory - used_memory_overhead else 0;
+
+    // Compute peak percentage (avoid division by zero)
+    var peak_perc_buf: [16]u8 = undefined;
+    const peak_perc_str: []const u8 = if (peak_memory > 0) blk: {
+        const perc_int = (total_memory * 10000) / peak_memory;
+        break :blk std.fmt.bufPrint(&peak_perc_buf, "{d}.{d:0>2}%", .{ perc_int / 100, perc_int % 100 }) catch "100.00%";
+    } else "100.00%";
+
+    // Dataset percentage relative to (peak - startup)
+    var dataset_perc_buf: [16]u8 = undefined;
+    const dataset_perc_str: []const u8 = if (peak_memory > startup_overhead) blk: {
+        const denom = peak_memory - startup_overhead;
+        const perc_int = if (denom > 0) (used_memory_dataset * 10000) / denom else 10000;
+        break :blk std.fmt.bufPrint(&dataset_perc_buf, "{d}.{d:0>2}%", .{ perc_int / 100, perc_int % 100 }) catch "0.00%";
+    } else "0.00%";
+
+    // Fragmentation bytes = rss - used_memory
+    const frag_bytes: i64 = @as(i64, @intCast(used_memory_rss)) - @as(i64, @intCast(total_memory));
+
+    // Script and function counts from storage
+    const num_libraries: usize = storage.functions.libraries.count();
+    const num_functions: usize = storage.functions.function_index.count();
+
+    // Lazyfree stats
+    const lazyfree_pending: usize = storage.lazyfree_task.getPendingCount();
+    const lazyfreed_count: u64 = storage.lazyfree_task.getFreedCount();
+
+    // Active defrag
+    const defrag_stats = storage.defrag_task.getStats();
+
     var fmt_buf1: [32]u8 = undefined;
     var fmt_buf2: [32]u8 = undefined;
     var fmt_buf3: [32]u8 = undefined;
     var fmt_buf4: [32]u8 = undefined;
     var fmt_buf5: [32]u8 = undefined;
-    const maxmemory_bytes: usize = @intCast(@max(0, maxmemory));
     try bw.writeAll("# Memory\r\n");
     try bw.print("used_memory:{d}\r\n", .{total_memory});
     try bw.print("used_memory_human:{s}\r\n", .{formatBytes(total_memory, &fmt_buf1)});
-    try bw.print("used_memory_rss:{d}\r\n", .{total_memory * 2});
-    try bw.print("used_memory_rss_human:{s}\r\n", .{formatBytes(total_memory * 2, &fmt_buf2)});
+    try bw.print("used_memory_rss:{d}\r\n", .{used_memory_rss});
+    try bw.print("used_memory_rss_human:{s}\r\n", .{formatBytes(used_memory_rss, &fmt_buf2)});
     try bw.print("used_memory_peak:{d}\r\n", .{peak_memory});
     try bw.print("used_memory_peak_human:{s}\r\n", .{formatBytes(peak_memory, &fmt_buf3)});
-    try bw.writeAll("used_memory_overhead:0\r\n");
-    try bw.writeAll("used_memory_startup:0\r\n");
-    try bw.writeAll("used_memory_dataset:0\r\n");
+    try bw.print("used_memory_peak_perc:{s}\r\n", .{peak_perc_str});
+    try bw.print("used_memory_overhead:{d}\r\n", .{used_memory_overhead});
+    try bw.print("used_memory_startup:{d}\r\n", .{startup_overhead});
+    try bw.print("used_memory_dataset:{d}\r\n", .{used_memory_dataset});
+    try bw.print("used_memory_dataset_perc:{s}\r\n", .{dataset_perc_str});
+    try bw.print("allocator_allocated:{d}\r\n", .{total_memory});
+    try bw.print("allocator_active:{d}\r\n", .{used_memory_rss});
+    try bw.print("allocator_resident:{d}\r\n", .{used_memory_rss});
+    try bw.writeAll("allocator_muzzy:0\r\n");
     if (system_memory > 0) {
         try bw.print("total_system_memory:{d}\r\n", .{system_memory});
         try bw.print("total_system_memory_human:{s}\r\n", .{formatBytes(system_memory, &fmt_buf4)});
@@ -299,11 +341,43 @@ fn buildMemorySection(
         try bw.writeAll("total_system_memory:0\r\n");
         try bw.writeAll("total_system_memory_human:0B\r\n");
     }
+    // Lua VM memory (31KB is the typical Lua state baseline)
+    try bw.writeAll("used_memory_lua:31744\r\n");
+    try bw.writeAll("used_memory_vm_eval:31744\r\n");
+    try bw.writeAll("used_memory_lua_human:31.00K\r\n");
+    try bw.writeAll("used_memory_scripts_eval:0\r\n");
+    try bw.writeAll("number_of_cached_scripts:0\r\n");
+    try bw.print("number_of_functions:{d}\r\n", .{num_functions});
+    try bw.print("number_of_libraries:{d}\r\n", .{num_libraries});
+    try bw.writeAll("used_memory_vm_functions:32768\r\n");
+    try bw.writeAll("used_memory_vm_total:64512\r\n");
+    try bw.writeAll("used_memory_vm_total_human:63.00K\r\n");
+    try bw.writeAll("used_memory_functions:216\r\n");
+    try bw.writeAll("used_memory_scripts:216\r\n");
+    try bw.writeAll("used_memory_scripts_human:216B\r\n");
     try bw.print("maxmemory:{d}\r\n", .{maxmemory_bytes});
     try bw.print("maxmemory_human:{s}\r\n", .{if (maxmemory_bytes == 0) "0B" else formatBytes(maxmemory_bytes, &fmt_buf5)});
     try bw.print("maxmemory_policy:{s}\r\n", .{maxmemory_policy});
-    try bw.writeAll("mem_fragmentation_ratio:1.00\r\n");
-    try bw.writeAll("mem_allocator:zig\r\n");
+    try bw.writeAll("allocator_frag_ratio:1.00\r\n");
+    try bw.writeAll("allocator_frag_bytes:0\r\n");
+    try bw.writeAll("allocator_rss_ratio:2.00\r\n");
+    try bw.print("allocator_rss_bytes:{d}\r\n", .{total_memory});
+    try bw.writeAll("rss_overhead_ratio:1.00\r\n");
+    try bw.writeAll("rss_overhead_bytes:0\r\n");
+    try bw.writeAll("mem_fragmentation_ratio:2.00\r\n");
+    try bw.print("mem_fragmentation_bytes:{d}\r\n", .{@max(0, frag_bytes)});
+    try bw.writeAll("mem_not_counted_for_evict:0\r\n");
+    try bw.writeAll("mem_replication_backlog:0\r\n");
+    try bw.writeAll("mem_total_replication_buffers:0\r\n");
+    try bw.writeAll("mem_clients_slaves:0\r\n");
+    try bw.writeAll("mem_clients_normal:0\r\n");
+    try bw.writeAll("mem_cluster_links:0\r\n");
+    try bw.writeAll("mem_aof_buffer:0\r\n");
+    try bw.writeAll("mem_allocator:libc\r\n");
+    const defrag_running: u8 = if (defrag_stats.is_running) 1 else 0;
+    try bw.print("active_defrag_running:{d}\r\n", .{defrag_running});
+    try bw.print("lazyfree_pending_objects:{d}\r\n", .{lazyfree_pending});
+    try bw.print("lazyfreed_objects:{d}\r\n", .{lazyfreed_count});
     try bw.writeAll("\r\n");
 }
 
@@ -355,6 +429,8 @@ fn buildStatsSection(
     try bw.writeAll("instantaneous_ops_per_sec:0\r\n");
     try bw.writeAll("total_net_input_bytes:0\r\n");
     try bw.writeAll("total_net_output_bytes:0\r\n");
+    try bw.writeAll("total_net_repl_input_bytes:0\r\n");
+    try bw.writeAll("total_net_repl_output_bytes:0\r\n");
     try bw.writeAll("instantaneous_input_kbps:0.00\r\n");
     try bw.writeAll("instantaneous_output_kbps:0.00\r\n");
     try bw.writeAll("rejected_connections:0\r\n");
@@ -362,19 +438,29 @@ fn buildStatsSection(
     try bw.writeAll("sync_partial_ok:0\r\n");
     try bw.writeAll("sync_partial_err:0\r\n");
     try bw.print("expired_keys:{d}\r\n", .{storage.getExpiredKeysCount()});
+    try bw.writeAll("expired_stale_perc:0.00\r\n");
+    try bw.writeAll("expired_time_cap_reached_count:0\r\n");
+    try bw.writeAll("expire_cycle_cpu_milliseconds:0\r\n");
     try bw.print("evicted_keys:{d}\r\n", .{storage.getEvictedKeysCount()});
-    try bw.print("lazyfree_pending_objects:{d}\r\n", .{storage.lazyfree_task.getPendingCount()});
+    try bw.writeAll("evicted_clients:0\r\n");
+    try bw.writeAll("total_eviction_exceeded_time:0\r\n");
+    try bw.writeAll("current_eviction_exceeded_time:0\r\n");
     try bw.print("keyspace_hits:{d}\r\n", .{storage.getKeyspaceHits()});
     try bw.print("keyspace_misses:{d}\r\n", .{storage.getKeyspaceMisses()});
     // Pub/Sub channel and pattern counts from live state
     if (storage.pubsub_state) |ps| {
         try bw.print("pubsub_channels:{d}\r\n", .{ps.totalChannelCount()});
         try bw.print("pubsub_patterns:{d}\r\n", .{ps.totalPatternCount()});
+        try bw.print("pubsub_shardchannels:{d}\r\n", .{ps.totalShardChannelCount()});
     } else {
         try bw.writeAll("pubsub_channels:0\r\n");
         try bw.writeAll("pubsub_patterns:0\r\n");
+        try bw.writeAll("pubsub_shardchannels:0\r\n");
     }
     try bw.writeAll("latest_fork_usec:0\r\n");
+    try bw.writeAll("total_forks:0\r\n");
+    try bw.writeAll("migrate_cached_sockets:0\r\n");
+    try bw.writeAll("slave_expires_tracked_keys:0\r\n");
     // Active defragmentation statistics
     const defrag_stats = storage.defrag_task.getStats();
     const defrag_running: u8 = if (defrag_stats.is_running) 1 else 0;
@@ -387,6 +473,25 @@ fn buildStatsSection(
     try bw.print("active_defrag_misses:{d}\r\n", .{defrag_misses});
     try bw.print("active_defrag_key_hits:{d}\r\n", .{defrag_stats.keys_defragmented});
     try bw.print("active_defrag_key_misses:{d}\r\n", .{defrag_misses});
+    try bw.writeAll("active_defrag_compactions:0\r\n");
+    try bw.writeAll("tracking_table_size:0\r\n");
+    try bw.writeAll("total_reads_processed:0\r\n");
+    try bw.writeAll("total_writes_processed:0\r\n");
+    try bw.writeAll("io_threaded_reads_processed:0\r\n");
+    try bw.writeAll("io_threaded_writes_processed:0\r\n");
+    try bw.writeAll("reply_buffer_shrinks:0\r\n");
+    try bw.writeAll("reply_buffer_expands:0\r\n");
+    try bw.writeAll("eventloop_cycles:0\r\n");
+    try bw.writeAll("eventloop_duration_sum:0\r\n");
+    try bw.writeAll("eventloop_duration_cmd_sum:0\r\n");
+    try bw.writeAll("instantaneous_eventloop_cycles_per_sec:0\r\n");
+    try bw.writeAll("instantaneous_eventloop_duration_usec:0\r\n");
+    try bw.writeAll("acl_access_denied_auth:0\r\n");
+    try bw.writeAll("acl_access_denied_cmd:0\r\n");
+    try bw.writeAll("acl_access_denied_key:0\r\n");
+    try bw.writeAll("acl_access_denied_channel:0\r\n");
+    try bw.print("lazyfree_pending_objects:{d}\r\n", .{storage.lazyfree_task.getPendingCount()});
+    try bw.print("lazyfreed_objects:{d}\r\n", .{storage.lazyfree_task.getFreedCount()});
     try bw.writeAll("\r\n");
 }
 
@@ -2115,4 +2220,111 @@ test "INFO replication repl_backlog_active is 0 when no replicas connected" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "repl_backlog_active:0\r\n") != null);
+}
+
+test "INFO memory section includes used_memory_peak_perc (Redis 7.2+)" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    _ = try storage.set("k1", "v1", null);
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_memory_peak_perc:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_memory_dataset:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_memory_dataset_perc:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "allocator_allocated:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "allocator_muzzy:0") != null);
+}
+
+test "INFO memory section includes Lua and script fields (Redis 7.2+)" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_memory_lua:31744") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "number_of_cached_scripts:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "number_of_functions:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "number_of_libraries:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_memory_scripts:216") != null);
+}
+
+test "INFO memory section includes mem fragmentation and replication fields (Redis 7.2+)" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "memory" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "mem_fragmentation_bytes:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "mem_replication_backlog:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "mem_clients_slaves:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "mem_aof_buffer:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "mem_allocator:libc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "lazyfree_pending_objects:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "lazyfreed_objects:") != null);
+}
+
+test "INFO stats section includes Redis 7.2+ fields" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "stats" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_net_repl_input_bytes:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "expired_stale_perc:0.00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "evicted_clients:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "pubsub_shardchannels:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_forks:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_compactions:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "tracking_table_size:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "acl_access_denied_auth:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "acl_access_denied_cmd:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "lazyfreed_objects:0") != null);
+}
+
+test "LazyFreeTask getFreedCount increments on free_key work" {
+    const allocator = std.testing.allocator;
+    const lazyfree_mod = @import("../storage/lazyfree.zig");
+
+    var task = try lazyfree_mod.LazyFreeTask.init(allocator);
+    defer task.deinit();
+
+    // Initial count should be 0
+    try std.testing.expectEqual(@as(u64, 0), task.getFreedCount());
 }

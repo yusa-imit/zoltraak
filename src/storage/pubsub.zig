@@ -441,6 +441,11 @@ pub const PubSub = struct {
         return self.patterns.count();
     }
 
+    /// Return the total number of active shard channel subscriptions (Redis 7.0+ SSUBSCRIBE).
+    pub fn totalShardChannelCount(self: *PubSub) usize {
+        return self.sharded_channels.count();
+    }
+
     /// Return an allocated slice of all active channel names (channels with
     /// at least one subscriber). Caller owns the returned slice but NOT the
     /// individual strings within it — those point into internal storage.
