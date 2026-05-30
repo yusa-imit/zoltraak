@@ -80,7 +80,7 @@ pub fn cmdInfo(
         try buildStatsSection(&buf, allocator, stats.total_commands_processed, stats.total_connections_received, storage);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "REPLICATION")) {
-        try buildReplicationSection(&buf, allocator, repl);
+        try buildReplicationSection(&buf, allocator, repl, storage);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "CPU")) {
         try buildCpuSection(&buf, allocator);
@@ -173,7 +173,9 @@ fn buildServerSection(
     try bw.writeAll("\r\n");
     try bw.writeAll("arch_bits:");
     try bw.print("{d}\r\n", .{@bitSizeOf(usize)});
+    try bw.writeAll("monotonic_clock:POSIX clock_gettime\r\n");
     try bw.print("multiplexing_api:{s}\r\n", .{multiplexing_api});
+    try bw.writeAll("atomicvar_api:atomic-builtin\r\n");
     try bw.writeAll("gcc_version:0.0.0\r\n");
     try bw.writeAll("process_id:");
     if (comptime @import("builtin").os.tag == .linux) {
@@ -183,6 +185,8 @@ fn buildServerSection(
     }
     try bw.print("run_id:{s}\r\n", .{&storage.run_id});
     try bw.print("tcp_port:{d}\r\n", .{config.port});
+    // server_time_usec: current Unix time in microseconds (Redis 7.0+ field)
+    try bw.print("server_time_usec:{d}\r\n", .{std.time.microTimestamp()});
     try bw.print("uptime_in_seconds:{d}\r\n", .{std.time.timestamp() - start_time_seconds});
     try bw.print("uptime_in_days:{d}\r\n", .{@divTrunc(std.time.timestamp() - start_time_seconds, 86400)});
     try bw.print("hz:{d}\r\n", .{hz});
@@ -390,8 +394,16 @@ fn buildReplicationSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     repl: *ReplicationState,
+    storage: *Storage,
 ) !void {
     const bw = buf.writer(allocator);
+
+    // Read repl_backlog_size from config (default 1MB)
+    const backlog_size: i64 = blk: {
+        var cv = storage.config.get("repl-backlog-size") catch break :blk 1048576;
+        defer cv.deinit(allocator);
+        break :blk switch (cv) { .int => |i| i, else => 1048576 };
+    };
 
     try bw.writeAll("# Replication\r\n");
 
@@ -400,10 +412,9 @@ fn buildReplicationSection(
         .replica => "slave",
     };
     try bw.print("role:{s}\r\n", .{role_str});
-    try bw.print("master_replid:{s}\r\n", .{repl.replid});
-    try bw.print("master_repl_offset:{d}\r\n", .{repl.repl_offset});
 
     if (repl.role == .primary) {
+        // Master-specific fields: connected_slaves, per-slave info, failover state
         try bw.print("connected_slaves:{d}\r\n", .{repl.replicas.items.len});
         for (repl.replicas.items, 0..) |r, i| {
             const state_str: []const u8 = switch (r.state) {
@@ -413,12 +424,15 @@ fn buildReplicationSection(
             };
             try bw.print("slave{d}:ip=127.0.0.1,port={d},state={s},offset={d},lag=0\r\n", .{
                 i,
-                6379 + i + 1, // Placeholder port
+                6379 + i + 1,
                 state_str,
                 r.repl_offset,
             });
         }
+        // master_failover_state: Redis 7.x field (no-failover for standalone/no active failover)
+        try bw.print("master_failover_state:{s}\r\n", .{repl.failover_state.toString()});
     } else {
+        // Replica-specific fields
         const link_status = if (repl.primary_link_up) "up" else "down";
         try bw.print("master_host:{s}\r\n", .{repl.primary_host orelse "unknown"});
         try bw.print("master_port:{d}\r\n", .{repl.primary_port});
@@ -427,9 +441,16 @@ fn buildReplicationSection(
         try bw.writeAll("master_sync_in_progress:0\r\n");
     }
 
+    // Common fields (both master and replica)
+    try bw.print("master_replid:{s}\r\n", .{repl.replid});
+    // master_replid2: secondary replication ID (all zeros when not set, Redis 7.x field)
+    try bw.writeAll("master_replid2:0000000000000000000000000000000000000000\r\n");
+    try bw.print("master_repl_offset:{d}\r\n", .{repl.repl_offset});
     try bw.writeAll("second_repl_offset:-1\r\n");
-    try bw.writeAll("repl_backlog_active:0\r\n");
-    try bw.writeAll("repl_backlog_size:1048576\r\n");
+    // repl_backlog_active: 1 when at least one replica is connected, 0 otherwise
+    const backlog_active: u8 = if (repl.role == .primary and repl.replicas.items.len > 0) 1 else 0;
+    try bw.print("repl_backlog_active:{d}\r\n", .{backlog_active});
+    try bw.print("repl_backlog_size:{d}\r\n", .{backlog_size});
     try bw.writeAll("repl_backlog_first_byte_offset:0\r\n");
     try bw.writeAll("repl_backlog_histlen:0\r\n");
     try bw.writeAll("\r\n");
@@ -2019,4 +2040,79 @@ test "INFO clients section maxclients defaults to 10000 when not configured" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "maxclients:10000\r\n") != null);
+}
+
+test "INFO replication includes master_failover_state (Redis 7.x)" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "replication" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "master_failover_state:no-failover\r\n") != null);
+}
+
+test "INFO replication includes master_replid2 (Redis 7.x)" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "replication" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "master_replid2:0000000000000000000000000000000000000000\r\n") != null);
+}
+
+test "INFO replication repl_backlog_size reads from config" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set a custom repl-backlog-size (2MB)
+    try storage.config.set("repl-backlog-size", "2097152");
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "replication" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "repl_backlog_size:2097152\r\n") != null);
+}
+
+test "INFO replication repl_backlog_active is 0 when no replicas connected" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "replication" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "repl_backlog_active:0\r\n") != null);
 }
