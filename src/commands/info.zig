@@ -68,7 +68,7 @@ pub fn cmdInfo(
         try buildServerSection(&buf, allocator, config, storage, stats.start_time_seconds, num_databases);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "CLIENTS")) {
-        try buildClientsSection(&buf, allocator, stats.client_count, stats.tracking_clients);
+        try buildClientsSection(&buf, allocator, stats.client_count, stats.tracking_clients, storage);
     }
     if (show_all or show_default or std.mem.eql(u8, section, "MEMORY")) {
         try buildMemorySection(&buf, allocator, storage);
@@ -201,16 +201,29 @@ fn buildClientsSection(
     allocator: std.mem.Allocator,
     client_count: usize,
     tracking_clients: usize,
+    storage: *Storage,
 ) !void {
     const bw = buf.writer(allocator);
 
+    // Read maxclients from config (default 10000)
+    const maxclients: i64 = blk: {
+        var cv = storage.config.get("maxclients") catch break :blk 10000;
+        defer cv.deinit(allocator);
+        break :blk switch (cv) { .int => |i| i, else => 10000 };
+    };
+
     try bw.writeAll("# Clients\r\n");
     try bw.print("connected_clients:{d}\r\n", .{client_count});
+    try bw.writeAll("cluster_connections:0\r\n");
+    try bw.print("maxclients:{d}\r\n", .{maxclients});
     try bw.writeAll("client_recent_max_input_buffer:0\r\n");
     try bw.writeAll("client_recent_max_output_buffer:0\r\n");
+    try bw.writeAll("total_blocking_keys:0\r\n");
+    try bw.writeAll("total_blocking_keys_on_nokey:0\r\n");
     try bw.writeAll("blocked_clients:0\r\n");
     try bw.print("tracking_clients:{d}\r\n", .{tracking_clients});
     try bw.writeAll("clients_in_timeout_table:0\r\n");
+    try bw.writeAll("total_watched_keys:0\r\n");
     try bw.writeAll("\r\n");
 }
 
@@ -358,6 +371,18 @@ fn buildStatsSection(
         try bw.writeAll("pubsub_patterns:0\r\n");
     }
     try bw.writeAll("latest_fork_usec:0\r\n");
+    // Active defragmentation statistics
+    const defrag_stats = storage.defrag_task.getStats();
+    const defrag_running: u8 = if (defrag_stats.is_running) 1 else 0;
+    const defrag_misses = if (defrag_stats.keys_scanned > defrag_stats.keys_defragmented)
+        defrag_stats.keys_scanned - defrag_stats.keys_defragmented
+    else
+        0;
+    try bw.print("active_defrag_running:{d}\r\n", .{defrag_running});
+    try bw.print("active_defrag_hits:{d}\r\n", .{defrag_stats.keys_defragmented});
+    try bw.print("active_defrag_misses:{d}\r\n", .{defrag_misses});
+    try bw.print("active_defrag_key_hits:{d}\r\n", .{defrag_stats.keys_defragmented});
+    try bw.print("active_defrag_key_misses:{d}\r\n", .{defrag_misses});
     try bw.writeAll("\r\n");
 }
 
@@ -1908,4 +1933,90 @@ test "Storage updatePeakMemory tracks maximum" {
     // Larger value updates peak
     storage.updatePeakMemory(2000);
     try std.testing.expectEqual(@as(usize, 2000), storage.getPeakMemory());
+}
+
+test "INFO clients section includes cluster_connections and maxclients" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    // Set maxclients to 500 via config
+    try storage.config.set("maxclients", "500");
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 3, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "clients" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_connections:0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxclients:500\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "connected_clients:3\r\n") != null);
+}
+
+test "INFO clients section includes blocking and watched key fields" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "clients" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_blocking_keys:0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_blocking_keys_on_nokey:0\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "total_watched_keys:0\r\n") != null);
+}
+
+test "INFO stats section includes active defrag fields" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "stats" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    // All 5 active_defrag fields must be present
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_running:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_hits:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_misses:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_key_hits:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_key_misses:") != null);
+    // Initially defrag is not running
+    try std.testing.expect(std.mem.indexOf(u8, result, "active_defrag_running:0\r\n") != null);
+}
+
+test "INFO clients section maxclients defaults to 10000 when not configured" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    // Do NOT set maxclients — should default to 10000
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const config = ServerConfig{ .port = 6379, .bind = "127.0.0.1", .maxmemory = 0, .maxmemory_policy = "noeviction", .timeout = 0, .tcp_keepalive = 300, .save = "", .appendonly = false, .appendfsync = "everysec", .databases = 1 };
+    const stats = ServerStats{ .client_count = 0, .tracking_clients = 0, .total_commands_processed = 0, .total_connections_received = 0, .start_time_seconds = std.time.timestamp() };
+
+    const args = [_][]const u8{ "INFO", "clients" };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &args, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "maxclients:10000\r\n") != null);
 }
