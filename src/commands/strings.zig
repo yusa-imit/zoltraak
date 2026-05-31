@@ -1440,6 +1440,10 @@ pub fn executeCommand(
                     const cmd_args = try extractBulkStrings(allocator, array[2..]);
                     defer allocator.free(cmd_args);
                     break :blk try command_cmds.cmdCommandGetKeys(allocator, cmd_args);
+                } else if (std.mem.eql(u8, subcmd_upper, "GETKEYSANDFLAGS")) {
+                    const cmd_args = try extractBulkStrings(allocator, array[2..]);
+                    defer allocator.free(cmd_args);
+                    break :blk try command_cmds.cmdCommandGetKeysAndFlags(allocator, cmd_args);
                 } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
                     var filter_by: ?[]const u8 = null;
                     if (array.len > 2) {

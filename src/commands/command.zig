@@ -17,7 +17,24 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "ping", .arity = -1, .flags = &.{ "fast", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
     .{ .name = "set", .arity = -3, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "get", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "mget", .arity = -2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = -1, .step = 1 },
+    .{ .name = "mset", .arity = -3, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = -1, .step = 2 },
+    .{ .name = "msetnx", .arity = -3, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = -1, .step = 2 },
+    .{ .name = "append", .arity = 3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "incr", .arity = 2, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "decr", .arity = 2, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "incrby", .arity = 3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "decrby", .arity = 3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "incrbyfloat", .arity = 3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "setnx", .arity = 3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "setex", .arity = 4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "psetex", .arity = 4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "getset", .arity = 3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "getdel", .arity = 2, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "getex", .arity = -2, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "strlen", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "del", .arity = -2, .flags = &.{"write"}, .first_key = 1, .last_key = -1, .step = 1 },
+    .{ .name = "unlink", .arity = -2, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = -1, .step = 1 },
     .{ .name = "exists", .arity = -2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = -1, .step = 1 },
     .{ .name = "getrange", .arity = 4, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "setrange", .arity = 4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
@@ -638,6 +655,97 @@ fn writeDocEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), doc: Com
     try buf.appendSlice(allocator, "*0\r\n");
 }
 
+/// COMMAND GETKEYSANDFLAGS command [arg [arg ...]] — Extract keys and per-key flags (Redis 7.0+)
+/// Returns an array where each element is [key, [flags...]] for each key in the command.
+/// Key flags: "read", "write", "delete", "not_key", "incomplete", "channel".
+pub fn cmdCommandGetKeysAndFlags(allocator: std.mem.Allocator, args: []const []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    if (args.len == 0) {
+        try buf.appendSlice(allocator, "-ERR wrong number of arguments for 'command|getkeysandflags' command\r\n");
+        return buf.toOwnedSlice(allocator);
+    }
+
+    const cmd_name = args[0];
+    for (ALL_COMMANDS) |cmd| {
+        if (std.ascii.eqlIgnoreCase(cmd.name, cmd_name)) {
+            if (cmd.first_key == 0) {
+                try buf.appendSlice(allocator, "*0\r\n");
+                return buf.toOwnedSlice(allocator);
+            }
+
+            // Derive key-level flags from command-level flags
+            var is_read = false;
+            var is_write = false;
+            var is_delete = false;
+            for (cmd.flags) |flag| {
+                if (std.mem.eql(u8, flag, "readonly")) is_read = true;
+                if (std.mem.eql(u8, flag, "write")) is_write = true;
+                if (std.mem.eql(u8, flag, "write") and
+                    (std.ascii.eqlIgnoreCase(cmd.name, "del") or
+                    std.ascii.eqlIgnoreCase(cmd.name, "unlink") or
+                    std.ascii.eqlIgnoreCase(cmd.name, "getdel"))) is_delete = true;
+            }
+
+            // Build key-level flags array
+            var key_flags = std.ArrayList([]const u8){};
+            defer key_flags.deinit(allocator);
+            if (is_read) try key_flags.append(allocator, "read");
+            if (is_write and !is_delete) try key_flags.append(allocator, "write");
+            if (is_delete) {
+                try key_flags.append(allocator, "write");
+                try key_flags.append(allocator, "delete");
+            }
+            if (!is_read and !is_write) {
+                try key_flags.append(allocator, "read");
+                try key_flags.append(allocator, "write");
+            }
+
+            // Count keys
+            var key_count: usize = 0;
+            var i: i32 = cmd.first_key;
+            while (i <= cmd.last_key or cmd.last_key == -1) : (i += cmd.step) {
+                const idx: usize = @intCast(i);
+                if (idx >= args.len) break;
+                key_count += 1;
+                if (cmd.last_key != -1 and i >= cmd.last_key) break;
+            }
+
+            // Outer array: N keys
+            try buf.append(allocator, '*');
+            try std.fmt.format(buf.writer(allocator), "{d}", .{key_count});
+            try buf.appendSlice(allocator, "\r\n");
+
+            // Each key: [key, [flags...]]
+            i = cmd.first_key;
+            while (i <= cmd.last_key or cmd.last_key == -1) : (i += cmd.step) {
+                const idx: usize = @intCast(i);
+                if (idx >= args.len) break;
+
+                // Two-element array: [key, flags]
+                try buf.appendSlice(allocator, "*2\r\n");
+                try writeBulkString(allocator, &buf, args[idx]);
+
+                // Flags array
+                try buf.append(allocator, '*');
+                try std.fmt.format(buf.writer(allocator), "{d}", .{key_flags.items.len});
+                try buf.appendSlice(allocator, "\r\n");
+                for (key_flags.items) |flag| {
+                    try writeBulkString(allocator, &buf, flag);
+                }
+
+                if (cmd.last_key != -1 and i >= cmd.last_key) break;
+            }
+
+            return buf.toOwnedSlice(allocator);
+        }
+    }
+
+    try buf.appendSlice(allocator, "-ERR Invalid command specified\r\n");
+    return buf.toOwnedSlice(allocator);
+}
+
 /// COMMAND HELP - Show help for COMMAND
 pub fn cmdCommandHelp(allocator: std.mem.Allocator) ![]const u8 {
     var buf = std.ArrayList(u8){};
@@ -648,6 +756,7 @@ pub fn cmdCommandHelp(allocator: std.mem.Allocator) ![]const u8 {
         "COMMAND COUNT - Return number of commands",
         "COMMAND INFO <command> [<command> ...] - Return command details",
         "COMMAND GETKEYS <command> [<arg> ...] - Extract keys from command",
+        "COMMAND GETKEYSANDFLAGS <command> [<arg> ...] - Extract keys and access flags (Redis 7.0+)",
         "COMMAND LIST [FILTERBY <filter>] - List command names (Redis 7.0+)",
         "COMMAND DOCS [<command> ...] - Return documentation for commands (Redis 7.0+)",
         "COMMAND HELP - This help message",
@@ -1112,4 +1221,106 @@ test "COMMAND DOCS - multiple commands" {
     try std.testing.expect(std.mem.indexOf(u8, result, "set") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "get") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "hash") != null);
+}
+
+test "COMMAND GETKEYSANDFLAGS - readonly command returns read flag" {
+    const allocator = std.testing.allocator;
+
+    // GET key: readonly → key gets "read" flag
+    const args = [_][]const u8{ "get", "mykey" };
+    const result = try cmdCommandGetKeysAndFlags(allocator, &args);
+    defer allocator.free(result);
+
+    // Outer array has 1 entry
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    // Contains the key name
+    try std.testing.expect(std.mem.indexOf(u8, result, "mykey") != null);
+    // Contains "read" flag
+    try std.testing.expect(std.mem.indexOf(u8, result, "read") != null);
+    // Does NOT contain "write" flag for GET
+    try std.testing.expect(std.mem.indexOf(u8, result, "write") == null);
+}
+
+test "COMMAND GETKEYSANDFLAGS - write command returns write flag" {
+    const allocator = std.testing.allocator;
+
+    // SET key value: write → key gets "write" flag
+    const args = [_][]const u8{ "set", "mykey", "myvalue" };
+    const result = try cmdCommandGetKeysAndFlags(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "mykey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "write") != null);
+    // Should not contain "read" flag for SET
+    try std.testing.expect(std.mem.indexOf(u8, result, "read") == null);
+}
+
+test "COMMAND GETKEYSANDFLAGS - delete command returns write and delete flags" {
+    const allocator = std.testing.allocator;
+
+    // DEL key: write + delete flag
+    const args = [_][]const u8{ "del", "mykey" };
+    const result = try cmdCommandGetKeysAndFlags(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "mykey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "write") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "delete") != null);
+}
+
+test "COMMAND GETKEYSANDFLAGS - multi-key command returns all keys with flags" {
+    const allocator = std.testing.allocator;
+
+    // MGET key1 key2 key3
+    const args = [_][]const u8{ "mget", "k1", "k2", "k3" };
+    const result = try cmdCommandGetKeysAndFlags(allocator, &args);
+    defer allocator.free(result);
+
+    // 3 keys
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "k1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "k2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "k3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "read") != null);
+}
+
+test "COMMAND GETKEYSANDFLAGS - no-key command returns empty array" {
+    const allocator = std.testing.allocator;
+
+    // PING has no keys
+    const args = [_][]const u8{"ping"};
+    const result = try cmdCommandGetKeysAndFlags(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "*0\r\n"));
+}
+
+test "COMMAND GETKEYSANDFLAGS - unknown command returns error" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"nonexistent_cmd_xyz"};
+    const result = try cmdCommandGetKeysAndFlags(allocator, &args);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "COMMAND GETKEYSANDFLAGS - no args returns error" {
+    const allocator = std.testing.allocator;
+
+    const result = try cmdCommandGetKeysAndFlags(allocator, &.{});
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "COMMAND HELP - includes GETKEYSANDFLAGS" {
+    const allocator = std.testing.allocator;
+
+    const result = try cmdCommandHelp(allocator);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "GETKEYSANDFLAGS") != null);
 }
