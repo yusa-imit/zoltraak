@@ -561,20 +561,54 @@ fn buildReplicationSection(
     try bw.writeAll("\r\n");
 }
 
+/// CPU usage from getrusage(2)
+const CpuUsage = struct {
+    user_sec: f64,
+    sys_sec: f64,
+    children_user_sec: f64,
+    children_sys_sec: f64,
+};
+
+/// Returns actual CPU time consumed by this process via getrusage.
+/// Falls back to zeros on platforms without getrusage (e.g. Windows).
+fn getCpuUsage() CpuUsage {
+    if (comptime !@hasDecl(std.c, "getrusage")) {
+        return .{ .user_sec = 0, .sys_sec = 0, .children_user_sec = 0, .children_sys_sec = 0 };
+    }
+
+    var self_ru = std.mem.zeroes(std.c.rusage);
+    _ = std.c.getrusage(std.c.rusage.SELF, &self_ru);
+
+    var ch_ru = std.mem.zeroes(std.c.rusage);
+    _ = std.c.getrusage(std.c.rusage.CHILDREN, &ch_ru);
+
+    return .{
+        .user_sec = @as(f64, @floatFromInt(self_ru.utime.sec)) +
+            @as(f64, @floatFromInt(self_ru.utime.usec)) / 1_000_000.0,
+        .sys_sec = @as(f64, @floatFromInt(self_ru.stime.sec)) +
+            @as(f64, @floatFromInt(self_ru.stime.usec)) / 1_000_000.0,
+        .children_user_sec = @as(f64, @floatFromInt(ch_ru.utime.sec)) +
+            @as(f64, @floatFromInt(ch_ru.utime.usec)) / 1_000_000.0,
+        .children_sys_sec = @as(f64, @floatFromInt(ch_ru.stime.sec)) +
+            @as(f64, @floatFromInt(ch_ru.stime.usec)) / 1_000_000.0,
+    };
+}
+
 fn buildCpuSection(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
 ) !void {
     const bw = buf.writer(allocator);
+    const cpu = getCpuUsage();
 
     try bw.writeAll("# CPU\r\n");
-    try bw.writeAll("used_cpu_sys:0.000000\r\n");
-    try bw.writeAll("used_cpu_user:0.000000\r\n");
-    try bw.writeAll("used_cpu_sys_children:0.000000\r\n");
-    try bw.writeAll("used_cpu_user_children:0.000000\r\n");
-    // Redis 7.0+ per-thread CPU stats
-    try bw.writeAll("used_cpu_sys_main_thread:0.000000\r\n");
-    try bw.writeAll("used_cpu_user_main_thread:0.000000\r\n");
+    try bw.print("used_cpu_sys:{d:.6}\r\n", .{cpu.sys_sec});
+    try bw.print("used_cpu_user:{d:.6}\r\n", .{cpu.user_sec});
+    try bw.print("used_cpu_sys_children:{d:.6}\r\n", .{cpu.children_sys_sec});
+    try bw.print("used_cpu_user_children:{d:.6}\r\n", .{cpu.children_user_sec});
+    // Redis 7.0+ per-thread CPU stats — approximate with process-level values
+    try bw.print("used_cpu_sys_main_thread:{d:.6}\r\n", .{cpu.sys_sec});
+    try bw.print("used_cpu_user_main_thread:{d:.6}\r\n", .{cpu.user_sec});
     try bw.writeAll("\r\n");
 }
 
@@ -2361,9 +2395,9 @@ test "INFO cpu section includes Redis 7.0+ main thread fields" {
     const result = try cmdInfo(allocator, &storage, &repl, config, stats, &[_][]const u8{ "INFO", "cpu" }, null, 1);
     defer allocator.free(result);
 
-    // Redis 7.0+ adds per-thread CPU stats
-    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys_main_thread:0.000000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_main_thread:0.000000") != null);
+    // Redis 7.0+ adds per-thread CPU stats — values are non-negative reals, not hardcoded zeros
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys_main_thread:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_main_thread:") != null);
 }
 
 test "INFO cpu section has all 6 fields" {
@@ -2401,4 +2435,55 @@ test "INFO cpu section has all 6 fields" {
     try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_children:") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys_main_thread:") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_main_thread:") != null);
+}
+
+test "getCpuUsage returns non-negative values" {
+    const cpu = getCpuUsage();
+    try std.testing.expect(cpu.user_sec >= 0.0);
+    try std.testing.expect(cpu.sys_sec >= 0.0);
+    try std.testing.expect(cpu.children_user_sec >= 0.0);
+    try std.testing.expect(cpu.children_sys_sec >= 0.0);
+}
+
+test "getCpuUsage returns non-zero after computation" {
+    // After running tests (which consume CPU), process CPU usage should be > 0
+    const cpu = getCpuUsage();
+    // At least user or sys CPU must be non-zero by this point in the test suite
+    try std.testing.expect(cpu.user_sec + cpu.sys_sec > 0.0);
+}
+
+test "INFO cpu section values are in decimal format with 6 places" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 1,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &[_][]const u8{ "INFO", "cpu" }, null, 1);
+    defer allocator.free(result);
+
+    // Verify the format contains a decimal point (not just integer zeros)
+    const sys_start = std.mem.indexOf(u8, result, "used_cpu_sys:") orelse return error.MissingField;
+    const sys_line_end = std.mem.indexOfScalarPos(u8, result, sys_start, '\r') orelse result.len;
+    const sys_val = result[sys_start + "used_cpu_sys:".len .. sys_line_end];
+    try std.testing.expect(std.mem.indexOfScalar(u8, sys_val, '.') != null);
 }
