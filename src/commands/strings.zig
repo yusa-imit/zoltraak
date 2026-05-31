@@ -1445,30 +1445,47 @@ pub fn executeCommand(
                     defer allocator.free(cmd_args);
                     break :blk try command_cmds.cmdCommandGetKeysAndFlags(allocator, cmd_args);
                 } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
-                    var filter_by: ?[]const u8 = null;
+                    // COMMAND LIST [FILTERBY (ACLCAT cat | PATTERN pat | MODULE mod)]
+                    // array[0]=COMMAND array[1]=LIST array[2]=FILTERBY array[3]=type array[4]=value
+                    var filter_type: ?[]const u8 = null;
+                    var filter_value: ?[]const u8 = null;
                     if (array.len > 2) {
                         const filter_opt = switch (array[2]) {
                             .bulk_string => |s| s,
                             else => {
                                 var w = Writer.init(allocator);
                                 defer w.deinit();
-                                return w.writeError("ERR invalid filter format");
+                                return w.writeError("ERR syntax error");
                             },
                         };
                         const filter_upper = try std.ascii.allocUpperString(allocator, filter_opt);
                         defer allocator.free(filter_upper);
-                        if (std.mem.eql(u8, filter_upper, "FILTERBY") and array.len > 3) {
-                            filter_by = switch (array[3]) {
+                        if (std.mem.eql(u8, filter_upper, "FILTERBY") and array.len > 4) {
+                            filter_type = switch (array[3]) {
                                 .bulk_string => |s| s,
                                 else => {
                                     var w = Writer.init(allocator);
                                     defer w.deinit();
-                                    return w.writeError("ERR invalid filter value");
+                                    return w.writeError("ERR syntax error");
                                 },
+                            };
+                            filter_value = switch (array[4]) {
+                                .bulk_string => |s| s,
+                                else => {
+                                    var w = Writer.init(allocator);
+                                    defer w.deinit();
+                                    return w.writeError("ERR syntax error");
+                                },
+                            };
+                        } else if (std.mem.eql(u8, filter_upper, "FILTERBY") and array.len > 3) {
+                            // FILTERBY present but no value — treat as empty filter
+                            filter_type = switch (array[3]) {
+                                .bulk_string => |s| s,
+                                else => null,
                             };
                         }
                     }
-                    break :blk try command_cmds.cmdCommandList(allocator, filter_by);
+                    break :blk try command_cmds.cmdCommandList(allocator, filter_type, filter_value);
                 } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                     break :blk try command_cmds.cmdCommandHelp(allocator);
                 } else if (std.mem.eql(u8, subcmd_upper, "DOCS")) {

@@ -278,39 +278,99 @@ pub fn cmdCommandGetKeys(allocator: std.mem.Allocator, args: []const []const u8)
     return buf.toOwnedSlice(allocator);
 }
 
-/// COMMAND LIST - List command names (Redis 7.0+)
-pub fn cmdCommandList(allocator: std.mem.Allocator, filter_by: ?[]const u8) ![]const u8 {
+/// Returns true if the given command group matches the requested ACL category.
+/// Handles Redis-canonical ACL category names (with or without leading @).
+fn groupMatchesAclCat(group: []const u8, cat: []const u8) bool {
+    // Strip leading @ from category if present
+    const cat_name = if (cat.len > 0 and cat[0] == '@') cat[1..] else cat;
+
+    // @all matches every command
+    if (std.ascii.eqlIgnoreCase(cat_name, "all")) return true;
+
+    // Direct group → category mapping
+    if (std.ascii.eqlIgnoreCase(cat_name, "string")) return std.mem.eql(u8, group, "string");
+    if (std.ascii.eqlIgnoreCase(cat_name, "list")) return std.mem.eql(u8, group, "list");
+    if (std.ascii.eqlIgnoreCase(cat_name, "set")) return std.mem.eql(u8, group, "set");
+    if (std.ascii.eqlIgnoreCase(cat_name, "sortedset") or std.ascii.eqlIgnoreCase(cat_name, "sorted_set")) return std.mem.eql(u8, group, "sorted_set");
+    if (std.ascii.eqlIgnoreCase(cat_name, "hash")) return std.mem.eql(u8, group, "hash");
+    if (std.ascii.eqlIgnoreCase(cat_name, "bitmap")) return std.mem.eql(u8, group, "bitmap");
+    if (std.ascii.eqlIgnoreCase(cat_name, "hyperloglog")) return std.mem.eql(u8, group, "hyperloglog");
+    if (std.ascii.eqlIgnoreCase(cat_name, "geo")) return std.mem.eql(u8, group, "geo");
+    if (std.ascii.eqlIgnoreCase(cat_name, "stream")) return std.mem.eql(u8, group, "stream");
+    if (std.ascii.eqlIgnoreCase(cat_name, "pubsub")) return std.mem.eql(u8, group, "pubsub");
+    if (std.ascii.eqlIgnoreCase(cat_name, "transaction") or std.ascii.eqlIgnoreCase(cat_name, "transactions")) return std.mem.eql(u8, group, "transactions");
+    if (std.ascii.eqlIgnoreCase(cat_name, "scripting")) return std.mem.eql(u8, group, "scripting");
+    if (std.ascii.eqlIgnoreCase(cat_name, "connection")) return std.mem.eql(u8, group, "connection");
+    if (std.ascii.eqlIgnoreCase(cat_name, "keyspace") or std.ascii.eqlIgnoreCase(cat_name, "generic")) return std.mem.eql(u8, group, "generic");
+    // @server and @admin cover server-management and cluster commands
+    if (std.ascii.eqlIgnoreCase(cat_name, "server") or std.ascii.eqlIgnoreCase(cat_name, "admin") or std.ascii.eqlIgnoreCase(cat_name, "dangerous")) {
+        return std.mem.eql(u8, group, "server") or std.mem.eql(u8, group, "cluster");
+    }
+    if (std.ascii.eqlIgnoreCase(cat_name, "cluster")) return std.mem.eql(u8, group, "cluster");
+
+    return false;
+}
+
+/// Return the group string for a command by looking it up in COMMAND_DOCS.
+/// Returns null if not found.
+fn getCommandGroup(name: []const u8) ?[]const u8 {
+    for (COMMAND_DOCS) |doc| {
+        if (std.ascii.eqlIgnoreCase(doc.name, name)) return doc.group;
+    }
+    return null;
+}
+
+/// COMMAND LIST [FILTERBY (ACLCAT category | PATTERN pattern | MODULE module)] (Redis 7.0+)
+/// filter_type: "ACLCAT", "PATTERN", or "MODULE" (case-insensitive, null = no filter)
+/// filter_value: the category name, glob pattern, or module name
+pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, filter_value: ?[]const u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    // Count matching commands
-    var count: usize = 0;
-    for (ALL_COMMANDS) |cmd| {
-        if (filter_by) |filter| {
-            if (std.mem.indexOf(u8, filter, "module") != null) continue;
-            if (std.mem.indexOf(u8, filter, "aclcat:") != null) continue;
-            if (std.mem.indexOf(u8, filter, "pattern:") != null) {
-                const pattern = filter[8..];
-                if (!matchesPattern(cmd.name, pattern)) continue;
-            }
-        }
-        count += 1;
+    const ft = if (filter_type) |t| t else null;
+
+    // MODULE filter: built-in commands don't belong to any module → return empty list
+    if (ft != null and std.ascii.eqlIgnoreCase(ft.?, "MODULE")) {
+        try buf.appendSlice(allocator, "*0\r\n");
+        return buf.toOwnedSlice(allocator);
     }
 
-    try buf.append(allocator, '*');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{count});
-    try buf.appendSlice(allocator, "\r\n");
+    // Collect matching command names
+    var matching = std.ArrayList([]const u8){};
+    defer matching.deinit(allocator);
 
     for (ALL_COMMANDS) |cmd| {
-        if (filter_by) |filter| {
-            if (std.mem.indexOf(u8, filter, "module") != null) continue;
-            if (std.mem.indexOf(u8, filter, "aclcat:") != null) continue;
-            if (std.mem.indexOf(u8, filter, "pattern:") != null) {
-                const pattern = filter[8..];
-                if (!matchesPattern(cmd.name, pattern)) continue;
+        if (ft != null) {
+            if (std.ascii.eqlIgnoreCase(ft.?, "PATTERN")) {
+                const pat = filter_value orelse "*";
+                if (!matchesPattern(cmd.name, pat)) continue;
+            } else if (std.ascii.eqlIgnoreCase(ft.?, "ACLCAT")) {
+                const cat = filter_value orelse "";
+                const group = getCommandGroup(cmd.name) orelse "";
+                // Also check @read/@write/@fast/@slow/@all derived from flags
+                const is_readonly = blk: {
+                    for (cmd.flags) |f| {
+                        if (std.mem.eql(u8, f, "readonly")) break :blk true;
+                    }
+                    break :blk false;
+                };
+                const cat_name = if (cat.len > 0 and cat[0] == '@') cat[1..] else cat;
+                const matches_group = groupMatchesAclCat(group, cat);
+                const matches_readwrite = (std.ascii.eqlIgnoreCase(cat_name, "read") and is_readonly) or
+                    (std.ascii.eqlIgnoreCase(cat_name, "write") and !is_readonly and group.len > 0) or
+                    std.ascii.eqlIgnoreCase(cat_name, "all") or
+                    std.ascii.eqlIgnoreCase(cat_name, "fast") or
+                    std.ascii.eqlIgnoreCase(cat_name, "slow");
+                if (!matches_group and !matches_readwrite) continue;
             }
         }
-        try writeBulkString(allocator, &buf, cmd.name);
+        try matching.append(allocator, cmd.name);
+    }
+
+    // Write RESP array of command names
+    try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{matching.items.len});
+    for (matching.items) |name| {
+        try writeBulkString(allocator, &buf, name);
     }
 
     return buf.toOwnedSlice(allocator);
@@ -757,7 +817,7 @@ pub fn cmdCommandHelp(allocator: std.mem.Allocator) ![]const u8 {
         "COMMAND INFO <command> [<command> ...] - Return command details",
         "COMMAND GETKEYS <command> [<arg> ...] - Extract keys from command",
         "COMMAND GETKEYSANDFLAGS <command> [<arg> ...] - Extract keys and access flags (Redis 7.0+)",
-        "COMMAND LIST [FILTERBY <filter>] - List command names (Redis 7.0+)",
+        "COMMAND LIST [FILTERBY (ACLCAT <cat> | PATTERN <pat> | MODULE <mod>)] - List command names (Redis 7.0+)",
         "COMMAND DOCS [<command> ...] - Return documentation for commands (Redis 7.0+)",
         "COMMAND HELP - This help message",
     };
@@ -1323,4 +1383,96 @@ test "COMMAND HELP - includes GETKEYSANDFLAGS" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "GETKEYSANDFLAGS") != null);
+}
+
+test "COMMAND LIST - no filter returns all commands" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, null, null);
+    defer allocator.free(result);
+    // Should start with a large array
+    try std.testing.expect(std.mem.startsWith(u8, result, "*"));
+    // Should include "get" and "set"
+    try std.testing.expect(std.mem.indexOf(u8, result, "get") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "set") != null);
+}
+
+test "COMMAND LIST FILTERBY ACLCAT string - returns string commands" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "ACLCAT", "string");
+    defer allocator.free(result);
+    // Should contain string commands like "get", "set"
+    try std.testing.expect(std.mem.indexOf(u8, result, "get") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "set") != null);
+    // Should NOT contain list commands like "lpush"
+    try std.testing.expect(std.mem.indexOf(u8, result, "$5\r\nlpush") == null);
+}
+
+test "COMMAND LIST FILTERBY ACLCAT list - returns list commands" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "ACLCAT", "list");
+    defer allocator.free(result);
+    // Should contain list commands
+    try std.testing.expect(std.mem.indexOf(u8, result, "lpush") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "lrange") != null);
+    // Should NOT contain string commands like "append"
+    try std.testing.expect(std.mem.indexOf(u8, result, "$6\r\nappend") == null);
+}
+
+test "COMMAND LIST FILTERBY ACLCAT hash - returns hash commands" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "ACLCAT", "hash");
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "hset") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "hget") != null);
+}
+
+test "COMMAND LIST FILTERBY ACLCAT @sortedset - returns zset commands (with @ prefix)" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "ACLCAT", "@sortedset");
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "zadd") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "zrange") != null);
+}
+
+test "COMMAND LIST FILTERBY PATTERN z* - returns commands starting with z" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "PATTERN", "z*");
+    defer allocator.free(result);
+    // Should contain zadd, zrange, etc.
+    try std.testing.expect(std.mem.indexOf(u8, result, "zadd") != null);
+    // Should NOT contain "set" (no z prefix)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$3\r\nset") == null);
+}
+
+test "COMMAND LIST FILTERBY PATTERN *get* - returns commands with 'get' substring" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "PATTERN", "*get*");
+    defer allocator.free(result);
+    // "get", "getset", "getdel", "getex" should all match
+    try std.testing.expect(std.mem.indexOf(u8, result, "getset") != null or std.mem.indexOf(u8, result, "get") != null);
+}
+
+test "COMMAND LIST FILTERBY MODULE - returns empty (built-in commands have no module)" {
+    const allocator = std.testing.allocator;
+    const result = try cmdCommandList(allocator, "MODULE", "any_module");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "groupMatchesAclCat - mapping correctness" {
+    // Direct group matches
+    try std.testing.expect(groupMatchesAclCat("string", "string"));
+    try std.testing.expect(groupMatchesAclCat("list", "list"));
+    try std.testing.expect(groupMatchesAclCat("sorted_set", "sortedset"));
+    try std.testing.expect(groupMatchesAclCat("sorted_set", "sorted_set"));
+    try std.testing.expect(groupMatchesAclCat("generic", "keyspace"));
+    try std.testing.expect(groupMatchesAclCat("server", "admin"));
+    try std.testing.expect(groupMatchesAclCat("server", "dangerous"));
+    try std.testing.expect(groupMatchesAclCat("cluster", "server"));
+    // @all matches everything
+    try std.testing.expect(groupMatchesAclCat("string", "all"));
+    try std.testing.expect(groupMatchesAclCat("string", "@all"));
+    // Non-matches
+    try std.testing.expect(!groupMatchesAclCat("string", "list"));
+    try std.testing.expect(!groupMatchesAclCat("list", "hash"));
 }
