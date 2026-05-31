@@ -9822,6 +9822,7 @@ pub const Storage = struct {
         key: []const u8,
         group_name: []const u8,
         id_str: []const u8,
+        entries_read: ?u64,
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -9843,9 +9844,15 @@ pub const Storage = struct {
 
                 group_ptr.last_delivered_id = new_id;
 
-                // Mark as arbitrary if not "0" or "$"
-                if (!std.mem.eql(u8, id_str, "0") and !std.mem.eql(u8, id_str, "$")) {
-                    group_ptr.arbitrary_start = true;
+                if (entries_read) |er| {
+                    // ENTRIESREAD provided: set counter and enable accurate lag calculation
+                    group_ptr.entries_read = er;
+                    group_ptr.arbitrary_start = false;
+                } else {
+                    // No ENTRIESREAD: mark as arbitrary if not "0" or "$"
+                    if (!std.mem.eql(u8, id_str, "0") and !std.mem.eql(u8, id_str, "$")) {
+                        group_ptr.arbitrary_start = true;
+                    }
                 }
             },
             else => return error.WrongType,
@@ -13211,6 +13218,52 @@ test "storage - xinfoGroups returns empty array for missing key" {
     defer allocator.free(info);
 
     try std.testing.expectEqualStrings("*0\r\n", info);
+}
+
+test "storage - xgroupSetId with ENTRIESREAD enables accurate lag" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "3000-0", &fields, null, .{});
+
+    // Create group at arbitrary position — lag would be null
+    try storage.xgroupCreate("s", "g", "1500-0");
+
+    // XGROUP SETID with ENTRIESREAD 1 (we've read 1 entry logically)
+    try storage.xgroupSetId("s", "g", "1500-0", 1);
+
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+
+    // Lag should now be available (not null): entries_added=3, entries_read=1, lag=2
+    try std.testing.expect(std.mem.indexOf(u8, info, "$-1") == null); // no null lag
+    try std.testing.expect(std.mem.indexOf(u8, info, ":2") != null); // lag is 2
+}
+
+test "storage - xgroupSetId without ENTRIESREAD preserves arbitrary_start" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+
+    // Create group at arbitrary position
+    try storage.xgroupCreate("s", "g", "1500-0");
+
+    // XGROUP SETID without ENTRIESREAD should still be arbitrary
+    try storage.xgroupSetId("s", "g", "1800-0", null);
+
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+
+    // Lag should be null because arbitrary_start is still true
+    try std.testing.expect(std.mem.indexOf(u8, info, "$-1") != null);
 }
 
 test "storage - dump and restore list" {
