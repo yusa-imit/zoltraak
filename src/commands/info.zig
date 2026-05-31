@@ -572,6 +572,9 @@ fn buildCpuSection(
     try bw.writeAll("used_cpu_user:0.000000\r\n");
     try bw.writeAll("used_cpu_sys_children:0.000000\r\n");
     try bw.writeAll("used_cpu_user_children:0.000000\r\n");
+    // Redis 7.0+ per-thread CPU stats
+    try bw.writeAll("used_cpu_sys_main_thread:0.000000\r\n");
+    try bw.writeAll("used_cpu_user_main_thread:0.000000\r\n");
     try bw.writeAll("\r\n");
 }
 
@@ -2327,4 +2330,75 @@ test "LazyFreeTask getFreedCount increments on free_key work" {
 
     // Initial count should be 0
     try std.testing.expectEqual(@as(u64, 0), task.getFreedCount());
+}
+
+test "INFO cpu section includes Redis 7.0+ main thread fields" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 1,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &[_][]const u8{ "INFO", "cpu" }, null, 1);
+    defer allocator.free(result);
+
+    // Redis 7.0+ adds per-thread CPU stats
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys_main_thread:0.000000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_main_thread:0.000000") != null);
+}
+
+test "INFO cpu section has all 6 fields" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 1,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &[_][]const u8{ "INFO", "cpu" }, null, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys_children:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_children:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_sys_main_thread:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "used_cpu_user_main_thread:") != null);
 }

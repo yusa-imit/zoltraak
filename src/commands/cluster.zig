@@ -314,6 +314,8 @@ pub fn cmdClusterInfo(
     const my_epoch = cluster.current_epoch;
 
     const writer = info_buf.writer(allocator);
+    // cluster_enabled is the first field — client libraries check this to determine standalone vs cluster
+    try writer.print("cluster_enabled:0\r\n", .{});
     try writer.print("cluster_state:{s}\r\n", .{state_str});
     try writer.print("cluster_slots_assigned:{}\r\n", .{assigned_slots});
     try writer.print("cluster_slots_ok:{}\r\n", .{ok_slots});
@@ -321,10 +323,14 @@ pub fn cmdClusterInfo(
     try writer.print("cluster_slots_fail:0\r\n", .{});
     try writer.print("cluster_known_nodes:{}\r\n", .{cluster.nodes.count()});
     try writer.print("cluster_size:{}\r\n", .{cluster_size});
+    // cluster_total_shards: number of distinct shards (Redis 7.0+)
+    try writer.print("cluster_total_shards:0\r\n", .{});
     try writer.print("cluster_current_epoch:{}\r\n", .{cluster.current_epoch});
     try writer.print("cluster_my_epoch:{}\r\n", .{my_epoch});
     try writer.print("cluster_stats_messages_sent:0\r\n", .{});
     try writer.print("cluster_stats_messages_received:0\r\n", .{});
+    // total_cluster_links_buffer_limit_exceeded: Redis 7.0+ field
+    try writer.print("total_cluster_links_buffer_limit_exceeded:0\r\n", .{});
 
     return w.writeBulkString(info_buf.items);
 }
@@ -461,7 +467,8 @@ test "cmdClusterInfo - contains all required fields" {
     _ = it.next(); // Skip size line
     const content = it.next() orelse "";
 
-    // Verify all 10 required fields are present
+    // Verify all required fields are present (including Redis 7.x additions)
+    try std.testing.expect(std.mem.indexOf(u8, content, "cluster_enabled:0") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_state") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_slots_assigned") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_slots_ok") != null);
@@ -469,9 +476,47 @@ test "cmdClusterInfo - contains all required fields" {
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_slots_fail") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_known_nodes") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "cluster_total_shards:0") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_current_epoch") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_my_epoch") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "cluster_stats_messages") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "total_cluster_links_buffer_limit_exceeded:0") != null);
+}
+
+test "cmdClusterInfo - cluster_enabled is first field" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    defer allocator.free(result);
+
+    var it = std.mem.splitSequence(u8, result, "\r\n");
+    _ = it.next(); // Skip RESP bulk string size line
+    const content = it.next() orelse "";
+
+    // cluster_enabled must appear before cluster_state (it's the first field)
+    const enabled_pos = std.mem.indexOf(u8, content, "cluster_enabled:0") orelse unreachable;
+    const state_pos = std.mem.indexOf(u8, content, "cluster_state:") orelse unreachable;
+    try std.testing.expect(enabled_pos < state_pos);
+}
+
+test "cmdClusterInfo - Redis 7.x new fields present" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    defer allocator.free(result);
+
+    var it = std.mem.splitSequence(u8, result, "\r\n");
+    _ = it.next(); // Skip size line
+    const content = it.next() orelse "";
+
+    // cluster_total_shards: introduced in Redis 7.0
+    try std.testing.expect(std.mem.indexOf(u8, content, "cluster_total_shards:0") != null);
+    // total_cluster_links_buffer_limit_exceeded: introduced in Redis 7.0
+    try std.testing.expect(std.mem.indexOf(u8, content, "total_cluster_links_buffer_limit_exceeded:0") != null);
 }
 
 test "cmdClusterNodes - single node format" {
@@ -4056,4 +4101,43 @@ test "cmdClusterCountFailureReports - with failure reports" {
 
     // Should return :2
     try std.testing.expect(std.mem.indexOf(u8, result, ":2") != null);
+}
+
+test "CLUSTER INFO cluster_enabled is zero for standalone" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    defer allocator.free(result);
+
+    var it = std.mem.splitSequence(u8, result, "\r\n");
+    _ = it.next(); // skip bulk string size line
+    const content = it.next() orelse "";
+
+    // cluster_enabled:0 must be present and be 0 (standalone server)
+    try std.testing.expect(std.mem.indexOf(u8, content, "cluster_enabled:0\r\n") != null);
+}
+
+test "Storage config cluster-enabled defaults to no" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // CONFIG GET cluster-enabled should return "no" for standalone server
+    const val = storage.config.getAsString("cluster-enabled") catch null;
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expect(val != null);
+    try std.testing.expectEqualStrings("no", val.?);
+}
+
+test "Storage config cluster-node-timeout defaults to 15000" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = storage.config.getAsString("cluster-node-timeout") catch null;
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expect(val != null);
+    try std.testing.expectEqualStrings("15000", val.?);
 }

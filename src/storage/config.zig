@@ -198,6 +198,24 @@ pub const Config = struct {
             .{ .name = "tls-client-key-file-pass", .value = .{ .string = "" }, .read_only = false }, // Client key password
             .{ .name = "tls-allowlisted-certs", .value = .{ .string = "" }, .read_only = false }, // Allowlisted cert paths (Redis 7.2+)
 
+            // Cluster configuration parameters (commonly queried by client libraries)
+            .{ .name = "cluster-enabled", .value = .{ .bool = false }, .read_only = false }, // Enable cluster mode (no for standalone)
+            .{ .name = "cluster-config-file", .value = .{ .string = "nodes.conf" }, .read_only = false }, // Cluster node config file path
+            .{ .name = "cluster-node-timeout", .value = .{ .int = 15000 }, .read_only = false }, // Cluster node failure timeout (ms)
+            .{ .name = "cluster-require-full-coverage", .value = .{ .bool = true }, .read_only = false }, // Require all slots covered to accept writes
+            .{ .name = "cluster-migration-barrier", .value = .{ .int = 1 }, .read_only = false }, // Min replicas to allow migration
+            .{ .name = "cluster-allow-reads-when-down", .value = .{ .bool = false }, .read_only = false }, // Allow reads when cluster is down
+            .{ .name = "cluster-allow-pubsubshard-when-down", .value = .{ .bool = true }, .read_only = false }, // Allow pub/sub when cluster down (Redis 7.0+)
+            .{ .name = "cluster-link-sendbuf-limit", .value = .{ .int = 0 }, .read_only = false }, // Cluster link send buffer limit (Redis 7.0+)
+            .{ .name = "cluster-announce-ip", .value = .{ .string = "" }, .read_only = false }, // IP address to announce to cluster
+            .{ .name = "cluster-announce-port", .value = .{ .int = 0 }, .read_only = false }, // Port to announce to cluster (0 = auto)
+            .{ .name = "cluster-announce-bus-port", .value = .{ .int = 0 }, .read_only = false }, // Bus port to announce (0 = auto)
+            .{ .name = "cluster-slave-no-failover", .value = .{ .bool = false }, .read_only = false }, // Prevent replicas from starting failover
+            .{ .name = "cluster-replica-no-failover", .value = .{ .bool = false }, .read_only = false }, // Alias for cluster-slave-no-failover
+            .{ .name = "cluster-slave-validity-factor", .value = .{ .int = 10 }, .read_only = false }, // Validity factor for failover
+            .{ .name = "cluster-replica-validity-factor", .value = .{ .int = 10 }, .read_only = false }, // Alias for cluster-slave-validity-factor
+            .{ .name = "cluster-preferred-endpoint-type", .value = .{ .string = "ip" }, .read_only = false }, // Endpoint type (ip/hostname/unknown-endpoint)
+
             // Server performance tuning (commonly used by clients and monitoring tools)
             .{ .name = "hz", .value = .{ .int = 10 }, .read_only = false }, // Server background task frequency (1-500)
             .{ .name = "dynamic-hz", .value = .{ .bool = true }, .read_only = false }, // Adaptive hz based on client count
