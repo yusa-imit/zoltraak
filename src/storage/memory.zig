@@ -9729,6 +9729,7 @@ pub const Storage = struct {
         key: []const u8,
         group_name: []const u8,
         id_str: []const u8,
+        entries_read: ?u64,
     ) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -9754,16 +9755,16 @@ pub const Storage = struct {
                 else
                     try Value.StreamId.parse(id_str, null);
 
-                // Determine if this is an arbitrary start (affects lag calculation)
-                // Arbitrary = not "0-0", not stream's first entry, not stream's last entry ("$")
-                const is_arbitrary = blk: {
+                // Determine if this is an arbitrary start (affects lag calculation).
+                // When entries_read is explicitly provided, treat as non-arbitrary.
+                const is_arbitrary = if (entries_read != null) false else blk: {
                     if (std.mem.eql(u8, id_str, "0")) break :blk false;
                     if (std.mem.eql(u8, id_str, "$")) break :blk false;
                     break :blk true;
                 };
 
-                // Calculate initial entries_read based on starting position
-                const initial_entries_read: u64 = if (std.mem.eql(u8, id_str, "$"))
+                // entries_read: use explicit value if provided, else derive from id position
+                const effective_entries_read: u64 = if (entries_read) |er| er else if (std.mem.eql(u8, id_str, "$"))
                     stream_val.entries_added
                 else
                     0;
@@ -9779,7 +9780,7 @@ pub const Storage = struct {
                     .last_delivered_id = starting_id,
                     .consumers = std.StringHashMap(Value.Consumer).init(self.allocator),
                     .pending = std.ArrayList(Value.PendingEntry){},
-                    .entries_read = initial_entries_read,
+                    .entries_read = effective_entries_read,
                     .creation_time = now_ms,
                     .arbitrary_start = is_arbitrary,
                 });
@@ -13127,7 +13128,7 @@ test "storage - xinfoConsumers returns consumer list with timing fields" {
     // Create stream and group
     const fields = [_][]const u8{ "x", "1" };
     _ = try storage.xadd("s", "1000-0", &fields, null, .{});
-    try storage.xgroupCreate("s", "g", "0");
+    try storage.xgroupCreate("s", "g", "0", null);
 
     // Create consumer via XREADGROUP
     _ = try storage.xreadgroup(allocator, "g", "c1", "s", ">", null, false);
@@ -13167,7 +13168,7 @@ test "storage - xinfoGroups returns group list with lag" {
     _ = try storage.xadd("s", "1002-0", &fields, null, .{});
 
     // Create group starting at 0
-    try storage.xgroupCreate("s", "g", "0");
+    try storage.xgroupCreate("s", "g", "0", null);
 
     // Read 1 entry
     if (try storage.xreadgroup(allocator, "g", "c1", "s", ">", 1, false)) |entries_const| {
@@ -13200,7 +13201,7 @@ test "storage - xinfoGroups lag is null for arbitrary start" {
     _ = try storage.xadd("s", "2000-0", &fields, null, .{});
 
     // Create group at arbitrary position (not 0 or $)
-    try storage.xgroupCreate("s", "g", "1500-0");
+    try storage.xgroupCreate("s", "g", "1500-0", null);
 
     const info = try storage.xinfoGroups(allocator, "s");
     defer allocator.free(info);
@@ -13220,6 +13221,47 @@ test "storage - xinfoGroups returns empty array for missing key" {
     try std.testing.expectEqualStrings("*0\r\n", info);
 }
 
+test "storage - xgroupCreate with ENTRIESREAD sets non-arbitrary lag" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "3000-0", &fields, null, .{});
+
+    // Arbitrary ID but ENTRIESREAD=1 provided — should have non-null lag
+    try storage.xgroupCreate("s", "g", "1500-0", 1);
+
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+
+    // entries_added=3, entries_read=1 → lag=2; no null lag
+    try std.testing.expect(std.mem.indexOf(u8, info, "$-1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, info, ":2") != null);
+}
+
+test "storage - xgroupCreate ENTRIESREAD=0 with $ id overrides default" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "1" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+
+    // $ normally means entries_read=entries_added; ENTRIESREAD=0 overrides
+    try storage.xgroupCreate("s", "g", "$", 0);
+
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+
+    // entries_added=2, entries_read=0 → lag=2
+    try std.testing.expect(std.mem.indexOf(u8, info, "$-1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, info, ":2") != null);
+}
+
 test "storage - xgroupSetId with ENTRIESREAD enables accurate lag" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
@@ -13231,7 +13273,7 @@ test "storage - xgroupSetId with ENTRIESREAD enables accurate lag" {
     _ = try storage.xadd("s", "3000-0", &fields, null, .{});
 
     // Create group at arbitrary position — lag would be null
-    try storage.xgroupCreate("s", "g", "1500-0");
+    try storage.xgroupCreate("s", "g", "1500-0", null);
 
     // XGROUP SETID with ENTRIESREAD 1 (we've read 1 entry logically)
     try storage.xgroupSetId("s", "g", "1500-0", 1);
@@ -13254,7 +13296,7 @@ test "storage - xgroupSetId without ENTRIESREAD preserves arbitrary_start" {
     _ = try storage.xadd("s", "2000-0", &fields, null, .{});
 
     // Create group at arbitrary position
-    try storage.xgroupCreate("s", "g", "1500-0");
+    try storage.xgroupCreate("s", "g", "1500-0", null);
 
     // XGROUP SETID without ENTRIESREAD should still be arbitrary
     try storage.xgroupSetId("s", "g", "1800-0", null);

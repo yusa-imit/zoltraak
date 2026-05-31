@@ -97,7 +97,7 @@ test "XREADGROUP BLOCK with timeout" {
     const add_result = try streams.cmdXadd(allocator, &storage, &xadd_args, null);
     defer allocator.free(add_result);
 
-    try storage.xgroupCreate("mystream", "mygroup", "$");
+    try storage.xgroupCreate("mystream", "mygroup", "$", null);
 
     // XREADGROUP BLOCK 100 with > (no new data, should timeout)
     const start_time = std.time.milliTimestamp();
@@ -138,7 +138,7 @@ test "XREADGROUP BLOCK with ID=0 returns immediately" {
     const add_result = try streams.cmdXadd(allocator, &storage, &xadd_args, null);
     defer allocator.free(add_result);
 
-    try storage.xgroupCreate("mystream", "mygroup", "0-0");
+    try storage.xgroupCreate("mystream", "mygroup", "0-0", null);
 
     // Read once to create PEL entry
     const xreadgroup_args1 = [_]RespValue{

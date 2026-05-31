@@ -1475,7 +1475,7 @@ test "streams - XPENDING summary shows pending count" {
     defer allocator.free(r1);
 
     // Create consumer group
-    _ = try storage.xgroupCreate("s", "g", "0");
+    _ = try storage.xgroupCreate("s", "g", "0", null);
 
     // Read with consumer group (creates pending entry)
     const read_result = try storage.xreadgroup(allocator, "g", "c1", "s", ">", 10, false);

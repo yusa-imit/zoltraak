@@ -32,9 +32,9 @@ fn notifyStreamEvent(
     notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
 }
 
-/// XGROUP CREATE key groupname <id | $> [MKSTREAM]
+/// XGROUP CREATE key groupname <id | $> [MKSTREAM] [ENTRIESREAD count]
 /// XGROUP DESTROY key groupname
-/// XGROUP SETID key groupname <id | $>
+/// XGROUP SETID key groupname <id | $> [ENTRIESREAD count]
 /// XGROUP CREATECONSUMER key groupname consumername
 /// XGROUP DELCONSUMER key groupname consumername
 pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
@@ -70,19 +70,34 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             else => return w.writeError("ERR invalid ID"),
         };
 
-        // Check for MKSTREAM option
+        // Parse MKSTREAM and ENTRIESREAD options (Redis 7.0+, either order)
         var mkstream = false;
-        if (args.len >= 6) {
-            const opt = switch (args[5]) {
+        var entries_read_opt: ?u64 = null;
+        var opt_idx: usize = 5;
+        while (opt_idx < args.len) {
+            const opt = switch (args[opt_idx]) {
                 .bulk_string => |s| s,
-                else => "",
+                else => return w.writeError("ERR syntax error"),
             };
             if (std.ascii.eqlIgnoreCase(opt, "MKSTREAM")) {
                 mkstream = true;
+                opt_idx += 1;
+            } else if (std.ascii.eqlIgnoreCase(opt, "ENTRIESREAD")) {
+                if (opt_idx + 1 >= args.len) return w.writeError("ERR syntax error");
+                const count_str = switch (args[opt_idx + 1]) {
+                    .bulk_string => |s| s,
+                    else => return w.writeError("ERR value is not an integer or out of range"),
+                };
+                entries_read_opt = std.fmt.parseUnsigned(u64, count_str, 10) catch {
+                    return w.writeError("ERR value is not an integer or out of range");
+                };
+                opt_idx += 2;
+            } else {
+                return w.writeError("ERR syntax error");
             }
         }
 
-        storage.xgroupCreate(key, groupname, id_str) catch |err| switch (err) {
+        storage.xgroupCreate(key, groupname, id_str, entries_read_opt) catch |err| switch (err) {
             error.NoKey => {
                 if (mkstream) {
                     // Create empty stream first
@@ -90,7 +105,7 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                     // Delete the placeholder entry
                     _ = try storage.xdel(key, &[_][]const u8{"0-1"});
                     // Now create the group
-                    try storage.xgroupCreate(key, groupname, id_str);
+                    try storage.xgroupCreate(key, groupname, id_str, entries_read_opt);
                 } else {
                     return w.writeError("ERR no such key");
                 }
@@ -1717,7 +1732,7 @@ test "XACKDEL KEEPREF mode" {
     _ = try storage.xadd("mystream", "1001-0", &[_][]const u8{ "field2", "value2" }, null, .{});
 
     // Create consumer group
-    try storage.xgroupCreate("mystream", "mygroup", "0");
+    try storage.xgroupCreate("mystream", "mygroup", "0", null);
 
     // Read entries
     const entries = try storage.xreadgroup(allocator, "mygroup", "consumer1", "mystream", ">", 10, false);
@@ -1758,8 +1773,8 @@ test "XACKDEL ACKED mode with multiple groups" {
     _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null, .{});
 
     // Create two consumer groups
-    try storage.xgroupCreate("mystream", "group1", "0");
-    try storage.xgroupCreate("mystream", "group2", "0");
+    try storage.xgroupCreate("mystream", "group1", "0", null);
+    try storage.xgroupCreate("mystream", "group2", "0", null);
 
     // Both groups read
     const entries1 = try storage.xreadgroup(allocator, "group1", "consumer1", "mystream", ">", 10, false);
@@ -1822,7 +1837,7 @@ test "XDELEX DELREF cleans dangling references" {
     _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field1", "value1" }, null, .{});
 
     // Create consumer group and read
-    try storage.xgroupCreate("mystream", "mygroup", "0");
+    try storage.xgroupCreate("mystream", "mygroup", "0", null);
     const entries = try storage.xreadgroup(allocator, "mygroup", "consumer1", "mystream", ">", 10, false);
     try std.testing.expect(entries != null);
     if (entries) |e| e.deinit(allocator);
@@ -1917,7 +1932,7 @@ test "XGROUP SETID ENTRIESREAD - invalid value returns error" {
     defer ps.deinit();
 
     // Create stream and group
-    _ = try storage.xgroupCreate("mystream", "mygroup", "$");
+    _ = try storage.xgroupCreate("mystream", "mygroup", "$", null);
 
     const setid_args = [_]RespValue{
         .{ .bulk_string = "XGROUP" },
@@ -1932,5 +1947,84 @@ test "XGROUP SETID ENTRIESREAD - invalid value returns error" {
     defer allocator.free(result);
 
     // Should return error
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "XGROUP CREATE ENTRIESREAD - sets accurate lag for arbitrary start" {
+    const allocator = std.testing.allocator;
+    var storage = try storage_mod.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var ps = try pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Create stream with 3 entries
+    _ = try storage.xadd("s", "1000-0", &[_][]const u8{ "k", "v" }, null, .{});
+    _ = try storage.xadd("s", "2000-0", &[_][]const u8{ "k", "v" }, null, .{});
+    _ = try storage.xadd("s", "3000-0", &[_][]const u8{ "k", "v" }, null, .{});
+
+    // XGROUP CREATE at arbitrary position with ENTRIESREAD 1
+    const args = [_]RespValue{
+        .{ .bulk_string = "XGROUP" },
+        .{ .bulk_string = "CREATE" },
+        .{ .bulk_string = "s" },
+        .{ .bulk_string = "g" },
+        .{ .bulk_string = "1500-0" },
+        .{ .bulk_string = "ENTRIESREAD" },
+        .{ .bulk_string = "1" },
+    };
+    const result = try cmdXgroup(allocator, &storage, &args, &ps, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Group should have non-null lag: entries_added=3, entries_read=1, lag=2
+    const info = try storage.xinfoGroups(allocator, "s");
+    defer allocator.free(info);
+    try std.testing.expect(std.mem.indexOf(u8, info, "$-1") == null); // no null lag
+    try std.testing.expect(std.mem.indexOf(u8, info, ":2") != null); // lag is 2
+}
+
+test "XGROUP CREATE MKSTREAM ENTRIESREAD - both options together" {
+    const allocator = std.testing.allocator;
+    var storage = try storage_mod.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var ps = try pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // MKSTREAM + ENTRIESREAD on non-existent key
+    const args = [_]RespValue{
+        .{ .bulk_string = "XGROUP" },
+        .{ .bulk_string = "CREATE" },
+        .{ .bulk_string = "newstream" },
+        .{ .bulk_string = "g" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "MKSTREAM" },
+        .{ .bulk_string = "ENTRIESREAD" },
+        .{ .bulk_string = "0" },
+    };
+    const result = try cmdXgroup(allocator, &storage, &args, &ps, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "XGROUP CREATE ENTRIESREAD - invalid value returns error" {
+    const allocator = std.testing.allocator;
+    var storage = try storage_mod.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var ps = try pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try storage.xadd("s", "1000-0", &[_][]const u8{ "k", "v" }, null, .{});
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "XGROUP" },
+        .{ .bulk_string = "CREATE" },
+        .{ .bulk_string = "s" },
+        .{ .bulk_string = "g" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "ENTRIESREAD" },
+        .{ .bulk_string = "notanumber" },
+    };
+    const result = try cmdXgroup(allocator, &storage, &args, &ps, 0);
+    defer allocator.free(result);
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
 }
