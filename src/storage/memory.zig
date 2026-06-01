@@ -10965,22 +10965,37 @@ pub const Storage = struct {
                 const writer = buf.writer(allocator);
 
                 if (!full_mode) {
-                    // Simple mode: basic stream metadata
+                    // Simple mode: Redis 7.x format — 10 key-value pairs = 20 elements
                     const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
+                    const max_del = stream_val.max_deleted_entry_id;
+                    // recorded-first-entry-id: first entry ID, or 0-0 if stream is empty
+                    const rec_first_id = if (stream_val.entries.items.len > 0)
+                        stream_val.entries.items[0].id
+                    else
+                        Value.StreamId{ .ms = 0, .seq = 0 };
 
-                    try writer.print("*18\r\n", .{});
+                    try writer.print("*20\r\n", .{});
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
                     try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
-                    try writer.print("$6\r\ngroups\r\n:{d}\r\n", .{stream_val.consumer_groups.count()});
-                    try writer.print("$13\r\nlast-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                    try writer.print("$17\r\nlast-generated-id\r\n${d}\r\n{d}-{d}\r\n", .{
                         std.fmt.count("{d}-{d}", .{ last_id.ms, last_id.seq }),
                         last_id.ms,
                         last_id.seq,
                     });
-                    try writer.print("$13\r\nidmp-duration\r\n:{d}\r\n", .{stream_val.idmp_duration_sec});
-                    try writer.print("$12\r\nidmp-maxsize\r\n:{d}\r\n", .{stream_val.idmp_maxsize});
-                    try writer.print("$13\r\nfirst-entry\r\n", .{});
+                    try writer.print("$20\r\nmax-deleted-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        std.fmt.count("{d}-{d}", .{ max_del.ms, max_del.seq }),
+                        max_del.ms,
+                        max_del.seq,
+                    });
+                    try writer.print("$13\r\nentries-added\r\n:{d}\r\n", .{stream_val.entries_added});
+                    try writer.print("$23\r\nrecorded-first-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        std.fmt.count("{d}-{d}", .{ rec_first_id.ms, rec_first_id.seq }),
+                        rec_first_id.ms,
+                        rec_first_id.seq,
+                    });
+                    try writer.print("$6\r\ngroups\r\n:{d}\r\n", .{stream_val.consumer_groups.count()});
+                    try writer.print("$11\r\nfirst-entry\r\n", .{});
                     if (stream_val.entries.items.len > 0) {
                         const first_entry = stream_val.entries.items[0];
                         try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
@@ -11011,23 +11026,37 @@ pub const Storage = struct {
                         try writer.print("$-1\r\n", .{});
                     }
                 } else {
-                    // Full mode: include all entries
+                    // Full mode: Redis 7.x format — 9 key-value pairs = 18 elements
                     const limit = count_limit orelse stream_val.entries.items.len;
                     const num_entries = @min(limit, stream_val.entries.items.len);
 
-                    try writer.print("*14\r\n", .{});
+                    const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
+                    const max_del = stream_val.max_deleted_entry_id;
+                    const rec_first_id = if (stream_val.entries.items.len > 0)
+                        stream_val.entries.items[0].id
+                    else
+                        Value.StreamId{ .ms = 0, .seq = 0 };
+
+                    try writer.print("*18\r\n", .{});
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
                     try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
-
-                    const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
-                    try writer.print("$13\r\nlast-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                    try writer.print("$17\r\nlast-generated-id\r\n${d}\r\n{d}-{d}\r\n", .{
                         std.fmt.count("{d}-{d}", .{ last_id.ms, last_id.seq }),
                         last_id.ms,
                         last_id.seq,
                     });
-                    try writer.print("$13\r\nidmp-duration\r\n:{d}\r\n", .{stream_val.idmp_duration_sec});
-                    try writer.print("$12\r\nidmp-maxsize\r\n:{d}\r\n", .{stream_val.idmp_maxsize});
+                    try writer.print("$20\r\nmax-deleted-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        std.fmt.count("{d}-{d}", .{ max_del.ms, max_del.seq }),
+                        max_del.ms,
+                        max_del.seq,
+                    });
+                    try writer.print("$13\r\nentries-added\r\n:{d}\r\n", .{stream_val.entries_added});
+                    try writer.print("$23\r\nrecorded-first-entry-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        std.fmt.count("{d}-{d}", .{ rec_first_id.ms, rec_first_id.seq }),
+                        rec_first_id.ms,
+                        rec_first_id.seq,
+                    });
 
                     try writer.print("$7\r\nentries\r\n*{d}\r\n", .{num_entries});
                     for (stream_val.entries.items[0..num_entries]) |stream_entry| {

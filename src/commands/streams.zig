@@ -1273,15 +1273,12 @@ pub fn cmdXpending(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     // Simple form: XPENDING key group
     if (args.len == 3) {
-        const info = storage.xpendingSummary(allocator, key, group_name) catch |err| switch (err) {
+        return storage.xpendingSummary(allocator, key, group_name) catch |err| switch (err) {
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             error.NoSuchKey => return w.writeArray(null),
             error.NoSuchGroup => return w.writeError("NOGROUP No such consumer group"),
             else => return err,
         };
-        defer allocator.free(info);
-
-        return w.writeSimpleString(info);
     }
 
     // Extended form: XPENDING key group [IDLE min-idle] start end count [consumer]
@@ -1341,16 +1338,13 @@ pub fn cmdXpending(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         };
     }
 
-    const entries = storage.xpendingRange(allocator, key, group_name, start, end, count, consumer_name, idle_time) catch |err| switch (err) {
+    return storage.xpendingRange(allocator, key, group_name, start, end, count, consumer_name, idle_time) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         error.NoSuchKey => return w.writeArray(null),
         error.NoSuchGroup => return w.writeError("NOGROUP No such consumer group"),
         error.InvalidStreamId => return w.writeError("ERR Invalid stream ID"),
         else => return err,
     };
-    defer allocator.free(entries);
-
-    return w.writeSimpleString(entries);
 }
 
 /// XINFO STREAM key [FULL [COUNT count]]
@@ -1448,14 +1442,11 @@ pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []c
         }
     }
 
-    const info = storage.xinfoStream(allocator, key, full_mode, count_limit) catch |err| switch (err) {
+    return storage.xinfoStream(allocator, key, full_mode, count_limit) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         error.NoSuchKey => return w.writeError("ERR no such key"),
         else => return err,
     };
-    defer allocator.free(info);
-
-    return w.writeSimpleString(info);
 }
 
 test "streams - XPENDING summary shows pending count" {
@@ -1521,9 +1512,145 @@ test "streams - XINFO STREAM shows basic metadata" {
     const result = try cmdXinfoStream(allocator, storage, &args);
     defer allocator.free(result);
 
-    // Should contain length and last-entry-id
+    // Redis 7.x format: 20-element flat array
+    try std.testing.expect(std.mem.startsWith(u8, result, "*20\r\n"));
+    // Verify Redis 7.x field names
     try std.testing.expect(std.mem.indexOf(u8, result, "length") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "last-entry-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "last-generated-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "max-deleted-entry-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "entries-added") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "recorded-first-entry-id") != null);
+    // Must NOT contain old non-Redis field names
+    try std.testing.expect(std.mem.indexOf(u8, result, "last-entry-id") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "idmp-duration") == null);
+}
+
+test "streams - XINFO STREAM FULL includes entries-added and max-deleted-entry-id" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "100-0" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XINFO" },
+        RespValue{ .bulk_string = "STREAM" },
+        RespValue{ .bulk_string = "mystream" },
+        RespValue{ .bulk_string = "FULL" },
+    };
+    const result = try cmdXinfoStream(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Full mode: 18-element flat array
+    try std.testing.expect(std.mem.startsWith(u8, result, "*18\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "last-generated-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "max-deleted-entry-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "entries-added") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "recorded-first-entry-id") != null);
+    // The entries-added counter should be 1
+    try std.testing.expect(std.mem.indexOf(u8, result, "entries-added\r\n:1\r\n") != null);
+}
+
+test "streams - XPENDING summary returns raw RESP array not wrapped simple string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create stream and consumer group
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "500-0" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    _ = try storage.xgroupCreate("s", "grp", "0", null);
+    const read_result = try storage.xreadgroup(allocator, "grp", "consumer1", "s", ">", 10, false);
+    if (read_result) |r| r.deinit(allocator);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XPENDING" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "grp" },
+    };
+    const result = try cmdXpending(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Must start with *4\r\n (RESP array), not +*4 (simple string wrapping array)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*4\r\n"));
+    try std.testing.expect(!std.mem.startsWith(u8, result, "+"));
+    // Pending count = 1
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);
+}
+
+test "streams - XPENDING empty group returns *4 with zero count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "1-0" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    _ = try storage.xgroupCreate("s2", "g2", "0", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XPENDING" },
+        RespValue{ .bulk_string = "s2" },
+        RespValue{ .bulk_string = "g2" },
+    };
+    const result = try cmdXpending(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Empty pending: *4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n
+    try std.testing.expect(std.mem.startsWith(u8, result, "*4\r\n:0\r\n"));
+    try std.testing.expect(!std.mem.startsWith(u8, result, "+"));
+}
+
+test "streams - XINFO STREAM empty stream shows 0-0 IDs" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Create empty stream via XSETID
+    const setid_args = [_]RespValue{
+        RespValue{ .bulk_string = "XSETID" },
+        RespValue{ .bulk_string = "empty" },
+        RespValue{ .bulk_string = "0-0" },
+    };
+    const r1 = try cmdXsetid(allocator, storage, &setid_args);
+    defer allocator.free(r1);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XINFO" },
+        RespValue{ .bulk_string = "STREAM" },
+        RespValue{ .bulk_string = "empty" },
+    };
+    const result = try cmdXinfoStream(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // 20-element array, length=0, last-generated-id=0-0
+    try std.testing.expect(std.mem.startsWith(u8, result, "*20\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "length\r\n:0\r\n") != null);
+    // first-entry and last-entry should be nil ($-1)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$-1\r\n") != null);
 }
 
 test "streams - XSETID creates new stream" {
