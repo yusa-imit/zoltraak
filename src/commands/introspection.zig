@@ -4,7 +4,8 @@ const Writer = @import("../protocol/writer.zig").Writer;
 const LatencyMonitor = @import("../storage/latency.zig").LatencyMonitor;
 const EventType = @import("../storage/latency.zig").EventType;
 
-/// MEMORY STATS - Return memory usage statistics (real implementation)
+/// MEMORY STATS - Return memory usage statistics as flat RESP array (Redis-compatible)
+/// Redis returns alternating bulk string keys and integer/bulk-string values.
 pub fn cmdMemoryStats(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -30,38 +31,129 @@ pub fn cmdMemoryStats(
     const dataset_pct = tracker.datasetPercentage();
     const peak_pct = tracker.peakPercentage();
     const frag_ratio = tracker.fragmentationRatio();
-    const frag_bytes: isize = @intCast(tracker.current_allocated -| tracker.dataset_bytes);
+    const frag_bytes: isize = @as(isize, @intCast(@min(tracker.current_allocated, std.math.maxInt(isize)))) -
+        @as(isize, @intCast(@min(tracker.dataset_bytes, std.math.maxInt(isize))));
 
-    // Build stats string
-    var stats = std.ArrayList(u8){};
-    errdefer stats.deinit(allocator);
-    const stats_w = stats.writer(allocator);
+    // Compute allocator-level ratios (approximated from RSS vs allocated)
+    const rss = storage.memory_tracker.current_allocated; // best approximation
+    const alloc_frag_ratio: f64 = if (tracker.current_allocated > 0)
+        @as(f64, @floatFromInt(rss)) / @as(f64, @floatFromInt(tracker.current_allocated))
+    else
+        1.0;
+    const alloc_frag_bytes: isize = @as(isize, @intCast(@min(rss, std.math.maxInt(isize)))) -
+        @as(isize, @intCast(@min(tracker.current_allocated, std.math.maxInt(isize))));
+    const alloc_rss_ratio: f64 = alloc_frag_ratio;
+    const alloc_rss_bytes: isize = alloc_frag_bytes;
+    const rss_overhead_ratio: f64 = 1.0;
+    const rss_overhead_bytes: isize = 0;
 
-    try stats_w.print("peak.allocated:{d}\r\n", .{tracker.peak_allocated});
-    try stats_w.print("total.allocated:{d}\r\n", .{tracker.current_allocated});
-    try stats_w.print("startup.allocated:{d}\r\n", .{tracker.startup_allocated});
-    try stats_w.print("replication.backlog:{d}\r\n", .{tracker.replication_backlog_bytes});
-    try stats_w.print("clients.slaves:{d}\r\n", .{tracker.clients_slaves_bytes});
-    try stats_w.print("clients.normal:{d}\r\n", .{tracker.clients_normal_bytes});
-    try stats_w.print("aof.buffer:{d}\r\n", .{tracker.aof_buffer_bytes});
-    try stats_w.print("overhead.total:{d}\r\n", .{overhead_total});
-    try stats_w.print("keys.count:{d}\r\n", .{keys_count});
-    try stats_w.print("keys.bytes-per-key:{d}\r\n", .{bytes_per_key});
-    try stats_w.print("dataset.bytes:{d}\r\n", .{tracker.dataset_bytes});
-    try stats_w.print("dataset.percentage:{d:.2}\r\n", .{dataset_pct});
-    try stats_w.print("peak.percentage:{d:.2}\r\n", .{peak_pct});
-    try stats_w.print("fragmentation:{d:.2}\r\n", .{frag_ratio});
-    try stats_w.print("fragmentation.bytes:{d}\r\n", .{frag_bytes});
+    // Defrag stats from defrag task
+    const defrag_stats = storage.defrag_task.getStats();
+    const defrag_running: i64 = if (defrag_stats.is_running) 1 else 0;
 
-    const stats_str = try stats.toOwnedSlice(allocator);
-    defer allocator.free(stats_str);
+    // MEMORY STATS returns a flat array with 26 key-value pairs = 52 elements.
+    // Format: *52\r\n then alternating $key\r\n + integer or bulk-string value.
+    const num_pairs: usize = 26;
+    try w.print("*{d}\r\n", .{num_pairs * 2});
 
-    // Write bulk string
-    try w.writeAll("$");
-    try w.print("{d}", .{stats_str.len});
-    try w.writeAll("\r\n");
-    try w.writeAll(stats_str);
-    try w.writeAll("\r\n");
+    // Helper: write a bulk-string key
+    const writeBulkKey = struct {
+        fn call(writer: anytype, key: []const u8) !void {
+            try writer.print("${d}\r\n{s}\r\n", .{ key.len, key });
+        }
+    }.call;
+    // Helper: write an integer value
+    const writeInt = struct {
+        fn call(writer: anytype, val: i64) !void {
+            try writer.print(":{d}\r\n", .{val});
+        }
+    }.call;
+    // Helper: write a float as bulk string (Redis sends doubles as bulk strings in RESP2)
+    const writeFloat = struct {
+        fn call(writer: anytype, alloc: std.mem.Allocator, val: f64) !void {
+            const s = try std.fmt.allocPrint(alloc, "{d:.4}", .{val});
+            defer alloc.free(s);
+            try writer.print("${d}\r\n{s}\r\n", .{ s.len, s });
+        }
+    }.call;
+
+    try writeBulkKey(w, "peak.allocated");
+    try writeInt(w, @intCast(tracker.peak_allocated));
+
+    try writeBulkKey(w, "total.allocated");
+    try writeInt(w, @intCast(tracker.current_allocated));
+
+    try writeBulkKey(w, "startup.allocated");
+    try writeInt(w, @intCast(tracker.startup_allocated));
+
+    try writeBulkKey(w, "replication.backlog");
+    try writeInt(w, @intCast(tracker.replication_backlog_bytes));
+
+    try writeBulkKey(w, "clients.slaves");
+    try writeInt(w, @intCast(tracker.clients_slaves_bytes));
+
+    try writeBulkKey(w, "clients.normal");
+    try writeInt(w, @intCast(tracker.clients_normal_bytes));
+
+    try writeBulkKey(w, "aof.buffer");
+    try writeInt(w, @intCast(tracker.aof_buffer_bytes));
+
+    try writeBulkKey(w, "overhead.total");
+    try writeInt(w, @intCast(overhead_total));
+
+    try writeBulkKey(w, "keys.count");
+    try writeInt(w, @intCast(keys_count));
+
+    try writeBulkKey(w, "keys.bytes-per-key");
+    try writeInt(w, @intCast(bytes_per_key));
+
+    try writeBulkKey(w, "dataset.bytes");
+    try writeInt(w, @intCast(tracker.dataset_bytes));
+
+    try writeBulkKey(w, "dataset.percentage");
+    try writeFloat(w, allocator, dataset_pct);
+
+    try writeBulkKey(w, "peak.percentage");
+    try writeFloat(w, allocator, peak_pct);
+
+    try writeBulkKey(w, "fragmentation");
+    try writeFloat(w, allocator, frag_ratio);
+
+    try writeBulkKey(w, "fragmentation.bytes");
+    try writeInt(w, frag_bytes);
+
+    try writeBulkKey(w, "allocator-frag.ratio");
+    try writeFloat(w, allocator, alloc_frag_ratio);
+
+    try writeBulkKey(w, "allocator-frag.bytes");
+    try writeInt(w, alloc_frag_bytes);
+
+    try writeBulkKey(w, "allocator-rss.ratio");
+    try writeFloat(w, allocator, alloc_rss_ratio);
+
+    try writeBulkKey(w, "allocator-rss.bytes");
+    try writeInt(w, alloc_rss_bytes);
+
+    try writeBulkKey(w, "rss-overhead.ratio");
+    try writeFloat(w, allocator, rss_overhead_ratio);
+
+    try writeBulkKey(w, "rss-overhead.bytes");
+    try writeInt(w, rss_overhead_bytes);
+
+    try writeBulkKey(w, "active.defrag.running");
+    try writeInt(w, defrag_running);
+
+    try writeBulkKey(w, "active.defrag.hits");
+    try writeInt(w, @intCast(defrag_stats.keys_defragmented));
+
+    try writeBulkKey(w, "active.defrag.misses");
+    try writeInt(w, @intCast(defrag_stats.keys_scanned -| defrag_stats.keys_defragmented));
+
+    try writeBulkKey(w, "active.defrag.key-hits");
+    try writeInt(w, @intCast(defrag_stats.keys_defragmented));
+
+    try writeBulkKey(w, "active.defrag.key-misses");
+    try writeInt(w, @intCast(defrag_stats.keys_scanned -| defrag_stats.keys_defragmented));
 
     return buf.toOwnedSlice(allocator);
 }
@@ -408,7 +500,7 @@ pub fn cmdSlowlog(
 }
 
 // Unit tests
-test "MEMORY STATS" {
+test "MEMORY STATS returns flat RESP array not bulk string" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
@@ -416,8 +508,64 @@ test "MEMORY STATS" {
     const result = try cmdMemoryStats(allocator, &storage);
     defer allocator.free(result);
 
+    // Must be a flat array (*N\r\n), not a bulk string ($N\r\n)
     try std.testing.expect(result.len > 0);
+    try std.testing.expect(std.mem.startsWith(u8, result, "*"));
+    // Must NOT be a bulk string
+    try std.testing.expect(!std.mem.startsWith(u8, result, "$"));
+}
+
+test "MEMORY STATS contains expected keys as RESP bulk strings" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdMemoryStats(allocator, &storage);
+    defer allocator.free(result);
+
+    // All keys appear as bulk strings in the flat array
     try std.testing.expect(std.mem.indexOf(u8, result, "keys.count") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "peak.allocated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "total.allocated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "dataset.bytes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "fragmentation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active.defrag.running") != null);
+}
+
+test "MEMORY STATS keys.count reflects actual key count" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // 0 keys initially — keys.count should be 0
+    const result0 = try cmdMemoryStats(allocator, &storage);
+    defer allocator.free(result0);
+    // The value after "keys.count" key entry should be :0
+    // Find the key entry "$10\r\nkeys.count\r\n" and check value is ":0\r\n"
+    try std.testing.expect(std.mem.indexOf(u8, result0, "keys.count") != null);
+
+    // Add 3 keys
+    _ = try storage.set("k1", "v1", null);
+    _ = try storage.set("k2", "v2", null);
+    _ = try storage.set("k3", "v3", null);
+
+    const result3 = try cmdMemoryStats(allocator, &storage);
+    defer allocator.free(result3);
+    try std.testing.expect(std.mem.indexOf(u8, result3, "keys.count") != null);
+    // With 3 keys, "keys.count\r\n:3\r\n" should be present
+    try std.testing.expect(std.mem.indexOf(u8, result3, ":3\r\n") != null);
+}
+
+test "MEMORY STATS has 26 key-value pairs (52 elements total)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdMemoryStats(allocator, &storage);
+    defer allocator.free(result);
+
+    // Should start with *52\r\n (26 pairs × 2)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*52\r\n"));
 }
 
 test "MEMORY USAGE" {
