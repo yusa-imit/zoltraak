@@ -11075,15 +11075,88 @@ pub const Storage = struct {
                     var group_it = stream_val.consumer_groups.iterator();
                     while (group_it.next()) |group_kv| {
                         const group = group_kv.value_ptr;
-                        try writer.print("*8\r\n", .{});
+                        // 6 key-value pairs = 12 elements per group (Redis 7.x format)
+                        try writer.print("*12\r\n", .{});
+
+                        // 1. name
                         try writer.print("$4\r\nname\r\n${d}\r\n{s}\r\n", .{ group_kv.key_ptr.len, group_kv.key_ptr.* });
-                        try writer.print("$9\r\nconsumers\r\n:{d}\r\n", .{group.consumers.count()});
-                        try writer.print("$7\r\npending\r\n:{d}\r\n", .{group.pending.items.len});
+
+                        // 2. last-delivered-id
                         try writer.print("$16\r\nlast-delivered-id\r\n${d}\r\n{d}-{d}\r\n", .{
                             std.fmt.count("{d}-{d}", .{ group.last_delivered_id.ms, group.last_delivered_id.seq }),
                             group.last_delivered_id.ms,
                             group.last_delivered_id.seq,
                         });
+
+                        // 3. entries-read: nil if group started at arbitrary position, integer otherwise
+                        try writer.print("$12\r\nentries-read\r\n", .{});
+                        if (group.arbitrary_start) {
+                            try writer.print("$-1\r\n", .{});
+                        } else {
+                            try writer.print(":{d}\r\n", .{group.entries_read});
+                        }
+
+                        // 4. pel-count: total pending entries across all consumers
+                        try writer.print("$9\r\npel-count\r\n:{d}\r\n", .{group.pending.items.len});
+
+                        // 5. pending: array of [id, consumer-name, delivery_time_ms, delivery_count]
+                        try writer.print("$7\r\npending\r\n*{d}\r\n", .{group.pending.items.len});
+                        for (group.pending.items) |pending| {
+                            const id_str_len = std.fmt.count("{d}-{d}", .{ pending.id.ms, pending.id.seq });
+                            try writer.print("*4\r\n${d}\r\n{d}-{d}\r\n${d}\r\n{s}\r\n:{d}\r\n:{d}\r\n", .{
+                                id_str_len,
+                                pending.id.ms,
+                                pending.id.seq,
+                                pending.consumer.len,
+                                pending.consumer,
+                                pending.delivery_time,
+                                pending.delivery_count,
+                            });
+                        }
+
+                        // 6. consumers: array of consumer objects with per-consumer pending info
+                        try writer.print("$9\r\nconsumers\r\n*{d}\r\n", .{group.consumers.count()});
+                        var consumer_it = group.consumers.iterator();
+                        while (consumer_it.next()) |consumer_kv| {
+                            const consumer = consumer_kv.value_ptr;
+                            // 5 key-value pairs = 10 elements per consumer
+                            try writer.print("*10\r\n", .{});
+
+                            // consumer name
+                            try writer.print("$4\r\nname\r\n${d}\r\n{s}\r\n", .{ consumer_kv.key_ptr.len, consumer_kv.key_ptr.* });
+
+                            // seen-time: last interaction in ms since epoch
+                            try writer.print("$9\r\nseen-time\r\n:{d}\r\n", .{consumer.last_attempted_time});
+
+                            // active-time: last successful delivery in ms since epoch
+                            try writer.print("$11\r\nactive-time\r\n:{d}\r\n", .{consumer.last_successful_time});
+
+                            // pel-count: number of pending messages for this consumer
+                            try writer.print("$9\r\npel-count\r\n:{d}\r\n", .{consumer.pending.items.len});
+
+                            // pending: array of [id, delivery_time_ms, delivery_count]
+                            try writer.print("$7\r\npending\r\n*{d}\r\n", .{consumer.pending.items.len});
+                            for (consumer.pending.items) |pending_id| {
+                                // Look up delivery info from group-level PEL
+                                var delivery_time: i64 = 0;
+                                var delivery_count: u64 = 0;
+                                for (group.pending.items) |gpe| {
+                                    if (gpe.id.ms == pending_id.ms and gpe.id.seq == pending_id.seq) {
+                                        delivery_time = gpe.delivery_time;
+                                        delivery_count = gpe.delivery_count;
+                                        break;
+                                    }
+                                }
+                                const pid_str_len = std.fmt.count("{d}-{d}", .{ pending_id.ms, pending_id.seq });
+                                try writer.print("*3\r\n${d}\r\n{d}-{d}\r\n:{d}\r\n:{d}\r\n", .{
+                                    pid_str_len,
+                                    pending_id.ms,
+                                    pending_id.seq,
+                                    delivery_time,
+                                    delivery_count,
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -14788,4 +14861,112 @@ test "storage - dirty_count increments on hset()" {
     const before = storage.getDirtyCount();
     _ = try storage.hset("myhash", &[_][]const u8{"f1"}, &[_][]const u8{"v1"}, null);
     try std.testing.expectEqual(before + 1, storage.getDirtyCount());
+}
+
+// ── XINFO STREAM FULL format tests (Iteration 319) ───────────────────────────
+
+test "storage - xinfoStream FULL empty group has 12 elements" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.xadd(allocator, "mystream", null, null, false, &[_][]const u8{ "f", "v" });
+    try storage.xgroupCreate("mystream", "grp1", "0-0", null);
+
+    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    defer allocator.free(result);
+
+    // Full mode group should have *12 elements (6 key-value pairs)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*12\r\n") != null);
+    // Should include all 6 keys
+    try std.testing.expect(std.mem.indexOf(u8, result, "entries-read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "pel-count") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "last-delivered-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "consumers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "pending") != null);
+}
+
+test "storage - xinfoStream FULL entries-read is nil for arbitrary_start" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.xadd(allocator, "mystream", null, null, false, &[_][]const u8{ "f", "v" });
+    // "0-0" is not matched by "0" or "$" checks, so arbitrary_start=true
+    try storage.xgroupCreate("mystream", "grp1", "0-0", null);
+
+    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    defer allocator.free(result);
+
+    // entries-read should be nil ($-1\r\n) for arbitrary_start groups
+    try std.testing.expect(std.mem.indexOf(u8, result, "entries-read\r\n$-1\r\n") != null);
+}
+
+test "storage - xinfoStream FULL entries-read is numeric for groups starting at 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.xadd(allocator, "mystream", null, null, false, &[_][]const u8{ "f", "v" });
+    // "0" exactly sets arbitrary_start=false and entries_read=0
+    try storage.xgroupCreate("mystream", "grp1", "0", null);
+
+    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    defer allocator.free(result);
+
+    // entries-read should be integer (not $-1) for non-arbitrary groups
+    // 0 entries have been read (no XREADGROUP yet)
+    try std.testing.expect(std.mem.indexOf(u8, result, "entries-read\r\n:0\r\n") != null);
+}
+
+test "storage - xinfoStream FULL pending array has id/consumer/time/count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.xadd(allocator, "mystream", null, null, false, &[_][]const u8{ "f", "v" });
+    try storage.xgroupCreate("mystream", "grp1", "0", null);
+    // Read the entry (creates pending for consumer "c1")
+    const read_result = try storage.xreadgroup(allocator, "grp1", "c1", "mystream", ">", null, false);
+    defer if (read_result) |entries| {
+        var list = entries;
+        for (list.items) |*e| e.deinit(allocator);
+        list.deinit(allocator);
+    };
+
+    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    defer allocator.free(result);
+
+    // Group's pending array should have *4 entries (id, consumer, delivery_time, delivery_count)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*4\r\n") != null);
+    // Consumer name "c1" should appear in pending
+    try std.testing.expect(std.mem.indexOf(u8, result, "$2\r\nc1\r\n") != null);
+    // pel-count should be 1
+    try std.testing.expect(std.mem.indexOf(u8, result, "pel-count\r\n:1\r\n") != null);
+}
+
+test "storage - xinfoStream FULL consumers array has proper objects" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.xadd(allocator, "mystream", null, null, false, &[_][]const u8{ "f", "v" });
+    try storage.xgroupCreate("mystream", "grp1", "0", null);
+    const read_result2 = try storage.xreadgroup(allocator, "grp1", "consumer1", "mystream", ">", null, false);
+    defer if (read_result2) |entries| {
+        var list = entries;
+        for (list.items) |*e| e.deinit(allocator);
+        list.deinit(allocator);
+    };
+
+    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    defer allocator.free(result);
+
+    // Each consumer object has 10 elements (5 key-value pairs)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*10\r\n") != null);
+    // Consumer name should appear
+    try std.testing.expect(std.mem.indexOf(u8, result, "$4\r\nname\r\n$9\r\nconsumer1\r\n") != null);
+    // Consumer should have seen-time and active-time
+    try std.testing.expect(std.mem.indexOf(u8, result, "seen-time") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "active-time") != null);
 }
