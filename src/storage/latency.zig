@@ -63,6 +63,7 @@ pub const LatencySample = struct {
 pub const EventSample = struct {
     event: EventType,
     sample: LatencySample,
+    max_latency: u32, // All-time maximum latency in microseconds
 };
 
 /// Ring buffer for latency history (keeps last 160 samples per event)
@@ -70,12 +71,14 @@ const HistoryBuffer = struct {
     samples: [160]LatencySample,
     head: usize,
     count: usize,
+    max_latency: u32, // All-time max latency in microseconds (persists across resets of ring buffer)
 
     pub fn init() HistoryBuffer {
         return .{
             .samples = undefined,
             .head = 0,
             .count = 0,
+            .max_latency = 0,
         };
     }
 
@@ -85,6 +88,9 @@ const HistoryBuffer = struct {
         self.head = (self.head + 1) % 160;
         if (self.count < 160) {
             self.count += 1;
+        }
+        if (sample.latency > self.max_latency) {
+            self.max_latency = sample.latency;
         }
     }
 
@@ -112,6 +118,7 @@ const HistoryBuffer = struct {
     pub fn reset(self: *HistoryBuffer) void {
         self.head = 0;
         self.count = 0;
+        self.max_latency = 0;
     }
 };
 
@@ -239,7 +246,11 @@ pub const LatencyMonitor = struct {
         var it = self.histories.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.getLatest()) |sample| {
-                try result.append(allocator, .{ .event = entry.key_ptr.*, .sample = sample });
+                try result.append(allocator, .{
+                    .event = entry.key_ptr.*,
+                    .sample = sample,
+                    .max_latency = entry.value_ptr.max_latency,
+                });
             }
         }
 
@@ -402,4 +413,51 @@ test "LatencyMonitor.getAllLatest" {
     defer std.testing.allocator.free(latest);
 
     try std.testing.expectEqual(@as(usize, 3), latest.len);
+}
+
+test "HistoryBuffer.max_latency tracking" {
+    var buf = HistoryBuffer.init();
+
+    // Initial max should be 0
+    try std.testing.expectEqual(@as(u32, 0), buf.max_latency);
+
+    buf.add(LatencySample.init(1000, 500));
+    try std.testing.expectEqual(@as(u32, 500), buf.max_latency);
+
+    buf.add(LatencySample.init(2000, 1500));
+    try std.testing.expectEqual(@as(u32, 1500), buf.max_latency);
+
+    // Adding a smaller value should not decrease max
+    buf.add(LatencySample.init(3000, 100));
+    try std.testing.expectEqual(@as(u32, 1500), buf.max_latency);
+
+    // Resetting should zero out max
+    buf.reset();
+    try std.testing.expectEqual(@as(u32, 0), buf.max_latency);
+}
+
+test "LatencyMonitor.getAllLatest includes max_latency" {
+    var monitor = try LatencyMonitor.init(std.testing.allocator);
+    defer monitor.deinit();
+
+    // Record 3 events for command: max should be 10000
+    try monitor.recordEvent(.command, 2000);
+    try monitor.recordEvent(.command, 10000);
+    try monitor.recordEvent(.command, 3000);
+
+    const latest = try monitor.getAllLatest(std.testing.allocator);
+    defer std.testing.allocator.free(latest);
+
+    try std.testing.expectEqual(@as(usize, 1), latest.len);
+
+    // Find the command entry
+    var found = false;
+    for (latest) |entry| {
+        if (entry.event == .command) {
+            try std.testing.expectEqual(@as(u32, 3000), entry.sample.latency);  // latest
+            try std.testing.expectEqual(@as(u32, 10000), entry.max_latency);     // max
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
 }

@@ -502,6 +502,10 @@ test "SLOWLOG integration" {
 }
 
 /// LATENCY LATEST - Get latest latency samples for all event types
+///
+/// Returns an array where each entry is a 4-element array:
+///   [event_name, unix_timestamp_sec, latest_latency_ms, all_time_max_latency_ms]
+/// This matches the Redis LATENCY LATEST wire format exactly.
 pub fn cmdLatencyLatest(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -517,22 +521,34 @@ pub fn cmdLatencyLatest(
     try w.print("*{d}\r\n", .{latest.len});
 
     for (latest) |entry| {
-        try w.writeAll("*2\r\n");
+        // Each entry: *4 [name, timestamp_sec, latest_ms, max_ms]
+        try w.writeAll("*4\r\n");
 
-        // Event name
+        // 1) Event name (bulk string)
         const event_name = entry.event.toString();
         try w.print("${d}\r\n{s}\r\n", .{ event_name.len, event_name });
 
-        // Event details array: [timestamp_ms, latency_us]
-        try w.writeAll("*2\r\n");
-        try w.print(":{d}\r\n", .{entry.sample.timestamp});
-        try w.print(":{d}\r\n", .{entry.sample.latency});
+        // 2) Unix timestamp in seconds (LatencySample stores milliseconds)
+        const timestamp_sec = @divTrunc(entry.sample.timestamp, 1000);
+        try w.print(":{d}\r\n", .{timestamp_sec});
+
+        // 3) Latest latency in milliseconds (stored as microseconds, convert)
+        const latest_ms = @divTrunc(entry.sample.latency, 1000);
+        try w.print(":{d}\r\n", .{latest_ms});
+
+        // 4) All-time max latency in milliseconds
+        const max_ms = @divTrunc(entry.max_latency, 1000);
+        try w.print(":{d}\r\n", .{max_ms});
     }
 
     return buf.toOwnedSlice(allocator);
 }
 
 /// LATENCY HISTORY - Get latency history for a specific event
+///
+/// Returns an array where each entry is a 2-element array:
+///   [unix_timestamp_sec, latency_ms]
+/// This matches the Redis LATENCY HISTORY wire format exactly.
 pub fn cmdLatencyHistory(
     allocator: std.mem.Allocator,
     storage: *Storage,
@@ -553,9 +569,14 @@ pub fn cmdLatencyHistory(
     if (history) |h| {
         try w.print("*{d}\r\n", .{h.len});
         for (h) |sample| {
+            // Each entry: *2 [timestamp_sec, latency_ms]
             try w.writeAll("*2\r\n");
-            try w.print(":{d}\r\n", .{sample.timestamp});
-            try w.print(":{d}\r\n", .{sample.latency});
+            // Timestamp stored in ms → convert to seconds
+            const timestamp_sec = @divTrunc(sample.timestamp, 1000);
+            try w.print(":{d}\r\n", .{timestamp_sec});
+            // Latency stored in microseconds → convert to milliseconds
+            const latency_ms = @divTrunc(sample.latency, 1000);
+            try w.print(":{d}\r\n", .{latency_ms});
         }
     } else {
         try w.writeAll("*0\r\n");
@@ -849,28 +870,75 @@ test "cmdLatencyLatest with events" {
     var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
     defer storage.deinit();
 
+    // Record 1ms (1000us) for command and 5ms (5000us) for fork
     try storage.latency_monitor.recordEvent(.command, 1000);
     try storage.latency_monitor.recordEvent(.fork, 5000);
 
     const result = try cmdLatencyLatest(std.testing.allocator, &storage);
     defer std.testing.allocator.free(result);
 
+    // Should start with *2 (2 event entries)
     try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    // Each entry should be *4 (name, timestamp_sec, latest_ms, max_ms)
+    try std.testing.expect(std.mem.indexOf(u8, result, "*4\r\n") != null);
+    // Event names present
+    try std.testing.expect(std.mem.indexOf(u8, result, "command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "fork") != null);
+    // Latencies in milliseconds: 1000us → 1ms, 5000us → 5ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":5\r\n") != null);
+}
+
+test "cmdLatencyLatest max_latency tracking" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    // Record multiple events - max should be 10000us = 10ms
+    try storage.latency_monitor.recordEvent(.command, 2000);
+    try storage.latency_monitor.recordEvent(.command, 10000);
+    try storage.latency_monitor.recordEvent(.command, 3000);
+
+    const result = try cmdLatencyLatest(std.testing.allocator, &storage);
+    defer std.testing.allocator.free(result);
+
+    // Latest latency: 3ms (3000us), max latency: 10ms (10000us)
+    try std.testing.expect(std.mem.indexOf(u8, result, ":10\r\n") != null); // max_ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":3\r\n") != null);  // latest_ms
 }
 
 test "cmdLatencyHistory" {
     var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
     defer storage.deinit();
 
+    // Record 500us and 1500us events
     try storage.latency_monitor.recordEvent(.aof_write, 500);
     try storage.latency_monitor.recordEvent(.aof_write, 1500);
 
     const result = try cmdLatencyHistory(std.testing.allocator, &storage, "aof-write");
     defer std.testing.allocator.free(result);
 
+    // Should have 2 entries
     try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, ":500\r\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, ":1500\r\n") != null);
+    // Each entry should be [timestamp_sec, latency_ms]
+    // 500us → 0ms, 1500us → 1ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":0\r\n") != null);  // 500us → 0ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);  // 1500us → 1ms
+}
+
+test "cmdLatencyHistory returns correct Redis format" {
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    // Record 5ms (5000us) event
+    try storage.latency_monitor.recordEvent(.command, 5000);
+
+    const result = try cmdLatencyHistory(std.testing.allocator, &storage, "command");
+    defer std.testing.allocator.free(result);
+
+    // Should have 1 entry: *1 then *2 [timestamp_sec, 5ms]
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":5\r\n") != null);  // 5ms
 }
 
 test "cmdLatencyReset specific event" {
