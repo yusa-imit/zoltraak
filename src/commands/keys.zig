@@ -1319,7 +1319,7 @@ pub fn cmdSort(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     var get_patterns: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
     defer get_patterns.deinit(allocator);
     var limit_offset: ?usize = null;
-    var limit_count: ?usize = null;
+    var limit_count: ?usize = null; // null means "no limit"; 0 is valid (return 0 elements)
     var descending = false;
     var alpha = false;
     var store_dest: ?[]const u8 = null;
@@ -1363,9 +1363,11 @@ pub fn cmdSort(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
             limit_offset = std.fmt.parseInt(usize, offset_str, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
-            limit_count = std.fmt.parseInt(usize, count_str, 10) catch {
+            // count can be -1 (or any negative) to mean "return all from offset"
+            const count_i64 = std.fmt.parseInt(i64, count_str, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
+            limit_count = if (count_i64 < 0) null else @intCast(count_i64);
         } else if (std.mem.eql(u8, opt_upper, "ASC")) {
             descending = false;
         } else if (std.mem.eql(u8, opt_upper, "DESC")) {
@@ -1693,11 +1695,37 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         }
         return w.writeInteger(1);
     } else if (std.mem.eql(u8, sub_upper, "IDLETIME")) {
+        // OBJECT IDLETIME is not available when maxmemory-policy is LFU-based
+        const idletime_policy_is_lfu = blk: {
+            var cv = storage.config.get("maxmemory-policy") catch break :blk false;
+            defer cv.deinit(allocator);
+            break :blk switch (cv) {
+                .string => |s| std.ascii.eqlIgnoreCase(s, "allkeys-lfu") or
+                    std.ascii.eqlIgnoreCase(s, "volatile-lfu"),
+                else => false,
+            };
+        };
+        if (idletime_policy_is_lfu) {
+            return w.writeError("ERR object idle time is only available when maxmemory-policy is not set to an LFU policy.");
+        }
         const idle = storage.getObjectIdleTime(key) orelse {
             return w.writeError("ERR no such key");
         };
         return w.writeInteger(@intCast(idle));
     } else if (std.mem.eql(u8, sub_upper, "FREQ")) {
+        // OBJECT FREQ requires LFU-based maxmemory-policy
+        const freq_policy_is_lfu = blk: {
+            var cv = storage.config.get("maxmemory-policy") catch break :blk false;
+            defer cv.deinit(allocator);
+            break :blk switch (cv) {
+                .string => |s| std.ascii.eqlIgnoreCase(s, "allkeys-lfu") or
+                    std.ascii.eqlIgnoreCase(s, "volatile-lfu"),
+                else => false,
+            };
+        };
+        if (!freq_policy_is_lfu) {
+            return w.writeError("ERR object freq is not allowed when maxmemory-policy is not set to an LFU policy.");
+        }
         if (storage.getType(key) == null) {
             return w.writeError("ERR no such key");
         }
@@ -2120,6 +2148,52 @@ test "SORT_RO rejects STORE option" {
     try std.testing.expect(std.mem.indexOf(u8, response, "STORE") != null);
 }
 
+test "SORT LIMIT count -1 returns all elements from offset" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("mylist", &[_][]const u8{ "3", "1", "4", "1", "5" }, null);
+
+    // SORT mylist LIMIT 2 -1 — skip first 2, return all remaining
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "LIMIT" },
+        .{ .bulk_string = "2" },
+        .{ .bulk_string = "-1" },
+    };
+    const response = try cmdSort(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Sorted list is: 1, 1, 3, 4, 5 — skip 2 → 3, 4, 5 (3 elements)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "5") != null);
+}
+
+test "SORT LIMIT count 0 returns empty array" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("mylist", &[_][]const u8{ "3", "1", "2" }, null);
+
+    // SORT mylist LIMIT 0 0 — return 0 elements
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "LIMIT" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdSort(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("*0\r\n", response);
+}
+
 test "HSCAN NOVALUES - basic with populated hash" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator);
@@ -2533,11 +2607,13 @@ test "OBJECT ENCODING - set switches to hashtable when member length exceeds thr
     try std.testing.expectEqualStrings("$9\r\nhashtable\r\n", result);
 }
 
-test "OBJECT FREQ - returns non-negative integer for existing key" {
+test "OBJECT FREQ - returns non-negative integer for existing key with LFU policy" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    // OBJECT FREQ requires LFU-based maxmemory-policy
+    try storage.config.set("maxmemory-policy", "allkeys-lfu");
     try storage.set("mykey", "hello", null);
     const args = [_]RespValue{
         .{ .bulk_string = "OBJECT" },
@@ -2551,11 +2627,13 @@ test "OBJECT FREQ - returns non-negative integer for existing key" {
     try std.testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
 }
 
-test "OBJECT FREQ - returns error for non-existing key" {
+test "OBJECT FREQ - returns error for non-existing key with LFU policy" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    // OBJECT FREQ requires LFU-based maxmemory-policy
+    try storage.config.set("maxmemory-policy", "allkeys-lfu");
     const args = [_]RespValue{
         .{ .bulk_string = "OBJECT" },
         .{ .bulk_string = "FREQ" },
@@ -2563,14 +2641,49 @@ test "OBJECT FREQ - returns error for non-existing key" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR no such key"));
 }
 
-test "OBJECT IDLETIME - returns non-negative integer for existing key" {
+test "OBJECT FREQ - returns error when maxmemory-policy is not LFU" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    // Default policy is noeviction — OBJECT FREQ should fail
+    try storage.set("mykey", "hello", null);
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "FREQ" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR object freq"));
+}
+
+test "OBJECT FREQ - returns error when maxmemory-policy is allkeys-lru (non-LFU)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.config.set("maxmemory-policy", "allkeys-lru");
+    try storage.set("mykey", "hello", null);
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "FREQ" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR object freq"));
+}
+
+test "OBJECT IDLETIME - returns non-negative integer for existing key with non-LFU policy" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Default policy is noeviction — OBJECT IDLETIME should work
     try storage.set("mykey", "hello", null);
     const args = [_]RespValue{
         .{ .bulk_string = "OBJECT" },
@@ -2597,6 +2710,41 @@ test "OBJECT IDLETIME - returns error for non-existing key" {
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "OBJECT IDLETIME - returns error when maxmemory-policy is LFU" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set LFU policy — OBJECT IDLETIME should fail
+    try storage.config.set("maxmemory-policy", "allkeys-lfu");
+    try storage.set("mykey", "hello", null);
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "IDLETIME" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR object idle time"));
+}
+
+test "OBJECT IDLETIME - returns error when maxmemory-policy is volatile-lfu" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.config.set("maxmemory-policy", "volatile-lfu");
+    try storage.set("mykey", "hello", null);
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "IDLETIME" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR object idle time"));
 }
 
 // ── OBJECT VERSION tests ──────────────────────────────────────────────────────
