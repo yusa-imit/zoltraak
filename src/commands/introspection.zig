@@ -703,7 +703,8 @@ pub fn cmdLatencyHistory(
     event_name: []const u8,
 ) ![]const u8 {
     const event_type = EventType.fromString(event_name) orelse {
-        return std.fmt.allocPrint(allocator, "-ERR Invalid event type\r\n", .{});
+        // Unknown event type → return empty array (Redis behavior)
+        return std.fmt.allocPrint(allocator, "*0\r\n", .{});
     };
 
     const history = try storage.latency_monitor.getHistory(event_type, allocator);
@@ -1071,6 +1072,19 @@ test "cmdLatencyHistory" {
     // 500us → 0ms, 1500us → 1ms
     try std.testing.expect(std.mem.indexOf(u8, result, ":0\r\n") != null);  // 500us → 0ms
     try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);  // 1500us → 1ms
+}
+
+test "cmdLatencyHistory unknown event returns empty array" {
+    // Regression test: unknown event types were returning ERR instead of empty array.
+    // Redis behavior: LATENCY HISTORY <unknown> returns *0\r\n (empty array).
+    var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
+    defer storage.deinit();
+
+    const result = try cmdLatencyHistory(std.testing.allocator, &storage, "not-a-real-event");
+    defer std.testing.allocator.free(result);
+
+    // Should return empty array, not an error
+    try std.testing.expectEqualStrings("*0\r\n", result);
 }
 
 test "cmdLatencyHistory returns correct Redis format" {

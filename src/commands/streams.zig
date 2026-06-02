@@ -1559,6 +1559,40 @@ test "streams - XINFO STREAM FULL includes entries-added and max-deleted-entry-i
     try std.testing.expect(std.mem.indexOf(u8, result, "entries-added\r\n:1\r\n") != null);
 }
 
+test "streams - XINFO STREAM FULL last-delivered-id has correct bulk string length" {
+    // Regression test: $16 was wrong for "last-delivered-id" (17 chars) in FULL group section,
+    // causing off-by-one RESP parse error when consumer groups are present.
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "100-0" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    _ = try storage.xgroupCreate("s", "grp", "0", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XINFO" },
+        RespValue{ .bulk_string = "STREAM" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "FULL" },
+    };
+    const result = try cmdXinfoStream(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Must contain correctly-sized bulk string for "last-delivered-id" (17 chars)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$17\r\nlast-delivered-id\r\n") != null);
+    // Must NOT contain the wrong size
+    try std.testing.expect(std.mem.indexOf(u8, result, "$16\r\nlast-delivered-id\r\n") == null);
+}
+
 test "streams - XPENDING summary returns raw RESP array not wrapped simple string" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
@@ -1622,6 +1656,39 @@ test "streams - XPENDING empty group returns *4 with zero count" {
     // Empty pending: *4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n
     try std.testing.expect(std.mem.startsWith(u8, result, "*4\r\n:0\r\n"));
     try std.testing.expect(!std.mem.startsWith(u8, result, "+"));
+}
+
+test "streams - XINFO STREAM radix-tree-nodes has correct bulk string length" {
+    // Regression test: $17 was wrong for "radix-tree-nodes" (16 chars), causing
+    // redis-cli to see '2' as invalid RESP type byte and fail with protocol error.
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const xadd_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd_args);
+    defer allocator.free(r1);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XINFO" },
+        RespValue{ .bulk_string = "STREAM" },
+        RespValue{ .bulk_string = "s" },
+    };
+    const result = try cmdXinfoStream(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Must contain the correctly-sized bulk string for "radix-tree-nodes" (16 chars)
+    try std.testing.expect(std.mem.indexOf(u8, result, "$16\r\nradix-tree-nodes\r\n") != null);
+    // Must NOT contain the wrong size
+    try std.testing.expect(std.mem.indexOf(u8, result, "$17\r\nradix-tree-nodes\r\n") == null);
+    // "radix-tree-nodes" is followed by integer :2
+    try std.testing.expect(std.mem.indexOf(u8, result, "$16\r\nradix-tree-nodes\r\n:2\r\n") != null);
 }
 
 test "streams - XINFO STREAM empty stream shows 0-0 IDs" {

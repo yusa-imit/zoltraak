@@ -10977,7 +10977,7 @@ pub const Storage = struct {
                     try writer.print("*20\r\n", .{});
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
-                    try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
+                    try writer.print("$16\r\nradix-tree-nodes\r\n:2\r\n", .{});
                     try writer.print("$17\r\nlast-generated-id\r\n${d}\r\n{d}-{d}\r\n", .{
                         std.fmt.count("{d}-{d}", .{ last_id.ms, last_id.seq }),
                         last_id.ms,
@@ -11040,7 +11040,7 @@ pub const Storage = struct {
                     try writer.print("*18\r\n", .{});
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
-                    try writer.print("$17\r\nradix-tree-nodes\r\n:2\r\n", .{});
+                    try writer.print("$16\r\nradix-tree-nodes\r\n:2\r\n", .{});
                     try writer.print("$17\r\nlast-generated-id\r\n${d}\r\n{d}-{d}\r\n", .{
                         std.fmt.count("{d}-{d}", .{ last_id.ms, last_id.seq }),
                         last_id.ms,
@@ -11082,7 +11082,7 @@ pub const Storage = struct {
                         try writer.print("$4\r\nname\r\n${d}\r\n{s}\r\n", .{ group_kv.key_ptr.len, group_kv.key_ptr.* });
 
                         // 2. last-delivered-id
-                        try writer.print("$16\r\nlast-delivered-id\r\n${d}\r\n{d}-{d}\r\n", .{
+                        try writer.print("$17\r\nlast-delivered-id\r\n${d}\r\n{d}-{d}\r\n", .{
                             std.fmt.count("{d}-{d}", .{ group.last_delivered_id.ms, group.last_delivered_id.seq }),
                             group.last_delivered_id.ms,
                             group.last_delivered_id.seq,
