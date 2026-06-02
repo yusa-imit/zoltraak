@@ -413,6 +413,32 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         const start_time = std.time.milliTimestamp();
         const check_interval_ms = 100; // Check every 100ms
 
+        // Resolve "$" IDs to actual start IDs for blocking retries.
+        // Key: key string (points into args), Value: next ID to poll from (exclusive start)
+        var dollar_start_ids = std.StringHashMap(StreamId).init(allocator);
+        defer dollar_start_ids.deinit();
+
+        for (keys, ids) |key_val, id_val| {
+            const k = switch (key_val) {
+                .bulk_string => |s| s,
+                else => continue,
+            };
+            const id_str2 = switch (id_val) {
+                .bulk_string => |s| s,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, id_str2, "$")) continue;
+
+            // Get current last ID of the stream (null = stream doesn't exist yet)
+            const last_id = storage.getStreamLastId(k);
+            // Next ID to poll from = last_id + 1 seq (exclusive start)
+            const next_id: StreamId = if (last_id) |lid| .{
+                .ms = if (lid.seq == std.math.maxInt(u64)) lid.ms +% 1 else lid.ms,
+                .seq = if (lid.seq == std.math.maxInt(u64)) 0 else lid.seq + 1,
+            } else .{ .ms = 0, .seq = 0 };
+            try dollar_start_ids.put(k, next_id);
+        }
+
         // Blocking loop
         while (true) {
             // Check timeout
@@ -452,36 +478,16 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
                 // Parse start ID ($ means read from end)
                 var entries = blk: {
-                    if (std.mem.eql(u8, id_str, "$")) {
-                        // For $, we need to check if there are new entries since we started blocking
-                        // Get current last ID and check if there are entries after it
-                        const raw_entries = storage.xrange(allocator, key, id_str, "+", count) catch |err| switch (err) {
-                            error.WrongType => continue,
-                            else => |e| return e,
-                        } orelse break :blk std.ArrayList(StreamEntry){};
-                        defer allocator.free(raw_entries);
+                    // Resolve effective start ID for xrange
+                    const effective_start: []const u8 = if (dollar_start_ids.get(key)) |start_id| eff: {
+                        // Format start ID as "ms-seq" for xrange
+                        const start_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ start_id.ms, start_id.seq });
+                        break :eff start_str;
+                    } else id_str; // Non-$ IDs use as-is
 
-                        // Convert slice to ArrayList
-                        var result = std.ArrayList(StreamEntry){};
-                        for (raw_entries) |entry| {
-                            // Clone fields
-                            var cloned_fields = std.ArrayList([]const u8){};
-                            for (entry.fields.items) |field| {
-                                const owned = try allocator.dupe(u8, field);
-                                try cloned_fields.append(allocator, owned);
-                            }
+                    defer if (dollar_start_ids.get(key) != null) allocator.free(effective_start);
 
-                            try result.append(allocator, StreamEntry{
-                                .id = entry.id,
-                                .fields = cloned_fields,
-                            });
-                        }
-
-                        break :blk result;
-                    }
-
-                    // Use xrange internally
-                    const raw_entries = storage.xrange(allocator, key, id_str, "+", count) catch |err| switch (err) {
+                    const raw_entries = storage.xrange(allocator, key, effective_start, "+", count) catch |err| switch (err) {
                         error.WrongType => continue,
                         else => |e| return e,
                     } orelse break :blk std.ArrayList(StreamEntry){};
@@ -2027,4 +2033,75 @@ test "XGROUP CREATE ENTRIESREAD - invalid value returns error" {
     const result = try cmdXgroup(allocator, &storage, &args, &ps, 0);
     defer allocator.free(result);
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "XREAD BLOCK with $ ID on empty stream returns null after timeout" {
+    const allocator = std.testing.allocator;
+    var storage = try storage_mod.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // XREAD BLOCK 100 STREAMS nonexistent $
+    // Should timeout and return null, not error
+    const args = [_]RespValue{
+        .{ .bulk_string = "XREAD" },
+        .{ .bulk_string = "BLOCK" },
+        .{ .bulk_string = "100" },
+        .{ .bulk_string = "STREAMS" },
+        .{ .bulk_string = "mystream" },
+        .{ .bulk_string = "$" },
+    };
+    const result = try cmdXread(allocator, &storage, &args);
+    defer allocator.free(result);
+
+    // Should return null array
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "XREAD BLOCK with $ ID on non-empty stream returns new entries" {
+    const allocator = std.testing.allocator;
+    var storage = try storage_mod.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create stream with one entry
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field", "value" }, null, .{});
+
+    // XREAD BLOCK 100 STREAMS mystream $
+    // Should immediately timeout since no entries after stream's last ID
+    const args = [_]RespValue{
+        .{ .bulk_string = "XREAD" },
+        .{ .bulk_string = "BLOCK" },
+        .{ .bulk_string = "100" },
+        .{ .bulk_string = "STREAMS" },
+        .{ .bulk_string = "mystream" },
+        .{ .bulk_string = "$" },
+    };
+    const result = try cmdXread(allocator, &storage, &args);
+    defer allocator.free(result);
+
+    // Should return null (no new entries after last_id)
+    try std.testing.expectEqualStrings("$-1\r\n", result);
+}
+
+test "XREAD with specific ID (not $) works correctly" {
+    const allocator = std.testing.allocator;
+    var storage = try storage_mod.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Create stream with entries
+    _ = try storage.xadd("mystream", "1000-0", &[_][]const u8{ "field", "value1" }, null, .{});
+    _ = try storage.xadd("mystream", "2000-0", &[_][]const u8{ "field", "value2" }, null, .{});
+
+    // XREAD STREAMS mystream 1500-0 (should return entry at 2000-0)
+    const args = [_]RespValue{
+        .{ .bulk_string = "XREAD" },
+        .{ .bulk_string = "STREAMS" },
+        .{ .bulk_string = "mystream" },
+        .{ .bulk_string = "1500-0" },
+    };
+    const result = try cmdXread(allocator, &storage, &args);
+    defer allocator.free(result);
+
+    // Should return array with stream data
+    try std.testing.expect(std.mem.startsWith(u8, result, "*"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "2000-0") != null);
 }

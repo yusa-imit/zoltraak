@@ -9407,6 +9407,25 @@ pub const Storage = struct {
         }
     }
 
+    /// Get the last entry ID of a stream without touching keyspace stats.
+    /// Returns null if the key doesn't exist, has expired, or is not a stream.
+    /// Used for resolving "$" IDs in blocking XREAD operations.
+    pub fn getStreamLastId(self: *Storage, key: []const u8) ?Value.StreamId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+            return null;
+        }
+
+        return switch (entry.value_ptr.*) {
+            .stream => |*stream_val| stream_val.last_id,
+            else => null,
+        };
+    }
+
     /// Query range of stream entries by ID.
     /// Returns slice of (id, fields) tuples. Caller must free.
     /// start/end can be "-" (min) or "+" (max) or specific IDs.
@@ -14969,4 +14988,55 @@ test "storage - xinfoStream FULL consumers array has proper objects" {
     // Consumer should have seen-time and active-time
     try std.testing.expect(std.mem.indexOf(u8, result, "seen-time") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "active-time") != null);
+}
+
+test "storage - getStreamLastId returns null for non-existent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?Value.StreamId, null), storage.getStreamLastId("nonexistent"));
+}
+
+test "storage - getStreamLastId returns null for non-stream type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.set(allocator, "mykey", "value");
+
+    try std.testing.expectEqual(@as(?Value.StreamId, null), storage.getStreamLastId("mykey"));
+}
+
+test "storage - getStreamLastId returns correct last ID after XADD" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "name", "alice" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    const id2 = (try storage.xadd("s", "2000-0", &fields, null, .{})).?;
+
+    const last = storage.getStreamLastId("s");
+    try std.testing.expect(last != null);
+    try std.testing.expectEqual(id2.ms, last.?.ms);
+    try std.testing.expectEqual(id2.seq, last.?.seq);
+}
+
+test "storage - getStreamLastId returns null for expired stream" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "name", "alice" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+
+    // Set key to expire in 1 millisecond
+    const now_ms = storage.getCurrentTimestamp();
+    try storage.expireAt("s", now_ms + 1);
+
+    // Sleep to ensure expiration
+    std.Thread.sleep(10 * std.time.ns_per_ms);
+
+    try std.testing.expectEqual(@as(?Value.StreamId, null), storage.getStreamLastId("s"));
 }
