@@ -1756,6 +1756,11 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
         };
+        const quicklist_packed_threshold: usize = blk: {
+            var cv = storage.config.get("debug-quicklist-packed-threshold") catch break :blk 4096;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 4096 }));
+        };
         const zset_max_entries: usize = blk: {
             var cv = storage.config.get("zset-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
@@ -1785,7 +1790,8 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .list => blk: {
                 const ln = storage.llen(key) orelse 0;
                 const max_elem = storage.getListMaxElementLength(key) orelse 0;
-                break :blk if (ln <= list_max_entries and max_elem <= list_max_value)
+                const effective_list_max = @min(list_max_value, quicklist_packed_threshold);
+                break :blk if (ln <= list_max_entries and max_elem <= effective_list_max)
                     "listpack"
                 else
                     "quicklist";
@@ -2586,6 +2592,50 @@ test "OBJECT ENCODING - list switches to quicklist when element length exceeds t
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("$9\r\nquicklist\r\n", result);
+}
+
+test "OBJECT ENCODING - list uses quicklist when debug-quicklist-packed-threshold is small" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Add a 5-byte element ("hello")
+    _ = try storage.rpush("threshlist", &[_][]const u8{"hello"}, null);
+
+    // With threshold=1, any element > 1 byte forces quicklist encoding
+    try storage.config.setConfigValue("debug-quicklist-packed-threshold", .{ .int = 1 });
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "threshlist" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nquicklist\r\n", result);
+}
+
+test "OBJECT ENCODING - list uses listpack after debug-quicklist-packed-threshold reset" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("resetlist", &[_][]const u8{"hi"}, null);
+
+    // Set threshold low first
+    try storage.config.setConfigValue("debug-quicklist-packed-threshold", .{ .int = 1 });
+
+    // Reset threshold to default (4096)
+    try storage.config.setConfigValue("debug-quicklist-packed-threshold", .{ .int = 4096 });
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "resetlist" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
 }
 
 test "OBJECT ENCODING - set switches to hashtable when member length exceeds threshold" {

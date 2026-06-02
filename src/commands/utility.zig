@@ -509,6 +509,37 @@ pub fn cmdDebug(
         }
 
         return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "QUICKLIST-PACKED-THRESHOLD")) {
+        // DEBUG QUICKLIST-PACKED-THRESHOLD <size>
+        // Sets the maximum size (bytes) of a packed quicklist node.
+        // 0 resets to default (4096). Affects OBJECT ENCODING for lists.
+        if (args.len != 3) {
+            return try w.writeError("ERR wrong number of arguments for 'debug quicklist-packed-threshold' command");
+        }
+        const threshold = std.fmt.parseInt(i64, args[2], 10) catch {
+            return try w.writeError("ERR value is not an integer or out of range");
+        };
+        if (threshold < 0) {
+            return try w.writeError("ERR value must be non-negative");
+        }
+        // 0 means reset to default (4096)
+        const effective: i64 = if (threshold == 0) 4096 else threshold;
+        config.setConfigValue("debug-quicklist-packed-threshold", .{ .int = effective }) catch |err| {
+            if (err == error.UnknownParameter) {
+                return try w.writeError("ERR internal error: missing config param");
+            }
+            return err;
+        };
+        return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "JMAP")) {
+        // DEBUG JMAP — no-op in non-JVM environments; returns OK for compatibility
+        return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "DISABLE-NEXT-AOF-FSYNC")) {
+        // DEBUG DISABLE-NEXT-AOF-FSYNC — stub, returns OK
+        return try w.writeSimpleString("OK");
+    } else if (std.ascii.eqlIgnoreCase(subcommand, "SFLAGS")) {
+        // DEBUG SFLAGS <value> — stub, returns OK
+        return try w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "HELP")) {
         const help_text =
             \\DEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:
@@ -524,6 +555,14 @@ pub fn cmdDebug(
             \\    Generate a new replication ID.
             \\POPULATE <count> [<prefix>] [<size>]
             \\    Create <count> test keys with optional prefix and value size.
+            \\QUICKLIST-PACKED-THRESHOLD <size>
+            \\    Set quicklist packed-node size threshold. 0 resets to default.
+            \\JMAP
+            \\    No-op (Java heap dump — not applicable here).
+            \\DISABLE-NEXT-AOF-FSYNC
+            \\    Disable the next AOF fsync (stub).
+            \\SFLAGS <value>
+            \\    Set server flags (stub).
             \\HELP
             \\    Print this help.
         ;
@@ -1327,6 +1366,90 @@ test "cmdDebug - DEBUG CHANGE-REPL-ID returns OK (stub)" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "CHANGE-REPL-ID" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "cmdDebug - QUICKLIST-PACKED-THRESHOLD sets threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "QUICKLIST-PACKED-THRESHOLD", "1" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+
+    // Verify config was updated
+    var cv = try config.get("debug-quicklist-packed-threshold");
+    defer cv.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), cv.int);
+}
+
+test "cmdDebug - QUICKLIST-PACKED-THRESHOLD 0 resets to default" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    // First set to 1
+    {
+        const args = [_][]const u8{ "DEBUG", "QUICKLIST-PACKED-THRESHOLD", "1" };
+        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+        defer allocator.free(result);
+    }
+
+    // Then reset to 0 (should restore to 4096)
+    const args = [_][]const u8{ "DEBUG", "QUICKLIST-PACKED-THRESHOLD", "0" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    var cv = try config.get("debug-quicklist-packed-threshold");
+    defer cv.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 4096), cv.int);
+}
+
+test "cmdDebug - JMAP returns OK" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "JMAP" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "cmdDebug - DISABLE-NEXT-AOF-FSYNC returns OK" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "DEBUG", "DISABLE-NEXT-AOF-FSYNC" };
     const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
     defer allocator.free(result);
 

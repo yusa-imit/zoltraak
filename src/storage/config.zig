@@ -259,6 +259,9 @@ pub const Config = struct {
             .{ .name = "jemalloc-bg-thread", .value = .{ .bool = true }, .read_only = false }, // Enable jemalloc background thread
             .{ .name = "io-threads", .value = .{ .int = 1 }, .read_only = false }, // Number of I/O threads
             .{ .name = "io-threads-do-reads", .value = .{ .bool = false }, .read_only = false }, // Allow I/O threads to read
+
+            // Debug / runtime overrides (set only via DEBUG command, not CONFIG SET)
+            .{ .name = "debug-quicklist-packed-threshold", .value = .{ .int = 4096 }, .read_only = false }, // Quicklist packed-node size threshold (DEBUG QUICKLIST-PACKED-THRESHOLD)
         };
 
         for (defaults) |def| {
@@ -384,7 +387,7 @@ pub const Config = struct {
         }
 
         // Create owned copy of the value
-        const new_value = try value.clone(self.allocator);
+        var new_value = try value.clone(self.allocator);
         errdefer new_value.deinit(self.allocator);
 
         // Replace the value in the HashMap
