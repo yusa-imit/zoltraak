@@ -513,7 +513,7 @@ pub const ClientRegistry = struct {
 
             // Redis 7.x full CLIENT LIST format
             try buf.writer(allocator).print(
-                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d}\n",
+                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type=normal\n",
                 .{
                     info.id,
                     info.addr,
@@ -565,7 +565,7 @@ pub const ClientRegistry = struct {
                 -1;
 
             try buf.writer(allocator).print(
-                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d}\n",
+                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type=normal\n",
                 .{
                     info.id,
                     info.addr,
@@ -1366,7 +1366,7 @@ fn cmdClientInfo(
     defer buf.deinit(allocator);
 
     // Redis 7.x full CLIENT INFO format (same as CLIENT LIST line for this client)
-    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d}", .{
+    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type=normal", .{
         info.id,
         info.addr,
         info.fd,
@@ -4765,4 +4765,50 @@ test "CLIENT LIST ID filter - returns only specified clients" {
     try std.testing.expect(std.mem.indexOf(u8, response, "127.0.0.1:11111") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "127.0.0.1:22222") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "127.0.0.1:33333") == null);
+}
+
+test "CLIENT LIST - includes watch=0 and type=normal fields (Redis 7.x compat)" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:55555", 55);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
+    const args_slice = try args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "watch=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "type=normal") != null);
+}
+
+test "CLIENT INFO - includes watch=0 and type=normal fields (Redis 7.x compat)" {
+    const allocator = std.testing.allocator;
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:66666", 66);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena.allocator(), RespValue{ .bulk_string = "INFO" });
+    const args_slice = try args.toOwnedSlice(arena.allocator());
+
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "watch=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "type=normal") != null);
 }

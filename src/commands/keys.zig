@@ -933,16 +933,20 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
                 .t_digest => "TDigest",
                 .vector_set => "VectorSet",
             } else "none";
+            // Case-insensitive comparison: lowercase both sides
             const tf_lower = try std.ascii.allocLowerString(allocator, tf);
             defer allocator.free(tf_lower);
-            if (!std.mem.eql(u8, type_str, tf_lower)) continue;
+            const type_lower = try std.ascii.allocLowerString(allocator, type_str);
+            defer allocator.free(type_lower);
+            if (!std.mem.eql(u8, type_lower, tf_lower)) continue;
         }
         try matching.append(allocator, k);
     }
 
-    // Apply cursor and count
+    // Apply cursor and count. COUNT=0 means return all matching keys (no limit).
+    const effective_count = if (count == 0) matching.items.len else count;
     const start = @min(cursor, matching.items.len);
-    const end = @min(start + count, matching.items.len);
+    const end = @min(start + effective_count, matching.items.len);
     const next_cursor: usize = if (end >= matching.items.len) 0 else end;
     const page = matching.items[start..end];
 
@@ -1056,12 +1060,13 @@ pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     }
 
-    // Apply cursor and count
+    // Apply cursor and count. COUNT=0 means return all matching fields (no limit).
     // With NOVALUES: pairs.items.len is field count
     // Without NOVALUES: pairs.items.len is field count * 2
     const item_count = if (novalues) pairs.items.len else pairs.items.len / 2;
+    const effective_count = if (count == 0) item_count else count;
     const start = @min(cursor, item_count);
-    const end = @min(start + count, item_count);
+    const end = @min(start + effective_count, item_count);
     const next_cursor: usize = if (end >= item_count) 0 else end;
     const page_pairs = if (novalues)
         pairs.items[start..end]
@@ -1162,8 +1167,10 @@ pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     }
 
+    // COUNT=0 means return all matching members (no limit)
+    const effective_count = if (count == 0) matching.items.len else count;
     const start = @min(cursor, matching.items.len);
-    const end = @min(start + count, matching.items.len);
+    const end = @min(start + effective_count, matching.items.len);
     const next_cursor: usize = if (end >= matching.items.len) 0 else end;
     const page = matching.items[start..end];
 
@@ -1274,8 +1281,10 @@ pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     }
 
     const pair_count = pairs.items.len / 2;
+    // COUNT=0 means return all matching pairs (no limit)
+    const effective_count = if (count == 0) pair_count else count;
     const start = @min(cursor, pair_count);
-    const end = @min(start + count, pair_count);
+    const end = @min(start + effective_count, pair_count);
     const next_cursor: usize = if (end >= pair_count) 0 else end;
     const page_pairs = pairs.items[start * 2 .. end * 2];
 
@@ -3239,4 +3248,88 @@ test "peekStringEncoding - null for non-existent key" {
 
     const enc = storage.peekStringEncoding("nosuchkey");
     try std.testing.expectEqual(@as(?[]const u8, null), enc);
+}
+
+test "SCAN COUNT 0 returns all matching keys (no infinite loop)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("key1", "v1", null);
+    try storage.set("key2", "v2", null);
+    try storage.set("key3", "v3", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SCAN" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "COUNT" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdScan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Cursor should be 0 (done) and all 3 keys returned
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n:0\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "key1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "key2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "key3") != null);
+}
+
+test "SCAN TYPE filter is case-insensitive" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("strkey", "hello", null);
+    _ = try storage.lpush("listkey", &[_][]const u8{"item"}, null);
+
+    // TYPE "STRING" (uppercase) should match string keys
+    const args_upper = [_]RespValue{
+        .{ .bulk_string = "SCAN" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "TYPE" },
+        .{ .bulk_string = "STRING" },
+    };
+    const response_upper = try cmdScan(allocator, &storage, &args_upper);
+    defer allocator.free(response_upper);
+
+    try std.testing.expect(std.mem.indexOf(u8, response_upper, "strkey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response_upper, "listkey") == null);
+
+    // TYPE "string" (lowercase) should also match string keys
+    const args_lower = [_]RespValue{
+        .{ .bulk_string = "SCAN" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "TYPE" },
+        .{ .bulk_string = "string" },
+    };
+    const response_lower = try cmdScan(allocator, &storage, &args_lower);
+    defer allocator.free(response_lower);
+
+    try std.testing.expect(std.mem.indexOf(u8, response_lower, "strkey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response_lower, "listkey") == null);
+}
+
+test "SSCAN COUNT 0 returns all matching members" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.sadd("myset", &[_][]const u8{ "a", "b", "c" }, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SSCAN" },
+        .{ .bulk_string = "myset" },
+        .{ .bulk_string = "0" },
+        .{ .bulk_string = "COUNT" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdSscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Cursor should be 0 and all members returned
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n:0\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "$1\r\na\r\n") != null or
+        std.mem.indexOf(u8, response, "$1\r\nb\r\n") != null or
+        std.mem.indexOf(u8, response, "$1\r\nc\r\n") != null);
 }
