@@ -39,16 +39,17 @@ pub fn cmdPfadd(
     var w = Writer.init(allocator);
     defer w.deinit();
 
+    // args[0] = "PFADD", args[1] = key, args[2..] = elements
     if (args.len < 2) {
         return w.writeError("ERR wrong number of arguments for 'pfadd' command");
     }
 
-    const key = switch (args[0]) {
+    const key = switch (args[1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid key"),
     };
 
-    const elements = args[1..];
+    const elements = args[2..];
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
@@ -105,16 +106,17 @@ pub fn cmdPfcount(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len < 1) {
+    // args[0] = "PFCOUNT", args[1..] = keys
+    if (args.len < 2) {
         return w.writeError("ERR wrong number of arguments for 'pfcount' command");
     }
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
-    if (args.len == 1) {
+    if (args.len == 2) {
         // Single key case
-        const key = switch (args[0]) {
+        const key = switch (args[1]) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR invalid key"),
         };
@@ -134,7 +136,7 @@ pub fn cmdPfcount(
         // Multiple keys: merge all HyperLogLogs and count
         var merged = Value.HyperLogLogValue.init();
 
-        for (args) |key_resp| {
+        for (args[1..]) |key_resp| {
             const key = switch (key_resp) {
                 .bulk_string => |s| s,
                 else => return w.writeError("ERR invalid key"),
@@ -167,15 +169,16 @@ pub fn cmdPfmerge(
     var w = Writer.init(allocator);
     defer w.deinit();
 
+    // args[0] = "PFMERGE", args[1] = destkey, args[2..] = sourcekeys
     if (args.len < 2) {
         return w.writeError("ERR wrong number of arguments for 'pfmerge' command");
     }
 
-    const destkey = switch (args[0]) {
+    const destkey = switch (args[1]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid key"),
     };
-    const sourcekeys = args[1..];
+    const sourcekeys = args[2..];
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
@@ -221,112 +224,159 @@ pub fn cmdPfmerge(
     return w.writeSimpleString("OK");
 }
 
-// Unit tests
-test "HyperLogLog: PFADD basic" {
-    var storage = try Storage.init(std.testing.allocator, 6379, "127.0.0.1");
+test "HyperLogLog: PFADD creates key and returns 1" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
 
-    var response = std.ArrayList(u8){};
-    defer response.deinit(std.testing.allocator);
+    const args = [_]RespValue{
+        .{ .bulk_string = "PFADD" },
+        .{ .bulk_string = "myhll" },
+        .{ .bulk_string = "elem1" },
+        .{ .bulk_string = "elem2" },
+    };
+    const result = try cmdPfadd(allocator, &storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
 
-    // Add elements
-    const args1 = [_][]const u8{ "hll1", "elem1", "elem2", "elem3" };
-    try cmdPfadd(&storage, &args1, &response, std.testing.allocator);
-
-    const result1 = response.items;
-    try std.testing.expect(std.mem.indexOf(u8, result1, ":1\r\n") != null); // Should update
-
-    // Add same elements again
-    response.clearRetainingCapacity();
-    const args2 = [_][]const u8{ "hll1", "elem1", "elem2" };
-    try cmdPfadd(&storage, &args2, &response, std.testing.allocator);
-
-    const result2 = response.items;
-    try std.testing.expect(std.mem.indexOf(u8, result2, ":0\r\n") != null); // No update
+    // Key must be visible to EXISTS
+    try std.testing.expect(storage.exists("myhll"));
 }
 
-test "HyperLogLog: PFCOUNT single key" {
-    var storage = try Storage.init(std.testing.allocator, 6379, "127.0.0.1");
+test "HyperLogLog: PFADD same elements returns 0" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
 
-    var response = std.ArrayList(u8){};
-    defer response.deinit(std.testing.allocator);
+    const args1 = [_]RespValue{
+        .{ .bulk_string = "PFADD" },
+        .{ .bulk_string = "myhll" },
+        .{ .bulk_string = "elem1" },
+    };
+    const r1 = try cmdPfadd(allocator, &storage, &args1, &pubsub, 0);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":1\r\n", r1);
 
-    // Add many elements
-    var args_list = std.ArrayList([]const u8){};
-    defer args_list.deinit(std.testing.allocator);
-
-    try args_list.append(std.testing.allocator, "hll1");
-
-    var buf: [20]u8 = undefined;
-    var i: usize = 0;
-    while (i < 100) : (i += 1) {
-        const elem = try std.fmt.bufPrint(&buf, "elem{d}", .{i});
-        const elem_copy = try std.testing.allocator.dupe(u8, elem);
-        defer std.testing.allocator.free(elem_copy);
-        try args_list.append(std.testing.allocator, elem_copy);
-    }
-
-    try cmdPfadd(&storage, args_list.items, &response, std.testing.allocator);
-
-    // Count
-    response.clearRetainingCapacity();
-    const count_args = [_][]const u8{"hll1"};
-    try cmdPfcount(&storage, &count_args, &response, std.testing.allocator);
-
-    // Should be approximately 100 (HyperLogLog is approximate)
-    const result = response.items;
-    try std.testing.expect(std.mem.indexOf(u8, result, ":") != null);
+    // Same elements again — no register update
+    const args2 = [_]RespValue{
+        .{ .bulk_string = "PFADD" },
+        .{ .bulk_string = "myhll" },
+        .{ .bulk_string = "elem1" },
+    };
+    const r2 = try cmdPfadd(allocator, &storage, &args2, &pubsub, 0);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":0\r\n", r2);
 }
 
-test "HyperLogLog: PFMERGE" {
-    var storage = try Storage.init(std.testing.allocator, 6379, "127.0.0.1");
+test "HyperLogLog: PFCOUNT returns approximate cardinality" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
 
-    var response = std.ArrayList(u8){};
-    defer response.deinit(std.testing.allocator);
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "PFADD" },
+        .{ .bulk_string = "hll1" },
+        .{ .bulk_string = "a" },
+        .{ .bulk_string = "b" },
+        .{ .bulk_string = "c" },
+    };
+    const ar = try cmdPfadd(allocator, &storage, &add_args, &pubsub, 0);
+    defer allocator.free(ar);
 
-    // Add to hll1
-    const args1 = [_][]const u8{ "hll1", "a", "b", "c" };
-    try cmdPfadd(&storage, &args1, &response, std.testing.allocator);
+    const count_args = [_]RespValue{
+        .{ .bulk_string = "PFCOUNT" },
+        .{ .bulk_string = "hll1" },
+    };
+    const result = try cmdPfcount(allocator, &storage, &count_args);
+    defer allocator.free(result);
 
-    // Add to hll2
-    response.clearRetainingCapacity();
-    const args2 = [_][]const u8{ "hll2", "c", "d", "e" };
-    try cmdPfadd(&storage, &args2, &response, std.testing.allocator);
-
-    // Merge
-    response.clearRetainingCapacity();
-    const merge_args = [_][]const u8{ "hll3", "hll1", "hll2" };
-    try cmdPfmerge(&storage, &merge_args, &response, std.testing.allocator);
-
-    const merge_result = response.items;
-    try std.testing.expect(std.mem.indexOf(u8, merge_result, "+OK\r\n") != null);
-
-    // Count merged
-    response.clearRetainingCapacity();
-    const count_args = [_][]const u8{"hll3"};
-    try cmdPfcount(&storage, &count_args, &response, std.testing.allocator);
-
-    // Should have approximately 5 unique elements (a, b, c, d, e)
-    const count_result = response.items;
-    try std.testing.expect(std.mem.indexOf(u8, count_result, ":") != null);
+    // Should be non-zero — approximate cardinality of {a, b, c}
+    try std.testing.expect(std.mem.startsWith(u8, result, ":"));
+    const colon_idx = std.mem.indexOf(u8, result, ":").?;
+    const num_str = result[colon_idx + 1 .. result.len - 2]; // strip leading ':' and trailing '\r\n'
+    const count = try std.fmt.parseInt(i64, num_str, 10);
+    try std.testing.expect(count > 0);
 }
 
-test "HyperLogLog: WRONGTYPE error" {
-    var storage = try Storage.init(std.testing.allocator, 6379, "127.0.0.1");
+test "HyperLogLog: PFCOUNT nonexistent key returns 0" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    var response = std.ArrayList(u8){};
-    defer response.deinit(std.testing.allocator);
+    const args = [_]RespValue{
+        .{ .bulk_string = "PFCOUNT" },
+        .{ .bulk_string = "nosuchkey" },
+    };
+    const result = try cmdPfcount(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
 
-    // Set a string value
+test "HyperLogLog: PFMERGE merges two HLLs" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    const add1 = [_]RespValue{
+        .{ .bulk_string = "PFADD" }, .{ .bulk_string = "hll1" },
+        .{ .bulk_string = "a" },     .{ .bulk_string = "b" },
+    };
+    const r1 = try cmdPfadd(allocator, &storage, &add1, &pubsub, 0);
+    defer allocator.free(r1);
+
+    const add2 = [_]RespValue{
+        .{ .bulk_string = "PFADD" }, .{ .bulk_string = "hll2" },
+        .{ .bulk_string = "c" },     .{ .bulk_string = "d" },
+    };
+    const r2 = try cmdPfadd(allocator, &storage, &add2, &pubsub, 0);
+    defer allocator.free(r2);
+
+    const merge_args = [_]RespValue{
+        .{ .bulk_string = "PFMERGE" },
+        .{ .bulk_string = "hll3" },
+        .{ .bulk_string = "hll1" },
+        .{ .bulk_string = "hll2" },
+    };
+    const mr = try cmdPfmerge(allocator, &storage, &merge_args, &pubsub, 0);
+    defer allocator.free(mr);
+    try std.testing.expectEqualStrings("+OK\r\n", mr);
+
+    // hll3 should contain approximately 4 elements
+    const count_args = [_]RespValue{
+        .{ .bulk_string = "PFCOUNT" },
+        .{ .bulk_string = "hll3" },
+    };
+    const cr = try cmdPfcount(allocator, &storage, &count_args);
+    defer allocator.free(cr);
+    try std.testing.expect(std.mem.startsWith(u8, cr, ":"));
+    const num_str = cr[1 .. cr.len - 2];
+    const count = try std.fmt.parseInt(i64, num_str, 10);
+    try std.testing.expect(count >= 3); // at least 3 of the 4 unique elements
+}
+
+test "HyperLogLog: PFADD WRONGTYPE error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+
     _ = try storage.set("mykey", "value", null);
 
-    // Try PFADD on string key
-    const args = [_][]const u8{ "mykey", "elem" };
-    try cmdPfadd(&storage, &args, &response, std.testing.allocator);
-
-    const result = response.items;
+    const args = [_]RespValue{
+        .{ .bulk_string = "PFADD" },
+        .{ .bulk_string = "mykey" },
+        .{ .bulk_string = "elem" },
+    };
+    const result = try cmdPfadd(allocator, &storage, &args, &pubsub, 0);
+    defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "-WRONGTYPE") != null);
 }

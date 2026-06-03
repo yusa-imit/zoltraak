@@ -361,6 +361,25 @@ pub fn build(b: *std.Build) void {
     const run_client_tracking_table_tests = b.addRunArtifact(client_tracking_table_tests);
     test_step.dependOn(&run_client_tracking_table_tests.step);
 
+    // HyperLogLog basic command tests (Iteration 326 — bug fix for args[0] vs args[1] key indexing)
+    const hyperloglog_basic_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_hyperloglog_basic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    hyperloglog_basic_tests.linkSystemLibrary("luajit-5.1");
+    hyperloglog_basic_tests.linkLibC();
+    hyperloglog_basic_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    hyperloglog_basic_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_hyperloglog_basic_tests = b.addRunArtifact(hyperloglog_basic_tests);
+    test_step.dependOn(&run_hyperloglog_basic_tests.step);
+
     // Stream COUNT 0 unit tests (Iteration 325)
     const stream_count_zero_tests = b.addTest(.{
         .root_module = b.createModule(.{

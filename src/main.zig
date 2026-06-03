@@ -17,6 +17,7 @@ pub const replication_commands = @import("commands/replication.zig");
 pub const sentinel = @import("storage/sentinel.zig");
 pub const client = @import("commands/client.zig");
 pub const modules = @import("storage/modules.zig");
+pub const hyperloglog_commands = @import("commands/hyperloglog.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
