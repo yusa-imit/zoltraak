@@ -715,13 +715,8 @@ fn cmdExpireImpl(
         else => return w.writeError("ERR value is not an integer or out of range"),
     };
 
-    if (time_val <= 0) {
-        var buf: [64]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "ERR invalid expire time in '{s}' command", .{cmd_name}) catch "ERR invalid expire time";
-        return w.writeError(msg);
-    }
-
-    // Parse optional NX/XX/GT/LT flags
+    // Parse optional NX/XX/GT/LT flags (parsed before the 0/negative check so
+    // unknown options still return a syntax error even when time_val <= 0)
     var options: u8 = 0;
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
@@ -743,6 +738,17 @@ fn cmdExpireImpl(
         } else {
             return w.writeError("ERR syntax error");
         }
+    }
+
+    // Redis 7.0+: 0 or negative timeout deletes the key immediately.
+    // NX/XX/GT/LT are ignored for past-timestamp deletes (matching Redis behaviour).
+    if (time_val <= 0) {
+        const key_slice = [_][]const u8{key};
+        const deleted = storage.del(&key_slice);
+        if (deleted > 0) {
+            notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, "expired");
+        }
+        return w.writeInteger(if (deleted > 0) 1 else 0);
     }
 
     const now_ms = Storage.getCurrentTimestamp();
@@ -3198,6 +3204,91 @@ test "EXPIREAT - positive past timestamp expires key immediately" {
     // Key should be expired on next read
     const val = storage.get("mykey");
     try std.testing.expectEqual(@as(?[]const u8, null), val);
+}
+
+test "EXPIRE - zero timeout deletes key immediately (Redis 7.0+ compat)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("expkey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIRE" },
+        .{ .bulk_string = "expkey" },
+        .{ .bulk_string = "0" },
+    };
+    const result = try cmdExpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(!storage.exists("expkey"));
+}
+
+test "EXPIRE - negative timeout deletes key immediately (Redis 7.0+ compat)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("negkey", "world", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIRE" },
+        .{ .bulk_string = "negkey" },
+        .{ .bulk_string = "-100" },
+    };
+    const result = try cmdExpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(!storage.exists("negkey"));
+}
+
+test "EXPIRE - zero timeout on non-existent key returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIRE" },
+        .{ .bulk_string = "nosuchkey" },
+        .{ .bulk_string = "0" },
+    };
+    const result = try cmdExpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "PEXPIRE - zero timeout deletes key immediately (Redis 7.0+ compat)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("pexpkey", "data", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "PEXPIRE" },
+        .{ .bulk_string = "pexpkey" },
+        .{ .bulk_string = "0" },
+    };
+    const result = try cmdPexpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(!storage.exists("pexpkey"));
 }
 
 test "OBJECT ENCODING - does not update keyspace_hits counter" {

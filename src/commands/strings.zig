@@ -3842,6 +3842,7 @@ fn cmdAppend(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
     const new_len = storage.appendString(key, suffix) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.StringTooLarge => return w.writeError("ERR string exceeds maximum allowed size (512mb)"),
         else => return err,
     };
 
@@ -5858,6 +5859,13 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR offset is out of range");
     }
 
+    // Redis enforces a 512MB maximum string size
+    const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
+    const required_len = @as(usize, @intCast(offset)) + value.len;
+    if (required_len > MAX_STRING_BYTES) {
+        return w.writeError("ERR string exceeds maximum allowed size (512mb)");
+    }
+
     const new_len = storage.setrange(key, @as(usize, @intCast(offset)), value) catch |err| {
         if (err == error.WrongType) {
             return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
@@ -7543,4 +7551,43 @@ test "commands - SET EXAT negative is still an error" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR invalid expire time") != null);
+}
+
+test "SETRANGE - rejects offset that would exceed 512MB" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // offset 536870912 + 1 byte = 536870913 > 512MB → error
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETRANGE" },
+        RespValue{ .bulk_string = "bigkey" },
+        RespValue{ .bulk_string = "536870912" },
+        RespValue{ .bulk_string = "x" },
+    };
+    const result = try cmdSetrange(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR string exceeds maximum allowed size") != null);
+}
+
+test "APPEND - normal operation works correctly" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "APPEND" },
+        RespValue{ .bulk_string = "appendkey" },
+        RespValue{ .bulk_string = "hello" },
+    };
+    const result = try cmdAppend(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":5\r\n", result);
 }

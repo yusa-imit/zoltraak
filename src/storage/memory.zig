@@ -5983,9 +5983,11 @@ pub const Storage = struct {
 
     /// Append suffix to a string value. Creates key as "" if missing.
     /// Returns the new length, or error.WrongType if not a string.
-    pub fn appendString(self: *Storage, key: []const u8, suffix: []const u8) !usize {
+    pub fn appendString(self: *Storage, key: []const u8, suffix: []const u8) error{ WrongType, OutOfMemory, StringTooLarge }!usize {
         self.mutex.lock();
         defer self.mutex.unlock();
+
+        const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
 
         if (self.data.getEntry(key)) |entry| {
             if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
@@ -5999,6 +6001,7 @@ pub const Storage = struct {
                     .string => |*sv| {
                         // Build new string = existing + suffix
                         const new_len = sv.data.len + suffix.len;
+                        if (new_len > MAX_STRING_BYTES) return error.StringTooLarge;
                         const new_buf = try self.allocator.alloc(u8, new_len);
                         errdefer self.allocator.free(new_buf);
                         @memcpy(new_buf[0..sv.data.len], sv.data);
@@ -6013,6 +6016,7 @@ pub const Storage = struct {
         }
 
         // Key doesn't exist (or was expired): create with suffix as value
+        if (suffix.len > MAX_STRING_BYTES) return error.StringTooLarge;
         const owned_val = try self.allocator.dupe(u8, suffix);
         errdefer self.allocator.free(owned_val);
         const owned_key = try self.allocator.dupe(u8, key);
