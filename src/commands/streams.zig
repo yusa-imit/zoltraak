@@ -2431,3 +2431,4 @@ test "streams - XTRIM with LIMIT parameter" {
     // Should delete exactly 2 due to LIMIT
     try std.testing.expect(std.mem.indexOf(u8, result, ":2") != null);
 }
+

@@ -979,6 +979,7 @@ pub const Storage = struct {
 
         // Start background defrag thread if activedefrag is enabled
         const activedefrag_val = storage.config.getAsString("activedefrag") catch null;
+        defer if (activedefrag_val) |val| storage.allocator.free(val);
         const activedefrag_enabled = if (activedefrag_val) |val|
             std.mem.eql(u8, val, "yes") or std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true")
         else
@@ -9474,7 +9475,8 @@ pub const Storage = struct {
                     {
                         try result.append(allocator, entry_item);
                         if (count) |c| {
-                            if (result.items.len >= c) break;
+                            // COUNT 0 means no limit (return all entries)
+                            if (c > 0 and result.items.len >= c) break;
                         }
                     }
                 }
@@ -9537,7 +9539,8 @@ pub const Storage = struct {
                     {
                         try result.append(allocator, entry_item);
                         if (count) |c| {
-                            if (result.items.len >= c) break;
+                            // COUNT 0 means no limit (return all entries)
+                            if (c > 0 and result.items.len >= c) break;
                         }
                     }
                 }
@@ -13191,6 +13194,44 @@ test "storage - xrange with COUNT limit" {
     defer allocator.free(result);
 
     try std.testing.expectEqual(@as(usize, 2), result.len);
+}
+
+test "storage - xrange COUNT 0 returns all entries (no limit)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "a", "b" };
+    _ = try storage.xadd("s", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "2000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "3000-0", &fields, null, .{});
+    _ = try storage.xadd("s", "4000-0", &fields, null, .{});
+
+    // COUNT 0 should return all entries, not 0 entries
+    const result = (try storage.xrange(allocator, "s", "-", "+", 0)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 4), result.len);
+}
+
+test "storage - xrevrange COUNT 0 returns all entries (no limit)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const fields = [_][]const u8{ "x", "y" };
+    _ = try storage.xadd("r", "1000-0", &fields, null, .{});
+    _ = try storage.xadd("r", "2000-0", &fields, null, .{});
+    _ = try storage.xadd("r", "3000-0", &fields, null, .{});
+
+    // COUNT 0 should return all entries in reverse, not 0 entries
+    const result = (try storage.xrevrange(allocator, "r", "+", "-", 0)).?;
+    defer allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 3), result.len);
+    // Verify reverse order: first entry should have highest ms
+    try std.testing.expectEqual(@as(i64, 3000), result[0].id.ms);
+    try std.testing.expectEqual(@as(i64, 1000), result[2].id.ms);
 }
 
 test "storage - getType returns stream type" {

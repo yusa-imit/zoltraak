@@ -361,6 +361,25 @@ pub fn build(b: *std.Build) void {
     const run_client_tracking_table_tests = b.addRunArtifact(client_tracking_table_tests);
     test_step.dependOn(&run_client_tracking_table_tests.step);
 
+    // Stream COUNT 0 unit tests (Iteration 325)
+    const stream_count_zero_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_stream_count_zero.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    stream_count_zero_tests.linkSystemLibrary("luajit-5.1");
+    stream_count_zero_tests.linkLibC();
+    stream_count_zero_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    stream_count_zero_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_stream_count_zero_tests = b.addRunArtifact(stream_count_zero_tests);
+    test_step.dependOn(&run_stream_count_zero_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

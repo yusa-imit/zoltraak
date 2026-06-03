@@ -422,10 +422,11 @@ pub const ClusterState = struct {
     }
 
     pub fn deinit(self: *ClusterState) void {
-        var it = self.nodes.valueIterator();
-        while (it.next()) |node| {
-            node.*.deinit(self.allocator);
-            self.allocator.destroy(node.*);
+        var it = self.nodes.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(entry.value_ptr.*);
         }
         self.nodes.deinit();
         self.banned_nodes.deinit();
