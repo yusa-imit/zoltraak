@@ -168,12 +168,13 @@ fn encodeGeohashBase32(hash: u64, buf: []u8) ![]const u8 {
     return buf[0..11];
 }
 
-/// GEOADD key longitude latitude member [longitude latitude member ...]
+/// GEOADD key [NX | XX] [CH] longitude latitude member [longitude latitude member ...]
 pub fn cmdGeoadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len < 4 or (args.len - 1) % 3 != 0) {
+    // Minimum: GEOADD key lon lat member = 5 args (args[0]=cmd, args[1]=key, then 3N)
+    if (args.len < 5) {
         return w.writeError("ERR wrong number of arguments for 'geoadd' command");
     }
 
@@ -182,8 +183,45 @@ pub fn cmdGeoadd(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         else => return w.writeError("ERR invalid key"),
     };
 
+    // Parse optional NX/XX/CH flags
+    var nx_flag = false;
+    var xx_flag = false;
+    var ch_flag = false;
+    var triple_start: usize = 2;
+
+    while (triple_start < args.len) {
+        const arg = switch (args[triple_start]) {
+            .bulk_string => |s| s,
+            else => break,
+        };
+        if (std.ascii.eqlIgnoreCase(arg, "NX")) {
+            nx_flag = true;
+            triple_start += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "XX")) {
+            xx_flag = true;
+            triple_start += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "CH")) {
+            ch_flag = true;
+            triple_start += 1;
+        } else {
+            break;
+        }
+    }
+
+    // After optional flags, remaining args must form complete triples
+    const remaining = args.len - triple_start;
+    if (remaining == 0 or remaining % 3 != 0) {
+        return w.writeError("ERR wrong number of arguments for 'geoadd' command");
+    }
+
+    // Build options bitmask for zadd
+    var options: u8 = 0;
+    if (nx_flag) options |= 1;
+    if (xx_flag) options |= 2;
+
     var added_count: usize = 0;
-    var i: usize = 2;
+    var changed_count: usize = 0;
+    var i: usize = triple_start;
     while (i < args.len) : (i += 3) {
         const lon_str = switch (args[i]) {
             .bulk_string => |s| s,
@@ -212,10 +250,15 @@ pub fn cmdGeoadd(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
         // Store as sorted set with geohash as score
         const score = @as(f64, @floatFromInt(geohash));
-        const result = try storage.zadd(key, &[_]f64{score}, &[_][]const u8{member}, 0, null);
+        const result = try storage.zadd(key, &[_]f64{score}, &[_][]const u8{member}, options, null);
         added_count += result.added;
+        changed_count += result.changed;
     }
 
+    // CH flag: return count of changed (new + score-updated), otherwise just added
+    if (ch_flag) {
+        return w.writeInteger(@intCast(changed_count));
+    }
     return w.writeInteger(@intCast(added_count));
 }
 
@@ -1649,4 +1692,139 @@ test "GEORADIUS_RO command" {
 
     // Should return San Francisco
     try testing.expect(std.mem.indexOf(u8, result, "San Francisco") != null);
+}
+
+test "GEOADD basic - single member" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+    };
+    const result = try cmdGeoadd(testing.allocator, &storage, &args);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings(":1\r\n", result);
+}
+
+test "GEOADD basic - multiple members" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+        .{ .bulk_string = "15.087269" },
+        .{ .bulk_string = "37.502669" },
+        .{ .bulk_string = "Catania" },
+    };
+    const result = try cmdGeoadd(testing.allocator, &storage, &args);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings(":2\r\n", result);
+}
+
+test "GEOADD with NX flag - skip existing" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    // Add initial member
+    const args1 = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+    };
+    const r1 = try cmdGeoadd(testing.allocator, &storage, &args1);
+    defer testing.allocator.free(r1);
+    try testing.expectEqualStrings(":1\r\n", r1);
+
+    // Try to update with NX - should skip (returns 0)
+    const args2 = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "NX" },
+        .{ .bulk_string = "15.0" },
+        .{ .bulk_string = "39.0" },
+        .{ .bulk_string = "Palermo" },
+    };
+    const r2 = try cmdGeoadd(testing.allocator, &storage, &args2);
+    defer testing.allocator.free(r2);
+    try testing.expectEqualStrings(":0\r\n", r2);
+}
+
+test "GEOADD with XX flag - only update existing" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    // Try to add new member with XX - should skip (returns 0)
+    const args1 = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "XX" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+    };
+    const r1 = try cmdGeoadd(testing.allocator, &storage, &args1);
+    defer testing.allocator.free(r1);
+    try testing.expectEqualStrings(":0\r\n", r1);
+}
+
+test "GEOADD with CH flag - return changed count" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    // Add initial member
+    const args1 = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+    };
+    const r1 = try cmdGeoadd(testing.allocator, &storage, &args1);
+    defer testing.allocator.free(r1);
+    try testing.expectEqualStrings(":1\r\n", r1);
+
+    // Update with CH flag - should return 1 (changed)
+    const args2 = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "CH" },
+        .{ .bulk_string = "15.0" },
+        .{ .bulk_string = "39.0" },
+        .{ .bulk_string = "Palermo" },
+    };
+    const r2 = try cmdGeoadd(testing.allocator, &storage, &args2);
+    defer testing.allocator.free(r2);
+    try testing.expectEqualStrings(":1\r\n", r2);
+}
+
+test "GEOADD wrong arg count" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    // Missing member - should return error
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+    };
+    const result = try cmdGeoadd(testing.allocator, &storage, &args);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.startsWith(u8, result, "-ERR"));
 }
