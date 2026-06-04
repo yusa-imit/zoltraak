@@ -107,6 +107,11 @@ pub const Config = struct {
             config.metadata.deinit(allocator);
         }
 
+        // Resolve the working directory for the `dir` config param (matches Redis behavior).
+        // Redis returns the absolute CWD when dir has not been explicitly set.
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd_str = std.fs.cwd().realpath(".", &cwd_buf) catch "";
+
         // Define default parameters
         const defaults = [_]struct {
             name: []const u8,
@@ -262,6 +267,56 @@ pub const Config = struct {
 
             // Debug / runtime overrides (set only via DEBUG command, not CONFIG SET)
             .{ .name = "debug-quicklist-packed-threshold", .value = .{ .int = 4096 }, .read_only = false }, // Quicklist packed-node size threshold (DEBUG QUICKLIST-PACKED-THRESHOLD)
+
+            // Authentication & security
+            .{ .name = "requirepass", .value = .{ .string = "" }, .read_only = false }, // Password required for AUTH (empty = no password)
+            .{ .name = "protected-mode", .value = .{ .bool = true }, .read_only = false }, // Protected mode (blocks connections from non-loopback when no password set)
+            .{ .name = "masterauth", .value = .{ .string = "" }, .read_only = false }, // Password to authenticate against primary
+            .{ .name = "aclfile", .value = .{ .string = "" }, .read_only = false }, // Path to ACL file (empty = inline ACL rules only)
+            .{ .name = "acllog-max-len", .value = .{ .int = 128 }, .read_only = false }, // Max entries in ACL log
+            .{ .name = "enable-protected-configs", .value = .{ .string = "no" }, .read_only = false }, // Allow setting protected configs via CONFIG SET
+            .{ .name = "enable-debug-command", .value = .{ .string = "yes" }, .read_only = false }, // Allow DEBUG commands (yes/no/local)
+
+            // Working directory (initialized to CWD at startup, matches Redis behavior)
+            .{ .name = "dir", .value = .{ .string = cwd_str }, .read_only = false }, // Working directory for RDB/AOF files
+
+            // Replication / replica settings
+            .{ .name = "replica-serve-stale-data", .value = .{ .bool = true }, .read_only = false }, // Serve stale data while replica is syncing
+            .{ .name = "replica-read-only", .value = .{ .bool = true }, .read_only = false }, // Replica is read-only
+            .{ .name = "replica-priority", .value = .{ .int = 100 }, .read_only = false }, // Priority for Sentinel failover (lower = preferred; 0 = never promote)
+            .{ .name = "replica-announced", .value = .{ .bool = true }, .read_only = false }, // Announce replica to Sentinel
+            .{ .name = "slave-serve-stale-data", .value = .{ .bool = true }, .read_only = false }, // Deprecated alias for replica-serve-stale-data
+            .{ .name = "slave-read-only", .value = .{ .bool = true }, .read_only = false }, // Deprecated alias for replica-read-only
+            .{ .name = "slave-priority", .value = .{ .int = 100 }, .read_only = false }, // Deprecated alias for replica-priority
+            .{ .name = "slave-announced", .value = .{ .bool = true }, .read_only = false }, // Deprecated alias for replica-announced
+            .{ .name = "propagate-reads-enabled", .value = .{ .bool = false }, .read_only = false }, // Whether to propagate read commands to replicas
+
+            // Latency monitoring
+            .{ .name = "latency-monitor-threshold", .value = .{ .int = 0 }, .read_only = false }, // Minimum latency (ms) to record (0 = disabled)
+
+            // Startup / runtime display
+            .{ .name = "always-show-logo", .value = .{ .bool = false }, .read_only = false }, // Always show ASCII art logo on startup
+            .{ .name = "set-proc-title", .value = .{ .bool = true }, .read_only = false }, // Set process title to show mode
+            .{ .name = "proc-title-template", .value = .{ .string = "{title} {listen-addr} {server-mode}" }, .read_only = false }, // Process title template
+
+            // Socket / network
+            .{ .name = "socket-mark-id", .value = .{ .int = 0 }, .read_only = false }, // SO_MARK for outgoing connections (0 = disabled)
+            // tls-replication and tls-cluster are defined in the TLS section above
+
+            // RDB / AOF edge cases
+            .{ .name = "rdb-del-sync-files", .value = .{ .bool = false }, .read_only = false }, // Delete RDB files used for replication after loading
+            .{ .name = "aof-timestamp-enabled", .value = .{ .bool = false }, .read_only = false }, // Add timestamps to AOF entries (Redis 7.0+)
+
+            // Active expiry / eviction tuning
+            .{ .name = "active-expire-enabled", .value = .{ .bool = true }, .read_only = false }, // Enable active key expiration
+            .{ .name = "active-expire-effort", .value = .{ .int = 1 }, .read_only = false }, // Aggressiveness of active expiry (1-10)
+            .{ .name = "maxmemory-eviction-tenacity", .value = .{ .int = 10 }, .read_only = false }, // How aggressively to try to meet maxmemory (0-100)
+
+            // Lua / scripting
+            // lua-replicate-commands is defined in the Lua section above
+            .{ .name = "busy-reply-threshold", .value = .{ .int = 5000 }, .read_only = false }, // ms before replying with BUSY during script
+            .{ .name = "repl-min-slaves-to-write", .value = .{ .int = 0 }, .read_only = false }, // Alias for min-replicas-to-write
+            .{ .name = "repl-min-slaves-max-lag", .value = .{ .int = 10 }, .read_only = false }, // Alias for min-replicas-max-lag
         };
 
         for (defaults) |def| {
@@ -976,6 +1031,90 @@ test "Config.set maxmemory with size suffixes" {
     const val3 = try config.get("maxmemory");
     defer if (val3) |v| allocator.free(v);
     try std.testing.expectEqualStrings("1073741824", val3.?);
+}
+
+test "Config - requirepass default is empty" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const val = try config.get("requirepass");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("", val.?);
+
+    try config.set("requirepass", "secretpassword");
+    const val2 = try config.get("requirepass");
+    defer if (val2) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("secretpassword", val2.?);
+}
+
+test "Config - protected-mode default is yes" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const val = try config.get("protected-mode");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", val.?);
+}
+
+test "Config - dir defaults to non-empty working directory" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const val = try config.get("dir");
+    defer if (val) |v| allocator.free(v);
+    // dir should be non-empty (initialized to CWD at startup)
+    try std.testing.expect(val != null);
+    try std.testing.expect(val.?.len > 0);
+}
+
+test "Config - replica params exist and have correct defaults" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const serve = try config.get("replica-serve-stale-data");
+    defer if (serve) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", serve.?);
+
+    const priority = try config.get("replica-priority");
+    defer if (priority) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("100", priority.?);
+
+    const ro = try config.get("replica-read-only");
+    defer if (ro) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", ro.?);
+}
+
+test "Config - latency-monitor-threshold default is 0" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const val = try config.get("latency-monitor-threshold");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", val.?);
+
+    try config.set("latency-monitor-threshold", "100");
+    const val2 = try config.get("latency-monitor-threshold");
+    defer if (val2) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("100", val2.?);
+}
+
+test "Config - slave aliases match replica defaults" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const slave_serve = try config.get("slave-serve-stale-data");
+    defer if (slave_serve) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", slave_serve.?);
+
+    const slave_prio = try config.get("slave-priority");
+    defer if (slave_prio) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("100", slave_prio.?);
 }
 
 test "Config.set dynamic-hz boolean parameter" {
