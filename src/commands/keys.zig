@@ -1706,7 +1706,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     if (std.mem.eql(u8, sub_upper, "REFCOUNT")) {
         if (storage.getType(key) == null) {
-            return w.writeError("ERR no such key");
+            return w.writeNull();
         }
         return w.writeInteger(1);
     } else if (std.mem.eql(u8, sub_upper, "IDLETIME")) {
@@ -1724,7 +1724,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             return w.writeError("ERR object idle time is only available when maxmemory-policy is not set to an LFU policy.");
         }
         const idle = storage.getObjectIdleTime(key) orelse {
-            return w.writeError("ERR no such key");
+            return w.writeNull();
         };
         return w.writeInteger(@intCast(idle));
     } else if (std.mem.eql(u8, sub_upper, "FREQ")) {
@@ -1742,13 +1742,13 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             return w.writeError("ERR object freq is not allowed when maxmemory-policy is not set to an LFU policy.");
         }
         if (storage.getType(key) == null) {
-            return w.writeError("ERR no such key");
+            return w.writeNull();
         }
         const freq = storage.getObjectFreq(key);
         return w.writeInteger(@intCast(freq));
     } else if (std.mem.eql(u8, sub_upper, "ENCODING")) {
         const vtype = storage.getType(key) orelse {
-            return w.writeError("ERR no such key");
+            return w.writeNull();
         };
         // Read config thresholds (fall back to Redis 8.x defaults on error)
         const hash_max_entries: usize = blk: {
@@ -1858,7 +1858,7 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeBulkString(encoding);
     } else if (std.mem.eql(u8, sub_upper, "VERSION")) {
         const version = storage.getKeyVersion(key) orelse {
-            return w.writeError("ERR no such key");
+            return w.writeNull();
         };
         return w.writeInteger(@intCast(version));
     } else {
@@ -2520,7 +2520,7 @@ test "OBJECT ENCODING - hash returns listpack for small hashes" {
     try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
 }
 
-test "OBJECT ENCODING - missing key returns error" {
+test "OBJECT ENCODING - missing key returns nil" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
@@ -2532,7 +2532,8 @@ test "OBJECT ENCODING - missing key returns error" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    // Redis 7.2.6+: returns nil (null bulk string) for non-existent keys
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "OBJECT ENCODING - list returns listpack for small lists" {
@@ -2692,7 +2693,7 @@ test "OBJECT FREQ - returns non-negative integer for existing key with LFU polic
     try std.testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
 }
 
-test "OBJECT FREQ - returns error for non-existing key with LFU policy" {
+test "OBJECT FREQ - returns nil for non-existing key with LFU policy" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
@@ -2706,7 +2707,8 @@ test "OBJECT FREQ - returns error for non-existing key with LFU policy" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR no such key"));
+    // Redis 7.2.6+: returns nil (null bulk string) for non-existent keys
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "OBJECT FREQ - returns error when maxmemory-policy is not LFU" {
@@ -2762,7 +2764,7 @@ test "OBJECT IDLETIME - returns non-negative integer for existing key with non-L
     try std.testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
 }
 
-test "OBJECT IDLETIME - returns error for non-existing key" {
+test "OBJECT IDLETIME - returns nil for non-existing key" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
@@ -2774,7 +2776,8 @@ test "OBJECT IDLETIME - returns error for non-existing key" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    // Redis 7.2.6+: returns nil (null bulk string) for non-existent keys
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "OBJECT IDLETIME - returns error when maxmemory-policy is LFU" {
@@ -2850,7 +2853,7 @@ test "OBJECT VERSION - increments on repeated writes" {
     try std.testing.expectEqualStrings(":3\r\n", result);
 }
 
-test "OBJECT VERSION - returns error for non-existing key" {
+test "OBJECT VERSION - returns nil for non-existing key" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
@@ -2862,7 +2865,8 @@ test "OBJECT VERSION - returns error for non-existing key" {
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);
-    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    // Redis 7.2.6+: returns nil (null bulk string) for non-existent keys
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "OBJECT VERSION - version removed on DEL" {
@@ -2889,7 +2893,7 @@ test "OBJECT VERSION - version removed on DEL" {
     const keys = [_][]const u8{"delkey"};
     _ = storage.del(&keys);
 
-    // Version should now be gone (error for non-existing key)
+    // Version should now be gone (nil for non-existing key, Redis 7.2.6+)
     {
         const args = [_]RespValue{
             .{ .bulk_string = "OBJECT" },
@@ -2898,7 +2902,7 @@ test "OBJECT VERSION - version removed on DEL" {
         };
         const result = try cmdObject(allocator, &storage, &args);
         defer allocator.free(result);
-        try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+        try std.testing.expectEqualStrings("$-1\r\n", result);
     }
 }
 

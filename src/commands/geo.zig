@@ -360,17 +360,17 @@ pub fn cmdGeodist(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
     var distance = haversineDistance(coords1.lat, coords1.lon, coords2.lat, coords2.lon);
 
-    // Convert to requested unit
-    if (std.mem.eql(u8, unit, "m")) {
+    // Convert to requested unit (case-insensitive per Redis spec)
+    if (std.ascii.eqlIgnoreCase(unit, "m")) {
         // meters (default)
-    } else if (std.mem.eql(u8, unit, "km")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "km")) {
         distance /= 1000.0;
-    } else if (std.mem.eql(u8, unit, "mi")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
         distance /= 1609.34;
-    } else if (std.mem.eql(u8, unit, "ft")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
         distance /= 0.3048;
     } else {
-        return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
     }
 
     var dist_buf: [64]u8 = undefined;
@@ -476,16 +476,17 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
     };
 
     // Convert radius to meters
-    if (std.mem.eql(u8, unit, "m")) {
+    // Convert radius to meters (case-insensitive per Redis spec)
+    if (std.ascii.eqlIgnoreCase(unit, "m")) {
         // meters (default)
-    } else if (std.mem.eql(u8, unit, "km")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "km")) {
         radius *= 1000.0;
-    } else if (std.mem.eql(u8, unit, "mi")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
         radius *= 1609.34;
-    } else if (std.mem.eql(u8, unit, "ft")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
         radius *= 0.3048;
     } else {
-        return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
     }
 
     // Parse options
@@ -614,11 +615,11 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
         // Distance
         if (with_dist) {
             var dist = result.distance;
-            if (std.mem.eql(u8, unit, "km")) {
+            if (std.ascii.eqlIgnoreCase(unit, "km")) {
                 dist /= 1000.0;
-            } else if (std.mem.eql(u8, unit, "mi")) {
+            } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
                 dist /= 1609.34;
-            } else if (std.mem.eql(u8, unit, "ft")) {
+            } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
                 dist /= 0.3048;
             }
             var dist_buf: [64]u8 = undefined;
@@ -700,16 +701,17 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
     };
 
     // Convert radius to meters
-    if (std.mem.eql(u8, unit, "m")) {
+    // Convert radius to meters (case-insensitive per Redis spec)
+    if (std.ascii.eqlIgnoreCase(unit, "m")) {
         // meters (default)
-    } else if (std.mem.eql(u8, unit, "km")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "km")) {
         radius *= 1000.0;
-    } else if (std.mem.eql(u8, unit, "mi")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
         radius *= 1609.34;
-    } else if (std.mem.eql(u8, unit, "ft")) {
+    } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
         radius *= 0.3048;
     } else {
-        return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+        return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
     }
 
     // Parse options (same as GEORADIUS)
@@ -837,11 +839,11 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
         // Distance
         if (with_dist) {
             var dist = result.distance;
-            if (std.mem.eql(u8, unit, "km")) {
+            if (std.ascii.eqlIgnoreCase(unit, "km")) {
                 dist /= 1000.0;
-            } else if (std.mem.eql(u8, unit, "mi")) {
+            } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
                 dist /= 1609.34;
-            } else if (std.mem.eql(u8, unit, "ft")) {
+            } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
                 dist /= 0.3048;
             }
             var dist_buf: [64]u8 = undefined;
@@ -989,17 +991,17 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
         };
         idx += 3;
 
-        // Convert radius to meters
-        if (std.mem.eql(u8, unit_str, "m")) {
+        // Convert radius to meters (case-insensitive per Redis spec)
+        if (std.ascii.eqlIgnoreCase(unit_str, "m")) {
             radius_meters = radius;
-        } else if (std.mem.eql(u8, unit_str, "km")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "km")) {
             radius_meters = radius * 1000.0;
-        } else if (std.mem.eql(u8, unit_str, "mi")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "mi")) {
             radius_meters = radius * 1609.34;
-        } else if (std.mem.eql(u8, unit_str, "ft")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "ft")) {
             radius_meters = radius * 0.3048;
         } else {
-            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+            return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
         }
     } else if (std.mem.eql(u8, by_upper, "BYBOX")) {
         search_type = .bybox;
@@ -1029,21 +1031,21 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
         };
         idx += 4;
 
-        // Convert dimensions to meters
-        if (std.mem.eql(u8, unit_str, "m")) {
+        // Convert dimensions to meters (case-insensitive per Redis spec)
+        if (std.ascii.eqlIgnoreCase(unit_str, "m")) {
             width_meters = width;
             height_meters = height;
-        } else if (std.mem.eql(u8, unit_str, "km")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "km")) {
             width_meters = width * 1000.0;
             height_meters = height * 1000.0;
-        } else if (std.mem.eql(u8, unit_str, "mi")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "mi")) {
             width_meters = width * 1609.34;
             height_meters = height * 1609.34;
-        } else if (std.mem.eql(u8, unit_str, "ft")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "ft")) {
             width_meters = width * 0.3048;
             height_meters = height * 0.3048;
         } else {
-            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+            return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
         }
     } else {
         return w.writeError("ERR syntax error");
@@ -1176,11 +1178,11 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
         if (with_dist) {
             var dist = result.distance;
-            if (std.mem.eql(u8, unit_str, "km")) {
+            if (std.ascii.eqlIgnoreCase(unit_str, "km")) {
                 dist /= 1000.0;
-            } else if (std.mem.eql(u8, unit_str, "mi")) {
+            } else if (std.ascii.eqlIgnoreCase(unit_str, "mi")) {
                 dist /= 1609.34;
-            } else if (std.mem.eql(u8, unit_str, "ft")) {
+            } else if (std.ascii.eqlIgnoreCase(unit_str, "ft")) {
                 dist /= 0.3048;
             }
             var dist_buf: [64]u8 = undefined;
@@ -1325,17 +1327,17 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
         };
         idx += 3;
 
-        // Convert radius to meters
-        if (std.mem.eql(u8, unit_str, "m")) {
+        // Convert radius to meters (case-insensitive per Redis spec)
+        if (std.ascii.eqlIgnoreCase(unit_str, "m")) {
             radius_meters = radius;
-        } else if (std.mem.eql(u8, unit_str, "km")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "km")) {
             radius_meters = radius * 1000.0;
-        } else if (std.mem.eql(u8, unit_str, "mi")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "mi")) {
             radius_meters = radius * 1609.34;
-        } else if (std.mem.eql(u8, unit_str, "ft")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "ft")) {
             radius_meters = radius * 0.3048;
         } else {
-            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+            return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
         }
     } else if (std.mem.eql(u8, by_upper, "BYBOX")) {
         search_type = .bybox;
@@ -1365,21 +1367,21 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
         };
         idx += 4;
 
-        // Convert dimensions to meters
-        if (std.mem.eql(u8, unit_str, "m")) {
+        // Convert dimensions to meters (case-insensitive per Redis spec)
+        if (std.ascii.eqlIgnoreCase(unit_str, "m")) {
             width_meters = width;
             height_meters = height;
-        } else if (std.mem.eql(u8, unit_str, "km")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "km")) {
             width_meters = width * 1000.0;
             height_meters = height * 1000.0;
-        } else if (std.mem.eql(u8, unit_str, "mi")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "mi")) {
             width_meters = width * 1609.34;
             height_meters = height * 1609.34;
-        } else if (std.mem.eql(u8, unit_str, "ft")) {
+        } else if (std.ascii.eqlIgnoreCase(unit_str, "ft")) {
             width_meters = width * 0.3048;
             height_meters = height * 0.3048;
         } else {
-            return w.writeError("ERR unsupported unit provided. please use m, km, ft, mi");
+            return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
         }
     } else {
         return w.writeError("ERR syntax error");
@@ -1520,13 +1522,13 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
         try members.append(allocator, member_copy);
 
         const score: f64 = if (store_dist) blk: {
-            // Store distance in specified unit
+            // Store distance in specified unit (case-insensitive per Redis spec)
             var dist = result.distance;
-            if (std.mem.eql(u8, unit_str, "km")) {
+            if (std.ascii.eqlIgnoreCase(unit_str, "km")) {
                 dist /= 1000.0;
-            } else if (std.mem.eql(u8, unit_str, "mi")) {
+            } else if (std.ascii.eqlIgnoreCase(unit_str, "mi")) {
                 dist /= 1609.34;
-            } else if (std.mem.eql(u8, unit_str, "ft")) {
+            } else if (std.ascii.eqlIgnoreCase(unit_str, "ft")) {
                 dist /= 0.3048;
             }
             break :blk dist;
@@ -1827,4 +1829,125 @@ test "GEOADD wrong arg count" {
     const result = try cmdGeoadd(testing.allocator, &storage, &args);
     defer testing.allocator.free(result);
     try testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "GEODIST - accepts uppercase unit KM" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    // Add two members
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+        .{ .bulk_string = "15.087269" },
+        .{ .bulk_string = "37.502669" },
+        .{ .bulk_string = "Catania" },
+    };
+    _ = try cmdGeoadd(testing.allocator, &storage, &add_args);
+
+    // Test GEODIST with uppercase KM
+    const dist_args = [_]RespValue{
+        .{ .bulk_string = "GEODIST" },
+        .{ .bulk_string = "mygeo" },
+        .{ .bulk_string = "Palermo" },
+        .{ .bulk_string = "Catania" },
+        .{ .bulk_string = "KM" },
+    };
+    const result = try cmdGeodist(testing.allocator, &storage, &dist_args);
+    defer testing.allocator.free(result);
+    // Should return a bulk string with a numeric distance, not an error
+    try testing.expect(std.mem.startsWith(u8, result, "$"));
+    try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "GEODIST - accepts mixed case unit Km" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo2" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+        .{ .bulk_string = "15.087269" },
+        .{ .bulk_string = "37.502669" },
+        .{ .bulk_string = "Catania" },
+    };
+    _ = try cmdGeoadd(testing.allocator, &storage, &add_args);
+
+    const dist_args = [_]RespValue{
+        .{ .bulk_string = "GEODIST" },
+        .{ .bulk_string = "mygeo2" },
+        .{ .bulk_string = "Palermo" },
+        .{ .bulk_string = "Catania" },
+        .{ .bulk_string = "Km" },
+    };
+    const result = try cmdGeodist(testing.allocator, &storage, &dist_args);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.startsWith(u8, result, "$"));
+    try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "GEORADIUS - accepts uppercase unit KM" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo3" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+    };
+    _ = try cmdGeoadd(testing.allocator, &storage, &add_args);
+
+    const radius_args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUS" },
+        .{ .bulk_string = "mygeo3" },
+        .{ .bulk_string = "15.0" },
+        .{ .bulk_string = "37.0" },
+        .{ .bulk_string = "300" },
+        .{ .bulk_string = "KM" },
+    };
+    const result = try cmdGeoradius(testing.allocator, &storage, &radius_args);
+    defer testing.allocator.free(result);
+    // Should return an array, not an error
+    try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "GEOSEARCH - accepts uppercase unit KM" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const add_args = [_]RespValue{
+        .{ .bulk_string = "GEOADD" },
+        .{ .bulk_string = "mygeo4" },
+        .{ .bulk_string = "13.361389" },
+        .{ .bulk_string = "38.115556" },
+        .{ .bulk_string = "Palermo" },
+    };
+    _ = try cmdGeoadd(testing.allocator, &storage, &add_args);
+
+    const search_args = [_]RespValue{
+        .{ .bulk_string = "GEOSEARCH" },
+        .{ .bulk_string = "mygeo4" },
+        .{ .bulk_string = "FROMLONLAT" },
+        .{ .bulk_string = "15.0" },
+        .{ .bulk_string = "37.0" },
+        .{ .bulk_string = "BYRADIUS" },
+        .{ .bulk_string = "300" },
+        .{ .bulk_string = "KM" },
+        .{ .bulk_string = "ASC" },
+    };
+    const result = try cmdGeosearch(testing.allocator, &storage, &search_args);
+    defer testing.allocator.free(result);
+    try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
 }
