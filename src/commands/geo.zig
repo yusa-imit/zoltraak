@@ -435,8 +435,10 @@ const GeoResult = struct {
     coords: Coords,
 };
 
-/// GEORADIUS key longitude latitude radius m|km|ft|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC|DESC]
-pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// GEORADIUS key longitude latitude radius m|km|ft|mi [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC] [STORE key] [STOREDIST key]
+/// ps and db_index are needed for keyspace notifications when STORE/STOREDIST is used.
+/// Pass ps=null to disable STORE support (used by GEORADIUS_RO).
+pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: ?*PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -475,7 +477,6 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return w.writeError("ERR invalid radius");
     };
 
-    // Convert radius to meters
     // Convert radius to meters (case-insensitive per Redis spec)
     if (std.ascii.eqlIgnoreCase(unit, "m")) {
         // meters (default)
@@ -494,8 +495,11 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
     var with_dist = false;
     var with_hash = false;
     var count_limit: ?usize = null;
+    var count_any = false;
     var sort_asc = false;
     var sort_desc = false;
+    var store_key: ?[]const u8 = null;
+    var store_dist = false;
 
     var i: usize = 6;
     while (i < args.len) {
@@ -527,12 +531,43 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
                 return w.writeError("ERR invalid count");
             };
             i += 2;
+            // Optional ANY flag after COUNT value
+            if (i < args.len) {
+                const next_str = switch (args[i]) {
+                    .bulk_string => |s| s,
+                    else => continue,
+                };
+                const next_upper = try std.ascii.allocUpperString(allocator, next_str);
+                defer allocator.free(next_upper);
+                if (std.mem.eql(u8, next_upper, "ANY")) {
+                    count_any = true;
+                    i += 1;
+                }
+            }
         } else if (std.mem.eql(u8, arg_upper, "ASC")) {
             sort_asc = true;
             i += 1;
         } else if (std.mem.eql(u8, arg_upper, "DESC")) {
             sort_desc = true;
             i += 1;
+        } else if (std.mem.eql(u8, arg_upper, "STORE")) {
+            if (ps == null) return w.writeError("ERR syntax error");
+            if (i + 1 >= args.len) return w.writeError("ERR syntax error");
+            store_key = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            store_dist = false;
+            i += 2;
+        } else if (std.mem.eql(u8, arg_upper, "STOREDIST")) {
+            if (ps == null) return w.writeError("ERR syntax error");
+            if (i + 1 >= args.len) return w.writeError("ERR syntax error");
+            store_key = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            store_dist = true;
+            i += 2;
         } else {
             return w.writeError("ERR syntax error");
         }
@@ -541,6 +576,12 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
     // Get all members and filter by radius
     const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
         // Key doesn't exist or is not a sorted set
+        if (store_key != null) {
+            var buf = std.ArrayList(u8){};
+            defer buf.deinit(allocator);
+            try buf.appendSlice(allocator, ":0\r\n");
+            return buf.toOwnedSlice(allocator);
+        }
         var buf = std.ArrayList(u8){};
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "*0\r\n");
@@ -573,8 +614,9 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
         }
     }
 
-    // Sort by distance if requested
-    if (sort_asc or sort_desc) {
+    // Sort by distance if requested (skip if ANY flag is set with a count limit — any results OK)
+    const needs_sort = (sort_asc or sort_desc) and !(count_any and count_limit != null);
+    if (needs_sort) {
         const Context = struct {
             fn lessThan(_: void, a: GeoResult, b: GeoResult) bool {
                 return a.distance < b.distance;
@@ -593,7 +635,49 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     const result_count = if (count_limit) |limit| @min(limit, results.items.len) else results.items.len;
 
-    // Build response
+    // STORE / STOREDIST: save results into destination sorted set and return count
+    if (store_key) |dest_key| {
+        var members = std.ArrayList([]const u8){};
+        defer {
+            for (members.items) |m| allocator.free(m);
+            members.deinit(allocator);
+        }
+        var scores = std.ArrayList(f64){};
+        defer scores.deinit(allocator);
+
+        for (results.items[0..result_count]) |result| {
+            const member_copy = try allocator.dupe(u8, result.member);
+            try members.append(allocator, member_copy);
+            const score: f64 = if (store_dist) blk: {
+                var dist = result.distance;
+                if (std.ascii.eqlIgnoreCase(unit, "km")) {
+                    dist /= 1000.0;
+                } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
+                    dist /= 1609.34;
+                } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
+                    dist /= 0.3048;
+                }
+                break :blk dist;
+            } else @floatFromInt(result.geohash);
+            try scores.append(allocator, score);
+        }
+
+        _ = storage.del(&[_][]const u8{dest_key});
+        _ = try storage.zadd(dest_key, scores.items, members.items, 0, null);
+
+        if (result_count > 0) {
+            if (ps) |pub_sub| {
+                notifyZsetEvent(allocator, storage, pub_sub, db_index, dest_key, "georadiusstore");
+            }
+        }
+
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{result_count});
+        return buf.toOwnedSlice(allocator);
+    }
+
+    // Build regular response
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
@@ -649,15 +733,18 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
 }
 
 /// GEORADIUS_RO - read-only variant of GEORADIUS (deprecated but used by read-only replicas)
-/// Syntax: GEORADIUS_RO key longitude latitude radius <M|KM|FT|MI> [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC|DESC]
+/// Syntax: GEORADIUS_RO key longitude latitude radius <M|KM|FT|MI> [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]
+/// Does NOT support STORE/STOREDIST (read-only).
 pub fn cmdGeoradiusRo(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    // GEORADIUS_RO has identical logic to GEORADIUS - just a read-only alias for replicas
-    return cmdGeoradius(allocator, storage, args);
+    // Pass ps=null to disable STORE/STOREDIST (returns ERR syntax error if attempted)
+    return cmdGeoradius(allocator, storage, args, null, 0);
 }
 
 /// GEORADIUSBYMEMBER - radius query from a member's location
-/// Syntax: GEORADIUSBYMEMBER key member radius <M|KM|FT|MI> [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC|DESC]
-pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Syntax: GEORADIUSBYMEMBER key member radius <M|KM|FT|MI> [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC] [STORE key] [STOREDIST key]
+/// ps and db_index are needed for keyspace notifications when STORE/STOREDIST is used.
+/// Pass ps=null to disable STORE support (used by GEORADIUSBYMEMBER_RO).
+pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: ?*PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -714,13 +801,16 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
         return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
     }
 
-    // Parse options (same as GEORADIUS)
+    // Parse options (same as GEORADIUS, including STORE/STOREDIST/ANY)
     var with_coord = false;
     var with_dist = false;
     var with_hash = false;
     var count_limit: ?usize = null;
+    var count_any = false;
     var sort_asc = false;
     var sort_desc = false;
+    var store_key: ?[]const u8 = null;
+    var store_dist_flag = false;
 
     var i: usize = 5;
     while (i < args.len) {
@@ -752,12 +842,43 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
                 return w.writeError("ERR invalid count");
             };
             i += 2;
+            // Optional ANY flag after COUNT value
+            if (i < args.len) {
+                const next_str = switch (args[i]) {
+                    .bulk_string => |s| s,
+                    else => continue,
+                };
+                const next_upper = try std.ascii.allocUpperString(allocator, next_str);
+                defer allocator.free(next_upper);
+                if (std.mem.eql(u8, next_upper, "ANY")) {
+                    count_any = true;
+                    i += 1;
+                }
+            }
         } else if (std.mem.eql(u8, arg_upper, "ASC")) {
             sort_asc = true;
             i += 1;
         } else if (std.mem.eql(u8, arg_upper, "DESC")) {
             sort_desc = true;
             i += 1;
+        } else if (std.mem.eql(u8, arg_upper, "STORE")) {
+            if (ps == null) return w.writeError("ERR syntax error");
+            if (i + 1 >= args.len) return w.writeError("ERR syntax error");
+            store_key = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            store_dist_flag = false;
+            i += 2;
+        } else if (std.mem.eql(u8, arg_upper, "STOREDIST")) {
+            if (ps == null) return w.writeError("ERR syntax error");
+            if (i + 1 >= args.len) return w.writeError("ERR syntax error");
+            store_key = switch (args[i + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            store_dist_flag = true;
+            i += 2;
         } else {
             return w.writeError("ERR syntax error");
         }
@@ -765,6 +886,12 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
 
     // Get all members and filter by radius (reuse GEORADIUS logic)
     const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
+        if (store_key != null) {
+            var buf = std.ArrayList(u8){};
+            defer buf.deinit(allocator);
+            try buf.appendSlice(allocator, ":0\r\n");
+            return buf.toOwnedSlice(allocator);
+        }
         var buf = std.ArrayList(u8){};
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "*0\r\n");
@@ -797,8 +924,9 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
         }
     }
 
-    // Sort by distance if requested
-    if (sort_asc or sort_desc) {
+    // Sort by distance if requested (skip if ANY flag is set with a count limit)
+    const needs_sort_bymember = (sort_asc or sort_desc) and !(count_any and count_limit != null);
+    if (needs_sort_bymember) {
         const Context = struct {
             fn lessThan(_: void, a: GeoResult, b: GeoResult) bool {
                 return a.distance < b.distance;
@@ -816,6 +944,48 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
     }
 
     const result_count = if (count_limit) |limit| @min(limit, results.items.len) else results.items.len;
+
+    // STORE / STOREDIST: save results into destination sorted set and return count
+    if (store_key) |dest_key| {
+        var members = std.ArrayList([]const u8){};
+        defer {
+            for (members.items) |m| allocator.free(m);
+            members.deinit(allocator);
+        }
+        var scores = std.ArrayList(f64){};
+        defer scores.deinit(allocator);
+
+        for (results.items[0..result_count]) |result| {
+            const member_copy = try allocator.dupe(u8, result.member);
+            try members.append(allocator, member_copy);
+            const stored_score: f64 = if (store_dist_flag) blk: {
+                var dist = result.distance;
+                if (std.ascii.eqlIgnoreCase(unit, "km")) {
+                    dist /= 1000.0;
+                } else if (std.ascii.eqlIgnoreCase(unit, "mi")) {
+                    dist /= 1609.34;
+                } else if (std.ascii.eqlIgnoreCase(unit, "ft")) {
+                    dist /= 0.3048;
+                }
+                break :blk dist;
+            } else @floatFromInt(result.geohash);
+            try scores.append(allocator, stored_score);
+        }
+
+        _ = storage.del(&[_][]const u8{dest_key});
+        _ = try storage.zadd(dest_key, scores.items, members.items, 0, null);
+
+        if (result_count > 0) {
+            if (ps) |pub_sub| {
+                notifyZsetEvent(allocator, storage, pub_sub, db_index, dest_key, "georadiusbymemberstore");
+            }
+        }
+
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(allocator);
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{result_count});
+        return buf.toOwnedSlice(allocator);
+    }
 
     // Build response (same format as GEORADIUS)
     var buf = std.ArrayList(u8){};
@@ -873,10 +1043,11 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
 }
 
 /// GEORADIUSBYMEMBER_RO - read-only variant of GEORADIUSBYMEMBER (deprecated but used by read-only replicas)
-/// Syntax: GEORADIUSBYMEMBER_RO key member radius <M|KM|FT|MI> [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count] [ASC|DESC]
+/// Syntax: GEORADIUSBYMEMBER_RO key member radius <M|KM|FT|MI> [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]
+/// Does NOT support STORE/STOREDIST (read-only).
 pub fn cmdGeoradiusbymemberRo(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
-    // GEORADIUSBYMEMBER_RO has identical logic to GEORADIUSBYMEMBER - just a read-only alias for replicas
-    return cmdGeoradiusbymember(allocator, storage, args);
+    // Pass ps=null to disable STORE/STOREDIST (returns ERR syntax error if attempted)
+    return cmdGeoradiusbymember(allocator, storage, args, null, 0);
 }
 
 /// GEOSEARCH - simplified implementation (BYRADIUS only)
@@ -1629,7 +1800,7 @@ test "GEORADIUSBYMEMBER command" {
         .{ .bulk_string = "km" },
     };
 
-    const result = try cmdGeoradiusbymember(testing.allocator, &storage, &args);
+    const result = try cmdGeoradiusbymember(testing.allocator, &storage, &args, null, 0);
     defer testing.allocator.free(result);
 
     // Should return both cities (SF is 0km, LA is ~559km)
@@ -1916,7 +2087,7 @@ test "GEORADIUS - accepts uppercase unit KM" {
         .{ .bulk_string = "300" },
         .{ .bulk_string = "KM" },
     };
-    const result = try cmdGeoradius(testing.allocator, &storage, &radius_args);
+    const result = try cmdGeoradius(testing.allocator, &storage, &radius_args, null, 0);
     defer testing.allocator.free(result);
     // Should return an array, not an error
     try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
@@ -1950,4 +2121,171 @@ test "GEOSEARCH - accepts uppercase unit KM" {
     const result = try cmdGeosearch(testing.allocator, &storage, &search_args);
     defer testing.allocator.free(result);
     try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+}
+
+test "GEORADIUS STORE - stores results in destination sorted set" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    // Add two cities
+    const palermo_hash = try encodeGeohash(38.115556, 13.361389);
+    const catania_hash = try encodeGeohash(37.502669, 15.087269);
+    _ = try storage.zadd("sicily", &[_]f64{ @floatFromInt(palermo_hash), @floatFromInt(catania_hash) }, &[_][]const u8{ "Palermo", "Catania" }, 0, null);
+
+    // GEORADIUS with STORE
+    var pubsub = try @import("../storage/pubsub.zig").PubSub.init(testing.allocator);
+    defer pubsub.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUS" },
+        .{ .bulk_string = "sicily" },
+        .{ .bulk_string = "15" },
+        .{ .bulk_string = "37" },
+        .{ .bulk_string = "200" },
+        .{ .bulk_string = "km" },
+        .{ .bulk_string = "STORE" },
+        .{ .bulk_string = "destination" },
+    };
+    const result = try cmdGeoradius(testing.allocator, &storage, &args, &pubsub, 0);
+    defer testing.allocator.free(result);
+    // Returns count of stored elements as integer
+    try testing.expectEqualStrings(":2\r\n", result);
+
+    // Verify destination key exists and has 2 members
+    const dest_card = storage.zcard("destination") orelse 0;
+    try testing.expectEqual(@as(usize, 2), dest_card);
+}
+
+test "GEORADIUS STOREDIST - stores distance as score in destination" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const palermo_hash = try encodeGeohash(38.115556, 13.361389);
+    const catania_hash = try encodeGeohash(37.502669, 15.087269);
+    _ = try storage.zadd("sicily2", &[_]f64{ @floatFromInt(palermo_hash), @floatFromInt(catania_hash) }, &[_][]const u8{ "Palermo", "Catania" }, 0, null);
+
+    var pubsub = try @import("../storage/pubsub.zig").PubSub.init(testing.allocator);
+    defer pubsub.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUS" },
+        .{ .bulk_string = "sicily2" },
+        .{ .bulk_string = "15" },
+        .{ .bulk_string = "37" },
+        .{ .bulk_string = "200" },
+        .{ .bulk_string = "km" },
+        .{ .bulk_string = "STOREDIST" },
+        .{ .bulk_string = "dists" },
+    };
+    const result = try cmdGeoradius(testing.allocator, &storage, &args, &pubsub, 0);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings(":2\r\n", result);
+
+    // Verify destination key exists
+    const dest_card = storage.zcard("dists") orelse 0;
+    try testing.expectEqual(@as(usize, 2), dest_card);
+}
+
+test "GEORADIUS_RO rejects STORE option with syntax error" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const hash = try encodeGeohash(38.115556, 13.361389);
+    _ = try storage.zadd("geo_ro_test", &[_]f64{@floatFromInt(hash)}, &[_][]const u8{"Palermo"}, 0, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUS_RO" },
+        .{ .bulk_string = "geo_ro_test" },
+        .{ .bulk_string = "15" },
+        .{ .bulk_string = "37" },
+        .{ .bulk_string = "200" },
+        .{ .bulk_string = "km" },
+        .{ .bulk_string = "STORE" },
+        .{ .bulk_string = "dest" },
+    };
+    const result = try cmdGeoradiusRo(testing.allocator, &storage, &args);
+    defer testing.allocator.free(result);
+    // _RO variant should reject STORE
+    try testing.expect(std.mem.startsWith(u8, result, "-ERR syntax error"));
+}
+
+test "GEORADIUS COUNT ANY - returns up to count results without full sort" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const palermo_hash = try encodeGeohash(38.115556, 13.361389);
+    const catania_hash = try encodeGeohash(37.502669, 15.087269);
+    _ = try storage.zadd("sicily3", &[_]f64{ @floatFromInt(palermo_hash), @floatFromInt(catania_hash) }, &[_][]const u8{ "Palermo", "Catania" }, 0, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUS" },
+        .{ .bulk_string = "sicily3" },
+        .{ .bulk_string = "15" },
+        .{ .bulk_string = "37" },
+        .{ .bulk_string = "200" },
+        .{ .bulk_string = "km" },
+        .{ .bulk_string = "COUNT" },
+        .{ .bulk_string = "1" },
+        .{ .bulk_string = "ANY" },
+    };
+    const result = try cmdGeoradius(testing.allocator, &storage, &args, null, 0);
+    defer testing.allocator.free(result);
+    // Should return exactly 1 result
+    try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
+    try testing.expectEqualStrings("*1\r\n", result[0..4]);
+}
+
+test "GEORADIUSBYMEMBER STORE - stores results in destination sorted set" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const sf_hash = try encodeGeohash(37.7749, -122.4194);
+    const la_hash = try encodeGeohash(34.0522, -118.2437);
+    _ = try storage.zadd("cities", &[_]f64{ @floatFromInt(sf_hash), @floatFromInt(la_hash) }, &[_][]const u8{ "San Francisco", "Los Angeles" }, 0, null);
+
+    var pubsub = try @import("../storage/pubsub.zig").PubSub.init(testing.allocator);
+    defer pubsub.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUSBYMEMBER" },
+        .{ .bulk_string = "cities" },
+        .{ .bulk_string = "San Francisco" },
+        .{ .bulk_string = "1000" },
+        .{ .bulk_string = "km" },
+        .{ .bulk_string = "STORE" },
+        .{ .bulk_string = "nearby" },
+    };
+    const result = try cmdGeoradiusbymember(testing.allocator, &storage, &args, &pubsub, 0);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings(":2\r\n", result);
+
+    const dest_card = storage.zcard("nearby") orelse 0;
+    try testing.expectEqual(@as(usize, 2), dest_card);
+}
+
+test "GEORADIUSBYMEMBER_RO rejects STORE option with syntax error" {
+    const testing = std.testing;
+    var storage = Storage.init(testing.allocator);
+    defer storage.deinit();
+
+    const hash = try encodeGeohash(37.7749, -122.4194);
+    _ = try storage.zadd("cities_ro", &[_]f64{@floatFromInt(hash)}, &[_][]const u8{"San Francisco"}, 0, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "GEORADIUSBYMEMBER_RO" },
+        .{ .bulk_string = "cities_ro" },
+        .{ .bulk_string = "San Francisco" },
+        .{ .bulk_string = "100" },
+        .{ .bulk_string = "km" },
+        .{ .bulk_string = "STORE" },
+        .{ .bulk_string = "dest" },
+    };
+    const result = try cmdGeoradiusbymemberRo(testing.allocator, &storage, &args);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.startsWith(u8, result, "-ERR syntax error"));
 }

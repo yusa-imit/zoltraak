@@ -1511,11 +1511,13 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "GEOHASH")) {
             break :blk try geo_cmds.cmdGeohash(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS")) {
-            break :blk try geo_cmds.cmdGeoradius(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try geo_cmds.cmdGeoradius(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS_RO")) {
             break :blk try geo_cmds.cmdGeoradiusRo(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUSBYMEMBER")) {
-            break :blk try geo_cmds.cmdGeoradiusbymember(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try geo_cmds.cmdGeoradiusbymember(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUSBYMEMBER_RO")) {
             break :blk try geo_cmds.cmdGeoradiusbymemberRo(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
