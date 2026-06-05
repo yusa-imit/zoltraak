@@ -2673,6 +2673,51 @@ test "OBJECT ENCODING - set switches to hashtable when member length exceeds thr
     try std.testing.expectEqualStrings("$9\r\nhashtable\r\n", result);
 }
 
+test "OBJECT ENCODING - hash uses ziplist alias to control encoding threshold" {
+    // Regression: setting hash-max-ziplist-entries (old Redis alias) must sync to
+    // hash-max-listpack-entries (the canonical name OBJECT ENCODING reads).
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set threshold to 2 entries via the deprecated alias
+    try storage.config.set("hash-max-ziplist-entries", "2");
+
+    // Add 3 entries — exceeds alias threshold of 2, so encoding should be hashtable
+    _ = try storage.hset("myhash", &[_][]const u8{ "f1", "f2", "f3" }, &[_][]const u8{ "v1", "v2", "v3" }, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "myhash" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nhashtable\r\n", result);
+}
+
+test "OBJECT ENCODING - zset uses ziplist alias to control encoding threshold" {
+    // Regression: setting zset-max-ziplist-entries must sync to zset-max-listpack-entries.
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set threshold to 2 entries via the deprecated alias
+    try storage.config.set("zset-max-ziplist-entries", "2");
+
+    // Add 3 members — should switch to skiplist encoding
+    _ = try storage.zadd("myzset", &[_]f64{ 1.0, 2.0, 3.0 }, &[_][]const u8{ "a", "b", "c" }, 0, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "myzset" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nskiplist\r\n", result);
+}
+
 test "OBJECT FREQ - returns non-negative integer for existing key with LFU policy" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);

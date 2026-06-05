@@ -380,6 +380,25 @@ pub fn build(b: *std.Build) void {
     const run_hyperloglog_basic_tests = b.addRunArtifact(hyperloglog_basic_tests);
     test_step.dependOn(&run_hyperloglog_basic_tests.step);
 
+    // Config alias sync unit tests (Iteration 333)
+    const config_alias_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_config_aliases.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    config_alias_tests.linkSystemLibrary("luajit-5.1");
+    config_alias_tests.linkLibC();
+    config_alias_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    config_alias_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_config_alias_tests = b.addRunArtifact(config_alias_tests);
+    test_step.dependOn(&run_config_alias_tests.step);
+
     // Stream COUNT 0 unit tests (Iteration 325)
     const stream_count_zero_tests = b.addTest(.{
         .root_module = b.createModule(.{

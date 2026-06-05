@@ -33,6 +33,38 @@ pub fn parseMemoryValue(s: []const u8) !i64 {
     return std.math.mul(i64, base, multiplier) catch return error.InvalidValue;
 }
 
+/// Alias pairs for CONFIG parameters.
+/// When setting one parameter, its peer is automatically synced.
+/// Each entry is { alias, canonical } (both directions are synced).
+const ALIAS_PAIRS = [_][2][]const u8{
+    .{ "hash-max-ziplist-entries", "hash-max-listpack-entries" },
+    .{ "hash-max-ziplist-value", "hash-max-listpack-value" },
+    .{ "zset-max-ziplist-entries", "zset-max-listpack-entries" },
+    .{ "zset-max-ziplist-value", "zset-max-listpack-value" },
+    .{ "list-max-ziplist-size", "list-max-listpack-size" },
+    .{ "slave-serve-stale-data", "replica-serve-stale-data" },
+    .{ "slave-read-only", "replica-read-only" },
+    .{ "slave-priority", "replica-priority" },
+    .{ "slave-announced", "replica-announced" },
+    .{ "cluster-slave-no-failover", "cluster-replica-no-failover" },
+    .{ "cluster-slave-validity-factor", "cluster-replica-validity-factor" },
+    .{ "repl-ping-slave-period", "repl-ping-replica-period" },
+    .{ "min-slaves-to-write", "min-replicas-to-write" },
+    .{ "min-slaves-max-lag", "min-replicas-max-lag" },
+    .{ "repl-min-slaves-to-write", "min-replicas-to-write" },
+    .{ "repl-min-slaves-max-lag", "min-replicas-max-lag" },
+};
+
+/// Return the alias peer for a parameter name, or null if none.
+/// The returned string is a static literal (no allocation needed).
+fn findAliasPeer(name: []const u8) ?[]const u8 {
+    for (ALIAS_PAIRS) |pair| {
+        if (std.mem.eql(u8, name, pair[0])) return pair[1];
+        if (std.mem.eql(u8, name, pair[1])) return pair[0];
+    }
+    return null;
+}
+
 /// Configuration parameter value types
 pub const ConfigValue = union(enum) {
     string: []const u8,
@@ -456,6 +488,16 @@ pub const Config = struct {
         } else {
             return error.UnknownParameter;
         }
+
+        // Sync alias peer
+        if (findAliasPeer(name_lower)) |peer_name| {
+            if (self.params.getPtr(peer_name)) |peer_ptr| {
+                if (gop.value_ptr.*.clone(self.allocator)) |peer_val| {
+                    peer_ptr.*.deinit(self.allocator);
+                    peer_ptr.* = peer_val;
+                } else |_| {}
+            }
+        }
     }
 
     /// Set configuration parameter - overloaded to handle both string and ConfigValue
@@ -464,15 +506,13 @@ pub const Config = struct {
     pub fn set(self: *Config, param_name: []const u8, value: anytype) !void {
         const ValueType = @TypeOf(value);
 
-        // Dispatch based on value type
-        if (ValueType == []const u8 or ValueType == [:0]const u8) {
-            // String version - use existing logic
-            return self.setString(param_name, value);
-        } else if (ValueType == ConfigValue) {
-            // ConfigValue version - use typed setter
+        // Dispatch based on value type.
+        // ConfigValue is the typed path; anything else is treated as a string
+        // ([]const u8, [:0]const u8, and string literals *const[N:0]u8 all coerce).
+        if (ValueType == ConfigValue) {
             return self.setConfigValue(param_name, value);
         } else {
-            @compileError("set() expects either []const u8 or ConfigValue, got " ++ @typeName(ValueType));
+            return self.setString(param_name, @as([]const u8, value));
         }
     }
 
@@ -611,6 +651,17 @@ pub const Config = struct {
         } else {
             // This shouldn't happen since we validated the parameter exists
             return error.UnknownParameter;
+        }
+
+        // Sync alias peer — keeps ziplist/listpack aliases and slave/replica aliases in sync.
+        // We already hold the mutex and the value is stored; clone it for the peer.
+        if (findAliasPeer(name_lower)) |peer_name| {
+            if (self.params.getPtr(peer_name)) |peer_ptr| {
+                if (gop.value_ptr.*.clone(self.allocator)) |peer_val| {
+                    peer_ptr.*.deinit(self.allocator);
+                    peer_ptr.* = peer_val;
+                } else |_| {} // best-effort: ignore allocation failure for alias sync
+            }
         }
     }
 
@@ -1132,4 +1183,100 @@ test "Config.set dynamic-hz boolean parameter" {
     const val2 = try config.get("dynamic-hz");
     defer if (val2) |v| allocator.free(v);
     try std.testing.expectEqualStrings("no", val2.?);
+}
+
+test "Config alias sync - setting ziplist alias updates listpack canonical" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Setting the ziplist alias should also update the listpack canonical
+    try config.set("hash-max-ziplist-entries", "64");
+
+    // Both should now be 64
+    const canonical = try config.get("hash-max-listpack-entries");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("64", canonical.?);
+
+    const alias = try config.get("hash-max-ziplist-entries");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("64", alias.?);
+}
+
+test "Config alias sync - setting listpack canonical updates ziplist alias" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Setting the canonical should also update the alias
+    try config.set("zset-max-listpack-entries", "32");
+
+    const canonical = try config.get("zset-max-listpack-entries");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", canonical.?);
+
+    const alias = try config.get("zset-max-ziplist-entries");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", alias.?);
+}
+
+test "Config alias sync - slave/replica parameter bidirectional sync" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Setting slave-serve-stale-data should update replica-serve-stale-data
+    try config.set("slave-serve-stale-data", "no");
+
+    const replica_val = try config.get("replica-serve-stale-data");
+    defer if (replica_val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("no", replica_val.?);
+
+    // Setting replica-serve-stale-data should update slave-serve-stale-data
+    try config.set("replica-serve-stale-data", "yes");
+
+    const slave_val = try config.get("slave-serve-stale-data");
+    defer if (slave_val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", slave_val.?);
+}
+
+test "Config alias sync - min-replicas integer aliases stay in sync" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    // Setting the old slave alias updates the new canonical
+    try config.set("min-slaves-to-write", "2");
+
+    const canonical = try config.get("min-replicas-to-write");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("2", canonical.?);
+}
+
+test "Config alias sync - list-max-ziplist-size syncs with list-max-listpack-size" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    try config.set("list-max-ziplist-size", "-1");
+
+    const listpack = try config.get("list-max-listpack-size");
+    defer if (listpack) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("-1", listpack.?);
+}
+
+test "Config alias sync - zset-max-ziplist-value syncs with zset-max-listpack-value" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    try config.set("zset-max-ziplist-value", "32");
+
+    const canonical = try config.get("zset-max-listpack-value");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", canonical.?);
+
+    const alias = try config.get("zset-max-ziplist-value");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", alias.?);
 }
