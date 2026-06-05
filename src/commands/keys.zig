@@ -956,14 +956,16 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     const next_cursor: usize = if (end >= matching.items.len) 0 else end;
     const page = matching.items[start..end];
 
-    // Build response: *2 array: cursor integer, then array of keys
+    // Build response: *2 array: cursor (bulk string), then array of keys
     var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
 
     // Write outer array header
     try buf.appendSlice(allocator, "*2\r\n");
-    // Write cursor
-    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    // Write cursor as bulk string (Redis returns cursor as bulk string, not integer)
+    const cursor_digits = try std.fmt.allocPrint(allocator, "{d}", .{next_cursor});
+    defer allocator.free(cursor_digits);
+    const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits.len, cursor_digits });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
     // Write keys array
@@ -1082,7 +1084,9 @@ pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "*2\r\n");
-    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    const cursor_digits_h = try std.fmt.allocPrint(allocator, "{d}", .{next_cursor});
+    defer allocator.free(cursor_digits_h);
+    const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits_h.len, cursor_digits_h });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
     const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
@@ -1183,7 +1187,9 @@ pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "*2\r\n");
-    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    const cursor_digits_s = try std.fmt.allocPrint(allocator, "{d}", .{next_cursor});
+    defer allocator.free(cursor_digits_s);
+    const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits_s.len, cursor_digits_s });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
     const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
@@ -1297,7 +1303,9 @@ pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "*2\r\n");
-    const cursor_resp = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{next_cursor});
+    const cursor_digits_z = try std.fmt.allocPrint(allocator, "{d}", .{next_cursor});
+    defer allocator.free(cursor_digits_z);
+    const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits_z.len, cursor_digits_z });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
     const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
@@ -2242,10 +2250,10 @@ test "HSCAN NOVALUES - basic with populated hash" {
     defer allocator.free(response);
 
     // Should return array with fields only (not values)
-    // Parse RESP: *2\r\n:0\r\n*<count>\r\n...<fields>...
+    // Parse RESP: *2\r\n$1\r\n0\r\n*<count>\r\n...<fields>...
     try std.testing.expect(std.mem.startsWith(u8, response, "*2"));
-    // Second element should be cursor 0 (next_cursor)
-    try std.testing.expect(std.mem.indexOf(u8, response, ":0") != null);
+    // Second element should be cursor 0 as bulk string
+    try std.testing.expect(std.mem.indexOf(u8, response, "$1\r\n0\r\n") != null);
     // Should have array with exactly 5 elements (not 10)
     try std.testing.expect(std.mem.indexOf(u8, response, "*5") != null);
     // Should NOT contain values
@@ -3416,8 +3424,8 @@ test "SCAN COUNT 0 returns all matching keys (no infinite loop)" {
     const response = try cmdScan(allocator, &storage, &args);
     defer allocator.free(response);
 
-    // Cursor should be 0 (done) and all 3 keys returned
-    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n:0\r\n"));
+    // Cursor should be 0 (done) as bulk string and all 3 keys returned
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$1\r\n0\r\n"));
     try std.testing.expect(std.mem.indexOf(u8, response, "key1") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "key2") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "key3") != null);
@@ -3475,9 +3483,89 @@ test "SSCAN COUNT 0 returns all matching members" {
     const response = try cmdSscan(allocator, &storage, &args);
     defer allocator.free(response);
 
-    // Cursor should be 0 and all members returned
-    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n:0\r\n"));
+    // Cursor should be 0 as bulk string and all members returned
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$1\r\n0\r\n"));
     try std.testing.expect(std.mem.indexOf(u8, response, "$1\r\na\r\n") != null or
         std.mem.indexOf(u8, response, "$1\r\nb\r\n") != null or
         std.mem.indexOf(u8, response, "$1\r\nc\r\n") != null);
+}
+
+test "SCAN cursor is returned as bulk string (Redis protocol compliance)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("scankey", "value", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SCAN" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdScan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$"));
+    // Must NOT use integer format for cursor
+    try std.testing.expect(!std.mem.startsWith(u8, response, "*2\r\n:"));
+}
+
+test "HSCAN cursor is returned as bulk string (Redis protocol compliance)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.hset("myhash", "field1", "val1");
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "HSCAN" },
+        .{ .bulk_string = "myhash" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdHscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$"));
+    try std.testing.expect(!std.mem.startsWith(u8, response, "*2\r\n:"));
+}
+
+test "SSCAN cursor is returned as bulk string (Redis protocol compliance)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.sadd("myset", &[_][]const u8{"member1"});
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SSCAN" },
+        .{ .bulk_string = "myset" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdSscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$"));
+    try std.testing.expect(!std.mem.startsWith(u8, response, "*2\r\n:"));
+}
+
+test "ZSCAN cursor is returned as bulk string (Redis protocol compliance)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.zadd("myzset", 1.0, "member1", false, false, false, false);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZSCAN" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdZscan(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
+    try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$"));
+    try std.testing.expect(!std.mem.startsWith(u8, response, "*2\r\n:"));
 }

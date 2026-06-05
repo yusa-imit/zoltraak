@@ -437,6 +437,25 @@ pub fn build(b: *std.Build) void {
     const run_xrange_content_tests = b.addRunArtifact(xrange_content_tests);
     test_step.dependOn(&run_xrange_content_tests.step);
 
+    // SCAN cursor bulk string format tests (Iteration 337)
+    const scan_cursor_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_scan_cursor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    scan_cursor_tests.linkSystemLibrary("luajit-5.1");
+    scan_cursor_tests.linkLibC();
+    scan_cursor_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    scan_cursor_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_scan_cursor_tests = b.addRunArtifact(scan_cursor_tests);
+    test_step.dependOn(&run_scan_cursor_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
