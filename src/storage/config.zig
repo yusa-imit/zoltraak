@@ -41,6 +41,8 @@ const ALIAS_PAIRS = [_][2][]const u8{
     .{ "hash-max-ziplist-value", "hash-max-listpack-value" },
     .{ "zset-max-ziplist-entries", "zset-max-listpack-entries" },
     .{ "zset-max-ziplist-value", "zset-max-listpack-value" },
+    .{ "set-max-ziplist-entries", "set-max-listpack-entries" },
+    .{ "set-max-ziplist-value", "set-max-listpack-value" },
     .{ "list-max-ziplist-size", "list-max-listpack-size" },
     .{ "slave-serve-stale-data", "replica-serve-stale-data" },
     .{ "slave-read-only", "replica-read-only" },
@@ -212,6 +214,8 @@ pub const Config = struct {
             .{ .name = "hash-max-ziplist-value", .value = .{ .int = 64 }, .read_only = false }, // alias for hash-max-listpack-value
             .{ .name = "zset-max-ziplist-entries", .value = .{ .int = 128 }, .read_only = false }, // alias for zset-max-listpack-entries
             .{ .name = "zset-max-ziplist-value", .value = .{ .int = 64 }, .read_only = false }, // alias for zset-max-listpack-value
+            .{ .name = "set-max-ziplist-entries", .value = .{ .int = 128 }, .read_only = false }, // alias for set-max-listpack-entries
+            .{ .name = "set-max-ziplist-value", .value = .{ .int = 64 }, .read_only = false }, // alias for set-max-listpack-value
 
             // TLS/SSL configuration (Phase 10) - These are stored in Storage.tls_config but exposed via CONFIG GET/SET
             .{ .name = "tls-port", .value = .{ .int = 0 }, .read_only = false }, // TLS port (0 = disabled)
@@ -349,6 +353,25 @@ pub const Config = struct {
             .{ .name = "busy-reply-threshold", .value = .{ .int = 5000 }, .read_only = false }, // ms before replying with BUSY during script
             .{ .name = "repl-min-slaves-to-write", .value = .{ .int = 0 }, .read_only = false }, // Alias for min-replicas-to-write
             .{ .name = "repl-min-slaves-max-lag", .value = .{ .int = 10 }, .read_only = false }, // Alias for min-replicas-max-lag
+
+            // Quicklist / stream node encoding
+            .{ .name = "list-compress-depth", .value = .{ .int = 0 }, .read_only = false }, // Number of quicklist node levels to leave uncompressed (0 = none)
+            .{ .name = "stream-node-max-bytes", .value = .{ .int = 4096 }, .read_only = false }, // Max bytes per stream listpack node (0 = unlimited)
+            .{ .name = "stream-node-max-entries", .value = .{ .int = 100 }, .read_only = false }, // Max entries per stream listpack node (0 = unlimited)
+
+            // OOM killer adjustment
+            .{ .name = "oom-score-adj", .value = .{ .string = "no" }, .read_only = false }, // OOM killer adjustment mode (no/yes/absolute)
+            .{ .name = "oom-score-adj-values", .value = .{ .string = "0 200 800" }, .read_only = false }, // OOM score values per mode (server/slave/bgchild)
+
+            // ACL / pub-sub defaults
+            .{ .name = "acl-pubsub-default", .value = .{ .string = "resetchannels" }, .read_only = false }, // Default pub/sub ACL for new connections (resetchannels/allchannels)
+
+            // Locale / collation
+            .{ .name = "locale-collate", .value = .{ .string = "" }, .read_only = false }, // Locale used for string comparison (empty = POSIX)
+
+            // Syslog metadata
+            .{ .name = "syslog-ident", .value = .{ .string = "redis" }, .read_only = false }, // Syslog identity string
+            .{ .name = "syslog-facility", .value = .{ .string = "local0" }, .read_only = false }, // Syslog facility
         };
 
         for (defaults) |def| {
@@ -1277,6 +1300,64 @@ test "Config alias sync - zset-max-ziplist-value syncs with zset-max-listpack-va
     try std.testing.expectEqualStrings("32", canonical.?);
 
     const alias = try config.get("zset-max-ziplist-value");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", alias.?);
+}
+
+test "Config - new params have correct defaults" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const compress_depth = try config.get("list-compress-depth");
+    defer if (compress_depth) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", compress_depth.?);
+
+    const stream_max_bytes = try config.get("stream-node-max-bytes");
+    defer if (stream_max_bytes) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("4096", stream_max_bytes.?);
+
+    const stream_max_entries = try config.get("stream-node-max-entries");
+    defer if (stream_max_entries) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("100", stream_max_entries.?);
+
+    const oom_adj = try config.get("oom-score-adj");
+    defer if (oom_adj) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("no", oom_adj.?);
+
+    const acl_pubsub = try config.get("acl-pubsub-default");
+    defer if (acl_pubsub) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("resetchannels", acl_pubsub.?);
+}
+
+test "Config alias sync - set-max-ziplist-entries syncs with set-max-listpack-entries" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    try config.set("set-max-ziplist-entries", "64");
+
+    const canonical = try config.get("set-max-listpack-entries");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("64", canonical.?);
+
+    const alias = try config.get("set-max-ziplist-entries");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("64", alias.?);
+}
+
+test "Config alias sync - set-max-ziplist-value syncs with set-max-listpack-value" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    try config.set("set-max-ziplist-value", "32");
+
+    const canonical = try config.get("set-max-listpack-value");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", canonical.?);
+
+    const alias = try config.get("set-max-ziplist-value");
     defer if (alias) |v| allocator.free(v);
     try std.testing.expectEqualStrings("32", alias.?);
 }

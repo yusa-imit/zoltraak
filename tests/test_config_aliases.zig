@@ -132,3 +132,87 @@ test "OBJECT ENCODING: zset-max-ziplist-entries alias controls encoding threshol
     // With 3 members and threshold=2, encoding should be skiplist (not listpack)
     try std.testing.expectEqualStrings("$8\r\nskiplist\r\n", result);
 }
+
+// ── set-max-ziplist alias tests ───────────────────────────────────────────────
+// Verify that set-max-ziplist-entries and set-max-ziplist-value aliases
+// are synced with their canonical set-max-listpack-* counterparts.
+
+test "CONFIG alias: set-max-ziplist-entries syncs to set-max-listpack-entries" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set("set-max-ziplist-entries", @as([]const u8, "16"));
+
+    const canonical = try storage.config.getAsString("set-max-listpack-entries");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("16", canonical.?);
+
+    const alias = try storage.config.getAsString("set-max-ziplist-entries");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("16", alias.?);
+}
+
+test "CONFIG alias: set-max-listpack-entries syncs to set-max-ziplist-entries" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set("set-max-listpack-entries", @as([]const u8, "64"));
+
+    const canonical = try storage.config.getAsString("set-max-listpack-entries");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("64", canonical.?);
+
+    const alias = try storage.config.getAsString("set-max-ziplist-entries");
+    defer if (alias) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("64", alias.?);
+}
+
+test "CONFIG alias: set-max-ziplist-value syncs to set-max-listpack-value" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set("set-max-ziplist-value", @as([]const u8, "32"));
+
+    const canonical = try storage.config.getAsString("set-max-listpack-value");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("32", canonical.?);
+}
+
+// ── new config param defaults tests ──────────────────────────────────────────
+
+test "CONFIG: list-compress-depth has correct default" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = try storage.config.getAsString("list-compress-depth");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", val.?);
+}
+
+test "CONFIG: stream-node-max-bytes and stream-node-max-entries have correct defaults" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const bytes = try storage.config.getAsString("stream-node-max-bytes");
+    defer if (bytes) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("4096", bytes.?);
+
+    const entries = try storage.config.getAsString("stream-node-max-entries");
+    defer if (entries) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("100", entries.?);
+}
+
+test "CONFIG: acl-pubsub-default has correct default" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = try storage.config.getAsString("acl-pubsub-default");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("resetchannels", val.?);
+}
