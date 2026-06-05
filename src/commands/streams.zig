@@ -319,40 +319,28 @@ pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     defer allocator.free(entries.?);
 
-    // Format as array of [id, [field1, value1, field2, value2, ...]]
-    var result = try std.ArrayList(RespValue).initCapacity(allocator, entries.?.len);
-    defer result.deinit(allocator);
+    // Build raw RESP response directly to avoid use-after-free from deferred frees in loop.
+    // Each entry is formatted as *2\r\n$<id_len>\r\n<id>\r\n*<n>\r\n<fields...>
+    var result_buf = std.ArrayList(u8){};
+    defer result_buf.deinit(allocator);
+    const result_writer = result_buf.writer(allocator);
+
+    try result_writer.print("*{d}\r\n", .{entries.?.len});
 
     for (entries.?) |entry| {
-        // Format entry as [id, fields_array]
+        try result_writer.writeAll("*2\r\n");
+
         const id_str = try entry.id.format(allocator);
         defer allocator.free(id_str);
+        try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
 
-        var entry_array = try std.ArrayList(RespValue).initCapacity(allocator, 2);
-        defer entry_array.deinit(allocator);
-
-        try entry_array.append(allocator, RespValue{ .bulk_string = id_str });
-
-        // Fields array
-        var fields_array = try std.ArrayList(RespValue).initCapacity(allocator, entry.fields.items.len);
-        defer fields_array.deinit(allocator);
-
+        try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
         for (entry.fields.items) |field| {
-            try fields_array.append(allocator, RespValue{ .bulk_string = field });
+            try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
         }
-
-        const fields_resp = try w.writeArray(fields_array.items);
-        defer allocator.free(fields_resp);
-
-        try entry_array.append(allocator, RespValue{ .bulk_string = fields_resp });
-
-        const entry_resp = try w.writeArray(entry_array.items);
-        defer allocator.free(entry_resp);
-
-        try result.append(allocator, RespValue{ .bulk_string = entry_resp });
     }
 
-    return w.writeArray(result.items);
+    return result_buf.toOwnedSlice(allocator);
 }
 
 /// XREVRANGE key start end [COUNT count]
@@ -420,38 +408,27 @@ pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     defer allocator.free(entries.?);
 
-    // Format as array of [id, [field1, value1, field2, value2, ...]]
-    var result = try std.ArrayList(RespValue).initCapacity(allocator, entries.?.len);
-    defer result.deinit(allocator);
+    // Build raw RESP response directly to avoid use-after-free from deferred frees in loop.
+    var result_buf = std.ArrayList(u8){};
+    defer result_buf.deinit(allocator);
+    const result_writer = result_buf.writer(allocator);
+
+    try result_writer.print("*{d}\r\n", .{entries.?.len});
 
     for (entries.?) |entry| {
+        try result_writer.writeAll("*2\r\n");
+
         const id_str = try entry.id.format(allocator);
         defer allocator.free(id_str);
+        try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
 
-        var entry_array = try std.ArrayList(RespValue).initCapacity(allocator, 2);
-        defer entry_array.deinit(allocator);
-
-        try entry_array.append(allocator, RespValue{ .bulk_string = id_str });
-
-        var fields_array = try std.ArrayList(RespValue).initCapacity(allocator, entry.fields.items.len);
-        defer fields_array.deinit(allocator);
-
+        try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
         for (entry.fields.items) |field| {
-            try fields_array.append(allocator, RespValue{ .bulk_string = field });
+            try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
         }
-
-        const fields_resp = try w.writeArray(fields_array.items);
-        defer allocator.free(fields_resp);
-
-        try entry_array.append(allocator, RespValue{ .bulk_string = fields_resp });
-
-        const entry_resp = try w.writeArray(entry_array.items);
-        defer allocator.free(entry_resp);
-
-        try result.append(allocator, RespValue{ .bulk_string = entry_resp });
     }
 
-    return w.writeArray(result.items);
+    return result_buf.toOwnedSlice(allocator);
 }
 
 /// XDEL key ID [ID ...]
@@ -1161,9 +1138,9 @@ test "streams - XTRIM limits stream length" {
     try std.testing.expectEqualStrings(":3\r\n", len_result);
 }
 
-test "streams - XRANGE returns entries" {
+test "streams - XRANGE returns entries with correct content" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Add entries
@@ -1197,12 +1174,21 @@ test "streams - XRANGE returns entries" {
     const result = try cmdXrange(allocator, storage, &args);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    // Should start with *2\r\n (2 entries)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    // Should contain entry IDs and field names/values
+    try std.testing.expect(std.mem.indexOf(u8, result, "1000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "2000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "temp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "20") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "25") != null);
+    // Should NOT contain garbage 0xaa bytes
+    try std.testing.expect(std.mem.indexOf(u8, result, "\xaa") == null);
 }
 
 test "streams - XRANGE with COUNT limit" {
     const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
     // Add 3 entries
@@ -1236,7 +1222,7 @@ test "streams - XRANGE with COUNT limit" {
     const r3 = try cmdXadd(allocator, storage, &fields3);
     defer allocator.free(r3);
 
-    // Query with COUNT 2
+    // Query with COUNT 2 — should return only 2 entries
     const args = [_]RespValue{
         RespValue{ .bulk_string = "XRANGE" },
         RespValue{ .bulk_string = "s" },
@@ -1248,7 +1234,65 @@ test "streams - XRANGE with COUNT limit" {
     const result = try cmdXrange(allocator, storage, &args);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
+    // Should start with *2\r\n (2 entries, not 3)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    // Should contain entry 1 and 2 but not entry 3
+    try std.testing.expect(std.mem.indexOf(u8, result, "1000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "2000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "3000-0") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\xaa") == null);
+}
+
+test "streams - XREVRANGE returns entries in reverse with correct content" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add entries in order
+    const xadd1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "rev" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "name" },
+        RespValue{ .bulk_string = "alice" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &xadd1);
+    defer allocator.free(r1);
+
+    const xadd2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "rev" },
+        RespValue{ .bulk_string = "2000-0" },
+        RespValue{ .bulk_string = "name" },
+        RespValue{ .bulk_string = "bob" },
+    };
+    const r2 = try cmdXadd(allocator, storage, &xadd2);
+    defer allocator.free(r2);
+
+    // XREVRANGE returns newest first
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XREVRANGE" },
+        RespValue{ .bulk_string = "rev" },
+        RespValue{ .bulk_string = "+" },
+        RespValue{ .bulk_string = "-" },
+    };
+    const result = try cmdXrevrange(allocator, storage, &args);
+    defer allocator.free(result);
+
+    // Should start with *2\r\n (2 entries)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    // Should contain field names and values
+    try std.testing.expect(std.mem.indexOf(u8, result, "2000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "1000-0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "alice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "bob") != null);
+    // Should NOT contain garbage 0xaa bytes (regression test for use-after-free bug)
+    try std.testing.expect(std.mem.indexOf(u8, result, "\xaa") == null);
+    // 2000-0 should appear BEFORE 1000-0 (reverse order)
+    const pos2000 = std.mem.indexOf(u8, result, "2000-0").?;
+    const pos1000 = std.mem.indexOf(u8, result, "1000-0").?;
+    try std.testing.expect(pos2000 < pos1000);
 }
 
 /// XPENDING key group [[IDLE min-idle-time] start end count [consumer]]

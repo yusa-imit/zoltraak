@@ -418,6 +418,25 @@ pub fn build(b: *std.Build) void {
     const run_stream_count_zero_tests = b.addRunArtifact(stream_count_zero_tests);
     test_step.dependOn(&run_stream_count_zero_tests.step);
 
+    // XRANGE/XREVRANGE content regression tests (Iteration 336)
+    const xrange_content_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_xrange_content.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    xrange_content_tests.linkSystemLibrary("luajit-5.1");
+    xrange_content_tests.linkLibC();
+    xrange_content_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    xrange_content_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_xrange_content_tests = b.addRunArtifact(xrange_content_tests);
+    test_step.dependOn(&run_xrange_content_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
