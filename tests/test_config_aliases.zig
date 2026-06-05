@@ -216,3 +216,128 @@ test "CONFIG: acl-pubsub-default has correct default" {
     defer if (val) |v| allocator.free(v);
     try std.testing.expectEqualStrings("resetchannels", val.?);
 }
+
+// ── Iteration 335: new CONFIG params and list-max-listpack-size OBJECT ENCODING ──
+
+test "CONFIG: activedefrag-ignore-bytes has correct default (100mb)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = try storage.config.getAsString("activedefrag-ignore-bytes");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("104857600", val.?);
+}
+
+test "CONFIG: activedefrag-max-scan-fields has correct default (1000)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = try storage.config.getAsString("activedefrag-max-scan-fields");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("1000", val.?);
+}
+
+test "CONFIG: maxmemory-clients has correct default (0)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = try storage.config.getAsString("maxmemory-clients");
+    defer if (val) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", val.?);
+}
+
+test "CONFIG: replica-ignore-maxmemory has correct default (yes/true)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const val = try storage.config.getAsString("replica-ignore-maxmemory");
+    defer if (val) |v| allocator.free(v);
+    // bool true serializes as "yes"
+    try std.testing.expectEqualStrings("yes", val.?);
+}
+
+test "CONFIG alias: slave-ignore-maxmemory syncs to replica-ignore-maxmemory" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set("slave-ignore-maxmemory", @as([]const u8, "no"));
+
+    const canonical = try storage.config.getAsString("replica-ignore-maxmemory");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("no", canonical.?);
+}
+
+test "OBJECT ENCODING: list-max-listpack-size positive value controls list encoding" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Set list-max-listpack-size to 3 entries — lists with <= 3 entries are listpack
+    try storage.config.set("list-max-listpack-size", @as([]const u8, "3"));
+
+    // Push 2 entries — should be listpack (within threshold)
+    _ = try storage.lpush("mylist", &[_][]const u8{"a"}, null);
+    _ = try storage.lpush("mylist", &[_][]const u8{"b"}, null);
+
+    const args_list = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "mylist" },
+    };
+    const enc_list = try keys_cmds.cmdObject(allocator, storage, &args_list);
+    defer allocator.free(enc_list);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", enc_list);
+
+    // Push 2 more entries to exceed threshold of 3 — should become quicklist
+    _ = try storage.lpush("mylist", &[_][]const u8{"c"}, null);
+    _ = try storage.lpush("mylist", &[_][]const u8{"d"}, null);
+
+    const args_qlist = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "mylist" },
+    };
+    const enc_qlist = try keys_cmds.cmdObject(allocator, storage, &args_qlist);
+    defer allocator.free(enc_qlist);
+    try std.testing.expectEqualStrings("$9\r\nquicklist\r\n", enc_qlist);
+}
+
+test "OBJECT ENCODING: list-max-listpack-size negative uses list-max-listpack-entries fallback" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // list-max-listpack-size default is -2 (byte mode), falls back to list-max-listpack-entries=128
+    // With 3 small entries, should still be listpack
+    _ = try storage.lpush("fallback_list", &[_][]const u8{"x"}, null);
+    _ = try storage.lpush("fallback_list", &[_][]const u8{"y"}, null);
+    _ = try storage.lpush("fallback_list", &[_][]const u8{"z"}, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "fallback_list" },
+    };
+    const result = try keys_cmds.cmdObject(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
+}
+
+test "CONFIG: shutdown-timeout and rdb-key-save-delay have correct defaults" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const timeout = try storage.config.getAsString("shutdown-timeout");
+    defer if (timeout) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("10", timeout.?);
+
+    const delay = try storage.config.getAsString("rdb-key-save-delay");
+    defer if (delay) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", delay.?);
+}

@@ -1762,6 +1762,14 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
         };
         const list_max_entries: usize = blk: {
+            // list-max-listpack-size is the canonical Redis param (positive = max entries,
+            // negative = max bytes per node). Use it when positive; fall back to our
+            // list-max-listpack-entries helper param when negative (default -2).
+            var cv_size = storage.config.get("list-max-listpack-size") catch break :blk 128;
+            defer cv_size.deinit(allocator);
+            const size_val: i64 = switch (cv_size) { .int => |i| i, else => -2 };
+            if (size_val > 0) break :blk @intCast(size_val);
+            // Negative list-max-listpack-size means byte-limit mode; fall back to entries param
             var cv = storage.config.get("list-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));

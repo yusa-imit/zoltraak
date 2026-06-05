@@ -55,6 +55,7 @@ const ALIAS_PAIRS = [_][2][]const u8{
     .{ "min-slaves-max-lag", "min-replicas-max-lag" },
     .{ "repl-min-slaves-to-write", "min-replicas-to-write" },
     .{ "repl-min-slaves-max-lag", "min-replicas-max-lag" },
+    .{ "slave-ignore-maxmemory", "replica-ignore-maxmemory" },
 };
 
 /// Return the alias peer for a parameter name, or null if none.
@@ -372,6 +373,31 @@ pub const Config = struct {
             // Syslog metadata
             .{ .name = "syslog-ident", .value = .{ .string = "redis" }, .read_only = false }, // Syslog identity string
             .{ .name = "syslog-facility", .value = .{ .string = "local0" }, .read_only = false }, // Syslog facility
+
+            // Active defragmentation (additional params)
+            .{ .name = "activedefrag-ignore-bytes", .value = .{ .int = 104857600 }, .read_only = false }, // Min bytes of fragmentation to start defrag (default 100mb)
+            .{ .name = "activedefrag-max-scan-fields", .value = .{ .int = 1000 }, .read_only = false }, // Max hash/set/zset/list fields per scan cycle for defrag
+
+            // Client memory / eviction (Redis 7.x)
+            .{ .name = "maxmemory-clients", .value = .{ .int = 0 }, .read_only = false }, // Client-side caching memory limit per client (0 = disabled)
+
+            // Replica memory policy (Redis 7.x)
+            .{ .name = "replica-ignore-maxmemory", .value = .{ .bool = true }, .read_only = false }, // Replica does not enforce maxmemory
+            .{ .name = "slave-ignore-maxmemory", .value = .{ .bool = true }, .read_only = false }, // Deprecated alias for replica-ignore-maxmemory
+
+            // RDB / loading throttle (Redis 7.x)
+            .{ .name = "rdb-key-save-delay", .value = .{ .int = 0 }, .read_only = false }, // Microsecond delay between each key save (for throttling RDB save)
+            .{ .name = "key-load-delay", .value = .{ .int = 0 }, .read_only = false }, // Microsecond delay between each key load (for throttling RDB load)
+            .{ .name = "loading-process-events-interval-bytes", .value = .{ .int = 2097152 }, .read_only = false }, // How often to process events while loading (bytes, default 2mb)
+
+            // Cluster announce (additional)
+            .{ .name = "cluster-announce-hostname", .value = .{ .string = "" }, .read_only = false }, // Hostname that this node announces to cluster
+            .{ .name = "cluster-announce-human-nodename", .value = .{ .string = "" }, .read_only = false }, // Human-readable node name for cluster topology
+
+            // Server shutdown
+            .{ .name = "shutdown-timeout", .value = .{ .int = 10 }, .read_only = false }, // Timeout (seconds) for graceful shutdown
+            .{ .name = "shutdown-save-on-sigterm", .value = .{ .string = "default" }, .read_only = false }, // Save on SIGTERM (default/yes/no)
+
         };
 
         for (defaults) |def| {
@@ -1360,4 +1386,42 @@ test "Config alias sync - set-max-ziplist-value syncs with set-max-listpack-valu
     const alias = try config.get("set-max-ziplist-value");
     defer if (alias) |v| allocator.free(v);
     try std.testing.expectEqualStrings("32", alias.?);
+}
+
+test "Config - Iteration 335 new params have correct defaults" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    const defrag_ignore = try config.getAsString("activedefrag-ignore-bytes");
+    defer if (defrag_ignore) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("104857600", defrag_ignore.?);
+
+    const defrag_scan = try config.getAsString("activedefrag-max-scan-fields");
+    defer if (defrag_scan) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("1000", defrag_scan.?);
+
+    const maxmem_clients = try config.getAsString("maxmemory-clients");
+    defer if (maxmem_clients) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("0", maxmem_clients.?);
+
+    const replica_ignore = try config.getAsString("replica-ignore-maxmemory");
+    defer if (replica_ignore) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("yes", replica_ignore.?);
+
+    const shutdown_timeout = try config.getAsString("shutdown-timeout");
+    defer if (shutdown_timeout) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("10", shutdown_timeout.?);
+}
+
+test "Config alias sync - slave-ignore-maxmemory syncs to replica-ignore-maxmemory" {
+    const allocator = std.testing.allocator;
+    const config = try Config.init(allocator, 6379, "127.0.0.1");
+    defer config.deinit();
+
+    try config.set("slave-ignore-maxmemory", @as([]const u8, "no"));
+
+    const canonical = try config.getAsString("replica-ignore-maxmemory");
+    defer if (canonical) |v| allocator.free(v);
+    try std.testing.expectEqualStrings("no", canonical.?);
 }
