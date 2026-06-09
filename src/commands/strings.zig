@@ -10,6 +10,7 @@ const repl_cmds = @import("replication.zig");
 const lists = @import("lists.zig");
 const sets = @import("sets.zig");
 const hashes = @import("hashes.zig");
+pub const hashes_cmds = hashes;
 const sorted_sets = @import("sorted_sets.zig");
 const streams = @import("streams.zig");
 const streams_adv = @import("streams_advanced.zig");

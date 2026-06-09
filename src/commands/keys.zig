@@ -66,8 +66,8 @@ pub fn cmdTtl(allocator: std.mem.Allocator, storage: *Storage, args: []const Res
     if (ttl_ms < 0) {
         return w.writeInteger(ttl_ms); // -1 or -2
     }
-    // Convert ms to seconds, round up to ceiling
-    const ttl_sec = @divTrunc(ttl_ms + 999, 1000);
+    // Convert ms to seconds using round-to-nearest (matches Redis: (ttl+500)/1000).
+    const ttl_sec = @divTrunc(ttl_ms + 500, 1000);
     return w.writeInteger(ttl_sec);
 }
 
@@ -1914,6 +1914,44 @@ test "keys - TTL on key with no expiry returns -1" {
     const result = try cmdTtl(allocator, storage, &args);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(":-1\r\n", result);
+}
+
+test "keys - TTL rounds to nearest second (Redis-compatible)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // TTL with 1499ms remaining → round-to-nearest = 1 (not 2 from ceiling)
+    const expires_at = Storage.getCurrentTimestamp() + 1499;
+    try storage.set("mykey", "hello", expires_at);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "TTL" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdTtl(allocator, storage, &args);
+    defer allocator.free(result);
+    // 1499ms → round-to-nearest → 1 second (not 2)
+    try std.testing.expectEqualStrings(":1\r\n", result);
+}
+
+test "keys - TTL with 1500ms remaining rounds up" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // TTL with 1500ms remaining → round-to-nearest = 2 (ties go up)
+    const expires_at = Storage.getCurrentTimestamp() + 1500;
+    try storage.set("mykey", "hello", expires_at);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "TTL" },
+        .{ .bulk_string = "mykey" },
+    };
+    const result = try cmdTtl(allocator, storage, &args);
+    defer allocator.free(result);
+    // 1500ms → round-to-nearest → 2 seconds
+    try std.testing.expectEqualStrings(":2\r\n", result);
 }
 
 test "keys - PTTL on key with expiry" {

@@ -1471,6 +1471,12 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
             }
         }
     } else {
+        // When count is provided and key doesn't exist, return empty array (not nil).
+        // Matches Redis behavior: HRANDFIELD nonexistent 3 → *0\r\n (empty array).
+        // Without count: HRANDFIELD nonexistent → $-1\r\n (nil bulk string).
+        if (count != null) {
+            return w.writeArray(&[_]RespValue{});
+        }
         return w.writeNull();
     }
 }
@@ -2739,6 +2745,75 @@ test "cmdHrandfield - returns null for non-existent key" {
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("$-1\r\n", response);
+}
+
+test "cmdHrandfield - returns empty array for non-existent key with count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // HRANDFIELD nonexistent 3 → empty array *0\r\n (not nil)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "nonexistent" },
+        .{ .bulk_string = "3" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "cmdHrandfield - returns empty array for non-existent key with negative count" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // HRANDFIELD nonexistent -3 → empty array *0\r\n (not nil)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "nonexistent" },
+        .{ .bulk_string = "-3" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "cmdHrandfield - returns empty array for non-existent key with count 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // HRANDFIELD nonexistent 0 → empty array *0\r\n (not nil)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "nonexistent" },
+        .{ .bulk_string = "0" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "cmdHrandfield - returns empty array for non-existent key with WITHVALUES" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // HRANDFIELD nonexistent 3 WITHVALUES → empty array *0\r\n (not nil)
+    const args = [_]RespValue{
+        .{ .bulk_string = "HRANDFIELD" },
+        .{ .bulk_string = "nonexistent" },
+        .{ .bulk_string = "3" },
+        .{ .bulk_string = "WITHVALUES" },
+    };
+    const response = try cmdHrandfield(allocator, storage, &args, .RESP2);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("*0\r\n", response);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
