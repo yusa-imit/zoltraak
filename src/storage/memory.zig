@@ -5361,6 +5361,8 @@ pub const Storage = struct {
                 .sorted_set => |*zset| {
                     if (zset.members.get(member)) |old_score| {
                         const new_score = old_score + increment;
+                        // Reject NaN result (e.g. +inf incremented by -inf)
+                        if (std.math.isNan(new_score)) return error.NanResult;
                         // Remove from sorted list
                         for (zset.sorted_list.items, 0..) |item, idx| {
                             if (std.mem.eql(u8, item.member, member)) {

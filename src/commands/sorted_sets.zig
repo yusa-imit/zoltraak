@@ -49,14 +49,17 @@ fn notifyGenericEvent(
     notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
 }
 
-/// Parse score from string, supporting +inf and -inf
+/// Parse score from string, supporting +inf and -inf.
+/// Rejects NaN: any input that parses as NaN returns error.InvalidScore.
 fn parseScore(s: []const u8) !f64 {
     if (std.mem.eql(u8, s, "+inf") or std.mem.eql(u8, s, "inf")) {
         return std.math.inf(f64);
     } else if (std.mem.eql(u8, s, "-inf")) {
         return -std.math.inf(f64);
     } else {
-        return std.fmt.parseFloat(f64, s) catch error.InvalidScore;
+        const result = std.fmt.parseFloat(f64, s) catch return error.InvalidScore;
+        if (std.math.isNan(result)) return error.InvalidScore;
+        return result;
     }
 }
 
@@ -181,6 +184,10 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
 
         const new_score = old_score + incr;
+        // Reject NaN result (e.g. +inf + (-inf))
+        if (std.math.isNan(new_score)) {
+            return w.writeError("ERR resulting score is not a number (NaN)");
+        }
         var new_scores = [_]f64{new_score};
         var new_members = [_][]const u8{member};
 
@@ -906,6 +913,9 @@ pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
     const new_score = storage.zincrby(allocator, key, increment, member) catch |err| {
         if (err == error.WrongType) {
             return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        }
+        if (err == error.NanResult) {
+            return w.writeError("ERR resulting score is not a number (NaN)");
         }
         return err;
     };
@@ -4846,4 +4856,182 @@ test "sorted_sets - ZMPOP accepts lowercase COUNT keyword" {
     try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nc\r\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "$1\r\nb\r\n") != null);
+}
+
+// ── Iteration 340: NaN score validation tests ─────────────────────────────────
+
+test "ZADD - rejects NaN score" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "nan" },
+        .{ .bulk_string = "member" },
+    };
+    const result = try cmdZadd(allocator, storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("-ERR score is not a valid float\r\n", result);
+}
+
+test "ZADD - rejects NaN score uppercase" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "NaN" },
+        .{ .bulk_string = "member" },
+    };
+    const result = try cmdZadd(allocator, storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("-ERR score is not a valid float\r\n", result);
+}
+
+test "ZADD - accepts +inf and -inf scores" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    const args_pos = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "+inf" },
+        .{ .bulk_string = "posmember" },
+    };
+    const r1 = try cmdZadd(allocator, storage, &args_pos, &pubsub, 0);
+    defer allocator.free(r1);
+    try std.testing.expectEqualStrings(":1\r\n", r1);
+
+    const args_neg = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "-inf" },
+        .{ .bulk_string = "negmember" },
+    };
+    const r2 = try cmdZadd(allocator, storage, &args_neg, &pubsub, 0);
+    defer allocator.free(r2);
+    try std.testing.expectEqualStrings(":1\r\n", r2);
+}
+
+test "ZADD INCR - rejects NaN result from pos-inf incremented by neg-inf" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    // Add member with +inf score
+    const args_setup = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "+inf" },
+        .{ .bulk_string = "member" },
+    };
+    const setup = try cmdZadd(allocator, storage, &args_setup, &pubsub, 0);
+    defer allocator.free(setup);
+
+    // INCR by -inf: +inf + (-inf) = NaN
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "-inf" },
+        .{ .bulk_string = "member" },
+    };
+    const result = try cmdZadd(allocator, storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("-ERR resulting score is not a number (NaN)\r\n", result);
+}
+
+test "ZINCRBY - rejects NaN increment" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZINCRBY" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "nan" },
+        .{ .bulk_string = "member" },
+    };
+    const result = try cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("-ERR value is not a valid float\r\n", result);
+}
+
+test "ZINCRBY - rejects NaN result from pos-inf incremented by neg-inf" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    // Add member with +inf score
+    const args_setup = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "+inf" },
+        .{ .bulk_string = "member" },
+    };
+    const setup = try cmdZadd(allocator, storage, &args_setup, &pubsub, 0);
+    defer allocator.free(setup);
+
+    // ZINCRBY by -inf: +inf + (-inf) = NaN
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZINCRBY" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "-inf" },
+        .{ .bulk_string = "member" },
+    };
+    const result = try cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("-ERR resulting score is not a number (NaN)\r\n", result);
+}
+
+test "ZINCRBY - valid pos-inf increment works" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    // Start at 5, increment by +inf => +inf
+    const args_setup = [_]RespValue{
+        .{ .bulk_string = "ZADD" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "5" },
+        .{ .bulk_string = "member" },
+    };
+    const setup = try cmdZadd(allocator, storage, &args_setup, &pubsub, 0);
+    defer allocator.free(setup);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "ZINCRBY" },
+        .{ .bulk_string = "myzset" },
+        .{ .bulk_string = "+inf" },
+        .{ .bulk_string = "member" },
+    };
+    const result = try cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$3\r\ninf\r\n", result);
 }
