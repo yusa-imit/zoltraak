@@ -1319,7 +1319,12 @@ pub fn cmdXpending(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     if (args.len == 3) {
         return storage.xpendingSummary(allocator, key, group_name) catch |err| switch (err) {
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
-            error.NoSuchKey => return w.writeArray(null),
+            // Non-existent key: report NOGROUP since the group cannot exist for a non-existent stream
+            error.NoSuchKey => blk: {
+                var err_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&err_buf, "NOGROUP No such consumer group '{s}' for key name '{s}'", .{ group_name, key }) catch "NOGROUP No such consumer group";
+                break :blk w.writeError(msg);
+            },
             error.NoSuchGroup => return w.writeError("NOGROUP No such consumer group"),
             else => return err,
         };
@@ -1384,7 +1389,8 @@ pub fn cmdXpending(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     return storage.xpendingRange(allocator, key, group_name, start, end, count, consumer_name, idle_time) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
-        error.NoSuchKey => return w.writeArray(null),
+        // Non-existent key: Redis returns empty array for extended XPENDING form (no pending messages)
+        error.NoSuchKey => return w.writeArray(&[_]RespValue{}),
         error.NoSuchGroup => return w.writeError("NOGROUP No such consumer group"),
         error.InvalidStreamId => return w.writeError("ERR Invalid stream ID"),
         else => return err,

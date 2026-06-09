@@ -1411,12 +1411,12 @@ pub fn cmdSort(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Load elements based on type
     const vtype = storage.getType(key) orelse {
-        // Key doesn't exist - return empty array or 0 if STORE
+        // Key doesn't exist - Redis returns empty array (not nil) for SORT, or 0 for STORE
         if (store_dest) |dest| {
             _ = storage.del(&[_][]const u8{dest});
             return w.writeInteger(0);
         }
-        return w.writeArray(null);
+        return w.writeArray(&[_]RespValue{});
     };
 
     var elements: std.ArrayList([]const u8) = .{ .items = &.{}, .capacity = 0 };
