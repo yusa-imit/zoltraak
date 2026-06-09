@@ -2007,6 +2007,28 @@ pub const Storage = struct {
         return max_len;
     }
 
+    /// Return the sum of all element byte lengths for a list key.
+    /// Used by OBJECT ENCODING to determine listpack vs quicklist with byte-limit mode
+    /// (list-max-listpack-size < 0). Returns null if key does not exist or is not a list.
+    pub fn getListTotalByteSize(self: *Storage, key: []const u8) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        const lv = switch (entry.value_ptr.*) {
+            .list => |*l| l,
+            else => return null,
+        };
+
+        var total: usize = 0;
+        for (lv.data.items) |elem| {
+            total += elem.len;
+        }
+        return total;
+    }
+
     /// Return the modification version counter for a key (OBJECT VERSION).
     /// Starts at 1 on first write, increments on each subsequent write.
     /// Returns null if key does not exist or version is not tracked.

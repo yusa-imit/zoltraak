@@ -1769,23 +1769,12 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer cv.deinit(allocator);
             break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
         };
-        const list_max_entries: usize = blk: {
-            // list-max-listpack-size is the canonical Redis param (positive = max entries,
-            // negative = max bytes per node). Use it when positive; fall back to our
-            // list-max-listpack-entries helper param when negative (default -2).
-            var cv_size = storage.config.get("list-max-listpack-size") catch break :blk 128;
-            defer cv_size.deinit(allocator);
-            const size_val: i64 = switch (cv_size) { .int => |i| i, else => -2 };
-            if (size_val > 0) break :blk @intCast(size_val);
-            // Negative list-max-listpack-size means byte-limit mode; fall back to entries param
-            var cv = storage.config.get("list-max-listpack-entries") catch break :blk 128;
+        // Raw list-max-listpack-size: positive = entry count limit, negative = byte size limit.
+        // -1=4096B, -2=8192B(default), -3=16384B, -4=32768B, -5=65536B.
+        const list_size_mode: i64 = blk: {
+            var cv = storage.config.get("list-max-listpack-size") catch break :blk @as(i64, -2);
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
-        };
-        const list_max_value: usize = blk: {
-            var cv = storage.config.get("list-max-listpack-value") catch break :blk 64;
-            defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
+            break :blk switch (cv) { .int => |i| i, else => -2 };
         };
         const quicklist_packed_threshold: usize = blk: {
             var cv = storage.config.get("debug-quicklist-packed-threshold") catch break :blk 4096;
@@ -1821,11 +1810,25 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             .list => blk: {
                 const ln = storage.llen(key) orelse 0;
                 const max_elem = storage.getListMaxElementLength(key) orelse 0;
-                const effective_list_max = @min(list_max_value, quicklist_packed_threshold);
-                break :blk if (ln <= list_max_entries and max_elem <= effective_list_max)
-                    "listpack"
-                else
-                    "quicklist";
+                // Any element exceeding the packed threshold forces a PLAIN quicklist node.
+                if (max_elem > quicklist_packed_threshold) break :blk "quicklist";
+                if (list_size_mode > 0) {
+                    // Entry count mode: listpack iff element count ≤ limit
+                    break :blk if (ln <= @as(usize, @intCast(list_size_mode))) "listpack" else "quicklist";
+                } else {
+                    // Byte limit mode: listpack iff total element bytes ≤ limit.
+                    // Maps -1→4096, -2→8192, -3→16384, -4→32768, -5→65536.
+                    const byte_limit: usize = switch (list_size_mode) {
+                        -1 => 4096,
+                        -2 => 8192,
+                        -3 => 16384,
+                        -4 => 32768,
+                        -5 => 65536,
+                        else => 8192,
+                    };
+                    const total_bytes = storage.getListTotalByteSize(key) orelse 0;
+                    break :blk if (total_bytes <= byte_limit) "listpack" else "quicklist";
+                }
             },
             .set => blk: {
                 // Use actual internal encoding for sets
@@ -2645,19 +2648,105 @@ test "OBJECT ENCODING - sorted set switches to skiplist when member length excee
     try std.testing.expectEqualStrings("$8\r\nskiplist\r\n", result);
 }
 
-test "OBJECT ENCODING - list switches to quicklist when element length exceeds threshold" {
+test "OBJECT ENCODING - list with 65-byte element uses listpack (byte-limit mode)" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add an element that exceeds list-max-listpack-value (64 bytes default)
-    const long_elem = "e" ** 65;
+    // Default list-max-listpack-size=-2 (8192-byte node limit).
+    // 65 bytes < 8192 AND 65 < 4096 packed threshold → listpack.
+    const elem = "e" ** 65;
+    _ = try storage.rpush("list65", &[_][]const u8{elem}, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "list65" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
+}
+
+test "OBJECT ENCODING - list switches to quicklist when element exceeds packed threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Element of 4097 bytes exceeds debug-quicklist-packed-threshold (default 4096).
+    const long_elem = "e" ** 4097;
     _ = try storage.rpush("biglist", &[_][]const u8{long_elem}, null);
 
     const args = [_]RespValue{
         .{ .bulk_string = "OBJECT" },
         .{ .bulk_string = "ENCODING" },
         .{ .bulk_string = "biglist" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nquicklist\r\n", result);
+}
+
+test "OBJECT ENCODING - list switches to quicklist when total bytes exceed byte limit" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Default list-max-listpack-size=-2 → 8192 byte limit.
+    // Push 100 elements of 100 bytes each = 10000 total bytes > 8192.
+    const elem = "x" ** 100;
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        _ = try storage.rpush("bytebiglist", &[_][]const u8{elem}, null);
+    }
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "bytebiglist" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$9\r\nquicklist\r\n", result);
+}
+
+test "OBJECT ENCODING - list with 200 short elements uses listpack (byte-limit mode)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // 200 elements of 1 byte each = 200 bytes << 8192 byte limit → listpack.
+    // With old entry-count logic this would have been "quicklist" (200 > 128).
+    var i: usize = 0;
+    while (i < 200) : (i += 1) {
+        _ = try storage.rpush("manyshort", &[_][]const u8{"x"}, null);
+    }
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "manyshort" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
+}
+
+test "OBJECT ENCODING - list entry count mode with positive list-max-listpack-size" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Set list-max-listpack-size=3: lists with > 3 entries → quicklist.
+    try storage.config.setConfigValue("list-max-listpack-size", .{ .int = 3 });
+    defer storage.config.setConfigValue("list-max-listpack-size", .{ .int = -2 }) catch {};
+
+    _ = try storage.rpush("countlist", &[_][]const u8{ "a", "b", "c", "d" }, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "countlist" },
     };
     const result = try cmdObject(allocator, &storage, &args);
     defer allocator.free(result);

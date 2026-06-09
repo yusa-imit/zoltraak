@@ -475,6 +475,25 @@ pub fn build(b: *std.Build) void {
     const run_iter338_tests = b.addRunArtifact(iter338_tests);
     test_step.dependOn(&run_iter338_tests.step);
 
+    // Iteration 339: OBJECT ENCODING for lists — byte-limit semantics
+    const iter339_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter339.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter339_tests.linkSystemLibrary("luajit-5.1");
+    iter339_tests.linkLibC();
+    iter339_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter339_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter339_tests = b.addRunArtifact(iter339_tests);
+    test_step.dependOn(&run_iter339_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
