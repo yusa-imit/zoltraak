@@ -2369,8 +2369,8 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     }
 
-    // All lists were empty
-    return w.writeNull();
+    // All lists were empty — Redis returns null array (*-1\r\n), not null bulk string
+    return w.writeArray(null);
 }
 
 /// BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]
@@ -2540,8 +2540,8 @@ pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         elapsed_ms += poll_interval_ms;
     }
 
-    // Timeout expired - return null
-    return w.writeNull();
+    // Timeout expired — Redis returns null array (*-1\r\n), not null bulk string
+    return w.writeArray(null);
 }
 
 // ── Unit tests for blocking list commands ────────────────────────────────────

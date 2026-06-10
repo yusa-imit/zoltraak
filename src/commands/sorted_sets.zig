@@ -2602,8 +2602,8 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     }
 
-    // All sorted sets were empty
-    return w.writeNull();
+    // All sorted sets were empty — Redis returns null array (*-1\r\n), not null bulk string
+    return w.writeArray(null);
 }
 
 /// BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]
@@ -2773,8 +2773,8 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         elapsed_ms += poll_interval_ms;
     }
 
-    // Timeout expired - return null
-    return w.writeNull();
+    // Timeout expired — Redis returns null array (*-1\r\n), not null bulk string
+    return w.writeArray(null);
 }
 
 /// BZPOPMIN key [key ...] timeout
