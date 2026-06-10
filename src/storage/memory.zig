@@ -6136,6 +6136,10 @@ pub const Storage = struct {
             return error.NoSuchKey;
         }
 
+        // Same-key rename is a no-op; skip to avoid use-after-free when fetchRemove
+        // removes the entry that src_entry references.
+        if (std.mem.eql(u8, key, newkey)) return;
+
         // Clone the value to move it under the new key
         const src_value = src_entry.value_ptr.*;
 

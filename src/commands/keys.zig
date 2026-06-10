@@ -308,6 +308,15 @@ pub fn cmdRename(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         else => return w.writeError("ERR invalid newkey"),
     };
 
+    // Same-key rename: OK immediately without notifications (no-op per Redis spec)
+    if (std.mem.eql(u8, key, newkey)) {
+        // Verify key exists first (Redis returns ERR for nonexistent key even on same-key rename)
+        if (storage.getType(key) == null) {
+            return w.writeError("ERR no such key");
+        }
+        return w.writeOK();
+    }
+
     storage.rename(key, newkey) catch |err| switch (err) {
         error.NoSuchKey => return w.writeError("ERR no such key"),
         else => return err,
