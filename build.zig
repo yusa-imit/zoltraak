@@ -570,6 +570,25 @@ pub fn build(b: *std.Build) void {
     const run_iter343_tests = b.addRunArtifact(iter343_tests);
     test_step.dependOn(&run_iter343_tests.step);
 
+    // Iteration 344: MULTI/EXEC allocator fix + CLIENT SETNAME validation
+    const iter344_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter344.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter344_tests.linkSystemLibrary("luajit-5.1");
+    iter344_tests.linkLibC();
+    iter344_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter344_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter344_tests = b.addRunArtifact(iter344_tests);
+    test_step.dependOn(&run_iter344_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

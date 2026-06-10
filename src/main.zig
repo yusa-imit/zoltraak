@@ -21,10 +21,12 @@ pub const hyperloglog_commands = @import("commands/hyperloglog.zig");
 pub const streams_commands = @import("commands/streams.zig");
 pub const keys_commands = @import("commands/keys.zig");
 pub const lists_commands = @import("commands/lists.zig");
+pub const blocking = @import("storage/blocking.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
 pub const ClientInfo = client.ClientInfo;
+pub const BlockingQueue = blocking.BlockingQueue;
 
 const Server = server_mod.Server;
 const Config = server_mod.Config;

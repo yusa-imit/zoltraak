@@ -669,14 +669,18 @@ pub fn executeCommand(
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
     if (tx.active) {
-        // We need to re-encode the parsed command back to RESP bytes for queuing.
-        // Use the raw input: we store the RESP bytes via the parser's raw slice trick.
-        // Since we don't have the raw bytes here, serialize the RespValue instead.
+        // Re-encode the parsed command to RESP bytes for queuing.
+        // MUST use tx.allocator (not the per-request arena allocator) because
+        // qc.data lives until tx.reset() frees it with tx.allocator. Using the
+        // arena allocator here causes an "Invalid free" when tx.reset() runs.
+        var enc_w = Writer.init(tx.allocator);
+        defer enc_w.deinit();
+        const encoded = try enc_w.serialize(cmd);
+        errdefer tx.allocator.free(encoded);
+        try tx.enqueue(encoded);
+
         var w = Writer.init(allocator);
         defer w.deinit();
-        const encoded = try w.serialize(cmd);
-        errdefer allocator.free(encoded);
-        try tx.enqueue(encoded);
         return w.writeSimpleString("QUEUED");
     }
 

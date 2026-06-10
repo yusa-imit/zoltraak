@@ -1213,9 +1213,10 @@ fn cmdClientSetname(
         },
     };
 
-    // Validate: name must not contain spaces
+    // Validate: name must contain only printable ASCII chars (0x21-0x7E).
+    // Redis rejects spaces (0x20), control characters (< 0x21), and DEL/high bytes (> 0x7E).
     for (name) |c| {
-        if (c == ' ') {
+        if (c < 0x21 or c > 0x7E) {
             var w = Writer.init(allocator);
             defer w.deinit();
             return w.writeError("ERR Client names cannot contain spaces, newlines or special characters.");
