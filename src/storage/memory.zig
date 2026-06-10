@@ -4186,7 +4186,7 @@ pub const Storage = struct {
                         i += 1;
                         // Format score as string
                         var score_buf: [64]u8 = undefined;
-                        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{item.score});
+                        const score_str: []const u8 = if (std.math.isPositiveInf(item.score)) "+inf" else if (std.math.isNegativeInf(item.score)) "-inf" else try std.fmt.bufPrint(&score_buf, "{d}", .{item.score});
                         const owned_score = try allocator.dupe(u8, score_str);
                         result[i] = owned_score;
                         i += 1;
@@ -4285,7 +4285,7 @@ pub const Storage = struct {
                         result[i] = item.member;
                         i += 1;
                         var score_buf: [64]u8 = undefined;
-                        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{item.score});
+                        const score_str: []const u8 = if (std.math.isPositiveInf(item.score)) "+inf" else if (std.math.isNegativeInf(item.score)) "-inf" else try std.fmt.bufPrint(&score_buf, "{d}", .{item.score});
                         const owned_score = try allocator.dupe(u8, score_str);
                         result[i] = owned_score;
                         i += 1;

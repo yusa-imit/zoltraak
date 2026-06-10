@@ -63,6 +63,15 @@ fn parseScore(s: []const u8) !f64 {
     }
 }
 
+/// Format a score value for RESP output.
+/// Redis convention: positive infinity → "+inf", negative infinity → "-inf",
+/// other values → standard decimal (Zig's {d} format, trailing zeros stripped).
+fn formatScore(buf: []u8, score: f64) []const u8 {
+    if (std.math.isPositiveInf(score)) return "+inf";
+    if (std.math.isNegativeInf(score)) return "-inf";
+    return std.fmt.bufPrint(buf, "{d}", .{score}) catch "0";
+}
+
 /// ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]
 /// Sets members with scores in a sorted set (Redis 6.2.0+: GT/LT/INCR options)
 /// Returns integer - count of new members added (or changed if CH flag set)
@@ -214,7 +223,7 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
         const final_score = storage.zscore(key, member) orelse new_score;
         var score_buf: [64]u8 = undefined;
-        const score_str_out = try std.fmt.bufPrint(&score_buf, "{d}", .{final_score});
+        const score_str_out = formatScore(&score_buf, final_score);
         return w.writeBulkString(score_str_out);
     }
 
@@ -368,10 +377,11 @@ pub fn cmdZrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     var result_items: ?[]const []const u8 = null;
     defer {
         if (result_items) |items| {
-            // Score strings are allocated only in BYSCORE mode with WITHSCORES
-            // BYLEX mode never has scores (ensured by mutual exclusivity check)
-            if (by_score and with_scores) {
-                // Free score strings (odd indices - allocated by handleZrangeByscore)
+            if (by_lex) {
+                // zrangebylex dupes all member strings
+                for (items) |item| allocator.free(item);
+            } else if (with_scores) {
+                // zrange/zrangebyscore dupe score strings at odd indices
                 var idx: usize = 1;
                 while (idx < items.len) : (idx += 2) {
                     allocator.free(items[idx]);
@@ -738,7 +748,7 @@ pub fn cmdZscore(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     if (score) |s| {
         var score_buf: [64]u8 = undefined;
-        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{s});
+        const score_str = formatScore(&score_buf, s);
         return w.writeBulkString(score_str);
     } else {
         return w.writeNull();
@@ -810,7 +820,7 @@ pub fn cmdZrank(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     if (with_score) {
         const score = storage.zrankScore(key, member) orelse return w.writeNull();
         var score_buf: [64]u8 = undefined;
-        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{score});
+        const score_str = formatScore(&score_buf, score);
         const owned_score = try allocator.dupe(u8, score_str);
         defer allocator.free(owned_score);
         const items = [_]RespValue{
@@ -867,7 +877,7 @@ pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     if (with_score) {
         const score = storage.zrankScore(key, member) orelse return w.writeNull();
         var score_buf: [64]u8 = undefined;
-        const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{score});
+        const score_str = formatScore(&score_buf, score);
         const owned_score = try allocator.dupe(u8, score_str);
         defer allocator.free(owned_score);
         const items = [_]RespValue{
@@ -924,7 +934,7 @@ pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
     notifyZsetEvent(allocator, storage, ps, db_index, key, "zincrby");
 
     var score_buf: [64]u8 = undefined;
-    const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{new_score});
+    const score_str = formatScore(&score_buf, new_score);
     return w.writeBulkString(score_str);
 }
 
@@ -1034,7 +1044,7 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
         for (members) |sm| {
             try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
             var score_buf: [64]u8 = undefined;
-            const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+            const score_str = formatScore(&score_buf, sm.score);
             const owned_score = try allocator.dupe(u8, score_str);
             try score_strings.append(allocator, owned_score);
             try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
@@ -1100,7 +1110,7 @@ pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const
         for (members) |sm| {
             try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
             var score_buf: [64]u8 = undefined;
-            const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+            const score_str = formatScore(&score_buf, sm.score);
             const owned_score = try allocator.dupe(u8, score_str);
             try score_strings.append(allocator, owned_score);
             try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
@@ -1155,7 +1165,7 @@ pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const
     for (scores) |maybe_score| {
         if (maybe_score) |score| {
             var score_buf: [64]u8 = undefined;
-            const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{score}) catch "0";
+            const score_str = formatScore(&score_buf, score);
             const owned_score = try allocator.dupe(u8, score_str);
             try score_strings.append(allocator, owned_score);
             try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
@@ -1238,7 +1248,7 @@ pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
             for (ms, 0..) |sm, i| {
                 var score_buf: [64]u8 = undefined;
-                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                const score_str = formatScore(&score_buf, sm.score);
                 const owned_score = try allocator.dupe(u8, score_str);
                 try score_strings.append(allocator, owned_score);
 
@@ -1263,7 +1273,7 @@ pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
                 try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
                 if (with_scores) {
                     var score_buf: [64]u8 = undefined;
-                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                    const score_str = formatScore(&score_buf, sm.score);
                     const owned_score = try allocator.dupe(u8, score_str);
                     try score_strings.append(allocator, owned_score);
                     try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
@@ -1374,7 +1384,7 @@ pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
             try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
             if (with_scores) {
                 var score_buf: [64]u8 = undefined;
-                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                const score_str = formatScore(&score_buf, sm.score);
                 const owned_score = try allocator.dupe(u8, score_str);
                 try score_strings.append(allocator, owned_score);
                 try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
@@ -1460,7 +1470,7 @@ pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
                 try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
                 if (with_scores) {
                     var score_buf: [64]u8 = undefined;
-                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                    const score_str = formatScore(&score_buf, sm.score);
                     const owned_score = try allocator.dupe(u8, score_str);
                     try score_strings.append(allocator, owned_score);
                     try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
@@ -2575,7 +2585,7 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
                 try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
 
                 var score_buf: [64]u8 = undefined;
-                const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                const score_str = formatScore(&score_buf, sm.score);
                 try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
             }
 
@@ -2740,7 +2750,7 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                     try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
 
                     var score_buf: [64]u8 = undefined;
-                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{sm.score}) catch "0";
+                    const score_str = formatScore(&score_buf, sm.score);
                     try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
                 }
 
@@ -2841,7 +2851,7 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                     try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
 
                     var score_buf: [64]u8 = undefined;
-                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
+                    const score_str = formatScore(&score_buf, members[0].score);
                     const owned_score = try allocator.dupe(u8, score_str);
                     defer allocator.free(owned_score);
 
@@ -2936,7 +2946,7 @@ pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                     try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
 
                     var score_buf: [64]u8 = undefined;
-                    const score_str = std.fmt.bufPrint(&score_buf, "{d}", .{members[0].score}) catch "0";
+                    const score_str = formatScore(&score_buf, members[0].score);
                     const owned_score = try allocator.dupe(u8, score_str);
                     defer allocator.free(owned_score);
 
@@ -3446,7 +3456,7 @@ pub fn cmdZunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer pairs.deinit(allocator);
             for (members) |sm| {
                 var score_buf: [32]u8 = undefined;
-                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                const score_str = formatScore(&score_buf, sm.score);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
                     .value = RespValue{ .bulk_string = score_str },
@@ -3459,7 +3469,7 @@ pub fn cmdZunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer resp_values.deinit(allocator);
             for (members) |sm| {
                 var score_buf: [32]u8 = undefined;
-                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                const score_str = formatScore(&score_buf, sm.score);
                 try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
                 try resp_values.append(allocator, RespValue{ .bulk_string = score_str });
             }
@@ -3540,7 +3550,7 @@ pub fn cmdZinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer pairs.deinit(allocator);
             for (members) |sm| {
                 var score_buf: [32]u8 = undefined;
-                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                const score_str = formatScore(&score_buf, sm.score);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
                     .value = RespValue{ .bulk_string = score_str },
@@ -3553,7 +3563,7 @@ pub fn cmdZinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer resp_values.deinit(allocator);
             for (members) |sm| {
                 var score_buf: [32]u8 = undefined;
-                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                const score_str = formatScore(&score_buf, sm.score);
                 try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
                 try resp_values.append(allocator, RespValue{ .bulk_string = score_str });
             }
@@ -3634,7 +3644,7 @@ pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             defer pairs.deinit(allocator);
             for (members) |sm| {
                 var score_buf: [32]u8 = undefined;
-                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                const score_str = formatScore(&score_buf, sm.score);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
                     .value = RespValue{ .bulk_string = score_str },
@@ -3647,7 +3657,7 @@ pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             defer resp_values.deinit(allocator);
             for (members) |sm| {
                 var score_buf: [32]u8 = undefined;
-                const score_str = try std.fmt.bufPrint(&score_buf, "{d}", .{sm.score});
+                const score_str = formatScore(&score_buf, sm.score);
                 try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
                 try resp_values.append(allocator, RespValue{ .bulk_string = score_str });
             }
@@ -5033,5 +5043,5 @@ test "ZINCRBY - valid pos-inf increment works" {
     };
     const result = try cmdZincrby(allocator, storage, &args, &pubsub, 0);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("$3\r\ninf\r\n", result);
+    try std.testing.expectEqualStrings("$4\r\n+inf\r\n", result);
 }

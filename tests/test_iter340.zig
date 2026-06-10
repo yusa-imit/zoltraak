@@ -214,7 +214,7 @@ test "ZINCRBY - valid +inf increment on finite score gives +inf" {
     };
     const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0);
     defer allocator.free(result);
-    try std.testing.expectEqualStrings("$3\r\ninf\r\n", result);
+    try std.testing.expectEqualStrings("$4\r\n+inf\r\n", result);
 }
 
 test "ZINCRBY - neg-inf incremented by pos-inf gives NaN error" {
