@@ -580,6 +580,10 @@ pub fn cmdACLHelp(
         "    when no category is specified.",
         "DELUSER <username> [<username> ...]",
         "    Delete a list of users.",
+        "DRYRUN <username> <command> [<arg> ...]",
+        "    Return whether the user can run the given command without executing it.",
+        "GENPASS [<bits>]",
+        "    Generate a secure random password string (default 512 bits).",
         "GETUSER <username>",
         "    Get the user's details.",
         "HELP",
@@ -665,6 +669,130 @@ pub fn cmdACLLoad(
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
+    return w.writeOK();
+}
+
+/// ACL GENPASS [bits]
+/// Generate a cryptographically random password as a hex string.
+/// Default: 512 bits (128 hex characters).
+/// With bits: 1-4096 bits, rounded up to nearest multiple of 4.
+pub fn cmdACLGenpass(
+    allocator: Allocator,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len > 2) {
+        return w.writeError("ERR wrong number of arguments for 'acl|genpass' command");
+    }
+
+    var bits: u32 = 512;
+    if (args.len == 2) {
+        const bits_str = switch (args[1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR Invalid arguments"),
+        };
+        const parsed = std.fmt.parseInt(i64, bits_str, 10) catch {
+            return w.writeError("ERR Invalid arguments");
+        };
+        if (parsed < 1 or parsed > 4096) {
+            return w.writeError("ERR Invalid bits value: use a value >= 1 and <= 4096");
+        }
+        bits = @intCast(parsed);
+    }
+
+    // Round up to nearest multiple of 4 (each hex char = 4 bits)
+    if (bits % 4 != 0) {
+        bits = (bits / 4) * 4 + 4;
+    }
+    const num_hex_chars = bits / 4;
+
+    // Generate random bytes: ceil(num_hex_chars / 2) bytes
+    const num_bytes = (num_hex_chars + 1) / 2;
+    const random_bytes = try allocator.alloc(u8, num_bytes);
+    defer allocator.free(random_bytes);
+    std.crypto.random.bytes(random_bytes);
+
+    // Convert to hex string
+    var hex_buf = try allocator.alloc(u8, num_hex_chars);
+    defer allocator.free(hex_buf);
+    var i: usize = 0;
+    var byte_idx: usize = 0;
+    while (i < num_hex_chars) {
+        const nibble: u8 = if (i % 2 == 0)
+            (random_bytes[byte_idx] >> 4) & 0x0F
+        else blk: {
+            const n = random_bytes[byte_idx] & 0x0F;
+            byte_idx += 1;
+            break :blk n;
+        };
+        hex_buf[i] = if (nibble < 10) '0' + nibble else 'a' + (nibble - 10);
+        i += 1;
+    }
+
+    return w.writeBulkString(hex_buf);
+}
+
+/// ACL DRYRUN username command [arg [arg ...]]
+/// Check if a user has permission to execute a command without executing it.
+/// Returns +OK if allowed, or error message if denied.
+pub fn cmdACLDryrun(
+    allocator: Allocator,
+    storage: *Storage,
+    args: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (args.len < 3) {
+        return w.writeError("ERR wrong number of arguments for 'acl|dryrun' command");
+    }
+
+    const username = switch (args[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR Invalid argument for 'acl|dryrun' username"),
+    };
+
+    const command = switch (args[2]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR Invalid argument for 'acl|dryrun' command"),
+    };
+
+    const acl = storage.acl orelse {
+        // No ACL store: deny nothing (open mode)
+        return w.writeOK();
+    };
+
+    const user = acl.getUser(username) orelse {
+        var buf: [256]u8 = undefined;
+        const err_msg = try std.fmt.bufPrint(&buf, "ERR User '{s}' not found", .{username});
+        return w.writeError(err_msg);
+    };
+
+    if (!user.enabled) {
+        var buf: [256]u8 = undefined;
+        const err_msg = try std.fmt.bufPrint(&buf, "NOPERM User {s} is disabled.", .{username});
+        return w.writeError(err_msg);
+    }
+
+    // Uppercase the command for comparison
+    var cmd_upper_buf: [64]u8 = undefined;
+    const cmd_upper = std.ascii.upperString(
+        cmd_upper_buf[0..@min(command.len, 64)],
+        command[0..@min(command.len, 64)],
+    );
+
+    if (!user.hasCommandPermission(cmd_upper)) {
+        var buf: [512]u8 = undefined;
+        const err_msg = try std.fmt.bufPrint(
+            &buf,
+            "NOPERM User {s} has no permissions to run the '{s}' command",
+            .{ username, command },
+        );
+        return w.writeError(err_msg);
+    }
+
     return w.writeOK();
 }
 

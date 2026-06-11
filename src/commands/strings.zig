@@ -2905,6 +2905,10 @@ pub fn executeCommand(
                 break :blk try acl_cmds.cmdACLLoad(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try acl_cmds.cmdACLHelp(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "GENPASS")) {
+                break :blk try acl_cmds.cmdACLGenpass(allocator, array[1..]);
+            } else if (std.mem.eql(u8, subcmd_upper, "DRYRUN")) {
+                break :blk try acl_cmds.cmdACLDryrun(allocator, storage, array[1..]);
             } else {
                 var w = Writer.init(allocator);
                 defer w.deinit();

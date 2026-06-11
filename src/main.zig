@@ -23,6 +23,7 @@ pub const streams_advanced_commands = @import("commands/streams_advanced.zig");
 pub const keys_commands = @import("commands/keys.zig");
 pub const lists_commands = @import("commands/lists.zig");
 pub const blocking = @import("storage/blocking.zig");
+pub const acl_commands = @import("commands/acl.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
