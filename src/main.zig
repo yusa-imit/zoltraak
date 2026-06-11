@@ -19,6 +19,7 @@ pub const client = @import("commands/client.zig");
 pub const modules = @import("storage/modules.zig");
 pub const hyperloglog_commands = @import("commands/hyperloglog.zig");
 pub const streams_commands = @import("commands/streams.zig");
+pub const streams_advanced_commands = @import("commands/streams_advanced.zig");
 pub const keys_commands = @import("commands/keys.zig");
 pub const lists_commands = @import("commands/lists.zig");
 pub const blocking = @import("storage/blocking.zig");

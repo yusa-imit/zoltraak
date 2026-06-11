@@ -608,6 +608,25 @@ pub fn build(b: *std.Build) void {
     const run_iter345_tests = b.addRunArtifact(iter345_tests);
     test_step.dependOn(&run_iter345_tests.step);
 
+    // Iteration 346: XREAD/XREADGROUP BLOCK null array response fix
+    const iter346_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter346.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter346_tests.linkSystemLibrary("luajit-5.1");
+    iter346_tests.linkLibC();
+    iter346_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter346_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter346_tests = b.addRunArtifact(iter346_tests);
+    test_step.dependOn(&run_iter346_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

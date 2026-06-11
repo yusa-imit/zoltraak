@@ -444,8 +444,8 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             // Check timeout
             const elapsed = std.time.milliTimestamp() - start_time;
             if (timeout_ms > 0 and elapsed >= timeout_ms) {
-                // Timeout expired, return null
-                return w.writeNull();
+                // Timeout expired, return null array (Redis returns *-1\r\n for XREAD timeout)
+                return w.writeArray(null);
             }
 
             // Sleep before retrying
@@ -530,7 +530,7 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     }
 
     if (!has_data) {
-        return w.writeNull();
+        return w.writeArray(null);
     }
 
     // Write array of streams
@@ -726,8 +726,8 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
                 // Check timeout
                 const elapsed = std.time.milliTimestamp() - start_time;
                 if (timeout_ms > 0 and elapsed >= timeout_ms) {
-                    // Timeout expired, return null
-                    return w.writeNull();
+                    // Timeout expired, return null array (Redis returns *-1\r\n for XREADGROUP timeout)
+                    return w.writeArray(null);
                 }
 
                 // Sleep before retrying
@@ -783,7 +783,7 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     if (!has_data) {
-        return w.writeNull();
+        return w.writeArray(null);
     }
 
     // Write array of streams (same format as XREAD)
@@ -2053,8 +2053,8 @@ test "XREAD BLOCK with $ ID on empty stream returns null after timeout" {
     const result = try cmdXread(allocator, &storage, &args);
     defer allocator.free(result);
 
-    // Should return null array
-    try std.testing.expectEqualStrings("$-1\r\n", result);
+    // Should return null array (*-1\r\n, not $-1\r\n — Redis XREAD returns null array on timeout)
+    try std.testing.expectEqualStrings("*-1\r\n", result);
 }
 
 test "XREAD BLOCK with $ ID on non-empty stream returns new entries" {
@@ -2078,8 +2078,8 @@ test "XREAD BLOCK with $ ID on non-empty stream returns new entries" {
     const result = try cmdXread(allocator, &storage, &args);
     defer allocator.free(result);
 
-    // Should return null (no new entries after last_id)
-    try std.testing.expectEqualStrings("$-1\r\n", result);
+    // Should return null array (no new entries after last_id)
+    try std.testing.expectEqualStrings("*-1\r\n", result);
 }
 
 test "XREAD with specific ID (not $) works correctly" {

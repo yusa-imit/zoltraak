@@ -39,8 +39,8 @@ test "XREAD BLOCK with timeout" {
     defer allocator.free(result);
     const elapsed = std.time.milliTimestamp() - start_time;
 
-    // Should return null after ~100ms
-    try testing.expectEqualStrings("$-1\r\n", result);
+    // Should return null array after ~100ms (Redis returns *-1\r\n, not $-1\r\n)
+    try testing.expectEqualStrings("*-1\r\n", result);
     try testing.expect(elapsed >= 100);
     try testing.expect(elapsed < 200); // Allow some slack
 }
@@ -77,8 +77,8 @@ test "XREAD BLOCK returns immediately if data available" {
 
     // Should return immediately (< 50ms)
     try testing.expect(elapsed < 50);
-    // Should contain data (not null)
-    try testing.expect(!std.mem.eql(u8, result, "$-1\r\n"));
+    // Should contain data (not null array)
+    try testing.expect(!std.mem.eql(u8, result, "*-1\r\n"));
 }
 
 test "XREADGROUP BLOCK with timeout" {
@@ -116,8 +116,8 @@ test "XREADGROUP BLOCK with timeout" {
     defer allocator.free(result);
     const elapsed = std.time.milliTimestamp() - start_time;
 
-    // Should return null after ~100ms
-    try testing.expectEqualStrings("$-1\r\n", result);
+    // Should return null array after ~100ms (Redis returns *-1\r\n, not $-1\r\n)
+    try testing.expectEqualStrings("*-1\r\n", result);
     try testing.expect(elapsed >= 100);
     try testing.expect(elapsed < 200);
 }
@@ -172,6 +172,6 @@ test "XREADGROUP BLOCK with ID=0 returns immediately" {
 
     // Should return immediately (< 50ms) even with BLOCK
     try testing.expect(elapsed < 50);
-    // Should contain pending data (not null)
-    try testing.expect(!std.mem.eql(u8, result2, "$-1\r\n"));
+    // Should contain pending data (not null array)
+    try testing.expect(!std.mem.eql(u8, result2, "*-1\r\n"));
 }
