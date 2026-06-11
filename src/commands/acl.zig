@@ -559,13 +559,101 @@ pub fn cmdACLCat(
 
         return buffer.toOwnedSlice(allocator);
     } else {
-        // List commands in category (stub: return empty array)
-        var buffer = std.ArrayList(u8){};
-        errdefer buffer.deinit(allocator);
+        // List commands in the given category
+        const cat_raw = switch (array[1]) {
+            .bulk_string => |s| s,
+            .simple_string => |s| s,
+            else => return w.writeError("ERR wrong type for category argument"),
+        };
 
-        try buffer.appendSlice(allocator, "*0\r\n");
-        return buffer.toOwnedSlice(allocator);
+        // Handle "slow" pseudo-category (all commands not marked fast)
+        if (std.ascii.eqlIgnoreCase(cat_raw, "slow")) {
+            return cmdACLCatSlow(allocator);
+        }
+
+        // Map category string to CommandCategory enum
+        const category = parseCategoryName(cat_raw) orelse {
+            const msg = try std.fmt.allocPrint(allocator, "ERR Unknown category '{s}'", .{cat_raw});
+            defer allocator.free(msg);
+            return w.writeError(msg);
+        };
+
+        const cmds = try CommandRegistry.getCommandsInCategory(allocator, category);
+        defer allocator.free(cmds);
+
+        return writeLowerCaseArray(allocator, cmds);
     }
+}
+
+/// Map an ACL category name string to a CommandCategory enum value.
+/// Returns null for unknown or special categories (slow, all).
+fn parseCategoryName(name: []const u8) ?CommandCategory {
+    if (std.ascii.eqlIgnoreCase(name, "keyspace")) return .keyspace;
+    if (std.ascii.eqlIgnoreCase(name, "read")) return .read;
+    if (std.ascii.eqlIgnoreCase(name, "write")) return .write;
+    if (std.ascii.eqlIgnoreCase(name, "string")) return .string;
+    if (std.ascii.eqlIgnoreCase(name, "list")) return .list;
+    if (std.ascii.eqlIgnoreCase(name, "set")) return .set;
+    if (std.ascii.eqlIgnoreCase(name, "sortedset") or std.ascii.eqlIgnoreCase(name, "sorted_set")) return .sorted_set;
+    if (std.ascii.eqlIgnoreCase(name, "hash")) return .hash;
+    if (std.ascii.eqlIgnoreCase(name, "bitmap")) return .bitmap;
+    if (std.ascii.eqlIgnoreCase(name, "hyperloglog")) return .hyperloglog;
+    if (std.ascii.eqlIgnoreCase(name, "geo")) return .geo;
+    if (std.ascii.eqlIgnoreCase(name, "stream")) return .stream;
+    if (std.ascii.eqlIgnoreCase(name, "pubsub")) return .pubsub;
+    if (std.ascii.eqlIgnoreCase(name, "admin")) return .admin;
+    if (std.ascii.eqlIgnoreCase(name, "fast")) return .fast;
+    if (std.ascii.eqlIgnoreCase(name, "blocking")) return .blocking;
+    if (std.ascii.eqlIgnoreCase(name, "dangerous")) return .dangerous;
+    if (std.ascii.eqlIgnoreCase(name, "connection")) return .connection;
+    if (std.ascii.eqlIgnoreCase(name, "transaction") or std.ascii.eqlIgnoreCase(name, "transactions")) return .transaction;
+    if (std.ascii.eqlIgnoreCase(name, "scripting")) return .scripting;
+    if (std.ascii.eqlIgnoreCase(name, "server")) return .server;
+    if (std.ascii.eqlIgnoreCase(name, "cluster")) return .cluster;
+    if (std.ascii.eqlIgnoreCase(name, "replication")) return .replication;
+    return null;
+}
+
+/// Build a RESP array of lowercase command names from an uppercase slice.
+fn writeLowerCaseArray(allocator: Allocator, cmds: []const []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{cmds.len});
+    for (cmds) |name| {
+        // Convert uppercase command name to lowercase (commands fit in 64 bytes)
+        var lower_buf: [64]u8 = undefined;
+        const lower = std.ascii.lowerString(lower_buf[0..@min(name.len, 64)], name[0..@min(name.len, 64)]);
+        try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ lower.len, lower });
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Return all commands NOT marked as fast (the "slow" pseudo-category).
+fn cmdACLCatSlow(allocator: Allocator) ![]const u8 {
+    // Get fast command names to build an exclusion set
+    const fast_cmds = try CommandRegistry.getCommandsInCategory(allocator, .fast);
+    defer allocator.free(fast_cmds);
+
+    var fast_set = std.StringHashMap(void).init(allocator);
+    defer fast_set.deinit();
+    for (fast_cmds) |cmd| {
+        try fast_set.put(cmd, {});
+    }
+
+    // Collect all commands not in the fast set
+    const all_keys = CommandRegistry.COMMAND_CATEGORIES.keys();
+    var slow_list = std.ArrayList([]const u8){};
+    defer slow_list.deinit(allocator);
+
+    for (all_keys) |cmd_name| {
+        if (!fast_set.contains(cmd_name)) {
+            try slow_list.append(allocator, cmd_name);
+        }
+    }
+
+    return writeLowerCaseArray(allocator, slow_list.items);
 }
 
 /// ACL HELP - Show ACL command help

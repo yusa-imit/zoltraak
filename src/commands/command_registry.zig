@@ -329,22 +329,38 @@ pub fn getCategoriesForCommand(command_name: []const u8) ![]const CommandCategor
     return &.{};
 }
 
-/// Get all commands in a specific category
+/// Get all commands in a specific category.
+/// Returns uppercase command names (as stored in COMMAND_CATEGORIES).
+/// Caller must free the returned slice.
 pub fn getCommandsInCategory(allocator: std.mem.Allocator, category: CommandCategory) ![]const []const u8 {
     var commands = std.ArrayList([]const u8){};
     errdefer commands.deinit(allocator);
 
-    var iter = COMMAND_CATEGORIES.iterator();
-    while (iter.next()) |entry| {
-        for (entry.value_ptr.*) |cat| {
+    const all_keys = COMMAND_CATEGORIES.keys();
+    const all_vals = COMMAND_CATEGORIES.values();
+
+    for (all_keys, all_vals) |cmd_name, cats| {
+        for (cats) |cat| {
             if (cat == category) {
-                try commands.append(allocator, entry.key_ptr.*);
+                try commands.append(allocator, cmd_name);
                 break;
             }
         }
     }
 
     return commands.toOwnedSlice(allocator);
+}
+
+/// Get all command names (unique, uppercase).
+/// Caller must free the returned slice.
+pub fn getAllCommandNames(allocator: std.mem.Allocator) ![]const []const u8 {
+    const all_keys = COMMAND_CATEGORIES.keys();
+    var result = std.ArrayList([]const u8){};
+    errdefer result.deinit(allocator);
+    for (all_keys) |k| {
+        try result.append(allocator, k);
+    }
+    return result.toOwnedSlice(allocator);
 }
 
 // Unit tests
