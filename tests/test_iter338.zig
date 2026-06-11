@@ -149,7 +149,9 @@ test "TTL rounds 1500ms to 2 seconds (round-to-nearest)" {
 
     try storage.set("rkey3", "val", null);
     const now_ms = std.time.milliTimestamp();
-    _ = storage.setExpiry("rkey3", now_ms + 1500, 0);
+    // Use 2000ms so that even with a few ms of execution time, the remaining
+    // TTL stays in [1500ms, 2000ms] range and rounds to 2 seconds.
+    _ = storage.setExpiry("rkey3", now_ms + 2000, 0);
 
     const args = [_]RespValue{
         .{ .bulk_string = "TTL" },
@@ -158,6 +160,6 @@ test "TTL rounds 1500ms to 2 seconds (round-to-nearest)" {
     const response = try keys_cmds.cmdTtl(allocator, storage, &args);
     defer allocator.free(response);
 
-    // 1500ms rounds to 2 (rounds up at exactly .5)
+    // 2000ms rounds to 2 seconds
     try std.testing.expectEqualStrings(":2\r\n", response);
 }
