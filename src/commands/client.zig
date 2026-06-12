@@ -76,6 +76,12 @@ pub const ClientInfo = struct {
     selected_db: u16,
     /// Pending RESP3 push invalidation messages (queued for delivery on next command)
     pending_invalidations: std.ArrayList([]u8),
+    /// Number of active channel subscriptions (SUBSCRIBE)
+    sub_count: u32,
+    /// Number of active pattern subscriptions (PSUBSCRIBE)
+    psub_count: u32,
+    /// Number of active shard channel subscriptions (SSUBSCRIBE)
+    ssub_count: u32,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -233,6 +239,9 @@ pub const ClientRegistry = struct {
             .authenticated_user = null, // Unauthenticated by default (will use "default" user)
             .selected_db = 0, // Start at database 0
             .pending_invalidations = std.ArrayList([]u8){},
+            .sub_count = 0,
+            .psub_count = 0,
+            .ssub_count = 0,
         };
 
         try self.clients.put(client_id, info);
@@ -449,6 +458,18 @@ pub const ClientRegistry = struct {
         }
     }
 
+    /// Update subscription counts for a client (called after SUBSCRIBE/UNSUBSCRIBE/etc.)
+    pub fn updateSubCounts(self: *ClientRegistry, client_id: u64, sub: u32, psub: u32, ssub: u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.sub_count = sub;
+            info.psub_count = psub;
+            info.ssub_count = ssub;
+        }
+    }
+
     /// Get no-touch flag for a client
     pub fn getNoTouch(self: *ClientRegistry, client_id: u64) bool {
         self.mutex.lock();
@@ -506,13 +527,18 @@ pub const ClientRegistry = struct {
 
         var it = self.clients.valueIterator();
         while (it.next()) |info| {
+            // Determine client type based on subscription state
+            const is_pubsub = (info.sub_count + info.psub_count + info.ssub_count) > 0;
+            const client_type = if (is_pubsub) "pubsub" else "normal";
+
             // Apply type filter: "normal" | "pubsub" | "replica" | "master"
             if (filter_type) |ft| {
                 if (std.ascii.eqlIgnoreCase(ft, "normal")) {
-                    // normal: non-pubsub, non-replica clients
+                    // normal: non-pubsub clients
+                    if (is_pubsub) continue;
                 } else if (std.ascii.eqlIgnoreCase(ft, "pubsub")) {
-                    // pubsub: clients in subscribe mode — skip for now (no per-client sub state here)
-                    continue;
+                    // pubsub: clients in subscribe mode
+                    if (!is_pubsub) continue;
                 } else if (std.ascii.eqlIgnoreCase(ft, "replica") or std.ascii.eqlIgnoreCase(ft, "slave")) {
                     // replica: replication clients — none tracked here
                     continue;
@@ -535,7 +561,7 @@ pub const ClientRegistry = struct {
 
             // Redis 7.x full CLIENT LIST format
             try buf.writer(allocator).print(
-                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type=normal\n",
+                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}\n",
                 .{
                     info.id,
                     info.addr,
@@ -545,12 +571,16 @@ pub const ClientRegistry = struct {
                     idle_sec,
                     info.flags,
                     info.selected_db,
+                    info.sub_count,
+                    info.psub_count,
+                    info.ssub_count,
                     info.last_cmd,
                     user_str,
                     lib_name_str,
                     lib_ver_str,
                     redir,
                     @intFromEnum(info.protocol),
+                    client_type,
                 },
             );
         }
@@ -575,6 +605,9 @@ pub const ClientRegistry = struct {
         for (ids) |target_id| {
             const info = self.clients.get(target_id) orelse continue;
 
+            const is_pubsub = (info.sub_count + info.psub_count + info.ssub_count) > 0;
+            const client_type = if (is_pubsub) "pubsub" else "normal";
+
             const age_sec = @divFloor(now - info.connected_at, 1000);
             const idle_sec = @divFloor(now - info.last_cmd_at, 1000);
             const name_str = info.name orelse "";
@@ -587,7 +620,7 @@ pub const ClientRegistry = struct {
                 -1;
 
             try buf.writer(allocator).print(
-                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type=normal\n",
+                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}\n",
                 .{
                     info.id,
                     info.addr,
@@ -597,12 +630,16 @@ pub const ClientRegistry = struct {
                     idle_sec,
                     info.flags,
                     info.selected_db,
+                    info.sub_count,
+                    info.psub_count,
+                    info.ssub_count,
                     info.last_cmd,
                     user_str,
                     lib_name_str,
                     lib_ver_str,
                     redir,
                     @intFromEnum(info.protocol),
+                    client_type,
                 },
             );
         }
@@ -1388,8 +1425,11 @@ fn cmdClientInfo(
     var buf = std.ArrayList(u8){};
     defer buf.deinit(allocator);
 
+    const is_pubsub = (info.sub_count + info.psub_count + info.ssub_count) > 0;
+    const client_type = if (is_pubsub) "pubsub" else "normal";
+
     // Redis 7.x full CLIENT INFO format (same as CLIENT LIST line for this client)
-    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type=normal", .{
+    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}", .{
         info.id,
         info.addr,
         info.fd,
@@ -1398,12 +1438,16 @@ fn cmdClientInfo(
         idle_sec,
         info.flags,
         info.selected_db,
+        info.sub_count,
+        info.psub_count,
+        info.ssub_count,
         info.last_cmd,
         user_str,
         lib_name_str,
         lib_ver_str,
         redir,
         @intFromEnum(info.protocol),
+        client_type,
     });
 
     const result = try buf.toOwnedSlice(allocator);

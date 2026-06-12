@@ -3079,6 +3079,23 @@ pub fn executeCommand(
         }
     };
 
+    // Update CLIENT LIST sub/psub/ssub counts after pub/sub command changes subscriptions.
+    // These counts are used by CLIENT LIST and CLIENT INFO to report subscription state.
+    if (std.mem.eql(u8, cmd_upper, "SUBSCRIBE") or
+        std.mem.eql(u8, cmd_upper, "UNSUBSCRIBE") or
+        std.mem.eql(u8, cmd_upper, "PSUBSCRIBE") or
+        std.mem.eql(u8, cmd_upper, "PUNSUBSCRIBE") or
+        std.mem.eql(u8, cmd_upper, "SSUBSCRIBE") or
+        std.mem.eql(u8, cmd_upper, "SUNSUBSCRIBE"))
+    {
+        client_registry.updateSubCounts(
+            client_id,
+            @intCast(ps.channelCount(subscriber_id)),
+            @intCast(ps.patternCount(subscriber_id)),
+            @intCast(ps.shardedChannelCount(subscriber_id)),
+        );
+    }
+
     // Log write commands to AOF (best-effort, skip on error)
     // Also mark any watched keys dirty so EXEC can detect conflicts.
     if (is_write_cmd) {
