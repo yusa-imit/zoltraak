@@ -520,15 +520,18 @@ pub const ACLStore = struct {
         defer self.mutex.unlock();
 
         var list = std.ArrayList([]const u8){};
-        errdefer list.deinit();
+        errdefer {
+            for (list.items) |name| allocator.free(name);
+            list.deinit(allocator);
+        }
 
         var iter = self.users.keyIterator();
         while (iter.next()) |username| {
             const copy = try allocator.dupe(u8, username.*);
-            try list.append(copy);
+            try list.append(allocator, copy);
         }
 
-        return list.toOwnedSlice();
+        return list.toOwnedSlice(allocator);
     }
 
     /// Get ACL rules list (simplified stub implementation)
@@ -541,7 +544,7 @@ pub const ACLStore = struct {
             for (list.items) |item| {
                 allocator.free(item);
             }
-            list.deinit();
+            list.deinit(allocator);
         }
 
         var iter = self.users.iterator();

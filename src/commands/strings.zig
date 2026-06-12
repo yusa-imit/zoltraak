@@ -2899,13 +2899,13 @@ pub fn executeCommand(
             defer allocator.free(subcmd_upper);
 
             if (std.mem.eql(u8, subcmd_upper, "WHOAMI")) {
-                break :blk try acl_cmds.cmdACLWhoami(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLWhoami(allocator, array[1..], client_registry, client_id);
             } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
-                break :blk try acl_cmds.cmdACLList(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLList(allocator, array[1..], storage);
             } else if (std.mem.eql(u8, subcmd_upper, "USERS")) {
-                break :blk try acl_cmds.cmdACLUsers(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLUsers(allocator, array[1..], storage);
             } else if (std.mem.eql(u8, subcmd_upper, "GETUSER")) {
-                break :blk try acl_cmds.cmdACLGetuser(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLGetuser(allocator, array[1..], storage);
             } else if (std.mem.eql(u8, subcmd_upper, "SETUSER")) {
                 break :blk try acl_cmds.cmdACLSetuser(allocator, storage, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "DELUSER")) {

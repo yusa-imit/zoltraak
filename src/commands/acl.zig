@@ -5,78 +5,160 @@ const RespValue = @import("../protocol/parser.zig").RespValue;
 const CommandRegistry = @import("command_registry.zig");
 const ACLStorage = @import("../storage/acl.zig");
 const Storage = @import("../storage/memory.zig").Storage;
+const ClientRegistry = @import("./client.zig").ClientRegistry;
 const CommandCategory = CommandRegistry.CommandCategory;
 
 /// ACL WHOAMI - Returns current connection username
 pub fn cmdACLWhoami(
     allocator: Allocator,
     _: []const RespValue,
+    client_registry: *ClientRegistry,
+    client_id: u64,
 ) ![]const u8 {
-    // Stub: always return "default" for now
     var w = Writer.init(allocator);
     defer w.deinit();
-    return w.writeBulkString("default");
+    const username = try client_registry.getAuthenticatedUser(client_id, allocator);
+    defer allocator.free(username);
+    return w.writeBulkString(username);
 }
 
 /// ACL LIST - List all ACL rules
 pub fn cmdACLList(
     allocator: Allocator,
     _: []const RespValue,
+    storage: *Storage,
 ) ![]const u8 {
-    // Stub: return basic default user rule
-    const rules = [_][]const u8{
-        "user default on nopass ~* +@all",
-    };
+    if (storage.acl) |acl_store| {
+        const rules = try acl_store.getACLList(allocator);
+        defer {
+            for (rules) |rule| allocator.free(rule);
+            allocator.free(rules);
+        }
 
-    // Build RESP array manually
-    var buffer = std.ArrayList(u8){};
-    errdefer buffer.deinit(allocator);
+        var buffer = std.ArrayList(u8){};
+        errdefer buffer.deinit(allocator);
 
-    try buffer.append(allocator, '*');
-    try std.fmt.format(buffer.writer(allocator), "{d}", .{rules.len});
-    try buffer.appendSlice(allocator, "\r\n");
-
-    for (rules) |rule| {
-        try buffer.append(allocator, '$');
-        try std.fmt.format(buffer.writer(allocator), "{d}", .{rule.len});
-        try buffer.appendSlice(allocator, "\r\n");
-        try buffer.appendSlice(allocator, rule);
-        try buffer.appendSlice(allocator, "\r\n");
+        try std.fmt.format(buffer.writer(allocator), "*{d}\r\n", .{rules.len});
+        for (rules) |rule| {
+            try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ rule.len, rule });
+        }
+        return buffer.toOwnedSlice(allocator);
     }
 
-    return buffer.toOwnedSlice(allocator);
+    // Fallback: no ACL store
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    return w.writeArray(&[_]RespValue{});
 }
 
 /// ACL USERS - List all usernames
 pub fn cmdACLUsers(
     allocator: Allocator,
     _: []const RespValue,
+    storage: *Storage,
 ) ![]const u8 {
-    // Stub: only default user exists
-    const users = [_][]const u8{"default"};
+    if (storage.acl) |acl_store| {
+        const usernames = try acl_store.listUsernames(allocator);
+        defer {
+            for (usernames) |name| allocator.free(name);
+            allocator.free(usernames);
+        }
 
-    var buffer = std.ArrayList(u8){};
-    errdefer buffer.deinit(allocator);
+        var buffer = std.ArrayList(u8){};
+        errdefer buffer.deinit(allocator);
 
-    try buffer.append(allocator, '*');
-    try std.fmt.format(buffer.writer(allocator), "{d}", .{users.len});
-    try buffer.appendSlice(allocator, "\r\n");
-
-    for (users) |user| {
-        try buffer.append(allocator, '$');
-        try std.fmt.format(buffer.writer(allocator), "{d}", .{user.len});
-        try buffer.appendSlice(allocator, "\r\n");
-        try buffer.appendSlice(allocator, user);
-        try buffer.appendSlice(allocator, "\r\n");
+        try std.fmt.format(buffer.writer(allocator), "*{d}\r\n", .{usernames.len});
+        for (usernames) |name| {
+            try std.fmt.format(buffer.writer(allocator), "${d}\r\n{s}\r\n", .{ name.len, name });
+        }
+        return buffer.toOwnedSlice(allocator);
     }
 
-    return buffer.toOwnedSlice(allocator);
+    // Fallback: return just "default"
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    const default_user = [_]RespValue{.{ .bulk_string = "default" }};
+    return w.writeArray(&default_user);
 }
 
-/// ACL GETUSER - Get user details
+/// Build ACL GETUSER response for a user from the ACL store.
+/// Returns a flat 12-element RESP array:
+/// flags [array], passwords [array], commands string, keys [array],
+/// channels [array], selectors [array]
+fn buildGetUserResponse(allocator: Allocator, user: *const ACLStorage.User) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    // Header: *12 (6 key-value pairs)
+    try buf.appendSlice(allocator, "*12\r\n");
+
+    // 1. "flags" key
+    try buf.appendSlice(allocator, "$5\r\nflags\r\n");
+    // flags array: on/off + nopass (if applicable)
+    const has_nopass = user.password == null;
+    const flags_count: usize = if (has_nopass) 2 else 1;
+    try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{flags_count});
+    if (user.enabled) {
+        try buf.appendSlice(allocator, "$2\r\non\r\n");
+    } else {
+        try buf.appendSlice(allocator, "$3\r\noff\r\n");
+    }
+    if (has_nopass) {
+        try buf.appendSlice(allocator, "$6\r\nnopass\r\n");
+    }
+
+    // 2. "passwords" key
+    try buf.appendSlice(allocator, "$9\r\npasswords\r\n");
+    if (user.password) |pwd| {
+        // Return password as a 1-element array with the hashed/raw password
+        // Redis returns SHA256 hashes prefixed with "#"; we store raw passwords,
+        // so return them prefixed with "#" for minimal compatibility.
+        const hash_repr = try std.fmt.allocPrint(allocator, "#{s}", .{pwd});
+        defer allocator.free(hash_repr);
+        try std.fmt.format(buf.writer(allocator), "*1\r\n${d}\r\n{s}\r\n", .{ hash_repr.len, hash_repr });
+    } else {
+        try buf.appendSlice(allocator, "*0\r\n");
+    }
+
+    // 3. "commands" key
+    try buf.appendSlice(allocator, "$8\r\ncommands\r\n");
+    if (user.all_commands_allowed) {
+        try buf.appendSlice(allocator, "$4\r\n+@all\r\n");
+    } else {
+        try buf.appendSlice(allocator, "$8\r\n-@all\r\n");
+    }
+
+    // 4. "keys" key
+    try buf.appendSlice(allocator, "$4\r\nkeys\r\n");
+    if (user.all_keys_allowed) {
+        try buf.appendSlice(allocator, "*1\r\n$2\r\n~*\r\n");
+    } else if (user.allowed_key_patterns.items.len == 0) {
+        try buf.appendSlice(allocator, "*0\r\n");
+    } else {
+        try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{user.allowed_key_patterns.items.len});
+        for (user.allowed_key_patterns.items) |pat| {
+            const full_pat = try std.fmt.allocPrint(allocator, "~{s}", .{pat});
+            defer allocator.free(full_pat);
+            try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ full_pat.len, full_pat });
+        }
+    }
+
+    // 5. "channels" key (Redis 7.0+ — always ~* for now)
+    try buf.appendSlice(allocator, "$8\r\nchannels\r\n");
+    try buf.appendSlice(allocator, "*1\r\n$2\r\n&*\r\n");
+
+    // 6. "selectors" key (Redis 7.0+)
+    try buf.appendSlice(allocator, "$9\r\nselectors\r\n");
+    try buf.appendSlice(allocator, "*0\r\n");
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// ACL GETUSER - Get user details from real ACL store
 pub fn cmdACLGetuser(
     allocator: Allocator,
     array: []const RespValue,
+    storage: *Storage,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -90,41 +172,22 @@ pub fn cmdACLGetuser(
         else => return w.writeError("ERR invalid username"),
     };
 
-    // Stub: only support "default" user
-    if (!std.mem.eql(u8, username, "default")) {
-        return w.writeNull();
-    }
-
-    // Return user details in simplified flat array format
-    const details = [_][]const u8{
-        "flags",
-        "on",
-        "allkeys",
-        "allcommands",
-        "nopass",
-        "passwords",
-        "commands",
-        "+@all",
-        "keys",
-        "~*",
+    const acl_store = storage.acl orelse {
+        // No ACL store: only "default" user exists
+        if (!std.mem.eql(u8, username, "default")) return w.writeNull();
+        // Return minimal default user response
+        return w.writeArray(&[_]RespValue{
+            .{ .bulk_string = "flags" },       .{ .bulk_string = "on" },
+            .{ .bulk_string = "passwords" },   .{ .bulk_string = "" },
+            .{ .bulk_string = "commands" },    .{ .bulk_string = "+@all" },
+            .{ .bulk_string = "keys" },        .{ .bulk_string = "~*" },
+            .{ .bulk_string = "channels" },    .{ .bulk_string = "&*" },
+            .{ .bulk_string = "selectors" },   .{ .bulk_string = "" },
+        });
     };
 
-    var buffer = std.ArrayList(u8){};
-    errdefer buffer.deinit(allocator);
-
-    try buffer.append(allocator, '*');
-    try std.fmt.format(buffer.writer(allocator), "{d}", .{details.len});
-    try buffer.appendSlice(allocator, "\r\n");
-
-    for (details) |detail| {
-        try buffer.append(allocator, '$');
-        try std.fmt.format(buffer.writer(allocator), "{d}", .{detail.len});
-        try buffer.appendSlice(allocator, "\r\n");
-        try buffer.appendSlice(allocator, detail);
-        try buffer.appendSlice(allocator, "\r\n");
-    }
-
-    return buffer.toOwnedSlice(allocator);
+    const user = acl_store.getUser(username) orelse return w.writeNull();
+    return buildGetUserResponse(allocator, user);
 }
 
 /// Parse ACL key pattern rules (~pattern, %R~pattern, %W~pattern, allkeys, resetkeys)
@@ -423,7 +486,9 @@ pub fn cmdACLSetuser(
             else => "ERR invalid permissions",
         });
     };
-    defer {
+    // errdefer (not defer): ownership transfers to ACL store on success.
+    // Only free if createOrUpdateUser fails.
+    errdefer {
         var iter = perm_result.allowed_commands.keyIterator();
         while (iter.next()) |key| {
             allocator.free(key.*);
@@ -442,7 +507,8 @@ pub fn cmdACLSetuser(
 
     // Parse key pattern rules
     var key_result = try parseKeyPatternRules(allocator, key_pattern_rules.items);
-    defer {
+    // errdefer: ownership transfers to ACL store on success.
+    errdefer {
         for (key_result.allowed_key_patterns.items) |pattern| {
             allocator.free(pattern);
         }
@@ -885,46 +951,123 @@ pub fn cmdACLDryrun(
 }
 
 // Unit tests
-test "ACL WHOAMI returns default" {
+test "ACL WHOAMI returns authenticated username" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
         RespValue{ .bulk_string = "WHOAMI" },
     };
 
-    const result = try cmdACLWhoami(allocator, &args);
+    // Unauthenticated → returns "default"
+    const result = try cmdACLWhoami(allocator, &args, &client_registry, client_id);
     defer allocator.free(result);
-
-    try std.testing.expect(std.mem.indexOf(u8, result, "$7\r\ndefault\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "default") != null);
 }
 
-test "ACL LIST returns users" {
+test "ACL WHOAMI returns real username after auth" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const client_id = try client_registry.registerClient("127.0.0.1:54322", 10);
+
+    try client_registry.setAuthenticatedUser(client_id, "alice");
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "WHOAMI" },
+    };
+
+    const result = try cmdACLWhoami(allocator, &args, &client_registry, client_id);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "alice") != null);
+}
+
+test "ACL LIST returns users from ACL store" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
         RespValue{ .bulk_string = "LIST" },
     };
 
-    const result = try cmdACLList(allocator, &args);
+    const result = try cmdACLList(allocator, &args, &storage);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "*1\r\n") != null); // Array of 1
+    // Should contain the default user rule
+    try std.testing.expect(std.mem.indexOf(u8, result, "default") != null);
+    // Should be a valid array
+    try std.testing.expect(result[0] == '*');
 }
 
-test "ACL USERS returns usernames" {
+test "ACL USERS returns usernames from ACL store" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
         RespValue{ .bulk_string = "USERS" },
     };
 
-    const result = try cmdACLUsers(allocator, &args);
+    const result = try cmdACLUsers(allocator, &args, &storage);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "default") != null);
+    // Should include the default user
+    try std.testing.expect(result[0] == '*');
+}
+
+test "ACL GETUSER default user returns proper format" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "GETUSER" },
+        RespValue{ .bulk_string = "default" },
+    };
+
+    const result = try cmdACLGetuser(allocator, &args, &storage);
+    defer allocator.free(result);
+
+    // Should be a valid RESP array starting with *
+    try std.testing.expect(result[0] == '*');
+    // Should contain required field names
+    try std.testing.expect(std.mem.indexOf(u8, result, "flags") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "passwords") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "commands") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "keys") != null);
+}
+
+test "ACL GETUSER unknown user returns nil" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "GETUSER" },
+        RespValue{ .bulk_string = "nonexistent" },
+    };
+
+    const result = try cmdACLGetuser(allocator, &args, &storage);
+    defer allocator.free(result);
+
+    // Non-existent user → null bulk string
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "ACL SETUSER creates user" {
