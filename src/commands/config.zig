@@ -244,6 +244,9 @@ fn cmdConfigSet(
                 std.mem.eql(u8, value, "1") or
                 std.mem.eql(u8, value, "true");
             storage.updateLazyfreeFlags(param_lower, enabled);
+        } else if (std.mem.eql(u8, param_lower, "requirepass")) {
+            // Sync requirepass to the default ACL user's password
+            storage.updateRequirepass(value);
         }
     }
 

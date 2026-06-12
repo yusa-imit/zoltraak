@@ -477,6 +477,24 @@ pub const ACLStore = struct {
         try self.users.put(username_copy, user);
     }
 
+    /// Update the default user's password (used by requirepass config)
+    /// Pass null or empty string to restore nopass behavior.
+    pub fn updateDefaultUserPassword(self: *ACLStore, password: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const user = self.users.getPtr("default") orelse return error.UserNotFound;
+        // Free old password
+        if (user.password) |old_pwd| {
+            self.allocator.free(old_pwd);
+            user.password = null;
+        }
+        // Set new password (empty string = nopass)
+        if (password.len > 0) {
+            user.password = try self.allocator.dupe(u8, password);
+        }
+    }
+
     /// Delete user
     pub fn deleteUser(self: *ACLStore, username: []const u8) !bool {
         self.mutex.lock();

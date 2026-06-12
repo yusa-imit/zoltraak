@@ -289,6 +289,17 @@ pub const ClientRegistry = struct {
         }
     }
 
+    /// Check if a client has explicitly authenticated (authenticated_user != null)
+    pub fn isAuthenticated(self: *ClientRegistry, client_id: u64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return info.authenticated_user != null;
+        }
+        return false;
+    }
+
     /// Get the authenticated ACL user for a client connection (returns "default" if null)
     pub fn getAuthenticatedUser(self: *ClientRegistry, client_id: u64, allocator: std.mem.Allocator) ![]const u8 {
         self.mutex.lock();

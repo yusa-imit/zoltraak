@@ -1018,6 +1018,16 @@ pub const Storage = struct {
 
     /// Update lazyfree flags from config values.
     /// Called by CONFIG SET handlers for the 3 lazyfree-lazy-* parameters.
+    /// Update the default ACL user's password when requirepass changes.
+    /// Pass empty string to restore nopass behavior.
+    pub fn updateRequirepass(self: *Storage, password: []const u8) void {
+        if (self.acl) |acl_store| {
+            acl_store.updateDefaultUserPassword(password) catch |err| {
+                std.log.warn("Storage: failed to update requirepass in ACL: {any}", .{err});
+            };
+        }
+    }
+
     pub fn updateLazyfreeFlags(self: *Storage, param: []const u8, enabled: bool) void {
         if (std.mem.eql(u8, param, "lazyfree-lazy-expire")) {
             self.lazy_expire.store(enabled, .release);

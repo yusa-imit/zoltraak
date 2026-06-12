@@ -440,13 +440,28 @@ pub fn executeCommand(
     const cmd_upper = try std.ascii.allocUpperString(allocator, cmd_name);
     defer allocator.free(cmd_upper);
 
-    // ── ACL Permission Check ──────────────────────────────────────────────────
-    // Always allow AUTH, HELLO, PING (used before/during authentication)
+    // ── NOAUTH / ACL Permission Check ────────────────────────────────────────
+    // Commands always allowed before authentication (per Redis spec)
     const always_allowed = std.mem.eql(u8, cmd_upper, "AUTH") or
         std.mem.eql(u8, cmd_upper, "HELLO") or
-        std.mem.eql(u8, cmd_upper, "PING");
+        std.mem.eql(u8, cmd_upper, "PING") or
+        std.mem.eql(u8, cmd_upper, "QUIT") or
+        std.mem.eql(u8, cmd_upper, "RESET");
 
     if (!always_allowed) {
+        // NOAUTH enforcement: if requirepass is configured, clients must authenticate first
+        if (!client_registry.isAuthenticated(client_id)) {
+            const rp = try storage.config.getAsString("requirepass");
+            defer if (rp) |p| allocator.free(p);
+            if (rp) |requirepass| {
+                if (requirepass.len > 0) {
+                    var w = Writer.init(allocator);
+                    defer w.deinit();
+                    return w.writeError("NOAUTH Authentication required.");
+                }
+            }
+        }
+
         // Get authenticated user (defaults to "default" if unauthenticated)
         const username = try client_registry.getAuthenticatedUser(client_id, allocator);
         defer allocator.free(username);
