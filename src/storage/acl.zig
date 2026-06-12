@@ -287,17 +287,52 @@ pub const User = struct {
     }
 };
 
+/// Reason why an ACL denial occurred
+pub const DenialReason = enum {
+    auth, // NOAUTH: authentication required
+    command, // NOPERM: user lacks command permission
+    key, // NOPERM: user lacks key permission
+    channel, // NOPERM: user lacks channel permission
+};
+
+/// A single ACL violation log entry
+pub const LogEntry = struct {
+    count: u64, // how many times this pattern was seen
+    reason: DenialReason,
+    object: []const u8, // command name or key that was denied
+    username: []const u8, // authenticated user (or "(noauth)")
+    client_info: []const u8, // client address/info string
+    timestamp_sec: i64, // Unix timestamp of first occurrence
+    timestamp_last_sec: i64, // Unix timestamp of last occurrence
+    entry_id: u64, // monotonically increasing entry ID
+
+    pub fn deinit(self: *LogEntry, allocator: Allocator) void {
+        allocator.free(self.object);
+        allocator.free(self.username);
+        allocator.free(self.client_info);
+    }
+};
+
+/// Default max ACL log entries (matches Redis default acllog-max-len=128)
+pub const ACL_LOG_MAX_DEFAULT: usize = 128;
+
 /// ACL storage and management
 pub const ACLStore = struct {
     allocator: Allocator,
     users: std.StringHashMap(User),
     mutex: std.Thread.Mutex,
+    log: std.ArrayList(LogEntry),
+    log_max_len: usize,
+    next_entry_id: u64,
 
     pub fn init(allocator: Allocator) !ACLStore {
         var store = ACLStore{
             .allocator = allocator,
             .users = std.StringHashMap(User).init(allocator),
             .mutex = .{},
+            .log = std.ArrayList(LogEntry){},
+            .log_max_len = ACL_LOG_MAX_DEFAULT,
+            .next_entry_id = 0,
         };
 
         // Create default user with full permissions
@@ -316,6 +351,100 @@ pub const ACLStore = struct {
             user.deinit(self.allocator);
         }
         self.users.deinit();
+
+        for (self.log.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.log.deinit(self.allocator);
+    }
+
+    /// Record an ACL violation. Deduplicates by (reason, object, username):
+    /// if the most recent entry matches, just increments count and updates timestamp.
+    pub fn addLogEntry(
+        self: *ACLStore,
+        reason: DenialReason,
+        object: []const u8,
+        username: []const u8,
+        client_info: []const u8,
+    ) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = std.time.timestamp();
+
+        // Check if last entry is the same violation (dedup)
+        if (self.log.items.len > 0) {
+            const last = &self.log.items[self.log.items.len - 1];
+            if (last.reason == reason and
+                std.mem.eql(u8, last.object, object) and
+                std.mem.eql(u8, last.username, username))
+            {
+                last.count += 1;
+                last.timestamp_last_sec = now;
+                return;
+            }
+        }
+
+        // Enforce max length: remove oldest entry if at capacity
+        if (self.log.items.len >= self.log_max_len) {
+            var oldest = self.log.orderedRemove(0);
+            oldest.deinit(self.allocator);
+        }
+
+        const obj_copy = self.allocator.dupe(u8, object) catch return;
+        const user_copy = self.allocator.dupe(u8, username) catch {
+            self.allocator.free(obj_copy);
+            return;
+        };
+        const info_copy = self.allocator.dupe(u8, client_info) catch {
+            self.allocator.free(obj_copy);
+            self.allocator.free(user_copy);
+            return;
+        };
+
+        const entry = LogEntry{
+            .count = 1,
+            .reason = reason,
+            .object = obj_copy,
+            .username = user_copy,
+            .client_info = info_copy,
+            .timestamp_sec = now,
+            .timestamp_last_sec = now,
+            .entry_id = self.next_entry_id,
+        };
+        self.next_entry_id += 1;
+
+        self.log.append(self.allocator, entry) catch {
+            self.allocator.free(obj_copy);
+            self.allocator.free(user_copy);
+            self.allocator.free(info_copy);
+        };
+    }
+
+    /// Get recent log entries. count=0 means return all entries.
+    /// Returns entries in reverse chronological order (newest first).
+    /// Caller owns returned slice but NOT the LogEntry fields (they point into the store).
+    pub fn getLogEntries(self: *ACLStore, count: usize) []const LogEntry {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const total = self.log.items.len;
+        if (total == 0) return &[_]LogEntry{};
+
+        const limit = if (count == 0 or count >= total) total else count;
+        const start = total - limit;
+        return self.log.items[start..];
+    }
+
+    /// Clear the ACL log
+    pub fn resetLog(self: *ACLStore) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.log.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.log.clearRetainingCapacity();
     }
 
     fn createDefaultUser(self: *ACLStore) !void {

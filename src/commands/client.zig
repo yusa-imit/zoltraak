@@ -300,6 +300,17 @@ pub const ClientRegistry = struct {
         return false;
     }
 
+    /// Get client address string (e.g. "127.0.0.1:12345"). Returns "unknown" if not found.
+    pub fn getClientAddr(self: *ClientRegistry, client_id: u64, allocator: std.mem.Allocator) ![]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.get(client_id)) |info| {
+            return try allocator.dupe(u8, info.addr);
+        }
+        return try allocator.dupe(u8, "unknown");
+    }
+
     /// Get the authenticated ACL user for a client connection (returns "default" if null)
     pub fn getAuthenticatedUser(self: *ClientRegistry, client_id: u64, allocator: std.mem.Allocator) ![]const u8 {
         self.mutex.lock();

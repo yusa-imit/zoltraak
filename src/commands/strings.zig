@@ -455,6 +455,12 @@ pub fn executeCommand(
             defer if (rp) |p| allocator.free(p);
             if (rp) |requirepass| {
                 if (requirepass.len > 0) {
+                    // Log NOAUTH violation
+                    if (storage.acl) |acl_store| {
+                        const client_addr = try client_registry.getClientAddr(client_id, allocator);
+                        defer allocator.free(client_addr);
+                        acl_store.addLogEntry(.auth, cmd_upper, "(noauth)", client_addr);
+                    }
                     var w = Writer.init(allocator);
                     defer w.deinit();
                     return w.writeError("NOAUTH Authentication required.");
@@ -472,6 +478,9 @@ pub fn executeCommand(
             if (acl_store.getUser(username)) |user| {
                 // Check if user has permission for this command
                 if (!user.hasCommandPermission(cmd_upper)) {
+                    const client_addr = try client_registry.getClientAddr(client_id, allocator);
+                    defer allocator.free(client_addr);
+                    acl_store.addLogEntry(.command, cmd_upper, username, client_addr);
                     var w = Writer.init(allocator);
                     defer w.deinit();
                     return w.writeError("NOPERM this user has no permissions to run this command");
@@ -487,12 +496,19 @@ pub fn executeCommand(
                 );
                 if (key_check_result) |err_msg| {
                     defer allocator.free(err_msg);
+                    // Log key permission violation
+                    const client_addr = try client_registry.getClientAddr(client_id, allocator);
+                    defer allocator.free(client_addr);
+                    acl_store.addLogEntry(.key, cmd_upper, username, client_addr);
                     var w = Writer.init(allocator);
                     defer w.deinit();
                     return w.writeError(err_msg);
                 }
             } else {
                 // User not found in ACL - deny
+                const client_addr = try client_registry.getClientAddr(client_id, allocator);
+                defer allocator.free(client_addr);
+                acl_store.addLogEntry(.command, cmd_upper, username, client_addr);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 return w.writeError("NOPERM user not found in ACL");
@@ -2913,7 +2929,7 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, subcmd_upper, "CAT")) {
                 break :blk try acl_cmds.cmdACLCat(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "LOG")) {
-                break :blk try acl_cmds.cmdACLLog(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLLog(allocator, array[1..], storage);
             } else if (std.mem.eql(u8, subcmd_upper, "SAVE")) {
                 break :blk try acl_cmds.cmdACLSave(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "LOAD")) {

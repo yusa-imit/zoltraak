@@ -770,38 +770,140 @@ pub fn cmdACLHelp(
     return buffer.toOwnedSlice(allocator);
 }
 
-/// ACL LOG [count | RESET] — Return or clear ACL security log entries
-/// Returns array of recent ACL violations; RESET clears the log.
+/// Format a single ACL log entry as a RESP2 flat array (20 elements = 10 key-value pairs).
+fn formatLogEntry(allocator: Allocator, entry: *const ACLStorage.LogEntry, current_ts: i64) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    // *20\r\n — 10 key-value pairs
+    try buf.appendSlice(allocator, "*20\r\n");
+
+    // 1. count
+    try buf.appendSlice(allocator, "$5\r\ncount\r\n");
+    const count_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{entry.count});
+    defer allocator.free(count_str);
+    try buf.appendSlice(allocator, count_str);
+
+    // 2. reason
+    try buf.appendSlice(allocator, "$6\r\nreason\r\n");
+    const reason_str: []const u8 = switch (entry.reason) {
+        .auth => "auth",
+        .command => "command",
+        .key => "key",
+        .channel => "channel",
+    };
+    const reason_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ reason_str.len, reason_str });
+    defer allocator.free(reason_resp);
+    try buf.appendSlice(allocator, reason_resp);
+
+    // 3. context (always "toplevel" — no multi/Lua context tracking)
+    try buf.appendSlice(allocator, "$7\r\ncontext\r\n");
+    try buf.appendSlice(allocator, "$8\r\ntoplevel\r\n");
+
+    // 4. object
+    try buf.appendSlice(allocator, "$6\r\nobject\r\n");
+    const obj_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ entry.object.len, entry.object });
+    defer allocator.free(obj_resp);
+    try buf.appendSlice(allocator, obj_resp);
+
+    // 5. username
+    try buf.appendSlice(allocator, "$8\r\nusername\r\n");
+    const user_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ entry.username.len, entry.username });
+    defer allocator.free(user_resp);
+    try buf.appendSlice(allocator, user_resp);
+
+    // 6. age-seconds (float string: seconds since entry was created)
+    try buf.appendSlice(allocator, "$11\r\nage-seconds\r\n");
+    const age = @as(f64, @floatFromInt(current_ts - entry.timestamp_sec));
+    const age_str = try std.fmt.allocPrint(allocator, "{d:.3}", .{age});
+    defer allocator.free(age_str);
+    const age_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ age_str.len, age_str });
+    defer allocator.free(age_resp);
+    try buf.appendSlice(allocator, age_resp);
+
+    // 7. client-info
+    try buf.appendSlice(allocator, "$11\r\nclient-info\r\n");
+    const info_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ entry.client_info.len, entry.client_info });
+    defer allocator.free(info_resp);
+    try buf.appendSlice(allocator, info_resp);
+
+    // 8. entry-id
+    try buf.appendSlice(allocator, "$8\r\nentry-id\r\n");
+    const id_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{entry.entry_id});
+    defer allocator.free(id_str);
+    try buf.appendSlice(allocator, id_str);
+
+    // 9. timestamp-created
+    try buf.appendSlice(allocator, "$17\r\ntimestamp-created\r\n");
+    const ts_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{entry.timestamp_sec});
+    defer allocator.free(ts_str);
+    try buf.appendSlice(allocator, ts_str);
+
+    // 10. timestamp-last-updated
+    try buf.appendSlice(allocator, "$22\r\ntimestamp-last-updated\r\n");
+    const ts_last_str = try std.fmt.allocPrint(allocator, ":{d}\r\n", .{entry.timestamp_last_sec});
+    defer allocator.free(ts_last_str);
+    try buf.appendSlice(allocator, ts_last_str);
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// ACL LOG [count | RESET] — Return or clear ACL security log entries.
 pub fn cmdACLLog(
     allocator: Allocator,
     args: []const RespValue,
+    storage: *Storage,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len == 1) {
-        // ACL LOG — return empty array (no violations logged in stub)
-        return w.writeArray(&[_]RespValue{});
+    var count: usize = 0; // 0 = all entries
+
+    if (args.len >= 2) {
+        const subcmd = switch (args[1]) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid argument for 'acl log' command"),
+        };
+
+        var subcmd_upper_buf: [16]u8 = undefined;
+        const subcmd_upper = std.ascii.upperString(&subcmd_upper_buf, subcmd[0..@min(subcmd.len, 16)]);
+
+        if (std.mem.eql(u8, subcmd_upper, "RESET")) {
+            if (storage.acl) |acl_store| {
+                acl_store.resetLog();
+            }
+            return w.writeOK();
+        }
+
+        const n = std.fmt.parseInt(u64, subcmd, 10) catch {
+            return w.writeError("ERR Invalid arguments");
+        };
+        count = @intCast(n);
     }
 
-    const subcmd = switch (args[1]) {
-        .bulk_string => |s| s,
-        else => return w.writeError("ERR invalid argument for 'acl log' command"),
-    };
+    const acl_store = storage.acl orelse return w.writeArray(&[_]RespValue{});
+    const entries = acl_store.getLogEntries(count);
 
-    var subcmd_upper_buf: [16]u8 = undefined;
-    const subcmd_upper = std.ascii.upperString(&subcmd_upper_buf, subcmd[0..@min(subcmd.len, 16)]);
+    if (entries.len == 0) return w.writeArray(&[_]RespValue{});
 
-    if (std.mem.eql(u8, subcmd_upper, "RESET")) {
-        return w.writeOK();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    const header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{entries.len});
+    defer allocator.free(header);
+    try buf.appendSlice(allocator, header);
+
+    const now = std.time.timestamp();
+    // Return newest-first
+    var i = entries.len;
+    while (i > 0) {
+        i -= 1;
+        const entry_bytes = try formatLogEntry(allocator, &entries[i], now);
+        defer allocator.free(entry_bytes);
+        try buf.appendSlice(allocator, entry_bytes);
     }
 
-    // ACL LOG <count> — return empty array (no violations tracked)
-    const count = std.fmt.parseInt(u64, subcmd, 10) catch {
-        return w.writeError("ERR Invalid arguments");
-    };
-    _ = count;
-    return w.writeArray(&[_]RespValue{});
+    return buf.toOwnedSlice(allocator);
 }
 
 /// ACL SAVE — Persist current ACL rules to the ACL file
@@ -1102,21 +1204,25 @@ test "ACL DELUSER cannot delete default" {
 
 test "ACL LOG returns empty array by default" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
         RespValue{ .bulk_string = "LOG" },
     };
 
-    const result = try cmdACLLog(allocator, &args);
+    const result = try cmdACLLog(allocator, &args, &storage);
     defer allocator.free(result);
 
-    // Empty array: *0\r\n
+    // Empty array: *0\r\n (no violations yet)
     try std.testing.expectEqualStrings("*0\r\n", result);
 }
 
 test "ACL LOG RESET returns OK" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
@@ -1124,7 +1230,7 @@ test "ACL LOG RESET returns OK" {
         RespValue{ .bulk_string = "RESET" },
     };
 
-    const result = try cmdACLLog(allocator, &args);
+    const result = try cmdACLLog(allocator, &args, &storage);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
@@ -1132,6 +1238,8 @@ test "ACL LOG RESET returns OK" {
 
 test "ACL LOG with count returns empty array" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
@@ -1139,11 +1247,94 @@ test "ACL LOG with count returns empty array" {
         RespValue{ .bulk_string = "10" },
     };
 
-    const result = try cmdACLLog(allocator, &args);
+    const result = try cmdACLLog(allocator, &args, &storage);
     defer allocator.free(result);
 
-    // Empty array (no violations logged)
+    // Empty array (no violations logged yet)
     try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "ACL LOG records violations and returns them" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Add a violation directly to the ACL store
+    const acl_store = storage.acl orelse return error.SkipZigTest;
+    acl_store.addLogEntry(.command, "SET", "alice", "127.0.0.1:12345");
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+    };
+
+    const result = try cmdACLLog(allocator, &args, &storage);
+    defer allocator.free(result);
+
+    // Should have 1 entry: *1\r\n
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    // Entry should contain the violation fields
+    try std.testing.expect(std.mem.indexOf(u8, result, "reason") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "SET") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "alice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "username") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "entry-id") != null);
+}
+
+test "ACL LOG RESET clears violations" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const acl_store = storage.acl orelse return error.SkipZigTest;
+    acl_store.addLogEntry(.key, "GET", "bob", "10.0.0.1:9999");
+    acl_store.addLogEntry(.auth, "SET", "(noauth)", "10.0.0.2:8888");
+
+    // Verify entries exist
+    const before_args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+    };
+    const before = try cmdACLLog(allocator, &before_args, &storage);
+    defer allocator.free(before);
+    try std.testing.expect(std.mem.startsWith(u8, before, "*2\r\n"));
+
+    // Reset
+    const reset_args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+        RespValue{ .bulk_string = "RESET" },
+    };
+    const reset_result = try cmdACLLog(allocator, &reset_args, &storage);
+    defer allocator.free(reset_result);
+    try std.testing.expectEqualStrings("+OK\r\n", reset_result);
+
+    // Verify log is empty
+    const after = try cmdACLLog(allocator, &before_args, &storage);
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings("*0\r\n", after);
+}
+
+test "ACL LOG count limits returned entries" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const acl_store = storage.acl orelse return error.SkipZigTest;
+    acl_store.addLogEntry(.command, "GET", "user1", "127.0.0.1:1");
+    acl_store.addLogEntry(.command, "SET", "user2", "127.0.0.1:2");
+    acl_store.addLogEntry(.key, "DEL", "user3", "127.0.0.1:3");
+
+    // ACL LOG 2 — should return 2 newest entries
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "LOG" },
+        RespValue{ .bulk_string = "2" },
+    };
+    const result = try cmdACLLog(allocator, &args, &storage);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
 }
 
 test "ACL SAVE returns OK" {
