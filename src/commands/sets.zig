@@ -559,6 +559,13 @@ pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         break :blk @as(usize, @intCast(n));
     } else 0;
 
+    // SPOP key 0 must return empty array without removing any elements.
+    // storage.spop treats count=0 as "single pop mode" (sentinel), so we must
+    // short-circuit here to avoid incorrectly popping 1 element.
+    if (has_count and count == 0) {
+        return w.writeArray(&[_]RespValue{});
+    }
+
     const popped = storage.spop(allocator, key, count) catch |err| {
         if (err == error.WrongType) {
             return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");

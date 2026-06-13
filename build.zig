@@ -792,6 +792,25 @@ pub fn build(b: *std.Build) void {
     const run_iter355_tests = b.addRunArtifact(iter355_tests);
     test_step.dependOn(&run_iter355_tests.step);
 
+    // Iteration 356: SPOP key 0 fix + sailor v2.40.0
+    const iter356_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter356.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter356_tests.linkSystemLibrary("luajit-5.1");
+    iter356_tests.linkLibC();
+    iter356_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter356_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter356_tests = b.addRunArtifact(iter356_tests);
+    test_step.dependOn(&run_iter356_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
