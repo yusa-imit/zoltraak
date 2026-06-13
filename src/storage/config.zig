@@ -398,6 +398,22 @@ pub const Config = struct {
             .{ .name = "shutdown-timeout", .value = .{ .int = 10 }, .read_only = false }, // Timeout (seconds) for graceful shutdown
             .{ .name = "shutdown-save-on-sigterm", .value = .{ .string = "default" }, .read_only = false }, // Save on SIGTERM (default/yes/no)
 
+            // Client output buffer limits (Redis 6.0+)
+            // Format: "<class> <hard-limit> <soft-limit> <soft-seconds> ..."
+            // Redis default: normal 0 0 0 slave 268435456 67108864 60 pubsub 33554432 8388608 60
+            .{ .name = "client-output-buffer-limit", .value = .{ .string = "normal 0 0 0 slave 268435456 67108864 60 pubsub 33554432 8388608 60" }, .read_only = false },
+
+            // ACL logging alias (acllog-max-len is the canonical name)
+            .{ .name = "acllog-max-entries", .value = .{ .int = 128 }, .read_only = false }, // Alias for acllog-max-len
+
+            // Cluster announce TLS port (Redis 6.2+)
+            .{ .name = "cluster-announce-tls-port", .value = .{ .int = 0 }, .read_only = false }, // TLS port announced to cluster
+
+            // Latency history flag (Redis 7.x)
+            .{ .name = "latency-history-enabled", .value = .{ .bool = true }, .read_only = false }, // Enable per-event latency history tracking
+
+            // Networking edge cases
+            .{ .name = "close-on-oom-score-adj", .value = .{ .bool = false }, .read_only = false }, // Disconnect clients when process hits OOM score limit
         };
 
         for (defaults) |def| {

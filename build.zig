@@ -754,6 +754,25 @@ pub fn build(b: *std.Build) void {
     const run_iter353_tests = b.addRunArtifact(iter353_tests);
     test_step.dependOn(&run_iter353_tests.step);
 
+    // Iteration 354: Missing CONFIG parameters (client-output-buffer-limit etc.)
+    const iter354_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter354.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter354_tests.linkSystemLibrary("luajit-5.1");
+    iter354_tests.linkLibC();
+    iter354_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter354_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter354_tests = b.addRunArtifact(iter354_tests);
+    test_step.dependOn(&run_iter354_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
