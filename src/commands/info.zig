@@ -36,7 +36,7 @@ pub const ServerStats = struct {
 /// INFO [section]
 ///
 /// Returns detailed information about the Redis-compatible server.
-/// Supported sections: server, clients, memory, persistence, stats, replication, cpu, modules, cluster, keyspace, commandstats, errorstats, latencystats, all, default
+/// Supported sections: server, clients, memory, persistence, stats, replication, cpu, modules, cluster, keyspace, commandstats, errorstats, latencystats, all, default, everything
 ///
 /// Iteration 30: Comprehensive INFO implementation with all major sections.
 pub fn cmdInfo(
@@ -61,46 +61,48 @@ pub fn cmdInfo(
     defer buf.deinit(allocator);
 
     const show_all = std.mem.eql(u8, section, "ALL");
+    const show_everything = std.mem.eql(u8, section, "EVERYTHING");
     const show_default = std.mem.eql(u8, section, "DEFAULT");
 
     // Build the requested sections
-    if (show_all or show_default or std.mem.eql(u8, section, "SERVER")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "SERVER")) {
         try buildServerSection(&buf, allocator, config, storage, stats.start_time_seconds, num_databases);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "CLIENTS")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "CLIENTS")) {
         try buildClientsSection(&buf, allocator, stats.client_count, stats.tracking_clients, storage);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "MEMORY")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "MEMORY")) {
         try buildMemorySection(&buf, allocator, storage);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "PERSISTENCE")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "PERSISTENCE")) {
         try buildPersistenceSection(&buf, allocator, config, storage);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "STATS")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "STATS")) {
         try buildStatsSection(&buf, allocator, stats.total_commands_processed, stats.total_connections_received, storage);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "REPLICATION")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "REPLICATION")) {
         try buildReplicationSection(&buf, allocator, repl, storage);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "CPU")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "CPU")) {
         try buildCpuSection(&buf, allocator);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "MODULES")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "MODULES")) {
         try buildModulesSection(&buf, allocator);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "CLUSTER")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "CLUSTER")) {
         try buildClusterSection(&buf, allocator);
     }
-    if (show_all or show_default or std.mem.eql(u8, section, "KEYSPACE")) {
+    if (show_all or show_everything or show_default or std.mem.eql(u8, section, "KEYSPACE")) {
         try buildKeyspaceSection(&buf, allocator, storage, databases, num_databases);
     }
-    if (show_all or std.mem.eql(u8, section, "COMMANDSTATS")) {
+    if (show_all or show_everything or std.mem.eql(u8, section, "COMMANDSTATS")) {
         try buildCommandstatsSection(&buf, allocator, storage);
     }
-    if (show_all or std.mem.eql(u8, section, "ERRORSTATS")) {
+    if (show_all or show_everything or std.mem.eql(u8, section, "ERRORSTATS")) {
         try buildErrorstatsSection(&buf, allocator, storage);
     }
-    if (show_all or std.mem.eql(u8, section, "LATENCYSTATS")) {
+    // LATENCYSTATS: included in "all", "everything", and explicit request, but NOT in "default"
+    if (show_all or show_everything or std.mem.eql(u8, section, "LATENCYSTATS")) {
         try buildLatencystatsSection(&buf, allocator);
     }
 
@@ -2486,4 +2488,82 @@ test "INFO cpu section values are in decimal format with 6 places" {
     const sys_line_end = std.mem.indexOfScalarPos(u8, result, sys_start, '\r') orelse result.len;
     const sys_val = result[sys_start + "used_cpu_sys:".len .. sys_line_end];
     try std.testing.expect(std.mem.indexOfScalar(u8, sys_val, '.') != null);
+}
+
+test "INFO everything includes all sections including latencystats" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const result = try cmdInfo(allocator, &storage, &repl, config, stats, &[_][]const u8{ "INFO", "everything" }, null, 1);
+    defer allocator.free(result);
+
+    // everything includes all sections
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Clients") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Memory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# CPU") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Cluster") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Keyspace") != null);
+    // everything also includes latencystats (like "all", unlike "default")
+    try std.testing.expect(std.mem.indexOf(u8, result, "# Latencystats") != null);
+}
+
+test "INFO default does NOT include latencystats (only all/everything)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const config = ServerConfig{
+        .port = 6379,
+        .bind = "127.0.0.1",
+        .maxmemory = 0,
+        .maxmemory_policy = "noeviction",
+        .timeout = 0,
+        .tcp_keepalive = 300,
+        .save = "",
+        .appendonly = false,
+        .appendfsync = "everysec",
+        .databases = 1,
+    };
+    const stats = ServerStats{
+        .client_count = 0,
+        .tracking_clients = 0,
+        .total_commands_processed = 0,
+        .total_connections_received = 0,
+        .start_time_seconds = std.time.timestamp(),
+    };
+
+    const default_result = try cmdInfo(allocator, &storage, &repl, config, stats, &[_][]const u8{ "INFO", "default" }, null, 1);
+    defer allocator.free(default_result);
+
+    // "default" includes all major sections
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "# Server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "# Cluster") != null);
+    // but "default" does NOT include latencystats
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "# Latencystats") == null);
 }

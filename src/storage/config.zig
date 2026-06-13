@@ -414,6 +414,23 @@ pub const Config = struct {
 
             // Networking edge cases
             .{ .name = "close-on-oom-score-adj", .value = .{ .bool = false }, .read_only = false }, // Disconnect clients when process hits OOM score limit
+
+            // RDB persistence options (commonly queried by clients)
+            .{ .name = "dbfilename", .value = .{ .string = "dump.rdb" }, .read_only = false }, // RDB file name
+            .{ .name = "rdbcompression", .value = .{ .bool = true }, .read_only = false }, // Compress RDB files with LZF
+            .{ .name = "rdbchecksum", .value = .{ .bool = true }, .read_only = false }, // Add CRC64 checksums to RDB
+
+            // Replication diskless sync timeout (Redis 7.x)
+            .{ .name = "repl-diskless-sync-timeout", .value = .{ .int = 5 }, .read_only = false }, // Timeout for diskless replica sync (seconds)
+
+            // Lua/scripting aliases (Redis 7.x)
+            .{ .name = "script-time-limit", .value = .{ .int = 5000 }, .read_only = false }, // Max Lua script execution time (ms), alias for lua-time-limit
+
+            // AOF persistence options (commonly queried)
+            .{ .name = "aof-rewrite-min-size", .value = .{ .int = 67108864 }, .read_only = false }, // Min AOF file size (64mb) before rewrite
+            .{ .name = "auto-aof-rewrite-percentage", .value = .{ .int = 100 }, .read_only = false }, // Rewrite when AOF is 100% larger than base
+            .{ .name = "auto-aof-rewrite-min-size", .value = .{ .int = 67108864 }, .read_only = false }, // Min size for auto-rewrite (64mb)
+            .{ .name = "aof-load-truncated", .value = .{ .bool = true }, .read_only = false }, // Load truncated AOF files
         };
 
         for (defaults) |def| {
