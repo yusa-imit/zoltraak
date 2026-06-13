@@ -24,7 +24,7 @@ test "ACL dispatcher - default user can execute all commands by default" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -73,7 +73,7 @@ test "ACL dispatcher - AUTH command always allowed" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -119,7 +119,7 @@ test "ACL dispatcher - PING command always allowed" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -164,7 +164,7 @@ test "ACL dispatcher - HELLO command always allowed" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -211,7 +211,7 @@ test "ACL dispatcher - restricted user denied GET command" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -290,7 +290,7 @@ test "ACL dispatcher - user with +GET allowed GET command" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -369,7 +369,7 @@ test "ACL dispatcher - user with +@read allowed GET but denied SET" {
 
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     var script_store = ScriptStore.init(allocator);
     defer script_store.deinit();

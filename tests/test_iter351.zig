@@ -63,7 +63,7 @@ test "iter351 - ACL LOG empty when no violations" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -82,9 +82,9 @@ test "iter351 - ACL LOG records NOPERM command violation" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
     // admin_id is used for setup and log queries (default user)
-    const admin_id = try registry.registerClient("127.0.0.1:1234", 10);
+    const admin_id = try registry.registerClient("127.0.0.1:1234", 10, "127.0.0.1:6379");
     // restricted_id is used for denied commands
-    const restricted_id = try registry.registerClient("127.0.0.1:1235", 11);
+    const restricted_id = try registry.registerClient("127.0.0.1:1235", 11, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -123,7 +123,7 @@ test "iter351 - ACL LOG RESET clears violations" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:5678", 10);
+    const client_id = try registry.registerClient("127.0.0.1:5678", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -156,7 +156,7 @@ test "iter351 - ACL LOG count limits results to newest" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:7777", 10);
+    const client_id = try registry.registerClient("127.0.0.1:7777", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -184,7 +184,7 @@ test "iter351 - ACL LOG deduplicates repeated violations" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:8888", 10);
+    const client_id = try registry.registerClient("127.0.0.1:8888", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -211,7 +211,7 @@ test "iter351 - ACL LOG entry has 20 elements (10 key-value pairs)" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:4444", 10);
+    const client_id = try registry.registerClient("127.0.0.1:4444", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -246,7 +246,7 @@ test "iter351 - ACL LOG reason=auth for NOAUTH violations" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:5555", 10);
+    const client_id = try registry.registerClient("127.0.0.1:5555", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -268,7 +268,7 @@ test "iter351 - ACL LOG reason=key for key permission violations" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:6666", 10);
+    const client_id = try registry.registerClient("127.0.0.1:6666", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -290,7 +290,7 @@ test "iter351 - ACL LOG multiple different violations are separate entries" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:3333", 10);
+    const client_id = try registry.registerClient("127.0.0.1:3333", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();

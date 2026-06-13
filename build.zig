@@ -735,6 +735,25 @@ pub fn build(b: *std.Build) void {
     const run_iter352_tests = b.addRunArtifact(iter352_tests);
     test_step.dependOn(&run_iter352_tests.step);
 
+    // Iteration 353: CLIENT LIST real multi/watch counts + laddr field
+    const iter353_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter353.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter353_tests.linkSystemLibrary("luajit-5.1");
+    iter353_tests.linkLibC();
+    iter353_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter353_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter353_tests = b.addRunArtifact(iter353_tests);
+    test_step.dependOn(&run_iter353_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

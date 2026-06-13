@@ -82,6 +82,12 @@ pub const ClientInfo = struct {
     psub_count: u32,
     /// Number of active shard channel subscriptions (SSUBSCRIBE)
     ssub_count: u32,
+    /// Number of commands queued in MULTI block (-1 = not in MULTI)
+    multi_count: i32,
+    /// Number of keys currently being WATCHed
+    watch_count: u32,
+    /// Local server address this client connected to (e.g., "127.0.0.1:6379")
+    laddr: []const u8,
 
     /// Deinitialize and free resources
     pub fn deinit(self: *ClientInfo, allocator: std.mem.Allocator) void {
@@ -108,6 +114,7 @@ pub const ClientInfo = struct {
         }
         self.pending_invalidations.deinit(allocator);
         allocator.free(self.addr);
+        allocator.free(self.laddr);
         allocator.free(self.last_cmd);
         allocator.free(self.flags);
     }
@@ -194,6 +201,7 @@ pub const ClientRegistry = struct {
         self: *ClientRegistry,
         addr: []const u8,
         fd: i32,
+        laddr: []const u8,
     ) !u64 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -205,6 +213,9 @@ pub const ClientRegistry = struct {
         const addr_copy = try self.allocator.dupe(u8, addr);
         errdefer self.allocator.free(addr_copy);
 
+        const laddr_copy = try self.allocator.dupe(u8, laddr);
+        errdefer self.allocator.free(laddr_copy);
+
         const default_cmd = try self.allocator.dupe(u8, "");
         errdefer self.allocator.free(default_cmd);
 
@@ -215,6 +226,7 @@ pub const ClientRegistry = struct {
             .id = client_id,
             .name = null,
             .addr = addr_copy,
+            .laddr = laddr_copy,
             .fd = fd,
             .connected_at = now,
             .last_cmd_at = now,
@@ -242,6 +254,8 @@ pub const ClientRegistry = struct {
             .sub_count = 0,
             .psub_count = 0,
             .ssub_count = 0,
+            .multi_count = -1,
+            .watch_count = 0,
         };
 
         try self.clients.put(client_id, info);
@@ -470,6 +484,17 @@ pub const ClientRegistry = struct {
         }
     }
 
+    /// Update multi/watch counts for a client (called after MULTI/EXEC/DISCARD/WATCH/UNWATCH)
+    pub fn updateTxCounts(self: *ClientRegistry, client_id: u64, multi_count: i32, watch_count: u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            info.multi_count = multi_count;
+            info.watch_count = watch_count;
+        }
+    }
+
     /// Get no-touch flag for a client
     pub fn getNoTouch(self: *ClientRegistry, client_id: u64) bool {
         self.mutex.lock();
@@ -561,10 +586,11 @@ pub const ClientRegistry = struct {
 
             // Redis 7.x full CLIENT LIST format
             try buf.writer(allocator).print(
-                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}\n",
+                "id={d} addr={s} laddr={s} fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi={d} watch={d} qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}\n",
                 .{
                     info.id,
                     info.addr,
+                    info.laddr,
                     info.fd,
                     name_str,
                     age_sec,
@@ -574,6 +600,8 @@ pub const ClientRegistry = struct {
                     info.sub_count,
                     info.psub_count,
                     info.ssub_count,
+                    info.multi_count,
+                    info.watch_count,
                     info.last_cmd,
                     user_str,
                     lib_name_str,
@@ -620,10 +648,11 @@ pub const ClientRegistry = struct {
                 -1;
 
             try buf.writer(allocator).print(
-                "id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}\n",
+                "id={d} addr={s} laddr={s} fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi={d} watch={d} qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}\n",
                 .{
                     info.id,
                     info.addr,
+                    info.laddr,
                     info.fd,
                     name_str,
                     age_sec,
@@ -633,6 +662,8 @@ pub const ClientRegistry = struct {
                     info.sub_count,
                     info.psub_count,
                     info.ssub_count,
+                    info.multi_count,
+                    info.watch_count,
                     info.last_cmd,
                     user_str,
                     lib_name_str,
@@ -1429,9 +1460,10 @@ fn cmdClientInfo(
     const client_type = if (is_pubsub) "pubsub" else "normal";
 
     // Redis 7.x full CLIENT INFO format (same as CLIENT LIST line for this client)
-    try buf.writer(allocator).print("id={d} addr={s} laddr= fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi=-1 watch=0 qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}", .{
+    try buf.writer(allocator).print("id={d} addr={s} laddr={s} fd={d} name={s} age={d} idle={d} flags={s} db={d} sub={d} psub={d} ssub={d} multi={d} watch={d} qbuf=0 qbuf-free=32768 argv-mem=10 multi-mem=0 tot-mem=20512 rbs=16384 rbp=0 obl=0 oll=0 omem=0 events=r cmd={s} user={s} library-name={s} library-ver={s} redir={d} resp={d} type={s}", .{
         info.id,
         info.addr,
+        info.laddr,
         info.fd,
         name_str,
         age_sec,
@@ -1441,6 +1473,8 @@ fn cmdClientInfo(
         info.sub_count,
         info.psub_count,
         info.ssub_count,
+        info.multi_count,
+        info.watch_count,
         info.last_cmd,
         user_str,
         lib_name_str,
@@ -2477,8 +2511,8 @@ test "ClientRegistry: register and unregister" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("127.0.0.1:54321", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("127.0.0.1:54321", 43, "127.0.0.1:6379");
 
     try std.testing.expectEqual(@as(u64, 1), client1);
     try std.testing.expectEqual(@as(u64, 2), client2);
@@ -2495,7 +2529,7 @@ test "ClientRegistry: set and get client name" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Initially no name
     const name1 = try registry.getClientName(client_id, allocator);
@@ -2526,7 +2560,7 @@ test "ClientRegistry: update last command" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     registry.updateLastCommand(client_id, "SET");
     registry.updateLastCommand(client_id, "GET");
@@ -2545,8 +2579,8 @@ test "ClientRegistry: format client list" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    _ = try registry.registerClient("127.0.0.1:54321", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    _ = try registry.registerClient("127.0.0.1:54321", 43, "127.0.0.1:6379");
 
     try registry.setClientName(client1, "client-one");
     registry.updateLastCommand(client1, "PING");
@@ -2570,7 +2604,7 @@ test "CLIENT ID command" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Build command: CLIENT ID
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -2596,7 +2630,7 @@ test "CLIENT GETNAME command - no name set" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2621,7 +2655,7 @@ test "CLIENT SETNAME command - success" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2652,7 +2686,7 @@ test "CLIENT SETNAME command - rejects spaces" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2678,8 +2712,8 @@ test "CLIENT LIST command - basic" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
 
     try registry.setClientName(client1, "alice");
     registry.updateLastCommand(client1, "SET");
@@ -2713,7 +2747,7 @@ test "CLIENT LIST command - with TYPE filter" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    _ = try registry.registerClient("127.0.0.1:12345", 42);
+    _ = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2741,7 +2775,7 @@ test "CLIENT unknown subcommand" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2766,7 +2800,7 @@ test "CLIENT LIST command - invalid TYPE" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    _ = try registry.registerClient("127.0.0.1:12345", 42);
+    _ = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2793,7 +2827,7 @@ test "ClientRegistry: set and get protocol version" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Default protocol should be RESP2
     try std.testing.expectEqual(RespProtocol.RESP2, registry.getProtocol(client_id));
@@ -2826,7 +2860,7 @@ test "CLIENT INFO command" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2855,7 +2889,7 @@ test "CLIENT HELP command" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2884,8 +2918,8 @@ test "CLIENT KILL command - old format" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2915,8 +2949,8 @@ test "CLIENT KILL command - by ID" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2947,8 +2981,8 @@ test "CLIENT KILL command - by ADDR" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2976,7 +3010,7 @@ test "CLIENT KILL command - SKIPME YES" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3006,7 +3040,7 @@ test "CLIENT KILL command - SKIPME NO" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3036,8 +3070,8 @@ test "CLIENT KILL command - by TYPE" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3068,7 +3102,7 @@ test "CLIENT KILL command - by MAXAGE" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Sleep to ensure client is older than 0 seconds
     std.Thread.sleep(1_100_000_000); // 1.1 seconds
@@ -3101,9 +3135,9 @@ test "CLIENT KILL command - multiple filters" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
-    const client3 = try registry.registerClient("127.0.0.1:54321", 44);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
+    const client3 = try registry.registerClient("127.0.0.1:54321", 44, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3134,8 +3168,8 @@ test "ClientRegistry: mark and check killed status" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("192.168.1.100:9999", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("192.168.1.100:9999", 43, "127.0.0.1:6379");
 
     // Initially no clients are killed
     try std.testing.expect(!registry.isClientKilled(client1));
@@ -3158,7 +3192,7 @@ test "CLIENT PAUSE command - WRITE mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3187,7 +3221,7 @@ test "CLIENT PAUSE command - ALL mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3216,7 +3250,7 @@ test "CLIENT PAUSE command - default WRITE mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3244,7 +3278,7 @@ test "CLIENT PAUSE command - zero timeout" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3271,7 +3305,7 @@ test "CLIENT PAUSE command - negative timeout rejected" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3296,7 +3330,7 @@ test "CLIENT UNPAUSE command" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // First pause clients
     registry.pauseClients(10000, true);
@@ -3347,7 +3381,7 @@ test "CLIENT PAUSE command - invalid mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3373,7 +3407,7 @@ test "CLIENT UNBLOCK command - client not blocked" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3398,7 +3432,7 @@ test "CLIENT UNBLOCK command - default TIMEOUT mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Create a blocked client
     const keys = try allocator.alloc([]const u8, 1);
@@ -3446,7 +3480,7 @@ test "CLIENT UNBLOCK command - ERROR mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Create a blocked client
     const keys = try allocator.alloc([]const u8, 1);
@@ -3495,7 +3529,7 @@ test "CLIENT UNBLOCK command - invalid mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3522,7 +3556,7 @@ test "CLIENT UNBLOCK command - invalid client ID" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3548,7 +3582,7 @@ test "CLIENT NO-EVICT command - enable" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3574,7 +3608,7 @@ test "CLIENT NO-EVICT command - disable" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Set to ON first
     registry.setNoEvict(client_id, true);
@@ -3603,7 +3637,7 @@ test "CLIENT NO-EVICT command - get status" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
     registry.setNoEvict(client_id, true);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -3628,7 +3662,7 @@ test "CLIENT REPLY command - ON mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3653,7 +3687,7 @@ test "CLIENT REPLY command - OFF mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3678,7 +3712,7 @@ test "CLIENT REPLY command - SKIP mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3707,7 +3741,7 @@ test "CLIENT REPLY command - invalid mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3731,7 +3765,7 @@ test "CLIENT NO-TOUCH command - enable" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3756,7 +3790,7 @@ test "CLIENT NO-TOUCH command - disable" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // First enable it
     registry.setNoTouch(client_id, true);
@@ -3784,7 +3818,7 @@ test "CLIENT NO-TOUCH command - get status" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3808,7 +3842,7 @@ test "CLIENT NO-TOUCH command - invalid argument" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3832,7 +3866,7 @@ test "CLIENT SETINFO command - LIB-NAME" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3857,7 +3891,7 @@ test "CLIENT SETINFO command - LIB-VER" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3882,7 +3916,7 @@ test "CLIENT SETINFO command - invalid attribute" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3908,7 +3942,7 @@ test "CLIENT SETINFO command - value with space (rejected)" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3934,7 +3968,7 @@ test "CLIENT SETINFO command - wrong number of arguments" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -3961,7 +3995,7 @@ test "CLIENT TRACKING - enable and disable" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4002,7 +4036,7 @@ test "CLIENT TRACKING - with OPTIN and OPTOUT" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4029,7 +4063,7 @@ test "CLIENT TRACKING - OPTIN and OPTOUT mutually exclusive" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4058,7 +4092,7 @@ test "CLIENT TRACKING - with PREFIX in BCAST mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4089,7 +4123,7 @@ test "CLIENT TRACKINGINFO - basic functionality" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Enable tracking first
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -4130,7 +4164,7 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Enable tracking with OPTIN
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -4170,7 +4204,7 @@ test "CLIENT GETREDIR - returns -1 when tracking disabled" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4195,8 +4229,8 @@ test "CLIENT GETREDIR - returns redirect client ID when enabled" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
-    const redirect_id = try registry.registerClient("127.0.0.1:54321", 43);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const redirect_id = try registry.registerClient("127.0.0.1:54321", 43, "127.0.0.1:6379");
 
     // Enable tracking with REDIRECT
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -4241,7 +4275,7 @@ test "CLIENT GETREDIR - returns -1 when redirect is 0 (self)" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // Enable tracking without REDIRECT (defaults to self)
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -4280,7 +4314,7 @@ test "CLIENT CACHING - YES and NO" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4321,7 +4355,7 @@ test "CLIENT CACHING - invalid argument" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4348,7 +4382,7 @@ test "CLIENT TRACKING - invalid redirect client" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4377,8 +4411,8 @@ test "CLIENT TRACKING - valid redirect to another client" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:12345", 42);
-    const client2 = try registry.registerClient("127.0.0.1:12346", 43);
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("127.0.0.1:12346", 43, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4407,7 +4441,7 @@ test "CLIENT TRACKING - with NOLOOP flag" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4434,7 +4468,7 @@ test "CLIENT TRACKING - missing ON/OFF argument" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4460,7 +4494,7 @@ test "CLIENT TRACKING - combination BCAST NOLOOP PREFIX" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4490,7 +4524,7 @@ test "CLIENT TRACKING - OPTIN with NOLOOP" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4515,7 +4549,7 @@ test "ClientRegistry - setMonitorMode and isMonitoring" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     // Initially not monitoring
     try std.testing.expect(!registry.isMonitoring(client_id));
@@ -4534,9 +4568,9 @@ test "ClientRegistry - getMonitoringClients" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:1", 10);
-    _ = try registry.registerClient("127.0.0.1:2", 11);
-    const client3 = try registry.registerClient("127.0.0.1:3", 12);
+    const client1 = try registry.registerClient("127.0.0.1:1", 10, "127.0.0.1:6379");
+    _ = try registry.registerClient("127.0.0.1:2", 11, "127.0.0.1:6379");
+    const client3 = try registry.registerClient("127.0.0.1:3", 12, "127.0.0.1:6379");
 
     // Enable monitoring for client1 and client3
     registry.setMonitorMode(client1, true);
@@ -4564,8 +4598,8 @@ test "ClientRegistry - broadcastToMonitors" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    _ = try registry.registerClient("127.0.0.1:1", 10);
-    const client2 = try registry.registerClient("127.0.0.1:2", 11);
+    _ = try registry.registerClient("127.0.0.1:1", 10, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("127.0.0.1:2", 11, "127.0.0.1:6379");
 
     // Enable monitoring for client2
     registry.setMonitorMode(client2, true);
@@ -4600,7 +4634,7 @@ test "ClientRegistry - broadcastToMonitors with quote escaping" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:1", 10);
+    const client1 = try registry.registerClient("127.0.0.1:1", 10, "127.0.0.1:6379");
     registry.setMonitorMode(client1, true);
 
     const cmd_args = [_][]const u8{ "SET", "key", "val\"ue" };
@@ -4629,7 +4663,7 @@ test "ClientRegistry - queuePushMessage and takePendingInvalidations" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:1111", 1);
+    const client_id = try registry.registerClient("127.0.0.1:1111", 1, "127.0.0.1:6379");
     defer registry.unregisterClient(client_id);
 
     // No pending messages initially
@@ -4671,7 +4705,7 @@ test "ClientRegistry - multiple pending invalidations drained in order" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:2222", 2);
+    const client_id = try registry.registerClient("127.0.0.1:2222", 2, "127.0.0.1:6379");
     defer registry.unregisterClient(client_id);
 
     const msg1 = try allocator.dupe(u8, "msg1");
@@ -4698,7 +4732,7 @@ test "CLIENT LIST - includes resp field" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
     registry.setProtocol(client_id, .RESP3);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -4723,7 +4757,7 @@ test "CLIENT LIST - includes user and library fields" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
     try registry.setLibName(client_id, "redis-py");
     try registry.setLibVer(client_id, "4.5.1");
 
@@ -4749,7 +4783,7 @@ test "CLIENT INFO - includes library fields after SETINFO" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4783,7 +4817,7 @@ test "CLIENT LIST - redir=-1 when tracking disabled" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4805,9 +4839,9 @@ test "CLIENT LIST ID filter - returns only specified clients" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client1 = try registry.registerClient("127.0.0.1:11111", 41);
-    const client2 = try registry.registerClient("127.0.0.1:22222", 42);
-    const client3 = try registry.registerClient("127.0.0.1:33333", 43);
+    const client1 = try registry.registerClient("127.0.0.1:11111", 41, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("127.0.0.1:22222", 42, "127.0.0.1:6379");
+    const client3 = try registry.registerClient("127.0.0.1:33333", 43, "127.0.0.1:6379");
     _ = client3;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -4841,7 +4875,7 @@ test "CLIENT LIST - includes watch=0 and type=normal fields (Redis 7.x compat)" 
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:55555", 55);
+    const client_id = try registry.registerClient("127.0.0.1:55555", 55, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -4864,7 +4898,7 @@ test "CLIENT INFO - includes watch=0 and type=normal fields (Redis 7.x compat)" 
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:66666", 66);
+    const client_id = try registry.registerClient("127.0.0.1:66666", 66, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();

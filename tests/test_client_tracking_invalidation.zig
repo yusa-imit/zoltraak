@@ -16,8 +16,8 @@ test "getInvalidationMessages - basic invalidation" {
     defer registry.deinit();
 
     // Register two clients
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Client A tracks a key
     try registry.trackKeyAccess(client_a, "mykey");
@@ -40,8 +40,8 @@ test "getInvalidationMessages - key removed from tracking table after invalidati
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Client A tracks a key
     try registry.trackKeyAccess(client_a, "mykey");
@@ -71,7 +71,7 @@ test "getInvalidationMessages - NOLOOP suppresses message but still removed from
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
 
     // Enable tracking with NOLOOP
     try registry.setTracking(client_a, true, -1, false, false, false, true, &[_][]const u8{});
@@ -91,7 +91,7 @@ test "getInvalidationMessages - NOLOOP suppresses message but still removed from
 
     // But key should still be in tracking table (message suppression only)
     // Getting messages from a different modifier should still work
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
     const messages2 = try registry.getInvalidationMessages("mykey", client_b, allocator);
     defer {
         for (messages2) |*msg| msg.deinit(allocator);
@@ -107,8 +107,8 @@ test "getInvalidationMessages - REDIRECT delivers to target client" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Client A tracks with REDIRECT to Client B
     try registry.setTracking(client_a, true, @intCast(client_b), false, false, false, false, &[_][]const u8{});
@@ -133,8 +133,8 @@ test "getInvalidationMessages - BCAST mode with prefix matching" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Client A tracks with BCAST and PREFIX
     const prefixes = [_][]const u8{"user:"};
@@ -165,9 +165,9 @@ test "getInvalidationMessages - multiple clients tracking same key" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
-    const client_c = try registry.registerClient("127.0.0.1:1002", 1002);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
+    const client_c = try registry.registerClient("127.0.0.1:1002", 1002, "127.0.0.1:6379");
 
     // Clients A and B track the same key
     try registry.trackKeyAccess(client_a, "mykey");
@@ -199,8 +199,8 @@ test "getInvalidationMessages - BCAST with no prefix matches all keys" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Client A tracks with BCAST but NO prefixes (broadcasts everything)
     try registry.setTracking(client_a, true, -1, true, false, false, false, &[_][]const u8{});
@@ -282,7 +282,7 @@ test "integration - client tracks key and receives invalidation" {
     defer registry.deinit();
 
     // Set up: Client A is in RESP3 mode
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
     registry.setProtocol(client_a, .RESP3);
 
     // Client A enables tracking
@@ -292,7 +292,7 @@ test "integration - client tracks key and receives invalidation" {
     try registry.trackKeyAccess(client_a, "mykey");
 
     // Verify key is in tracking table
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Get invalidation messages when key is modified
     const messages = try registry.getInvalidationMessages("mykey", client_b, allocator);
@@ -311,7 +311,7 @@ test "integration - OPTIN mode requires explicit caching enabled" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
 
     // Enable tracking with OPTIN mode
     try registry.setTracking(client_a, true, -1, false, true, false, false, &[_][]const u8{});
@@ -320,7 +320,7 @@ test "integration - OPTIN mode requires explicit caching enabled" {
     try registry.trackKeyAccess(client_a, "key1");
 
     // Check messages - should be empty because OPTIN requires caching enabled
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
     const messages1 = try registry.getInvalidationMessages("key1", client_b, allocator);
     defer {
         for (messages1) |*msg| msg.deinit(allocator);
@@ -348,7 +348,7 @@ test "integration - OPTOUT mode tracks everything unless disabled" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
 
     // Enable tracking with OPTOUT mode
     try registry.setTracking(client_a, true, -1, false, false, true, false, &[_][]const u8{});
@@ -356,7 +356,7 @@ test "integration - OPTOUT mode tracks everything unless disabled" {
     // Track a key - should work by default
     try registry.trackKeyAccess(client_a, "key1");
 
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
     var messages1 = try registry.getInvalidationMessages("key1", client_b, allocator);
     defer {
         for (messages1) |*msg| msg.deinit(allocator);
@@ -383,13 +383,13 @@ test "integration - multiple prefixes in BCAST mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
 
     // Enable tracking with BCAST and multiple prefixes
     const prefixes = [_][]const u8{ "user:", "product:" };
     try registry.setTracking(client_a, true, -1, true, false, false, false, &prefixes);
 
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Test matching first prefix
     var messages1 = try registry.getInvalidationMessages("user:123", client_b, allocator);
@@ -421,8 +421,8 @@ test "integration - disconnect removes client from all tracking entries" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_a = try registry.registerClient("127.0.0.1:1000", 1000);
-    const client_b = try registry.registerClient("127.0.0.1:1001", 1001);
+    const client_a = try registry.registerClient("127.0.0.1:1000", 1000, "127.0.0.1:6379");
+    const client_b = try registry.registerClient("127.0.0.1:1001", 1001, "127.0.0.1:6379");
 
     // Client A tracks multiple keys
     try registry.trackKeyAccess(client_a, "key1");

@@ -65,7 +65,7 @@ test "iter349 - isAuthenticated returns false for new client" {
     const allocator = testing.allocator;
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
     try testing.expect(!registry.isAuthenticated(client_id));
 }
 
@@ -73,7 +73,7 @@ test "iter349 - isAuthenticated returns true after setAuthenticatedUser" {
     const allocator = testing.allocator;
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
     try registry.setAuthenticatedUser(client_id, "default");
     try testing.expect(registry.isAuthenticated(client_id));
 }
@@ -136,7 +136,7 @@ test "iter349 - AUTH with requirepass correct password succeeds and authenticate
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     // Client is not yet authenticated
     try testing.expect(!registry.isAuthenticated(client_id));
@@ -162,7 +162,7 @@ test "iter349 - AUTH with requirepass wrong password returns WRONGPASS" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     const args = [_]RespValue{
         .{ .bulk_string = "AUTH" },
@@ -186,7 +186,7 @@ test "iter349 - NOAUTH returned for unauthenticated client when requirepass set"
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -208,7 +208,7 @@ test "iter349 - PING allowed without auth even when requirepass set" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -229,7 +229,7 @@ test "iter349 - no NOAUTH when requirepass is empty" {
     // requirepass is empty by default (no auth required)
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -253,7 +253,7 @@ test "iter349 - after successful AUTH, commands work normally" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();

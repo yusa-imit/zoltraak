@@ -64,7 +64,7 @@ test "iter350 - ACL WHOAMI returns 'default' for unauthenticated client" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -83,7 +83,7 @@ test "iter350 - ACL WHOAMI returns real username after AUTH" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -116,7 +116,7 @@ test "iter350 - ACL LIST returns rules from real ACL store" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -143,7 +143,7 @@ test "iter350 - ACL USERS returns all usernames from ACL store" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -165,7 +165,7 @@ test "iter350 - ACL GETUSER default returns 12-field response" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -191,7 +191,7 @@ test "iter350 - ACL GETUSER nonexistent returns nil" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -215,7 +215,7 @@ test "iter350 - ACL GETUSER user-with-password has non-empty passwords array" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -239,7 +239,7 @@ test "iter350 - ACL GETUSER default user has nopass flag" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -260,7 +260,7 @@ test "iter350 - ACL SETUSER then GETUSER shows created user" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -286,7 +286,7 @@ test "iter350 - ACL USERS includes newly created user" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -311,7 +311,7 @@ test "iter350 - ACL LIST includes newly created user rule" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9999", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9999", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();

@@ -11,8 +11,8 @@ test "tracking table - basic key tracking" {
     defer registry.deinit();
 
     // Register two clients
-    const client1_id = try registry.registerClient("127.0.0.1:1000", 10);
-    const client2_id = try registry.registerClient("127.0.0.1:2000", 20);
+    const client1_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
+    const client2_id = try registry.registerClient("127.0.0.1:2000", 20, "127.0.0.1:6379");
 
     // Enable tracking for both clients
     try registry.setTracking(client1_id, true, -1, false, false, false, false, &[_][]const u8{});
@@ -53,8 +53,8 @@ test "tracking table - NOLOOP mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client1_id = try registry.registerClient("127.0.0.1:1000", 10);
-    const client2_id = try registry.registerClient("127.0.0.1:2000", 20);
+    const client1_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
+    const client2_id = try registry.registerClient("127.0.0.1:2000", 20, "127.0.0.1:6379");
 
     // Client1 enables tracking with NOLOOP
     try registry.setTracking(client1_id, true, -1, false, false, false, true, &[_][]const u8{});
@@ -85,9 +85,9 @@ test "tracking table - REDIRECT mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client1_id = try registry.registerClient("127.0.0.1:1000", 10);
-    const client2_id = try registry.registerClient("127.0.0.1:2000", 20);
-    const client3_id = try registry.registerClient("127.0.0.1:3000", 30);
+    const client1_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
+    const client2_id = try registry.registerClient("127.0.0.1:2000", 20, "127.0.0.1:6379");
+    const client3_id = try registry.registerClient("127.0.0.1:3000", 30, "127.0.0.1:6379");
 
     // Client1 redirects to client3
     try registry.setTracking(client1_id, true, @intCast(client3_id), false, false, false, false, &[_][]const u8{});
@@ -126,7 +126,7 @@ test "tracking table - BCAST mode with PREFIX" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client1_id = try registry.registerClient("127.0.0.1:1000", 10);
+    const client1_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
 
     // Enable BCAST with prefix "user:"
     const prefixes = [_][]const u8{"user:"};
@@ -159,7 +159,7 @@ test "tracking table - OPTIN mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:1000", 10);
+    const client_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
 
     // Enable OPTIN mode
     try registry.setTracking(client_id, true, -1, false, true, false, false, &[_][]const u8{});
@@ -193,7 +193,7 @@ test "tracking table - OPTOUT mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:1000", 10);
+    const client_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
 
     // Enable OPTOUT mode
     try registry.setTracking(client_id, true, -1, false, false, true, false, &[_][]const u8{});
@@ -227,7 +227,7 @@ test "tracking table - removeKeyFromTracking" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:1000", 10);
+    const client_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
     try registry.setTracking(client_id, true, -1, false, false, false, false, &[_][]const u8{});
 
     try registry.trackKeyAccess(client_id, "mykey");
@@ -247,7 +247,7 @@ test "tracking table - removeClientFromTracking" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:1000", 10);
+    const client_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
     try registry.setTracking(client_id, true, -1, false, false, false, false, &[_][]const u8{});
 
     try registry.trackKeyAccess(client_id, "key1");
@@ -275,7 +275,7 @@ test "tracking table - max size enforcement" {
     // Set very small limit for testing
     registry.tracking_table_max_keys = 2;
 
-    const client_id = try registry.registerClient("127.0.0.1:1000", 10);
+    const client_id = try registry.registerClient("127.0.0.1:1000", 10, "127.0.0.1:6379");
     try registry.setTracking(client_id, true, -1, false, false, false, false, &[_][]const u8{});
 
     // Track 3 keys (exceeds limit of 2)

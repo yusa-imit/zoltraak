@@ -63,7 +63,7 @@ test "iter352 - CLIENT LIST shows sub=0 for normal client" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9001", 10);
+    const client_id = try registry.registerClient("127.0.0.1:9001", 10, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -84,7 +84,7 @@ test "iter352 - CLIENT LIST shows sub=1 after SUBSCRIBE" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9002", 11);
+    const client_id = try registry.registerClient("127.0.0.1:9002", 11, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -110,7 +110,7 @@ test "iter352 - CLIENT LIST shows psub=1 after PSUBSCRIBE" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9003", 12);
+    const client_id = try registry.registerClient("127.0.0.1:9003", 12, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -135,8 +135,8 @@ test "iter352 - CLIENT LIST TYPE pubsub returns subscribed clients" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const normal_id = try registry.registerClient("127.0.0.1:9004", 13);
-    const pubsub_id = try registry.registerClient("127.0.0.1:9005", 14);
+    const normal_id = try registry.registerClient("127.0.0.1:9004", 13, "127.0.0.1:6379");
+    const pubsub_id = try registry.registerClient("127.0.0.1:9005", 14, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -162,8 +162,8 @@ test "iter352 - CLIENT LIST TYPE normal excludes subscribed clients" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const normal_id = try registry.registerClient("127.0.0.1:9006", 15);
-    const pubsub_id = try registry.registerClient("127.0.0.1:9007", 16);
+    const normal_id = try registry.registerClient("127.0.0.1:9006", 15, "127.0.0.1:6379");
+    const pubsub_id = try registry.registerClient("127.0.0.1:9007", 16, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -186,7 +186,7 @@ test "iter352 - CLIENT LIST sub count resets after UNSUBSCRIBE" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9008", 17);
+    const client_id = try registry.registerClient("127.0.0.1:9008", 17, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -223,7 +223,7 @@ test "iter352 - CLIENT INFO shows real sub counts" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9009", 18);
+    const client_id = try registry.registerClient("127.0.0.1:9009", 18, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
@@ -247,7 +247,7 @@ test "iter352 - CLIENT LIST multiple subscriptions show correct counts" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9010", 19);
+    const client_id = try registry.registerClient("127.0.0.1:9010", 19, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();

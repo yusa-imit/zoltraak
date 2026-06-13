@@ -687,15 +687,32 @@ pub fn executeCommand(
     // MULTI, EXEC, DISCARD, WATCH, UNWATCH are always handled immediately,
     // even inside a MULTI block.
     if (std.mem.eql(u8, cmd_upper, "MULTI")) {
-        return tx_mod.cmdMulti(allocator, tx, array);
+        const result = tx_mod.cmdMulti(allocator, tx, array);
+        // After MULTI, multi_count=0 (transaction started, 0 commands queued)
+        if (tx.active) client_registry.updateTxCounts(client_id, 0, @intCast(tx.watched_keys.items.len));
+        return result;
     } else if (std.mem.eql(u8, cmd_upper, "DISCARD")) {
-        return tx_mod.cmdDiscard(allocator, tx, array);
+        const result = tx_mod.cmdDiscard(allocator, tx, array);
+        // After DISCARD, multi_count=-1 (not in transaction), watch_count=0
+        client_registry.updateTxCounts(client_id, -1, 0);
+        return result;
     } else if (std.mem.eql(u8, cmd_upper, "WATCH")) {
-        return tx_mod.cmdWatch(allocator, tx, array);
+        const result = tx_mod.cmdWatch(allocator, tx, array);
+        // After WATCH, update watch_count with real watched key count
+        const multi: i32 = if (tx.active) @intCast(tx.queue.items.len) else -1;
+        client_registry.updateTxCounts(client_id, multi, @intCast(tx.watched_keys.items.len));
+        return result;
     } else if (std.mem.eql(u8, cmd_upper, "UNWATCH")) {
-        return tx_mod.cmdUnwatch(allocator, tx, array);
+        const result = tx_mod.cmdUnwatch(allocator, tx, array);
+        // After UNWATCH, watch_count=0
+        const multi: i32 = if (tx.active) @intCast(tx.queue.items.len) else -1;
+        client_registry.updateTxCounts(client_id, multi, 0);
+        return result;
     } else if (std.mem.eql(u8, cmd_upper, "EXEC")) {
-        return try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store, shutdown_state, databases, num_databases);
+        const result = try cmdExec(allocator, storage, aof, ps, subscriber_id, tx, repl, my_port, client_registry, client_id, script_store, shutdown_state, databases, num_databases);
+        // After EXEC, transaction is finished: multi_count=-1, watch_count=0
+        client_registry.updateTxCounts(client_id, -1, 0);
+        return result;
     }
 
     // When inside a MULTI block, queue all other commands and return +QUEUED.
@@ -709,6 +726,9 @@ pub fn executeCommand(
         const encoded = try enc_w.serialize(cmd);
         errdefer tx.allocator.free(encoded);
         try tx.enqueue(encoded);
+
+        // Update multi_count to reflect newly queued command
+        client_registry.updateTxCounts(client_id, @intCast(tx.queue.items.len), @intCast(tx.watched_keys.items.len));
 
         var w = Writer.init(allocator);
         defer w.deinit();

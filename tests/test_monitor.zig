@@ -49,7 +49,7 @@ test "MONITOR - enables monitor mode" {
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
 
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
 
     // Monitor mode should be off initially
     try std.testing.expect(!client_registry.isMonitoring(client_id));
@@ -77,8 +77,8 @@ test "MONITOR - broadcasts commands to monitoring clients" {
     defer client_registry.deinit();
 
     // Register two clients
-    const client1 = try client_registry.registerClient("127.0.0.1:1", 10);
-    const client2 = try client_registry.registerClient("127.0.0.1:2", 11);
+    const client1 = try client_registry.registerClient("127.0.0.1:1", 10, "127.0.0.1:6379");
+    const client2 = try client_registry.registerClient("127.0.0.1:2", 11, "127.0.0.1:6379");
 
     // Enable monitoring for client2
     client_registry.setMonitorMode(client2, true);
@@ -131,8 +131,8 @@ test "MONITOR - does not broadcast MONITOR command itself" {
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
 
-    const client1 = try client_registry.registerClient("127.0.0.1:1", 10);
-    const client2 = try client_registry.registerClient("127.0.0.1:2", 11);
+    const client1 = try client_registry.registerClient("127.0.0.1:1", 10, "127.0.0.1:6379");
+    const client2 = try client_registry.registerClient("127.0.0.1:2", 11, "127.0.0.1:6379");
 
     // Enable monitoring for both clients
     client_registry.setMonitorMode(client1, true);
@@ -167,9 +167,9 @@ test "MONITOR - multiple monitoring clients receive broadcasts" {
     defer client_registry.deinit();
 
     // Register three clients
-    const client1 = try client_registry.registerClient("127.0.0.1:1", 10);
-    const client2 = try client_registry.registerClient("127.0.0.1:2", 11);
-    const client3 = try client_registry.registerClient("127.0.0.1:3", 12);
+    const client1 = try client_registry.registerClient("127.0.0.1:1", 10, "127.0.0.1:6379");
+    const client2 = try client_registry.registerClient("127.0.0.1:2", 11, "127.0.0.1:6379");
+    const client3 = try client_registry.registerClient("127.0.0.1:3", 12, "127.0.0.1:6379");
 
     // Enable monitoring for client2 and client3
     client_registry.setMonitorMode(client2, true);
@@ -210,7 +210,7 @@ test "MONITOR - timestamp format" {
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
 
-    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10);
+    const client_id = try client_registry.registerClient("127.0.0.1:54321", 10, "127.0.0.1:6379");
     client_registry.setMonitorMode(client_id, true);
 
     const cmd_args = [_][]const u8{"PING"};

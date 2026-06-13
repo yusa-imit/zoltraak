@@ -28,7 +28,7 @@ test "CLIENT SETNAME - rejects tab character" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -55,7 +55,7 @@ test "CLIENT SETNAME - rejects newline character" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -81,7 +81,7 @@ test "CLIENT SETNAME - rejects DEL character (0x7F)" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -107,7 +107,7 @@ test "CLIENT SETNAME - accepts printable ASCII including punctuation" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -133,7 +133,7 @@ test "CLIENT SETNAME - accepts empty string (resets name)" {
     defer blocking_queue.deinit();
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     // First set a name
     try registry.setClientName(client_id, "existing-name");
@@ -175,7 +175,7 @@ test "MULTI/EXEC - queued commands execute correctly with WRONGTYPE error mid-tr
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:11111", 42);
+    const client_id = try registry.registerClient("127.0.0.1:11111", 42, "127.0.0.1:6379");
 
     var script_store = commands.ScriptStore.init(allocator);
     defer script_store.deinit();
@@ -262,7 +262,7 @@ test "MULTI/EXEC - empty transaction returns empty array" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:11111", 42);
+    const client_id = try registry.registerClient("127.0.0.1:11111", 42, "127.0.0.1:6379");
 
     var script_store = commands.ScriptStore.init(allocator);
     defer script_store.deinit();

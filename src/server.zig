@@ -486,8 +486,12 @@ pub const Server = struct {
 
         std.debug.print("Client connected from {s}\n", .{addr_str});
 
+        // Build local address string (the server address this client connected to)
+        var laddr_buf: [256]u8 = undefined;
+        const laddr_str = std.fmt.bufPrint(&laddr_buf, "{s}:{d}", .{ self.config.host, self.config.port }) catch "unknown";
+
         // Register client connection
-        const client_id = try self.client_registry.registerClient(addr_str, connection.stream.handle);
+        const client_id = try self.client_registry.registerClient(addr_str, connection.stream.handle, laddr_str);
         defer self.client_registry.unregisterClient(client_id);
 
         // Assign a unique subscriber ID for this connection

@@ -35,7 +35,7 @@ test "deprecated aliases - HMSET redirects to HSET" {
 
     var client_registry = try ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:12345", -1);
+    const client_id = try client_registry.registerClient("127.0.0.1:12345", -1, "127.0.0.1:6379");
 
     var tx = commands.TxState.init(allocator);
     defer tx.deinit();
@@ -98,7 +98,7 @@ test "deprecated aliases - RPOPLPUSH redirects to LMOVE" {
 
     var client_registry = try ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:12345", -1);
+    const client_id = try client_registry.registerClient("127.0.0.1:12345", -1, "127.0.0.1:6379");
 
     var tx = commands.TxState.init(allocator);
     defer tx.deinit();
@@ -164,7 +164,7 @@ test "deprecated aliases - SLAVEOF NO ONE redirects to REPLICAOF" {
 
     var client_registry = try ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    const client_id = try client_registry.registerClient("127.0.0.1:12345", -1);
+    const client_id = try client_registry.registerClient("127.0.0.1:12345", -1, "127.0.0.1:6379");
 
     var tx = commands.TxState.init(allocator);
     defer tx.deinit();

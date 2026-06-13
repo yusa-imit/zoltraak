@@ -16,7 +16,7 @@ test "Integration: CLIENT NO-EVICT - set ON and OFF" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -74,7 +74,7 @@ test "Integration: CLIENT NO-EVICT - get status without argument" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
     registry.setNoEvict(client_id, true);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -107,7 +107,7 @@ test "Integration: CLIENT REPLY - ON mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -141,7 +141,7 @@ test "Integration: CLIENT REPLY - OFF mode" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -175,7 +175,7 @@ test "Integration: CLIENT REPLY - SKIP mode and revert" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -213,7 +213,7 @@ test "Integration: CLIENT REPLY - invalid mode returns error" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -246,7 +246,7 @@ test "Integration: CLIENT NO-EVICT - invalid argument returns error" {
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
 
-    const client_id = try registry.registerClient("127.0.0.1:12345", 42);
+    const client_id = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
