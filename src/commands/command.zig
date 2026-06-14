@@ -216,6 +216,16 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "hgetdel", .arity = -4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "hgetex", .arity = -4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "hsetex", .arity = -4, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hstrlen", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hexpire", .arity = -6, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hpexpire", .arity = -6, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hexpireat", .arity = -6, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hpexpireat", .arity = -6, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hpersist", .arity = -5, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "httl", .arity = -5, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hpttl", .arity = -5, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hexpiretime", .arity = -5, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hpexpiretime", .arity = -5, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
 
     // Sorted set commands (additional)
     .{ .name = "zmpop", .arity = -4, .flags = &.{"write"}, .first_key = 0, .last_key = 0, .step = 0 },
@@ -233,6 +243,9 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "zrangebylex", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "zrevrangebylex", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "zrangestore", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "zremrangebyrank", .arity = 4, .flags = &.{"write"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "zremrangebyscore", .arity = 4, .flags = &.{"write"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "zremrangebylex", .arity = 4, .flags = &.{"write"}, .first_key = 1, .last_key = 1, .step = 1 },
 
     // HyperLogLog commands
     .{ .name = "pfadd", .arity = -2, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
@@ -248,6 +261,8 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "georadiusbymember", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "geosearch", .arity = -7, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "geosearchstore", .arity = -8, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "georadius_ro", .arity = -6, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "georadiusbymember_ro", .arity = -5, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
 
     // Pub/Sub commands (additional)
     .{ .name = "psubscribe", .arity = -2, .flags = &.{ "pubsub", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
@@ -582,6 +597,16 @@ pub const COMMAND_DOCS = [_]CommandDoc{
     .{ .name = "hgetdel", .summary = "Get the value of a field and delete it", .since = "8.0.0", .group = "hash", .complexity = "O(N) where N is the number of fields" },
     .{ .name = "hgetex", .summary = "Get the value of a field and set its expiration", .since = "8.0.0", .group = "hash", .complexity = "O(N) where N is the number of fields" },
     .{ .name = "hsetex", .summary = "Set the value of a field with expiration", .since = "8.0.0", .group = "hash", .complexity = "O(N) where N is the number of fields" },
+    .{ .name = "hstrlen", .summary = "Get the length of the value of a hash field", .since = "3.2.0", .group = "hash", .complexity = "O(1)" },
+    .{ .name = "hexpire", .summary = "Set expiry for hash field using relative time to expire (seconds)", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hpexpire", .summary = "Set expiry for hash field using relative time to expire (milliseconds)", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hexpireat", .summary = "Set expiry for hash field using an absolute Unix timestamp (seconds)", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hpexpireat", .summary = "Set expiry for hash field using an absolute Unix timestamp (milliseconds)", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hpersist", .summary = "Remove the expiration of a hash field", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "httl", .summary = "Get the TTL for hash fields in seconds", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hpttl", .summary = "Get the TTL for hash fields in milliseconds", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hexpiretime", .summary = "Get the expiration Unix timestamp for hash fields in seconds", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
+    .{ .name = "hpexpiretime", .summary = "Get the expiration Unix timestamp for hash fields in milliseconds", .since = "7.4.0", .group = "hash", .complexity = "O(N) where N is the number of specified fields" },
     // Set commands
     .{ .name = "sadd", .summary = "Add one or more members to a set", .since = "1.0.0", .group = "set", .complexity = "O(N) where N is the number of elements added" },
     .{ .name = "srem", .summary = "Remove one or more members from a set", .since = "1.0.0", .group = "set", .complexity = "O(N) where N is the number of members" },
@@ -617,6 +642,9 @@ pub const COMMAND_DOCS = [_]CommandDoc{
     .{ .name = "zrevrangebylex", .summary = "Return a range of members in a sorted set, by lexicographical range, ordered from higher to lower strings", .since = "2.8.9", .group = "sorted_set", .complexity = "O(log(N)+M) where N is the number of elements and M is the number returned", .doc_flags = "deprecated", .replaced_by = "zrange with bylex rev" },
     .{ .name = "zrevrange", .summary = "Return a range of members in a sorted set, by index, with scores ordered from high to low", .since = "1.2.0", .group = "sorted_set", .complexity = "O(log(N)+M) where N is the number of elements and M is the number returned", .doc_flags = "deprecated", .replaced_by = "zrange with rev" },
     .{ .name = "zrangestore", .summary = "Store a range of members from sorted set into another key", .since = "6.2.0", .group = "sorted_set", .complexity = "O(log(N)+M) where N is the number of elements and M is the number of elements returned" },
+    .{ .name = "zremrangebyrank", .summary = "Remove all members in a sorted set within the given indexes", .since = "2.0.0", .group = "sorted_set", .complexity = "O(log(N)+M) where N is the number of elements and M is the number removed" },
+    .{ .name = "zremrangebyscore", .summary = "Remove all members in a sorted set within the given scores", .since = "1.2.0", .group = "sorted_set", .complexity = "O(log(N)+M) where N is the number of elements and M is the number removed" },
+    .{ .name = "zremrangebylex", .summary = "Remove all members in a sorted set between the given lexicographical range", .since = "2.8.9", .group = "sorted_set", .complexity = "O(log(N)+M) where N is the number of elements and M is the number removed" },
     .{ .name = "zmscore", .summary = "Get the score associated with the given members in a sorted set", .since = "6.2.0", .group = "sorted_set", .complexity = "O(N) where N is the number of members" },
     .{ .name = "zpopmin", .summary = "Remove and return members with the lowest scores in a sorted set", .since = "5.0.0", .group = "sorted_set", .complexity = "O(log(N)*M) where N is the number of elements and M is the number popped" },
     .{ .name = "zpopmax", .summary = "Remove and return members with the highest scores in a sorted set", .since = "5.0.0", .group = "sorted_set", .complexity = "O(log(N)*M) where N is the number of elements and M is the number popped" },
@@ -759,6 +787,8 @@ pub const COMMAND_DOCS = [_]CommandDoc{
     .{ .name = "georadiusbymember", .summary = "Query a sorted set representing a geospatial index to fetch members matching a given maximum distance from a member", .since = "3.2.0", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements inside the bounding box and N is the number of elements", .doc_flags = "deprecated", .replaced_by = "geosearch" },
     .{ .name = "geosearch", .summary = "Query a sorted set representing a geospatial index to fetch members inside an area of a box or a circle", .since = "6.2.0", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements in the geo index and N is the number of items being returned" },
     .{ .name = "geosearchstore", .summary = "Query a sorted set representing a geospatial index to fetch members inside an area of a box or a circle, and store the result in another key", .since = "6.2.0", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements in the geo index and N is the number of items being stored" },
+    .{ .name = "georadius_ro", .summary = "A read-only variant for GEORADIUS", .since = "3.2.10", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements inside the bounding box and N is the number of elements", .doc_flags = "deprecated", .replaced_by = "geosearch" },
+    .{ .name = "georadiusbymember_ro", .summary = "A read-only variant for GEORADIUSBYMEMBER", .since = "3.2.10", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements inside the bounding box and N is the number of elements", .doc_flags = "deprecated", .replaced_by = "geosearch" },
 };
 
 /// COMMAND DOCS [command-name [command-name ...]] — Return documentation for commands (Redis 7.0+)
