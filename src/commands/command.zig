@@ -169,6 +169,134 @@ pub const ALL_COMMANDS = [_]CommandInfo{
 
     // Command introspection
     .{ .name = "command", .arity = -1, .flags = &.{ "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+
+    // Connection commands
+    .{ .name = "hello", .arity = -1, .flags = &.{ "noscript", "loading", "stale", "fast", "no_auth", "allow_busy" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "auth", .arity = -2, .flags = &.{ "noscript", "loading", "stale", "fast", "no_auth", "allow_busy" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "echo", .arity = 2, .flags = &.{ "loading", "stale", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "quit", .arity = -1, .flags = &.{ "loading", "stale", "fast", "allow_busy" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "select", .arity = 2, .flags = &.{ "loading", "stale", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "time", .arity = 1, .flags = &.{ "random", "loading", "stale", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "lolwut", .arity = -1, .flags = &.{"fast"}, .first_key = 0, .last_key = 0, .step = 0 },
+
+    // Generic key commands
+    .{ .name = "type", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "ttl", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "pttl", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "persist", .arity = 2, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "expire", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "expireat", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "pexpire", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "pexpireat", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "expiretime", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "pexpiretime", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "keys", .arity = 2, .flags = &.{ "readonly", "sort_for_script" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "rename", .arity = 3, .flags = &.{"write"}, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "renamenx", .arity = 3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "randomkey", .arity = 1, .flags = &.{ "readonly", "random" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "touch", .arity = -2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = -1, .step = 1 },
+    .{ .name = "dump", .arity = 2, .flags = &.{ "readonly", "random" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "restore", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "copy", .arity = -3, .flags = &.{"write"}, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "move", .arity = 3, .flags = &.{"write"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "swapdb", .arity = 3, .flags = &.{ "write", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "sort_ro", .arity = -2, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "lastsave", .arity = 1, .flags = &.{ "random", "loading", "stale", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "substr", .arity = 4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "lcs", .arity = -3, .flags = &.{"readonly"}, .first_key = 1, .last_key = 2, .step = 1 },
+
+    // List commands (additional)
+    .{ .name = "lmpop", .arity = -4, .flags = &.{"write"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "blmpop", .arity = -5, .flags = &.{ "write", "noscript" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "brpoplpush", .arity = 4, .flags = &.{ "write", "denyoom", "noscript" }, .first_key = 1, .last_key = 2, .step = 1 },
+
+    // Hash commands (additional)
+    .{ .name = "hmset", .arity = -4, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hrandfield", .arity = -2, .flags = &.{ "readonly", "random" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hgetdel", .arity = -4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hgetex", .arity = -4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hsetex", .arity = -4, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+
+    // Sorted set commands (additional)
+    .{ .name = "zmpop", .arity = -4, .flags = &.{"write"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "bzmpop", .arity = -5, .flags = &.{ "write", "noscript" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "bzpopmin", .arity = -3, .flags = &.{ "write", "noscript" }, .first_key = 1, .last_key = -2, .step = 1 },
+    .{ .name = "bzpopmax", .arity = -3, .flags = &.{ "write", "noscript" }, .first_key = 1, .last_key = -2, .step = 1 },
+    .{ .name = "zdiff", .arity = -3, .flags = &.{"readonly"}, .first_key = 2, .last_key = 0, .step = 0 },
+    .{ .name = "zdiffstore", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 0, .step = 0 },
+    .{ .name = "zinter", .arity = -3, .flags = &.{"readonly"}, .first_key = 2, .last_key = 0, .step = 0 },
+    .{ .name = "zintercard", .arity = -3, .flags = &.{"readonly"}, .first_key = 2, .last_key = 0, .step = 0 },
+    .{ .name = "zinterstore", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 0, .step = 0 },
+    .{ .name = "zunion", .arity = -3, .flags = &.{"readonly"}, .first_key = 2, .last_key = 0, .step = 0 },
+    .{ .name = "zunionstore", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 0, .step = 0 },
+    .{ .name = "zlexcount", .arity = 4, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "zrangebylex", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "zrevrangebylex", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "zrangestore", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 2, .step = 1 },
+
+    // HyperLogLog commands
+    .{ .name = "pfadd", .arity = -2, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "pfcount", .arity = -2, .flags = &.{"readonly"}, .first_key = 1, .last_key = -1, .step = 1 },
+    .{ .name = "pfmerge", .arity = -2, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = -1, .step = 1 },
+
+    // Geo commands
+    .{ .name = "geoadd", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "geodist", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 2, .step = 1 },
+    .{ .name = "geohash", .arity = -3, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "geopos", .arity = -2, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "georadius", .arity = -6, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "georadiusbymember", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "geosearch", .arity = -7, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "geosearchstore", .arity = -8, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 2, .step = 1 },
+
+    // Pub/Sub commands (additional)
+    .{ .name = "psubscribe", .arity = -2, .flags = &.{ "pubsub", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "punsubscribe", .arity = -1, .flags = &.{ "pubsub", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "ssubscribe", .arity = -2, .flags = &.{ "pubsub", "noscript", "fast" }, .first_key = 1, .last_key = -1, .step = 1 },
+    .{ .name = "sunsubscribe", .arity = -1, .flags = &.{ "pubsub", "noscript", "fast" }, .first_key = 1, .last_key = -1, .step = 1 },
+    .{ .name = "spublish", .arity = 3, .flags = &.{ "pubsub", "fast", "loading", "stale" }, .first_key = 1, .last_key = 1, .step = 1 },
+
+    // Stream commands
+    .{ .name = "xadd", .arity = -5, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xdel", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xlen", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xrange", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xrevrange", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xtrim", .arity = -4, .flags = &.{"write"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xread", .arity = -4, .flags = &.{"readonly"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "xreadgroup", .arity = -7, .flags = &.{"write"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "xack", .arity = -4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xclaim", .arity = -6, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xautoclaim", .arity = -7, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xinfo", .arity = -2, .flags = &.{"readonly"}, .first_key = 2, .last_key = 2, .step = 1 },
+    .{ .name = "xgroup", .arity = -2, .flags = &.{"write"}, .first_key = 2, .last_key = 2, .step = 1 },
+    .{ .name = "xpending", .arity = -3, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xsetid", .arity = -3, .flags = &.{ "write", "denyoom", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+
+    // ACL/admin commands
+    .{ .name = "acl", .arity = -2, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "debug", .arity = -2, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "slowlog", .arity = -2, .flags = &.{ "admin", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "latency", .arity = -2, .flags = &.{ "admin", "fast", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "memory", .arity = -2, .flags = &.{"readonly"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "monitor", .arity = 1, .flags = &.{ "admin", "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "role", .arity = 1, .flags = &.{ "noscript", "loading", "stale", "fast" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "failover", .arity = -1, .flags = &.{ "admin", "noscript" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "shutdown", .arity = -1, .flags = &.{ "admin", "noscript", "loading", "stale", "allow_busy" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "slaveof", .arity = 3, .flags = &.{ "admin", "noscript", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "cluster", .arity = -2, .flags = &.{"admin"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "sentinel", .arity = -2, .flags = &.{ "admin", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "module", .arity = -2, .flags = &.{"admin"}, .first_key = 0, .last_key = 0, .step = 0 },
+
+    // Scripting commands
+    .{ .name = "eval", .arity = -3, .flags = &.{"noscript"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "evalsha", .arity = -3, .flags = &.{"noscript"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "eval_ro", .arity = -3, .flags = &.{ "noscript", "readonly" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "evalsha_ro", .arity = -3, .flags = &.{ "noscript", "readonly" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "script", .arity = -2, .flags = &.{ "noscript", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "fcall", .arity = -3, .flags = &.{"noscript"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "fcall_ro", .arity = -3, .flags = &.{ "noscript", "readonly" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "function", .arity = -2, .flags = &.{"noscript"}, .first_key = 0, .last_key = 0, .step = 0 },
 };
 
 /// COMMAND - Return all commands
