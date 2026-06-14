@@ -684,6 +684,25 @@ pub fn buildMessageFrame(allocator: std.mem.Allocator, channel: []const u8, mess
     return buf.toOwnedSlice(allocator);
 }
 
+/// Build a PING response frame for subscription mode.
+/// RESP2 format (version=2): `*3\r\n$4\r\npong\r\n$<len>\r\n<message>\r\n`
+/// RESP3 format (version=3): `>2\r\n$4\r\npong\r\n$<len>\r\n<message>\r\n`
+/// Caller owns the returned slice.
+pub fn buildPingFrame(allocator: std.mem.Allocator, message: []const u8, version: u8) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    if (version == 3) {
+        try buf.appendSlice(allocator, ">2\r\n");
+    } else {
+        try buf.appendSlice(allocator, "*3\r\n");
+    }
+    try buf.appendSlice(allocator, "$4\r\npong\r\n");
+    try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ message.len, message });
+
+    return buf.toOwnedSlice(allocator);
+}
+
 /// Build a subscribe confirmation frame.
 /// RESP2 format (version=2):
 /// ```
@@ -1782,4 +1801,36 @@ test "pubsub - publish respects subscriber RESP2 version" {
     try std.testing.expectEqual(@as(usize, 1), pending.len);
     // Should be RESP2 array format
     try std.testing.expect(std.mem.startsWith(u8, pending[0], "*3\r\n"));
+}
+
+test "pubsub - buildPingFrame RESP2 no message" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPingFrame(allocator, "", 2);
+    defer allocator.free(frame);
+
+    try std.testing.expectEqualStrings("*3\r\n$4\r\npong\r\n$0\r\n\r\n", frame);
+}
+
+test "pubsub - buildPingFrame RESP2 with message" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPingFrame(allocator, "hello", 2);
+    defer allocator.free(frame);
+
+    try std.testing.expectEqualStrings("*3\r\n$4\r\npong\r\n$5\r\nhello\r\n", frame);
+}
+
+test "pubsub - buildPingFrame RESP3 no message" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPingFrame(allocator, "", 3);
+    defer allocator.free(frame);
+
+    try std.testing.expectEqualStrings(">2\r\n$4\r\npong\r\n$0\r\n\r\n", frame);
+}
+
+test "pubsub - buildPingFrame RESP3 with message" {
+    const allocator = std.testing.allocator;
+    const frame = try buildPingFrame(allocator, "world", 3);
+    defer allocator.free(frame);
+
+    try std.testing.expectEqualStrings(">2\r\n$4\r\npong\r\n$5\r\nworld\r\n", frame);
 }

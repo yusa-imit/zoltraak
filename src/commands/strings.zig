@@ -683,6 +683,38 @@ pub fn executeCommand(
         }
     }
 
+    // ── Subscription mode guard ───────────────────────────────────────────────
+    // When a client has active subscriptions, only pub/sub-related commands and
+    // PING/RESET/QUIT are allowed. All other commands return an error matching Redis behavior.
+    {
+        const total_subs = ps.channelCount(subscriber_id) +
+            ps.patternCount(subscriber_id) +
+            ps.shardedChannelCount(subscriber_id);
+        if (total_subs > 0) {
+            const allowed_in_sub_mode =
+                std.mem.eql(u8, cmd_upper, "SUBSCRIBE") or
+                std.mem.eql(u8, cmd_upper, "UNSUBSCRIBE") or
+                std.mem.eql(u8, cmd_upper, "PSUBSCRIBE") or
+                std.mem.eql(u8, cmd_upper, "PUNSUBSCRIBE") or
+                std.mem.eql(u8, cmd_upper, "SSUBSCRIBE") or
+                std.mem.eql(u8, cmd_upper, "SUNSUBSCRIBE") or
+                std.mem.eql(u8, cmd_upper, "PING") or
+                std.mem.eql(u8, cmd_upper, "RESET") or
+                std.mem.eql(u8, cmd_upper, "QUIT");
+            if (!allowed_in_sub_mode) {
+                var w = Writer.init(allocator);
+                defer w.deinit();
+                var buf: [192]u8 = undefined;
+                const msg = std.fmt.bufPrint(
+                    &buf,
+                    "ERR Can't call '{s}' in subscription mode",
+                    .{cmd_name},
+                ) catch "ERR Command not allowed in subscription mode";
+                return w.writeError(msg);
+            }
+        }
+    }
+
     // ── Transaction command handling ──────────────────────────────────────────
     // MULTI, EXEC, DISCARD, WATCH, UNWATCH are always handled immediately,
     // even inside a MULTI block.
@@ -833,6 +865,18 @@ pub fn executeCommand(
         }
         // String commands
         else if (std.mem.eql(u8, cmd_upper, "PING")) {
+            // In subscription mode, PING returns a push-style 3-element array, not +PONG.
+            const sub_count = ps.channelCount(subscriber_id) +
+                ps.patternCount(subscriber_id) +
+                ps.shardedChannelCount(subscriber_id);
+            if (sub_count > 0) {
+                const resp_ver: u8 = if (getClientProtocol(client_registry, client_id) == RespProtocol.RESP3) 3 else 2;
+                const msg: []const u8 = if (array.len >= 2) switch (array[1]) {
+                    .bulk_string => |s| s,
+                    else => "",
+                } else "";
+                break :blk try pubsub_mod.buildPingFrame(allocator, msg, resp_ver);
+            }
             break :blk try cmdPing(allocator, array);
         } else if (std.mem.eql(u8, cmd_upper, "SET")) {
             const selected_db = client_registry.getSelectedDb(client_id);

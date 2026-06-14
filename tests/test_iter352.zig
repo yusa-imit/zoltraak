@@ -84,17 +84,19 @@ test "iter352 - CLIENT LIST shows sub=1 after SUBSCRIBE" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9002", 11, "127.0.0.1:6379");
+    const sub_client_id = try registry.registerClient("127.0.0.1:9002", 11, "127.0.0.1:6379");
+    // Use a separate monitor client to call CLIENT LIST (subscribed client can't run non-pub/sub commands)
+    const monitor_id = try registry.registerClient("127.0.0.1:9002b", 110, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    // Subscribe to a channel
-    const sub_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "SUBSCRIBE", "news" });
+    // Subscribe to a channel using subscriber_id=11 for the subscribing client
+    const sub_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 11, &.{ "SUBSCRIBE", "news" });
     defer allocator.free(sub_result);
 
-    // Now CLIENT LIST should show sub=1
-    const list_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "CLIENT", "LIST" });
+    // Monitor client (subscriber_id=110, no subscriptions) calls CLIENT LIST
+    const list_result = try execCmd(allocator, storage, &registry, monitor_id, &ps, 110, &.{ "CLIENT", "LIST" });
     defer allocator.free(list_result);
 
     try testing.expect(std.mem.indexOf(u8, list_result, "sub=1") != null);
@@ -110,16 +112,18 @@ test "iter352 - CLIENT LIST shows psub=1 after PSUBSCRIBE" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9003", 12, "127.0.0.1:6379");
+    const sub_client_id = try registry.registerClient("127.0.0.1:9003", 12, "127.0.0.1:6379");
+    const monitor_id = try registry.registerClient("127.0.0.1:9003b", 120, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    // Subscribe to a pattern
-    const sub_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "PSUBSCRIBE", "news.*" });
+    // Subscribe to a pattern using subscriber_id=12
+    const sub_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 12, &.{ "PSUBSCRIBE", "news.*" });
     defer allocator.free(sub_result);
 
-    const list_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "CLIENT", "LIST" });
+    // Monitor client (no subscriptions) calls CLIENT LIST
+    const list_result = try execCmd(allocator, storage, &registry, monitor_id, &ps, 120, &.{ "CLIENT", "LIST" });
     defer allocator.free(list_result);
 
     try testing.expect(std.mem.indexOf(u8, list_result, "sub=0") != null);
@@ -186,30 +190,31 @@ test "iter352 - CLIENT LIST sub count resets after UNSUBSCRIBE" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9008", 17, "127.0.0.1:6379");
+    const sub_client_id = try registry.registerClient("127.0.0.1:9008", 17, "127.0.0.1:6379");
+    const monitor_id = try registry.registerClient("127.0.0.1:9008b", 170, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    // Subscribe
-    const sub_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "SUBSCRIBE", "chan1" });
+    // Subscribe (subscriber_id=17)
+    const sub_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 17, &.{ "SUBSCRIBE", "chan1" });
     defer allocator.free(sub_result);
 
-    // Verify subscribed
+    // Verify subscribed — use monitor client (subscriber_id=170, no subscriptions)
     {
-        const list_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "CLIENT", "LIST" });
+        const list_result = try execCmd(allocator, storage, &registry, monitor_id, &ps, 170, &.{ "CLIENT", "LIST" });
         defer allocator.free(list_result);
         try testing.expect(std.mem.indexOf(u8, list_result, "sub=1") != null);
         try testing.expect(std.mem.indexOf(u8, list_result, "type=pubsub") != null);
     }
 
-    // Unsubscribe
-    const unsub_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "UNSUBSCRIBE", "chan1" });
+    // Unsubscribe (subscriber_id=17, allowed in subscription mode)
+    const unsub_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 17, &.{ "UNSUBSCRIBE", "chan1" });
     defer allocator.free(unsub_result);
 
-    // After unsubscribing, sub should be 0 and type normal
+    // After unsubscribing, sub should be 0 — now sub_client_id has no subscriptions, can use directly
     {
-        const list_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "CLIENT", "LIST" });
+        const list_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 17, &.{ "CLIENT", "LIST" });
         defer allocator.free(list_result);
         try testing.expect(std.mem.indexOf(u8, list_result, "sub=0") != null);
         try testing.expect(std.mem.indexOf(u8, list_result, "type=normal") != null);
@@ -223,21 +228,28 @@ test "iter352 - CLIENT INFO shows real sub counts" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9009", 18, "127.0.0.1:6379");
+    const sub_client_id = try registry.registerClient("127.0.0.1:9009", 18, "127.0.0.1:6379");
+    const monitor_id = try registry.registerClient("127.0.0.1:9009b", 180, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    // Subscribe to 2 channels at once
-    const sub1 = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "SUBSCRIBE", "ch1", "ch2" });
+    // Subscribe to 2 channels at once using subscriber_id=18
+    const sub1 = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 18, &.{ "SUBSCRIBE", "ch1", "ch2" });
     defer allocator.free(sub1);
 
-    const info_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "CLIENT", "INFO" });
-    defer allocator.free(info_result);
+    // Verify subscription counts via PubSub state
+    try testing.expectEqual(@as(usize, 2), ps.channelCount(18));
+    try testing.expectEqual(@as(usize, 0), ps.patternCount(18));
 
-    try testing.expect(std.mem.indexOf(u8, info_result, "sub=2") != null);
-    try testing.expect(std.mem.indexOf(u8, info_result, "psub=0") != null);
-    try testing.expect(std.mem.indexOf(u8, info_result, "type=pubsub") != null);
+    // Use monitor client (subscriber_id=180, no subscriptions) to call CLIENT LIST
+    // which shows all clients including the subscribed one
+    const list_result = try execCmd(allocator, storage, &registry, monitor_id, &ps, 180, &.{ "CLIENT", "LIST" });
+    defer allocator.free(list_result);
+
+    try testing.expect(std.mem.indexOf(u8, list_result, "sub=2") != null);
+    try testing.expect(std.mem.indexOf(u8, list_result, "psub=0") != null);
+    try testing.expect(std.mem.indexOf(u8, list_result, "type=pubsub") != null);
 }
 
 test "iter352 - CLIENT LIST multiple subscriptions show correct counts" {
@@ -247,18 +259,21 @@ test "iter352 - CLIENT LIST multiple subscriptions show correct counts" {
 
     var registry = ClientRegistry.init(allocator);
     defer registry.deinit();
-    const client_id = try registry.registerClient("127.0.0.1:9010", 19, "127.0.0.1:6379");
+    const sub_client_id = try registry.registerClient("127.0.0.1:9010", 19, "127.0.0.1:6379");
+    const monitor_id = try registry.registerClient("127.0.0.1:9010b", 190, "127.0.0.1:6379");
 
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    // Subscribe to channels and patterns
-    const sub_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "SUBSCRIBE", "ch1", "ch2", "ch3" });
+    // Subscribe to channels using subscriber_id=19
+    const sub_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 19, &.{ "SUBSCRIBE", "ch1", "ch2", "ch3" });
     defer allocator.free(sub_result);
-    const psub_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "PSUBSCRIBE", "p1*", "p2*" });
+    // PSUBSCRIBE is also allowed in subscription mode
+    const psub_result = try execCmd(allocator, storage, &registry, sub_client_id, &ps, 19, &.{ "PSUBSCRIBE", "p1*", "p2*" });
     defer allocator.free(psub_result);
 
-    const list_result = try execCmd(allocator, storage, &registry, client_id, &ps, 1, &.{ "CLIENT", "LIST" });
+    // Monitor client (subscriber_id=190, no subscriptions) calls CLIENT LIST
+    const list_result = try execCmd(allocator, storage, &registry, monitor_id, &ps, 190, &.{ "CLIENT", "LIST" });
     defer allocator.free(list_result);
 
     try testing.expect(std.mem.indexOf(u8, list_result, "sub=3") != null);

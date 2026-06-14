@@ -811,6 +811,25 @@ pub fn build(b: *std.Build) void {
     const run_iter356_tests = b.addRunArtifact(iter356_tests);
     test_step.dependOn(&run_iter356_tests.step);
 
+    // Iteration 358: Subscription Mode Enforcement + PING in Subscription Mode
+    const iter358_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter358.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter358_tests.linkSystemLibrary("luajit-5.1");
+    iter358_tests.linkLibC();
+    iter358_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter358_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter358_tests = b.addRunArtifact(iter358_tests);
+    test_step.dependOn(&run_iter358_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
