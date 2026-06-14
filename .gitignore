@@ -5,6 +5,11 @@ check_existing
 main
 appendonly.aof
 dump.rdb
+appendonlydir/
+streams_advanced
+test_output.log
+test_results.log
+zoltraak.conf
 
 # Claude Code
 .claude/scratchpad.md
