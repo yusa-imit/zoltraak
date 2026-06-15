@@ -182,7 +182,7 @@ test "iter359 - COMMAND INFO zremrangebyrank/score/lex return non-nil entries" {
     try testing.expect(std.mem.indexOf(u8, lex, "zremrangebylex") != null);
 }
 
-test "iter359 - COMMAND COUNT increased to 246" {
+test "iter359 - COMMAND COUNT increased to 269" {
     const allocator = testing.allocator;
     var s = try setup(allocator);
     defer s.storage.deinit();
@@ -191,7 +191,7 @@ test "iter359 - COMMAND COUNT increased to 246" {
 
     const result = try execCmd(allocator, s.storage, &s.registry, s.client_id, &s.ps, &.{"COMMAND", "COUNT"});
     defer allocator.free(result);
-    try testing.expectEqualStrings(":246\r\n", result);
+    try testing.expectEqualStrings(":269\r\n", result);
 }
 
 test "iter359 - ZREMRANGEBYRANK actually removes elements" {

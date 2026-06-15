@@ -312,6 +312,37 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "fcall", .arity = -3, .flags = &.{"noscript"}, .first_key = 0, .last_key = 0, .step = 0 },
     .{ .name = "fcall_ro", .arity = -3, .flags = &.{ "noscript", "readonly" }, .first_key = 0, .last_key = 0, .step = 0 },
     .{ .name = "function", .arity = -2, .flags = &.{"noscript"}, .first_key = 0, .last_key = 0, .step = 0 },
+
+    // Cluster commands (additional)
+    .{ .name = "asking", .arity = 1, .flags = &.{ "fast", "allow_busy" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "migrate", .arity = -6, .flags = &.{ "write", "admin" }, .first_key = 3, .last_key = 3, .step = 1 },
+    .{ .name = "readonly", .arity = 1, .flags = &.{"fast"}, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "readwrite", .arity = 1, .flags = &.{"fast"}, .first_key = 0, .last_key = 0, .step = 0 },
+
+    // Generic key commands (Redis 8.x extensions)
+    .{ .name = "delex", .arity = -2, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "digest", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "hotkeys", .arity = -2, .flags = &.{ "admin", "loading", "stale" }, .first_key = 0, .last_key = 0, .step = 0 },
+    .{ .name = "msetex", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 2, .last_key = -1, .step = 2 },
+
+    // Vector Set commands (Redis 8.0+)
+    .{ .name = "vadd", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vcard", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vdim", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vemb", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vgetattr", .arity = 4, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vinfo", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vismember", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vlinks", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vrandmember", .arity = -2, .flags = &.{ "readonly", "random" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vrange", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vrem", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "vsim", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
+
+    // Stream commands (Redis 8.x)
+    .{ .name = "xackdel", .arity = -5, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xcfgset", .arity = -3, .flags = &.{"write"}, .first_key = 1, .last_key = 1, .step = 1 },
+    .{ .name = "xdelex", .arity = -4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
 };
 
 /// COMMAND - Return all commands
@@ -789,6 +820,33 @@ pub const COMMAND_DOCS = [_]CommandDoc{
     .{ .name = "geosearchstore", .summary = "Query a sorted set representing a geospatial index to fetch members inside an area of a box or a circle, and store the result in another key", .since = "6.2.0", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements in the geo index and N is the number of items being stored" },
     .{ .name = "georadius_ro", .summary = "A read-only variant for GEORADIUS", .since = "3.2.10", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements inside the bounding box and N is the number of elements", .doc_flags = "deprecated", .replaced_by = "geosearch" },
     .{ .name = "georadiusbymember_ro", .summary = "A read-only variant for GEORADIUSBYMEMBER", .since = "3.2.10", .group = "geo", .complexity = "O(N+log(M)) where M is the number of elements inside the bounding box and N is the number of elements", .doc_flags = "deprecated", .replaced_by = "geosearch" },
+    // Cluster commands (additional)
+    .{ .name = "asking", .summary = "Sent by cluster clients after an ASK redirect", .since = "3.0.0", .group = "cluster", .complexity = "O(1)" },
+    .{ .name = "migrate", .summary = "Atomically transfer a key from a Redis instance to another one", .since = "2.6.0", .group = "generic", .complexity = "O(N) serialization complexity per key transferred" },
+    .{ .name = "readonly", .summary = "Enables read queries for a connection to a cluster replica node", .since = "3.0.0", .group = "cluster", .complexity = "O(1)" },
+    .{ .name = "readwrite", .summary = "Resets the connection cluster node to default read/write mode", .since = "3.0.0", .group = "cluster", .complexity = "O(1)" },
+    // Generic key commands (Redis 8.x)
+    .{ .name = "delex", .summary = "Conditionally delete a key based on value or digest comparison", .since = "8.4.0", .group = "generic", .complexity = "O(1) for IFEQ/IFNE, O(N) for IFDEQ/IFDNE" },
+    .{ .name = "digest", .summary = "Get the hash digest for the value stored in a key", .since = "8.4.0", .group = "generic", .complexity = "O(N) where N is the size of the value" },
+    .{ .name = "hotkeys", .summary = "Track and retrieve the hottest keys accessed by the server", .since = "8.0.0", .group = "server", .complexity = "O(N) for GET where N is the number of hot keys tracked" },
+    .{ .name = "msetex", .summary = "Set multiple keys with a shared expiration time", .since = "8.0.0", .group = "string", .complexity = "O(N) where N is the number of keys to set" },
+    // Vector Set commands (Redis 8.0+)
+    .{ .name = "vadd", .summary = "Add a vector element to a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(log(N))" },
+    .{ .name = "vcard", .summary = "Return the number of elements in a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
+    .{ .name = "vdim", .summary = "Return the dimension of vectors in a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
+    .{ .name = "vemb", .summary = "Return the vector embedding for a given element", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
+    .{ .name = "vgetattr", .summary = "Return an attribute of a vector set element", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
+    .{ .name = "vinfo", .summary = "Return information about a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
+    .{ .name = "vismember", .summary = "Determine if an element is a member of a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
+    .{ .name = "vlinks", .summary = "Return the HNSW graph neighbors for a given element", .since = "8.0.0", .group = "vector_set", .complexity = "O(M) where M is the number of neighbors" },
+    .{ .name = "vrandmember", .summary = "Return one or more random elements from a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(N) where N is the number of elements returned" },
+    .{ .name = "vrange", .summary = "Return elements from a vector set sorted by similarity", .since = "8.0.0", .group = "vector_set", .complexity = "O(N*log(N))" },
+    .{ .name = "vrem", .summary = "Remove one or more elements from a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(M*log(N)) where M is the number of elements removed" },
+    .{ .name = "vsim", .summary = "Return elements similar to a given vector or element", .since = "8.0.0", .group = "vector_set", .complexity = "O(log(N))" },
+    // Stream commands (Redis 8.x)
+    .{ .name = "xackdel", .summary = "Acknowledge and delete entries from a stream consumer group", .since = "8.2.0", .group = "stream", .complexity = "O(M) where M is the number of IDs being acknowledged and deleted" },
+    .{ .name = "xcfgset", .summary = "Set configuration parameters for a stream", .since = "8.6.0", .group = "stream", .complexity = "O(1)" },
+    .{ .name = "xdelex", .summary = "Delete stream entries with consumer group reference handling", .since = "8.2.0", .group = "stream", .complexity = "O(M) where M is the number of IDs deleted" },
 };
 
 /// COMMAND DOCS [command-name [command-name ...]] — Return documentation for commands (Redis 7.0+)
