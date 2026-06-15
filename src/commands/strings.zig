@@ -363,6 +363,7 @@ fn notifyKeyspaceEvent(
     // Get notification flags from config
     const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
     const config_str = config_value orelse return;
+    defer allocator.free(config_str);
 
     const flags = notifications_mod.parseNotificationFlags(config_str);
 
@@ -912,14 +913,17 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "STRLEN")) {
             break :blk try cmdStrlen(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GETSET")) {
-            break :blk try cmdGetset(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdGetset(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "GETDEL")) {
-            break :blk try cmdGetdel(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdGetdel(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "GETEX")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try cmdGetex(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "SETNX")) {
-            break :blk try cmdSetnx(allocator, storage, array);
+            const selected_db = client_registry.getSelectedDb(client_id);
+            break :blk try cmdSetnx(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "SETEX")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try cmdSetex(allocator, storage, array, ps, selected_db);
@@ -4008,7 +4012,7 @@ fn cmdStrlen(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 ///
 /// Sets key to value and returns the old value.
 /// Functionally equivalent to: SET key value GET
-fn cmdGetset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdGetset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -4039,12 +4043,15 @@ fn cmdGetset(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
     try storage.set(key, value, null);
 
+    // Fire "set" keyspace notification (GETSET always overwrites)
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
+
     return w.writeBulkString(old_copy);
 }
 
 /// GETDEL key
 /// Gets the value and deletes the key.
-fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -4062,6 +4069,11 @@ fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         else => return err,
     };
     defer if (val) |v| allocator.free(v);
+
+    // Fire "del" keyspace notification only when the key actually existed and was deleted
+    if (val != null) {
+        notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, "del");
+    }
 
     return w.writeBulkString(val);
 }
@@ -4140,7 +4152,7 @@ fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
 ///
 /// Set key to value only if key does not exist. Returns 1 if set, 0 if not.
 /// Functionally equivalent to: SET key value NX
-fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -4163,6 +4175,8 @@ fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
     }
 
     try storage.set(key, value, null);
+    // Fire "set" notification only when key was actually set
+    notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
     return w.writeInteger(1);
 }
 
@@ -6477,6 +6491,9 @@ test "commands - GETSET returns old value" {
     const storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     try storage.set("key", "old", null);
 
     const args = [_]RespValue{
@@ -6484,7 +6501,7 @@ test "commands - GETSET returns old value" {
         RespValue{ .bulk_string = "key" },
         RespValue{ .bulk_string = "new" },
     };
-    const result = try cmdGetset(allocator, storage, &args);
+    const result = try cmdGetset(allocator, storage, &args, &ps, 0);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("$3\r\nold\r\n", result);
 
@@ -6496,13 +6513,16 @@ test "commands - GETDEL returns value and removes key" {
     const storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     try storage.set("key", "value", null);
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "GETDEL" },
         RespValue{ .bulk_string = "key" },
     };
-    const result = try cmdGetdel(allocator, storage, &args);
+    const result = try cmdGetdel(allocator, storage, &args, &ps, 0);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("$5\r\nvalue\r\n", result);
 
@@ -6514,11 +6534,14 @@ test "commands - GETDEL on missing key returns null" {
     const storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "GETDEL" },
         RespValue{ .bulk_string = "missing" },
     };
-    const result = try cmdGetdel(allocator, storage, &args);
+    const result = try cmdGetdel(allocator, storage, &args, &ps, 0);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("$-1\r\n", result);
 }
@@ -6528,16 +6551,19 @@ test "commands - SETNX sets only when key missing" {
     const storage = try Storage.init(allocator);
     defer storage.deinit();
 
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
     const args = [_]RespValue{
         RespValue{ .bulk_string = "SETNX" },
         RespValue{ .bulk_string = "key" },
         RespValue{ .bulk_string = "value" },
     };
-    const r1 = try cmdSetnx(allocator, storage, &args);
+    const r1 = try cmdSetnx(allocator, storage, &args, &ps, 0);
     defer allocator.free(r1);
     try std.testing.expectEqualStrings(":1\r\n", r1);
 
-    const r2 = try cmdSetnx(allocator, storage, &args);
+    const r2 = try cmdSetnx(allocator, storage, &args, &ps, 0);
     defer allocator.free(r2);
     try std.testing.expectEqualStrings(":0\r\n", r2);
 }
