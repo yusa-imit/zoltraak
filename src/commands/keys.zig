@@ -1768,6 +1768,16 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             return w.writeNull();
         };
         // Read config thresholds (fall back to Redis 8.x defaults on error)
+        const stream_node_max_entries: usize = blk: {
+            var cv = storage.config.get("stream-node-max-entries") catch break :blk 100;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 100 }));
+        };
+        const stream_node_max_bytes: usize = blk: {
+            var cv = storage.config.get("stream-node-max-bytes") catch break :blk 4096;
+            defer cv.deinit(allocator);
+            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 4096 }));
+        };
         const hash_max_entries: usize = blk: {
             var cv = storage.config.get("hash-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
@@ -1870,7 +1880,15 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 else
                     "skiplist";
             },
-            .stream => "stream",
+            .stream => blk: {
+                // Redis 7.0+: "listpack" when all entries fit in one radix-tree node,
+                // "stream" when multiple nodes are needed (entries span > one listpack).
+                const entry_count = (storage.xlen(key) catch null) orelse 0;
+                const field_bytes = storage.getStreamTotalFieldBytes(key) orelse 0;
+                const use_listpack = (stream_node_max_entries == 0 or entry_count <= stream_node_max_entries) and
+                    (stream_node_max_bytes == 0 or field_bytes <= stream_node_max_bytes);
+                break :blk if (use_listpack) "listpack" else "stream";
+            },
             // HyperLogLog is stored as a string internally in Redis; dense format is "raw"
             .hyperloglog => "raw",
             .json => "json",
@@ -3704,4 +3722,71 @@ test "ZSCAN cursor is returned as bulk string (Redis protocol compliance)" {
     // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
     try std.testing.expect(std.mem.startsWith(u8, response, "*2\r\n$"));
     try std.testing.expect(!std.mem.startsWith(u8, response, "*2\r\n:"));
+}
+
+test "OBJECT ENCODING - small stream returns listpack (Redis 7.0+)" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // 5 entries with short fields — well within 100-entry / 4096-byte defaults.
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        _ = try storage.xadd("small_stream", "*", &[_][]const u8{ "f", "v" }, null, .{});
+    }
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "small_stream" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$8\r\nlistpack\r\n", result);
+}
+
+test "OBJECT ENCODING - stream exceeding entry count uses stream encoding" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Lower the threshold so we can test without adding 101 entries.
+    try storage.config.setConfigValue("stream-node-max-entries", .{ .int = 3 });
+    defer storage.config.setConfigValue("stream-node-max-entries", .{ .int = 100 }) catch {};
+
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        _ = try storage.xadd("big_stream", "*", &[_][]const u8{ "f", "v" }, null, .{});
+    }
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "big_stream" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$6\r\nstream\r\n", result);
+}
+
+test "OBJECT ENCODING - stream exceeding byte limit uses stream encoding" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    // Lower byte limit so a single large-field entry triggers "stream" encoding.
+    try storage.config.setConfigValue("stream-node-max-bytes", .{ .int = 10 });
+    defer storage.config.setConfigValue("stream-node-max-bytes", .{ .int = 4096 }) catch {};
+
+    // One entry with a 20-byte field value: exceeds 10-byte limit.
+    _ = try storage.xadd("byte_stream", "*", &[_][]const u8{ "field", "v" ** 20 }, null, .{});
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "OBJECT" },
+        .{ .bulk_string = "ENCODING" },
+        .{ .bulk_string = "byte_stream" },
+    };
+    const result = try cmdObject(allocator, &storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("$6\r\nstream\r\n", result);
 }

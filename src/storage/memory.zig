@@ -2039,6 +2039,30 @@ pub const Storage = struct {
         return total;
     }
 
+    /// Return approximate byte size of all stream entries' field+value strings.
+    /// Used by OBJECT ENCODING to determine listpack vs stream encoding threshold.
+    /// Returns null if key doesn't exist, is expired, or is not a stream.
+    pub fn getStreamTotalFieldBytes(self: *Storage, key: []const u8) ?usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.data.getEntry(key) orelse return null;
+        if (entry.value_ptr.isExpired(getCurrentTimestamp())) return null;
+
+        const sv = switch (entry.value_ptr.*) {
+            .stream => |*s| s,
+            else => return null,
+        };
+
+        var total: usize = 0;
+        for (sv.entries.items) |e| {
+            for (e.fields.items) |field| {
+                total += field.len;
+            }
+        }
+        return total;
+    }
+
     /// Return the modification version counter for a key (OBJECT VERSION).
     /// Starts at 1 on first write, increments on each subsequent write.
     /// Returns null if key does not exist or version is not tracked.
