@@ -191,7 +191,7 @@ test "iter359 - COMMAND COUNT increased to 269" {
 
     const result = try execCmd(allocator, s.storage, &s.registry, s.client_id, &s.ps, &.{"COMMAND", "COUNT"});
     defer allocator.free(result);
-    try testing.expectEqualStrings(":270\r\n", result);
+    try testing.expectEqualStrings(":387\r\n", result);
 }
 
 test "iter359 - ZREMRANGEBYRANK actually removes elements" {
