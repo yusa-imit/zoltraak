@@ -326,17 +326,22 @@ pub const ALL_COMMANDS = [_]CommandInfo{
     .{ .name = "msetex", .arity = -4, .flags = &.{ "write", "denyoom" }, .first_key = 2, .last_key = -1, .step = 2 },
 
     // Vector Set commands (Redis 8.0+)
-    .{ .name = "vadd", .arity = -5, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
+    // VADD key [REDUCE dim] (VALUES num | FP32) values... element [opts] — min 6 tokens
+    .{ .name = "vadd", .arity = -6, .flags = &.{ "write", "denyoom" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vcard", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vdim", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vemb", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
-    .{ .name = "vgetattr", .arity = 4, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    // VGETATTR key member — Redis 8.0: 3 tokens total
+    .{ .name = "vgetattr", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vinfo", .arity = 2, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vismember", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vlinks", .arity = 3, .flags = &.{ "readonly", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vrandmember", .arity = -2, .flags = &.{ "readonly", "random" }, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vrange", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
     .{ .name = "vrem", .arity = -3, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    // VSETATTR key member blob — 4 tokens total
+    .{ .name = "vsetattr", .arity = 4, .flags = &.{ "write", "fast" }, .first_key = 1, .last_key = 1, .step = 1 },
+    // VSIM key (ELE element | VALUES num vals...) [opts] — min 4 tokens
     .{ .name = "vsim", .arity = -4, .flags = &.{"readonly"}, .first_key = 1, .last_key = 1, .step = 1 },
 
     // Stream commands (Redis 8.x)
@@ -842,6 +847,7 @@ pub const COMMAND_DOCS = [_]CommandDoc{
     .{ .name = "vrandmember", .summary = "Return one or more random elements from a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(N) where N is the number of elements returned" },
     .{ .name = "vrange", .summary = "Return elements from a vector set sorted by similarity", .since = "8.0.0", .group = "vector_set", .complexity = "O(N*log(N))" },
     .{ .name = "vrem", .summary = "Remove one or more elements from a vector set", .since = "8.0.0", .group = "vector_set", .complexity = "O(M*log(N)) where M is the number of elements removed" },
+    .{ .name = "vsetattr", .summary = "Set the attribute blob for a vector set element", .since = "8.0.0", .group = "vector_set", .complexity = "O(1)" },
     .{ .name = "vsim", .summary = "Return elements similar to a given vector or element", .since = "8.0.0", .group = "vector_set", .complexity = "O(log(N))" },
     // Stream commands (Redis 8.x)
     .{ .name = "xackdel", .summary = "Acknowledge and delete entries from a stream consumer group", .since = "8.2.0", .group = "stream", .complexity = "O(M) where M is the number of IDs being acknowledged and deleted" },

@@ -87,7 +87,7 @@ test "iter362 - COMMAND COUNT increased to 269" {
 
     const result = try execCmd(allocator, s.storage, &s.registry, s.client_id, &s.ps, &.{ "COMMAND", "COUNT" });
     defer allocator.free(result);
-    try testing.expectEqualStrings(":269\r\n", result);
+    try testing.expectEqualStrings(":270\r\n", result);
 }
 
 test "iter362 - COMMAND INFO for cluster commands returns valid info" {
@@ -168,7 +168,7 @@ test "iter362 - COMMAND INFO asking has correct arity 1" {
     try testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);
 }
 
-test "iter362 - COMMAND INFO vadd has correct arity -5" {
+test "iter362 - COMMAND INFO vadd has correct arity -6" {
     const allocator = testing.allocator;
     var s = try setup(allocator);
     defer s.storage.deinit();
@@ -177,7 +177,7 @@ test "iter362 - COMMAND INFO vadd has correct arity -5" {
 
     const result = try execCmd(allocator, s.storage, &s.registry, s.client_id, &s.ps, &.{ "COMMAND", "INFO", "vadd" });
     defer allocator.free(result);
-    try testing.expect(std.mem.indexOf(u8, result, ":-5\r\n") != null);
+    try testing.expect(std.mem.indexOf(u8, result, ":-6\r\n") != null);
 }
 
 test "iter362 - COMMAND INFO xackdel has correct arity -5" {

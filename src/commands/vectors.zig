@@ -8,322 +8,667 @@ const DistanceMetric = @import("../storage/vector.zig").DistanceMetric;
 const QuantizationType = @import("../storage/vector.zig").QuantizationType;
 const RespValue = @import("../protocol/parser.zig").RespValue;
 
-/// VADD key dimensionality metric element [element ...]
-/// Add one or more vectors to a vector set.
-/// Each element is: <id> <embedding_values...>
-/// Returns the number of newly added vectors (existing vectors are updated, not counted).
+/// VADD key [REDUCE dim] (VALUES num | FP32) f1..fn element [SETATTR blob] [EF ef] [M m] [CAS] [NOQUANT|Q8|BIN]
+/// Redis 8.0 Vector Set add. One element per call.
+/// Returns 1 if newly added, 0 if updated.
 pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
     if (args.len < 5) return RespValue{ .error_string = "ERR wrong number of arguments for 'vadd' command" };
 
     const key = args[1];
-    const dim_str = args[2];
-    const metric_str = args[3];
+    var idx: usize = 2;
 
-    // Parse dimensionality
-    const dimensionality = std.fmt.parseInt(usize, dim_str, 10) catch {
-        return RespValue{ .error_string = "ERR invalid dimensionality" };
-    };
-    if (dimensionality == 0) {
-        return RespValue{ .error_string = "ERR dimensionality must be positive" };
+    // Optional: REDUCE dim (we accept but ignore — compression not yet implemented)
+    if (idx < args.len and std.ascii.eqlIgnoreCase(args[idx], "REDUCE")) {
+        idx += 1;
+        if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
+        _ = std.fmt.parseInt(usize, args[idx], 10) catch {
+            return RespValue{ .error_string = "ERR invalid REDUCE dim value" };
+        };
+        idx += 1;
     }
 
-    // Parse distance metric
-    const metric = DistanceMetric.fromString(metric_str) catch {
-        return RespValue{ .error_string = "ERR invalid distance metric, must be L2, IP, or COSINE" };
-    };
+    if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
 
-    // Each element requires: id + dimensionality values
-    const element_size = 1 + dimensionality;
-    const elements_data = args[4..];
-    if (elements_data.len % element_size != 0) {
-        return RespValue{ .error_string = "ERR syntax error, element format is: <id> <f32> [<f32> ...]" };
-    }
+    // Parse vector input: VALUES num f1..fn
+    var embedding: []f32 = undefined;
+    var embedding_allocated = false;
 
-    const num_elements = elements_data.len / element_size;
-    if (num_elements == 0) {
-        return RespValue{ .error_string = "ERR at least one vector required" };
-    }
+    if (std.ascii.eqlIgnoreCase(args[idx], "VALUES")) {
+        idx += 1;
+        if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
+        const num = std.fmt.parseInt(usize, args[idx], 10) catch {
+            return RespValue{ .error_string = "ERR invalid VALUES count" };
+        };
+        if (num == 0) return RespValue{ .error_string = "ERR VALUES count must be positive" };
+        idx += 1;
+        if (idx + num > args.len) return RespValue{ .error_string = "ERR not enough vector values" };
 
-    // Get or create the vector set
-    const result = try storage.data.getOrPut(key);
-    if (!result.found_existing) {
-        // Create new vector set
-        const key_copy = try allocator.dupe(u8, key);
-        errdefer allocator.free(key_copy);
-
-        var new_vs = try VectorSetValue.init(allocator, dimensionality, metric);
-        errdefer new_vs.deinit();
-
-        result.key_ptr.* = key_copy;
-        result.value_ptr.* = Value{ .vector_set = new_vs };
-    } else {
-        // Validate existing key is a vector set
-        if (result.value_ptr.* != .vector_set) {
-            return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-        }
-
-        // Validate dimensionality and metric match
-        const existing_vs = &result.value_ptr.vector_set;
-        if (existing_vs.dimensionality != dimensionality) {
-            return RespValue{ .error_string = "ERR dimensionality mismatch with existing vector set" };
-        }
-        if (existing_vs.metric != metric) {
-            return RespValue{ .error_string = "ERR distance metric mismatch with existing vector set" };
-        }
-    }
-
-    const vs = &result.value_ptr.vector_set;
-
-    // Parse and add all vectors
-    var added_count: i64 = 0;
-    var idx: usize = 0;
-    while (idx < elements_data.len) : (idx += element_size) {
-        const id = elements_data[idx];
-
-        // Parse embedding values
-        var embedding = try allocator.alloc(f32, dimensionality);
-        defer allocator.free(embedding);
-
-        for (0..dimensionality) |i| {
-            const val_str = elements_data[idx + 1 + i];
-            embedding[i] = std.fmt.parseFloat(f32, val_str) catch {
+        embedding = try allocator.alloc(f32, num);
+        embedding_allocated = true;
+        for (0..num) |i| {
+            embedding[i] = std.fmt.parseFloat(f32, args[idx + i]) catch {
+                allocator.free(embedding);
                 return RespValue{ .error_string = "ERR invalid float value" };
             };
         }
+        idx += num;
+    } else if (std.ascii.eqlIgnoreCase(args[idx], "FP32")) {
+        return RespValue{ .error_string = "ERR FP32 binary format not supported, use VALUES" };
+    } else {
+        return RespValue{ .error_string = "ERR syntax error, expected VALUES or FP32" };
+    }
+    defer if (embedding_allocated) allocator.free(embedding);
 
-        // Add to vector set
-        const is_new = try vs.add(id, embedding);
-        if (is_new) {
-            added_count += 1;
+    // Required: element name follows vector values
+    if (idx >= args.len) return RespValue{ .error_string = "ERR missing element name" };
+    const element_name = args[idx];
+    idx += 1;
+
+    // Optional trailing flags
+    var setattr_blob: ?[]const u8 = null;
+    while (idx < args.len) {
+        const flag = args[idx];
+        if (std.ascii.eqlIgnoreCase(flag, "SETATTR")) {
+            idx += 1;
+            if (idx >= args.len) return RespValue{ .error_string = "ERR SETATTR requires a value" };
+            setattr_blob = args[idx];
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(flag, "CAS") or
+                   std.ascii.eqlIgnoreCase(flag, "NOQUANT") or
+                   std.ascii.eqlIgnoreCase(flag, "Q8") or
+                   std.ascii.eqlIgnoreCase(flag, "BIN"))
+        {
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(flag, "EF") or
+                   std.ascii.eqlIgnoreCase(flag, "M"))
+        {
+            idx += 1;
+            if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
+            idx += 1;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
         }
     }
 
-    return RespValue{ .integer = added_count };
+    // Get or create vector set
+    const gop = try storage.data.getOrPut(key);
+    if (!gop.found_existing) {
+        const key_copy = try allocator.dupe(u8, key);
+        errdefer allocator.free(key_copy);
+
+        var new_vs = try VectorSetValue.init(allocator, embedding.len, .cosine);
+        errdefer new_vs.deinit();
+
+        gop.key_ptr.* = key_copy;
+        gop.value_ptr.* = Value{ .vector_set = new_vs };
+    } else {
+        if (gop.value_ptr.* != .vector_set) {
+            return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+        }
+        if (gop.value_ptr.vector_set.dimensionality != embedding.len) {
+            return RespValue{ .error_string = "ERR dimensionality mismatch with existing vector set" };
+        }
+    }
+
+    const vs = &gop.value_ptr.vector_set;
+    const is_new = try vs.add(element_name, embedding);
+
+    if (setattr_blob) |blob| {
+        if (vs.get(element_name)) |entry| {
+            try entry.setAttribute("__attr__", blob);
+        }
+    }
+
+    return RespValue{ .integer = if (is_new) 1 else 0 };
 }
 
 /// VCARD key
-/// Returns the cardinality (number of vectors) in the vector set.
 pub fn cmdVcard(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
     _ = allocator;
-
     if (args.len != 2) return RespValue{ .error_string = "ERR wrong number of arguments for 'vcard' command" };
-
     const key = args[1];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .integer = 0 };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const cardinality: i64 = @intCast(value.vector_set.cardinality());
-    return RespValue{ .integer = cardinality };
+    const value = storage.data.get(key) orelse return RespValue{ .integer = 0 };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    return RespValue{ .integer = @intCast(value.vector_set.cardinality()) };
 }
 
 /// VDIM key
-/// Returns the dimensionality of vectors in the vector set.
 pub fn cmdVdim(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
     _ = allocator;
-
     if (args.len != 2) return RespValue{ .error_string = "ERR wrong number of arguments for 'vdim' command" };
-
     const key = args[1];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .error_string = "ERR no such key" };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const dimensionality: i64 = @intCast(value.vector_set.dimensionality);
-    return RespValue{ .integer = dimensionality };
+    const value = storage.data.get(key) orelse return RespValue{ .error_string = "ERR no such key" };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    return RespValue{ .integer = @intCast(value.vector_set.dimensionality) };
 }
 
 /// VEMB key id
-/// Returns the embedding of a specific vector in the set.
-/// Returns an array of floats as bulk strings.
 pub fn cmdVemb(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
     if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vemb' command" };
-
     const key = args[1];
     const id = args[2];
+    const value = storage.data.get(key) orelse return RespValue{ .null_bulk_string = {} };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    const entry = value.vector_set.get(id) orelse return RespValue{ .null_bulk_string = {} };
 
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .null_bulk_string = {} };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-    const entry = vs.get(id) orelse {
-        return RespValue{ .null_bulk_string = {} };
-    };
-
-    // Build array of bulk strings (float values)
     var elements = try allocator.alloc(RespValue, entry.embedding.len);
     errdefer allocator.free(elements);
-
     for (entry.embedding, 0..) |val, i| {
-        // Format float as string
         var buf: [64]u8 = undefined;
         const str = try std.fmt.bufPrint(&buf, "{d}", .{val});
-        const str_copy = try allocator.dupe(u8, str);
-        errdefer allocator.free(str_copy);
-
-        elements[i] = RespValue{ .bulk_string = str_copy };
+        elements[i] = RespValue{ .bulk_string = try allocator.dupe(u8, str) };
     }
-
     return RespValue{ .array = elements };
 }
 
+/// VREM key id [id ...]
+pub fn cmdVrem(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    _ = allocator;
+    if (args.len < 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vrem' command" };
+    const key = args[1];
+    const entry = storage.data.getPtr(key) orelse return RespValue{ .integer = 0 };
+    if (entry.* != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    var vs = &entry.vector_set;
+    var removed: i64 = 0;
+    for (args[2..]) |id| {
+        if (try vs.remove(id)) removed += 1;
+    }
+    return RespValue{ .integer = removed };
+}
+
+/// VISMEMBER key id
+pub fn cmdVismember(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    _ = allocator;
+    if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vismember' command" };
+    const key = args[1];
+    const id = args[2];
+    const value = storage.data.get(key) orelse return RespValue{ .integer = 0 };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    return RespValue{ .integer = if (value.vector_set.contains(id)) 1 else 0 };
+}
+
+/// VRANDMEMBER key [count]
+pub fn cmdVrandmember(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len < 2 or args.len > 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vrandmember' command" };
+    const key = args[1];
+    const value = storage.data.get(key) orelse {
+        if (args.len == 2) return RespValue{ .null_bulk_string = {} };
+        return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+    };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    const vs = &value.vector_set;
+
+    if (args.len == 2) {
+        const id = vs.randomMember() orelse return RespValue{ .null_bulk_string = {} };
+        return RespValue{ .bulk_string = try allocator.dupe(u8, id) };
+    }
+
+    const count_signed = std.fmt.parseInt(i64, args[2], 10) catch {
+        return RespValue{ .error_string = "ERR value is not an integer or out of range" };
+    };
+    if (count_signed == 0) return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+
+    const allow_dups = count_signed < 0;
+    const count_abs: usize = @intCast(@abs(count_signed));
+    const result_count = if (!allow_dups) @min(count_abs, vs.cardinality()) else count_abs;
+
+    var results = try allocator.alloc(RespValue, result_count);
+    errdefer allocator.free(results);
+
+    if (allow_dups) {
+        for (0..count_abs) |i| {
+            const id = vs.randomMember() orelse {
+                allocator.free(results);
+                return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+            };
+            results[i] = RespValue{ .bulk_string = try allocator.dupe(u8, id) };
+        }
+    } else {
+        var all_ids = try allocator.alloc([]const u8, vs.cardinality());
+        defer allocator.free(all_ids);
+        var it = vs.vectors.keyIterator();
+        var i: usize = 0;
+        while (it.next()) |k| { all_ids[i] = k.*; i += 1; }
+        // Fisher-Yates shuffle
+        var j = all_ids.len;
+        while (j > 1) {
+            j -= 1;
+            const r = @rem(std.crypto.random.int(usize), j + 1);
+            const tmp = all_ids[j]; all_ids[j] = all_ids[r]; all_ids[r] = tmp;
+        }
+        for (0..result_count) |k| {
+            results[k] = RespValue{ .bulk_string = try allocator.dupe(u8, all_ids[k]) };
+        }
+    }
+    return RespValue{ .array = results };
+}
+
+/// VGETATTR key member
+/// Redis 8.0: returns the attribute blob stored for this member, or nil.
+pub fn cmdVgetattr(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vgetattr' command" };
+    const key = args[1];
+    const member = args[2];
+    const value = storage.data.get(key) orelse return RespValue{ .null_bulk_string = {} };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    const entry = value.vector_set.get(member) orelse return RespValue{ .null_bulk_string = {} };
+    const blob = entry.getAttribute("__attr__") orelse return RespValue{ .null_bulk_string = {} };
+    return RespValue{ .bulk_string = try allocator.dupe(u8, blob) };
+}
+
+/// VSETATTR key member blob
+/// Redis 8.0: stores an attribute blob for this member. Returns 1 on success, 0 if member not found.
+pub fn cmdVsetattr(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    _ = allocator;
+    if (args.len != 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vsetattr' command" };
+    const key = args[1];
+    const member = args[2];
+    const blob = args[3];
+    const value = storage.data.get(key) orelse return RespValue{ .error_string = "ERR no such key" };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    const entry = value.vector_set.get(member) orelse return RespValue{ .integer = 0 };
+    try entry.setAttribute("__attr__", blob);
+    return RespValue{ .integer = 1 };
+}
+
+/// VINFO key
+pub fn cmdVinfo(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len != 2) return RespValue{ .error_string = "ERR wrong number of arguments for 'vinfo' command" };
+    const key = args[1];
+    const value = storage.data.get(key) orelse return RespValue{ .error_string = "ERR no such key" };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    const vs = &value.vector_set;
+
+    var elements = try allocator.alloc(RespValue, 8);
+    errdefer allocator.free(elements);
+    elements[0] = RespValue{ .bulk_string = try allocator.dupe(u8, "dimensionality") };
+    elements[1] = RespValue{ .integer = @intCast(vs.dimensionality) };
+    elements[2] = RespValue{ .bulk_string = try allocator.dupe(u8, "metric") };
+    elements[3] = RespValue{ .bulk_string = try allocator.dupe(u8, vs.metric.toString()) };
+    elements[4] = RespValue{ .bulk_string = try allocator.dupe(u8, "count") };
+    elements[5] = RespValue{ .integer = @intCast(vs.cardinality()) };
+    elements[6] = RespValue{ .bulk_string = try allocator.dupe(u8, "quantization") };
+    elements[7] = RespValue{ .bulk_string = try allocator.dupe(u8, vs.quantization.toString()) };
+    return RespValue{ .array = elements };
+}
+
+/// VSIM key (ELE element | VALUES num f1..fn | FP32 blob) [COUNT n] [WITHSCORES] [WITHATTRIBS] [EF ef] [EPSILON d] [TRUTH] [NOTHREAD] [FILTER expr] [FILTER-EF n]
+/// Redis 8.0 Vector Similarity Search. Returns elements sorted by similarity score (descending).
+/// WITHSCORES returns flat array [elem1, score1, elem2, score2, ...].
+pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len < 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vsim' command" };
+
+    const key = args[1];
+    var idx: usize = 2;
+
+    // Parse input mode: ELE, VALUES, or FP32
+    var query_embedding: []const f32 = undefined;
+    var query_buf: ?[]f32 = null;
+    defer if (query_buf) |buf| allocator.free(buf);
+    var is_ele_query = false;
+    var ele_query_name: []const u8 = undefined;
+
+    if (std.ascii.eqlIgnoreCase(args[idx], "ELE")) {
+        idx += 1;
+        if (idx >= args.len) return RespValue{ .error_string = "ERR ELE requires element name" };
+        ele_query_name = args[idx];
+        is_ele_query = true;
+        idx += 1;
+    } else if (std.ascii.eqlIgnoreCase(args[idx], "VALUES")) {
+        idx += 1;
+        if (idx >= args.len) return RespValue{ .error_string = "ERR VALUES requires count" };
+        const num = std.fmt.parseInt(usize, args[idx], 10) catch {
+            return RespValue{ .error_string = "ERR invalid VALUES count" };
+        };
+        idx += 1;
+        if (idx + num > args.len) return RespValue{ .error_string = "ERR not enough vector values" };
+        const buf = try allocator.alloc(f32, num);
+        query_buf = buf;
+        for (0..num) |i| {
+            buf[i] = std.fmt.parseFloat(f32, args[idx + i]) catch {
+                return RespValue{ .error_string = "ERR invalid float value" };
+            };
+        }
+        query_embedding = buf;
+        idx += num;
+    } else if (std.ascii.eqlIgnoreCase(args[idx], "FP32")) {
+        return RespValue{ .error_string = "ERR FP32 binary format not supported, use ELE or VALUES" };
+    } else {
+        return RespValue{ .error_string = "ERR syntax error, expected ELE, VALUES, or FP32" };
+    }
+
+    // Parse options
+    var count: usize = 10;
+    var with_scores = false;
+    var with_attribs = false;
+    while (idx < args.len) {
+        const opt = args[idx];
+        if (std.ascii.eqlIgnoreCase(opt, "COUNT")) {
+            idx += 1;
+            if (idx >= args.len) return RespValue{ .error_string = "ERR COUNT requires value" };
+            count = std.fmt.parseInt(usize, args[idx], 10) catch {
+                return RespValue{ .error_string = "ERR value is not an integer or out of range" };
+            };
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(opt, "WITHSCORES")) {
+            with_scores = true;
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(opt, "WITHATTRIBS")) {
+            with_attribs = true;
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(opt, "EF") or
+                   std.ascii.eqlIgnoreCase(opt, "EPSILON") or
+                   std.ascii.eqlIgnoreCase(opt, "FILTER") or
+                   std.ascii.eqlIgnoreCase(opt, "FILTER-EF"))
+        {
+            idx += 1;
+            if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(opt, "TRUTH") or
+                   std.ascii.eqlIgnoreCase(opt, "NOTHREAD"))
+        {
+            idx += 1;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+
+    // Get vector set
+    const value = storage.data.get(key) orelse {
+        return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+    };
+    if (value != .vector_set) {
+        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    }
+    const vs = &value.vector_set;
+
+    // Resolve ELE query embedding
+    if (is_ele_query) {
+        const entry = vs.get(ele_query_name) orelse {
+            return RespValue{ .error_string = "ERR element not found" };
+        };
+        query_embedding = entry.embedding;
+    } else {
+        if (query_embedding.len != vs.dimensionality) {
+            return RespValue{ .error_string = "ERR vector dimensionality mismatch" };
+        }
+    }
+
+    const SimResult = struct {
+        id: []const u8,
+        score: f32,
+    };
+
+    var results = std.ArrayList(SimResult){};
+    defer results.deinit(allocator);
+
+    var it = vs.vectors.iterator();
+    while (it.next()) |kv| {
+        const dist = vs.distance(query_embedding, kv.value_ptr.*.embedding);
+        // Convert distance to similarity score ∈ [0, 1]; for cosine dist ∈ [0,2]
+        const score: f32 = @max(0.0, 1.0 - dist);
+        try results.append(allocator, SimResult{ .id = kv.key_ptr.*, .score = score });
+    }
+
+    std.mem.sort(SimResult, results.items, {}, struct {
+        pub fn lessThan(_: void, a: SimResult, b: SimResult) bool {
+            return a.score > b.score;
+        }
+    }.lessThan);
+
+    const actual = @min(count, results.items.len);
+
+    if (!with_scores and !with_attribs) {
+        var arr = try allocator.alloc(RespValue, actual);
+        errdefer allocator.free(arr);
+        for (0..actual) |i| {
+            arr[i] = RespValue{ .bulk_string = try allocator.dupe(u8, results.items[i].id) };
+        }
+        return RespValue{ .array = arr };
+    }
+
+    // Flat array with optional score and/or attribs fields per element
+    const fields_per: usize = 1 + @as(usize, if (with_scores) 1 else 0) + @as(usize, if (with_attribs) 1 else 0);
+    var arr = try allocator.alloc(RespValue, actual * fields_per);
+    errdefer allocator.free(arr);
+
+    for (0..actual) |i| {
+        const item = results.items[i];
+        var pos = i * fields_per;
+        arr[pos] = RespValue{ .bulk_string = try allocator.dupe(u8, item.id) };
+        pos += 1;
+        if (with_scores) {
+            const s = try std.fmt.allocPrint(allocator, "{d}", .{item.score});
+            arr[pos] = RespValue{ .bulk_string = s };
+            pos += 1;
+        }
+        if (with_attribs) {
+            const entry = vs.get(item.id);
+            if (entry) |e| {
+                const blob = e.getAttribute("__attr__");
+                if (blob) |b| {
+                    arr[pos] = RespValue{ .bulk_string = try allocator.dupe(u8, b) };
+                } else {
+                    arr[pos] = RespValue{ .null_bulk_string = {} };
+                }
+            } else {
+                arr[pos] = RespValue{ .null_bulk_string = {} };
+            }
+            pos += 1;
+        }
+    }
+    return RespValue{ .array = arr };
+}
+
+/// VRANGE key start stop [WITHEMBEDDINGS]
+pub fn cmdVrange(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len < 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vrange' command" };
+    const key = args[1];
+    var with_embeddings = false;
+    for (args[4..]) |flag| {
+        if (std.ascii.eqlIgnoreCase(flag, "WITHEMBEDDINGS")) {
+            with_embeddings = true;
+        } else {
+            return RespValue{ .error_string = "ERR syntax error" };
+        }
+    }
+    const value = storage.data.get(key) orelse return RespValue{ .error_string = "ERR no such key" };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    const vs = &value.vector_set;
+    const cnt = vs.cardinality();
+    if (cnt == 0) return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+
+    var start = std.fmt.parseInt(i64, args[2], 10) catch return RespValue{ .error_string = "ERR invalid start index" };
+    var stop = std.fmt.parseInt(i64, args[3], 10) catch return RespValue{ .error_string = "ERR invalid stop index" };
+    const cnt_i64 = @as(i64, @intCast(cnt));
+    if (start < 0) start = cnt_i64 + start;
+    if (stop < 0) stop = cnt_i64 + stop;
+    if (start < 0) start = 0;
+    if (stop >= cnt_i64) stop = cnt_i64 - 1;
+    if (start > stop) return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+
+    var members = std.ArrayList(*VectorEntry){};
+    defer members.deinit(allocator);
+    var it = vs.vectors.valueIterator();
+    while (it.next()) |ep| try members.append(allocator, ep.*);
+
+    const range_size = @as(usize, @intCast(stop - start + 1));
+    var result = try allocator.alloc(RespValue, range_size);
+    errdefer allocator.free(result);
+
+    for (0..range_size) |i| {
+        const entry = members.items[@as(usize, @intCast(start)) + i];
+        if (!with_embeddings) {
+            result[i] = RespValue{ .bulk_string = try allocator.dupe(u8, entry.id) };
+        } else {
+            var item = try allocator.alloc(RespValue, 2);
+            item[0] = RespValue{ .bulk_string = try allocator.dupe(u8, entry.id) };
+            var emb = try allocator.alloc(RespValue, entry.embedding.len);
+            for (entry.embedding, 0..) |v, j| {
+                emb[j] = RespValue{ .bulk_string = try std.fmt.allocPrint(allocator, "{d}", .{v}) };
+            }
+            item[1] = RespValue{ .array = emb };
+            result[i] = RespValue{ .array = item };
+        }
+    }
+    return RespValue{ .array = result };
+}
+
+/// VLINKS key member — stub (HNSW graph not yet built)
+pub fn cmdVlinks(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
+    if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vlinks' command" };
+    const key = args[1];
+    const member = args[2];
+    const value = storage.data.get(key) orelse return RespValue{ .error_string = "ERR no such key" };
+    if (value != .vector_set) return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
+    _ = value.vector_set.get(member) orelse return RespValue{ .error_string = "ERR member not found" };
+    return RespValue{ .array = try allocator.alloc(RespValue, 0) };
+}
+
+/// Free a RespValue that was returned by a vector command.
+/// Only bulk_string and array variants are allocated by vector commands;
+/// error_string is always a string literal and must not be freed.
+pub fn deinitRespValue(allocator: Allocator, rv: RespValue) void {
+    switch (rv) {
+        .bulk_string => |s| allocator.free(s),
+        .array => |arr| {
+            for (arr) |item| deinitRespValue(allocator, item);
+            allocator.free(arr);
+        },
+        else => {},
+    }
+}
+
 // ============================================================================
-// Unit tests
+// Tests — all use Redis 8.0 VADD syntax: VADD key VALUES num f1..fn element
 // ============================================================================
 
-test "cmdVadd: basic add" {
+test "cmdVadd: basic add returns 1" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{ "VADD", "myvec", "3", "L2", "vec1", "1.0", "2.0", "3.0" };
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "1.0", "2.0", "3.0", "vec1" };
     const result = try cmdVadd(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expectEqual(@as(i64, 1), result.integer);
 }
 
-test "cmdVadd: multiple vectors" {
+test "cmdVadd: update existing returns 0" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{
-        "VADD", "myvec",      "2",    "COSINE",
-        "v1",   "1.0",        "2.0",
-        "v2",   "3.0",        "4.0",
-        "v3",   "5.0",        "6.0",
-    };
+    const args1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), r1.integer);
+
+    const args2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v1" };
+    const r2 = try cmdVadd(allocator, &storage, &args2, 3);
+    defer r2.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), r2.integer);
+}
+
+test "cmdVadd: dimensionality mismatch on second add" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args1 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "1.0", "2.0", "3.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &args1, 3);
+    defer r1.deinit(allocator);
+
+    const args2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v2" };
+    const r2 = try cmdVadd(allocator, &storage, &args2, 3);
+    defer r2.deinit(allocator);
+    try std.testing.expect(r2 == .err);
+}
+
+test "cmdVadd: invalid float value" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "notafloat", "2.0", "v1" };
     const result = try cmdVadd(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 3), result.integer);
-}
-
-test "cmdVadd: update existing vector" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    // Add first time
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "IP", "vec1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
-    try std.testing.expectEqual(@as(i64, 1), result1.integer);
-
-    // Add same vector again (update)
-    const args2 = [_][]const u8{ "VADD", "myvec", "2", "IP", "vec1", "3.0", "4.0" };
-    const result2 = try cmdVadd(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-    try std.testing.expectEqual(@as(i64, 0), result2.integer); // 0 new vectors
-}
-
-test "cmdVadd: dimension mismatch" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    // Create vector set with dim=3
-    const args1 = [_][]const u8{ "VADD", "myvec", "3", "L2", "v1", "1.0", "2.0", "3.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
-
-    // Try to add with dim=2 (should fail)
-    const args2 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v2", "4.0", "5.0" };
-    const result2 = try cmdVadd(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .err);
-}
-
-test "cmdVadd: metric mismatch" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    // Create with L2
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
-
-    // Try to add with COSINE (should fail)
-    const args2 = [_][]const u8{ "VADD", "myvec", "2", "COSINE", "v2", "3.0", "4.0" };
-    const result2 = try cmdVadd(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .err);
-}
-
-test "cmdVadd: invalid dimensionality" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    const args = [_][]const u8{ "VADD", "myvec", "0", "L2", "v1", "1.0" };
-    const result = try cmdVadd(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
-test "cmdVadd: invalid metric" {
+test "cmdVadd: zero VALUES count rejected" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{ "VADD", "myvec", "2", "INVALID", "v1", "1.0", "2.0" };
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "0", "v1" };
     const result = try cmdVadd(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
-test "cmdVadd: wrong type" {
+test "cmdVadd: wrong type key" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Create a string key
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
 
-    const args = [_][]const u8{ "VADD", "mykey", "2", "L2", "v1", "1.0", "2.0" };
+    const args = [_][]const u8{ "VADD", "mykey", "VALUES", "2", "1.0", "2.0", "v1" };
     const result = try cmdVadd(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
+
+test "cmdVadd: SETATTR option stores blob" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1", "SETATTR", "{\"label\":\"test\"}" };
+    const r = try cmdVadd(allocator, &storage, &args, 3);
+    defer r.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), r.integer);
+
+    // Verify stored via VGETATTR
+    const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .bulk_string);
+    try std.testing.expectEqualStrings("{\"label\":\"test\"}", gr.bulk_string);
+}
+
+test "cmdVadd: REDUCE option accepted" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "REDUCE", "2", "VALUES", "3", "1.0", "2.0", "3.0", "v1" };
+    const result = try cmdVadd(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+// ============================================================================
+// VCARD tests
+// ============================================================================
 
 test "cmdVcard: basic" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
 
-    // Get cardinality
-    const args2 = [_][]const u8{ "VCARD", "myvec" };
-    const result2 = try cmdVcard(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 2), result2.integer);
+    const args = [_][]const u8{ "VCARD", "myvec" };
+    const result = try cmdVcard(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 2), result.integer);
 }
 
 test "cmdVcard: nonexistent key" {
@@ -334,7 +679,6 @@ test "cmdVcard: nonexistent key" {
     const args = [_][]const u8{ "VCARD", "nonexistent" };
     const result = try cmdVcard(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 }
 
@@ -344,41 +688,29 @@ test "cmdVcard: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VCARD", "mykey" };
     const result = try cmdVcard(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
+
+// ============================================================================
+// VDIM tests
+// ============================================================================
 
 test "cmdVdim: basic" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    var vec_args = std.ArrayList([]const u8){};
-    defer vec_args.deinit();
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "1.0", "2.0", "3.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
-    try vec_args.append("VADD");
-    try vec_args.append("myvec");
-    try vec_args.append("3");
-    try vec_args.append("COSINE");
-    try vec_args.append("v1");
-    try vec_args.append("1.0");
-    try vec_args.append("2.0");
-    try vec_args.append("3.0");
-
-    const result1 = try cmdVadd(allocator, &storage, vec_args.items, 3);
-    defer result1.deinit(allocator);
-
-    // Get dimensionality
-    const args2 = [_][]const u8{ "VDIM", "myvec" };
-    const result2 = try cmdVdim(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 3), result2.integer);
+    const args = [_][]const u8{ "VDIM", "myvec" };
+    const result = try cmdVdim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 3), result.integer);
 }
 
 test "cmdVdim: nonexistent key" {
@@ -389,7 +721,6 @@ test "cmdVdim: nonexistent key" {
     const args = [_][]const u8{ "VDIM", "nonexistent" };
     const result = try cmdVdim(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
@@ -399,31 +730,30 @@ test "cmdVdim: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VDIM", "mykey" };
     const result = try cmdVdim(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
+
+// ============================================================================
+// VEMB tests
+// ============================================================================
 
 test "cmdVemb: basic" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "3", "L2", "v1", "1.5", "2.5", "3.5" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "1.5", "2.5", "3.5", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
-    // Get embedding
-    const args2 = [_][]const u8{ "VEMB", "myvec", "v1" };
-    const result2 = try cmdVemb(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 3), result2.array.len);
+    const args = [_][]const u8{ "VEMB", "myvec", "v1" };
+    const result = try cmdVemb(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
 }
 
 test "cmdVemb: nonexistent vector" {
@@ -431,17 +761,14 @@ test "cmdVemb: nonexistent vector" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
-    // Get nonexistent vector
-    const args2 = [_][]const u8{ "VEMB", "myvec", "v2" };
-    const result2 = try cmdVemb(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .null_bulk_string);
+    const args = [_][]const u8{ "VEMB", "myvec", "v2" };
+    const result = try cmdVemb(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .null_bulk_string);
 }
 
 test "cmdVemb: nonexistent key" {
@@ -452,7 +779,6 @@ test "cmdVemb: nonexistent key" {
     const args = [_][]const u8{ "VEMB", "nonexistent", "v1" };
     const result = try cmdVemb(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .null_bulk_string);
 }
 
@@ -462,178 +788,10 @@ test "cmdVemb: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VEMB", "mykey", "v1" };
     const result = try cmdVemb(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
-}
-
-/// VREM key id [id ...]
-/// Remove one or more vectors from the vector set.
-/// Returns the number of vectors removed (not including non-existent vectors).
-pub fn cmdVrem(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    _ = allocator;
-
-    if (args.len < 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vrem' command" };
-
-    const key = args[1];
-    const ids = args[2..];
-
-    const entry = storage.data.getPtr(key) orelse {
-        return RespValue{ .integer = 0 };
-    };
-
-    if (entry.* != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    var vs = &entry.vector_set;
-    var removed_count: i64 = 0;
-
-    for (ids) |id| {
-        const was_removed = try vs.remove(id);
-        if (was_removed) {
-            removed_count += 1;
-        }
-    }
-
-    return RespValue{ .integer = removed_count };
-}
-
-/// VISMEMBER key id
-/// Returns 1 if the vector exists in the set, 0 otherwise.
-pub fn cmdVismember(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    _ = allocator;
-
-    if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vismember' command" };
-
-    const key = args[1];
-    const id = args[2];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .integer = 0 };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-    const exists = vs.contains(id);
-
-    return RespValue{ .integer = if (exists) 1 else 0 };
-}
-
-/// VRANDMEMBER key [count]
-/// Returns one or more random vectors from the set.
-/// If count is positive: returns up to count distinct vectors.
-/// If count is negative: allows duplicates, returns abs(count) vectors.
-/// Without count: returns a single vector ID as bulk string.
-/// With count: returns an array of vector IDs.
-pub fn cmdVrandmember(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    if (args.len < 2 or args.len > 3) {
-        return RespValue{ .error_string = "ERR wrong number of arguments for 'vrandmember' command" };
-    }
-
-    const key = args[1];
-
-    const value = storage.data.get(key) orelse {
-        if (args.len == 2) {
-            return RespValue{ .null_bulk_string = {} };
-        } else {
-            // With count, return empty array
-            const empty = try allocator.alloc(RespValue, 0);
-            return RespValue{ .array = empty };
-        }
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-
-    // No count argument: return single random member
-    if (args.len == 2) {
-        const member_id = vs.randomMember() orelse {
-            return RespValue{ .null_bulk_string = {} };
-        };
-        const id_copy = try allocator.dupe(u8, member_id);
-        return RespValue{ .bulk_string = id_copy };
-    }
-
-    // Parse count
-    const count_str = args[2];
-    const count_signed = std.fmt.parseInt(i64, count_str, 10) catch {
-        return RespValue{ .error_string = "ERR value is not an integer or out of range" };
-    };
-
-    if (count_signed == 0) {
-        const empty = try allocator.alloc(RespValue, 0);
-        return RespValue{ .array = empty };
-    }
-
-    const allow_duplicates = count_signed < 0;
-    const count_abs: usize = @intCast(@abs(count_signed));
-    const result_count = if (!allow_duplicates)
-        @min(count_abs, vs.cardinality())
-    else
-        count_abs;
-
-    if (result_count == 0) {
-        const empty = try allocator.alloc(RespValue, 0);
-        return RespValue{ .array = empty };
-    }
-
-    var results = try allocator.alloc(RespValue, result_count);
-    errdefer allocator.free(results);
-
-    if (allow_duplicates) {
-        // Allow duplicates: just call randomMember() count_abs times
-        for (0..count_abs) |i| {
-            const member_id = vs.randomMember() orelse {
-                // Empty set, shouldn't happen since we checked above
-                allocator.free(results);
-                const empty = try allocator.alloc(RespValue, 0);
-                return RespValue{ .array = empty };
-            };
-            const id_copy = try allocator.dupe(u8, member_id);
-            errdefer allocator.free(id_copy);
-            results[i] = RespValue{ .bulk_string = id_copy };
-        }
-    } else {
-        // Distinct members: collect all IDs, shuffle, take first N
-        var all_ids = try allocator.alloc([]const u8, vs.cardinality());
-        defer allocator.free(all_ids);
-
-        var it = vs.vectors.keyIterator();
-        var idx: usize = 0;
-        while (it.next()) |key_ptr| {
-            all_ids[idx] = key_ptr.*;
-            idx += 1;
-        }
-
-        // Simple shuffle (Fisher-Yates)
-        var i = all_ids.len;
-        while (i > 1) {
-            i -= 1;
-            const j = @rem(std.crypto.random.int(usize), i + 1);
-            const tmp = all_ids[i];
-            all_ids[i] = all_ids[j];
-            all_ids[j] = tmp;
-        }
-
-        // Take first result_count
-        for (0..result_count) |j| {
-            const id_copy = try allocator.dupe(u8, all_ids[j]);
-            errdefer allocator.free(id_copy);
-            results[j] = RespValue{ .bulk_string = id_copy };
-        }
-    }
-
-    return RespValue{ .array = results };
 }
 
 // ============================================================================
@@ -645,23 +803,22 @@ test "cmdVrem: basic remove" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0", "v3", "5.0", "6.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
 
-    // Remove one vector
-    const args2 = [_][]const u8{ "VREM", "myvec", "v2" };
-    const result2 = try cmdVrem(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
+    const rem = [_][]const u8{ "VREM", "myvec", "v2" };
+    const rr = try cmdVrem(allocator, &storage, &rem, 3);
+    defer rr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), rr.integer);
 
-    try std.testing.expectEqual(@as(i64, 1), result2.integer);
-
-    // Verify cardinality
-    const args3 = [_][]const u8{ "VCARD", "myvec" };
-    const result3 = try cmdVcard(allocator, &storage, &args3, 3);
-    defer result3.deinit(allocator);
-    try std.testing.expectEqual(@as(i64, 2), result3.integer);
+    const card = [_][]const u8{ "VCARD", "myvec" };
+    const cr = try cmdVcard(allocator, &storage, &card, 3);
+    defer cr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 2), cr.integer);
 }
 
 test "cmdVrem: multiple removes" {
@@ -669,23 +826,22 @@ test "cmdVrem: multiple removes" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0", "v3", "5.0", "6.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
 
-    // Remove multiple vectors
-    const args2 = [_][]const u8{ "VREM", "myvec", "v1", "v3" };
-    const result2 = try cmdVrem(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
+    const rem = [_][]const u8{ "VREM", "myvec", "v1", "v3" };
+    const rr = try cmdVrem(allocator, &storage, &rem, 3);
+    defer rr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 2), rr.integer);
 
-    try std.testing.expectEqual(@as(i64, 2), result2.integer);
-
-    // Verify only v2 remains
-    const args3 = [_][]const u8{ "VCARD", "myvec" };
-    const result3 = try cmdVcard(allocator, &storage, &args3, 3);
-    defer result3.deinit(allocator);
-    try std.testing.expectEqual(@as(i64, 1), result3.integer);
+    const card = [_][]const u8{ "VCARD", "myvec" };
+    const cr = try cmdVcard(allocator, &storage, &card, 3);
+    defer cr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), cr.integer);
 }
 
 test "cmdVrem: nonexistent vector" {
@@ -693,17 +849,13 @@ test "cmdVrem: nonexistent vector" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Try to remove nonexistent vector
-    const args2 = [_][]const u8{ "VREM", "myvec", "v2" };
-    const result2 = try cmdVrem(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 0), result2.integer);
+    const rem = [_][]const u8{ "VREM", "myvec", "v2" };
+    const rr = try cmdVrem(allocator, &storage, &rem, 3);
+    defer rr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), rr.integer);
 }
 
 test "cmdVrem: nonexistent key" {
@@ -714,7 +866,6 @@ test "cmdVrem: nonexistent key" {
     const args = [_][]const u8{ "VREM", "nonexistent", "v1" };
     const result = try cmdVrem(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 }
 
@@ -724,11 +875,9 @@ test "cmdVrem: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VREM", "mykey", "v1" };
     const result = try cmdVrem(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
@@ -741,17 +890,13 @@ test "cmdVismember: exists" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Check membership
-    const args2 = [_][]const u8{ "VISMEMBER", "myvec", "v1" };
-    const result2 = try cmdVismember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 1), result2.integer);
+    const args = [_][]const u8{ "VISMEMBER", "myvec", "v1" };
+    const result = try cmdVismember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
 }
 
 test "cmdVismember: not exists" {
@@ -759,17 +904,13 @@ test "cmdVismember: not exists" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Check nonexistent member
-    const args2 = [_][]const u8{ "VISMEMBER", "myvec", "v2" };
-    const result2 = try cmdVismember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 0), result2.integer);
+    const args = [_][]const u8{ "VISMEMBER", "myvec", "v2" };
+    const result = try cmdVismember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), result.integer);
 }
 
 test "cmdVismember: nonexistent key" {
@@ -780,7 +921,6 @@ test "cmdVismember: nonexistent key" {
     const args = [_][]const u8{ "VISMEMBER", "nonexistent", "v1" };
     const result = try cmdVismember(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expectEqual(@as(i64, 0), result.integer);
 }
 
@@ -790,11 +930,9 @@ test "cmdVismember: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VISMEMBER", "mykey", "v1" };
     const result = try cmdVismember(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
@@ -807,21 +945,17 @@ test "cmdVrandmember: single random" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
 
-    // Get random member
-    const args2 = [_][]const u8{ "VRANDMEMBER", "myvec" };
-    const result2 = try cmdVrandmember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .bulk_string);
-    // Should be either "v1" or "v2"
-    const is_valid = std.mem.eql(u8, result2.bulk_string, "v1") or
-        std.mem.eql(u8, result2.bulk_string, "v2");
-    try std.testing.expect(is_valid);
+    const args = [_][]const u8{ "VRANDMEMBER", "myvec" };
+    const result = try cmdVrandmember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .bulk_string);
+    const valid = std.mem.eql(u8, result.bulk_string, "v1") or std.mem.eql(u8, result.bulk_string, "v2");
+    try std.testing.expect(valid);
 }
 
 test "cmdVrandmember: with positive count" {
@@ -829,40 +963,35 @@ test "cmdVrandmember: with positive count" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0", "v3", "5.0", "6.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
 
-    // Get 2 random members (distinct)
-    const args2 = [_][]const u8{ "VRANDMEMBER", "myvec", "2" };
-    const result2 = try cmdVrandmember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 2), result2.array.len);
+    const args = [_][]const u8{ "VRANDMEMBER", "myvec", "2" };
+    const result = try cmdVrandmember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
 }
 
-test "cmdVrandmember: with negative count" {
+test "cmdVrandmember: with negative count allows duplicates" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Get 3 random members with duplicates allowed
-    const args2 = [_][]const u8{ "VRANDMEMBER", "myvec", "-3" };
-    const result2 = try cmdVrandmember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 3), result2.array.len);
-    // All should be "v1" since there's only one vector
-    for (result2.array) |elem| {
-        try std.testing.expect(std.mem.eql(u8, elem.bulk_string, "v1"));
+    const args = [_][]const u8{ "VRANDMEMBER", "myvec", "-3" };
+    const result = try cmdVrandmember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    for (result.array) |elem| {
+        try std.testing.expectEqualStrings("v1", elem.bulk_string);
     }
 }
 
@@ -871,18 +1000,16 @@ test "cmdVrandmember: count exceeds size" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add 2 vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
 
-    // Request 5 distinct members (only 2 available)
-    const args2 = [_][]const u8{ "VRANDMEMBER", "myvec", "5" };
-    const result2 = try cmdVrandmember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 2), result2.array.len); // Returns all 2
+    const args = [_][]const u8{ "VRANDMEMBER", "myvec", "5" };
+    const result = try cmdVrandmember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
 }
 
 test "cmdVrandmember: count zero" {
@@ -890,18 +1017,14 @@ test "cmdVrandmember: count zero" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Request 0 members
-    const args2 = [_][]const u8{ "VRANDMEMBER", "myvec", "0" };
-    const result2 = try cmdVrandmember(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 0), result2.array.len);
+    const args = [_][]const u8{ "VRANDMEMBER", "myvec", "0" };
+    const result = try cmdVrandmember(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
 
 test "cmdVrandmember: nonexistent key without count" {
@@ -912,7 +1035,6 @@ test "cmdVrandmember: nonexistent key without count" {
     const args = [_][]const u8{ "VRANDMEMBER", "nonexistent" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .null_bulk_string);
 }
 
@@ -924,7 +1046,6 @@ test "cmdVrandmember: nonexistent key with count" {
     const args = [_][]const u8{ "VRANDMEMBER", "nonexistent", "5" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .array);
     try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
@@ -935,217 +1056,71 @@ test "cmdVrandmember: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VRANDMEMBER", "mykey" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
-/// VGETATTR key member attribute
-/// Returns the value of a specific attribute for a vector member.
-/// Returns bulk string if attribute exists, null bulk string otherwise.
-/// Returns null for nonexistent key, nonexistent member, or nonexistent attribute.
-/// Returns WRONGTYPE error if key holds the wrong type.
-pub fn cmdVgetattr(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    if (args.len != 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vgetattr' command" };
-
-    const key = args[1];
-    const member = args[2];
-    const attribute = args[3];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .null_bulk_string = {} };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-    const entry = vs.get(member) orelse {
-        return RespValue{ .null_bulk_string = {} };
-    };
-
-    const attr_value = entry.getAttribute(attribute) orelse {
-        return RespValue{ .null_bulk_string = {} };
-    };
-
-    // Return the attribute value as a bulk string.
-    // The value is a string literal owned by storage, so we must copy it for
-    // the RespValue to own.
-    const value_copy = try allocator.dupe(u8, attr_value);
-    return RespValue{ .bulk_string = value_copy };
-}
-
-/// VSETATTR key member attribute value
-/// Sets an attribute on a vector member.
-/// Returns 1 if the attribute was set successfully, 0 if the member does not exist.
-/// Returns error if the key does not exist or holds the wrong type.
-pub fn cmdVsetattr(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    _ = allocator;
-
-    if (args.len != 5) return RespValue{ .error_string = "ERR wrong number of arguments for 'vsetattr' command" };
-
-    const key = args[1];
-    const member = args[2];
-    const attribute = args[3];
-    const attr_value = args[4];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .error_string = "ERR no such key" };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    var vs = &value.vector_set;
-    const entry = vs.get(member) orelse {
-        return RespValue{ .integer = 0 };
-    };
-
-    try entry.setAttribute(attribute, attr_value);
-    return RespValue{ .integer = 1 };
-}
-
-/// VINFO key
-/// Returns metadata about a vector set as a flat array of 8 elements:
-/// ["dimensionality", <int>, "metric", <string>, "count", <int>, "quantization", <string>]
-/// Metric and quantization strings are uppercase.
-/// Returns error for nonexistent key or wrong type.
-pub fn cmdVinfo(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    if (args.len != 2) return RespValue{ .error_string = "ERR wrong number of arguments for 'vinfo' command" };
-
-    const key = args[1];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .error_string = "ERR no such key" };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-
-    // Build flat array: ["dimensionality", int, "metric", str, "count", int, "quantization", str]
-    var elements = try allocator.alloc(RespValue, 8);
-    errdefer allocator.free(elements);
-
-    // Element 0: "dimensionality" label
-    const dim_label = try allocator.dupe(u8, "dimensionality");
-    errdefer allocator.free(dim_label);
-    elements[0] = RespValue{ .bulk_string = dim_label };
-
-    // Element 1: dimensionality value
-    elements[1] = RespValue{ .integer = @intCast(vs.dimensionality) };
-
-    // Element 2: "metric" label
-    const metric_label = try allocator.dupe(u8, "metric");
-    errdefer allocator.free(metric_label);
-    elements[2] = RespValue{ .bulk_string = metric_label };
-
-    // Element 3: metric value (uppercase string)
-    const metric_str = try allocator.dupe(u8, vs.metric.toString());
-    errdefer allocator.free(metric_str);
-    elements[3] = RespValue{ .bulk_string = metric_str };
-
-    // Element 4: "count" label
-    const count_label = try allocator.dupe(u8, "count");
-    errdefer allocator.free(count_label);
-    elements[4] = RespValue{ .bulk_string = count_label };
-
-    // Element 5: count value
-    elements[5] = RespValue{ .integer = @intCast(vs.cardinality()) };
-
-    // Element 6: "quantization" label
-    const quant_label = try allocator.dupe(u8, "quantization");
-    errdefer allocator.free(quant_label);
-    elements[6] = RespValue{ .bulk_string = quant_label };
-
-    // Element 7: quantization value (uppercase string)
-    const quant_str = try allocator.dupe(u8, vs.quantization.toString());
-    errdefer allocator.free(quant_str);
-    elements[7] = RespValue{ .bulk_string = quant_str };
-
-    return RespValue{ .array = elements };
-}
-
 // ============================================================================
-// VGETATTR tests
+// VGETATTR tests (Redis 8.0: 3-arg form — cmd key member)
 // ============================================================================
 
-test "cmdVgetattr: existing attribute" {
+test "cmdVgetattr: returns stored blob" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector and set attribute
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VSETATTR", "myvec", "v1", "category", "test" };
-    const result2 = try cmdVsetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
+    const sa = [_][]const u8{ "VSETATTR", "myvec", "v1", "{\"category\":\"test\"}" };
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3); defer sr.deinit(allocator);
 
-    // Get attribute
-    const args3 = [_][]const u8{ "VGETATTR", "myvec", "v1", "category" };
-    const result3 = try cmdVgetattr(allocator, &storage, &args3, 3);
-    defer result3.deinit(allocator);
-
-    try std.testing.expect(result3 == .bulk_string);
-    try std.testing.expectEqualStrings("test", result3.bulk_string);
+    const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .bulk_string);
+    try std.testing.expectEqualStrings("{\"category\":\"test\"}", gr.bulk_string);
 }
 
-test "cmdVgetattr: nonexistent attribute" {
+test "cmdVgetattr: no attribute returns nil" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector without attributes
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Get nonexistent attribute
-    const args2 = [_][]const u8{ "VGETATTR", "myvec", "v1", "nonexistent" };
-    const result2 = try cmdVgetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .null_bulk_string);
+    const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .null_bulk_string);
 }
 
-test "cmdVgetattr: nonexistent member" {
+test "cmdVgetattr: nonexistent member returns nil" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Get attribute of nonexistent member
-    const args2 = [_][]const u8{ "VGETATTR", "myvec", "v_none", "category" };
-    const result2 = try cmdVgetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .null_bulk_string);
+    const ga = [_][]const u8{ "VGETATTR", "myvec", "v_none" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .null_bulk_string);
 }
 
-test "cmdVgetattr: nonexistent key" {
+test "cmdVgetattr: nonexistent key returns nil" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{ "VGETATTR", "nonexistent", "v1", "category" };
-    const result = try cmdVgetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .null_bulk_string);
+    const ga = [_][]const u8{ "VGETATTR", "nonexistent", "v1" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .null_bulk_string);
 }
 
 test "cmdVgetattr: wrong type" {
@@ -1154,88 +1129,58 @@ test "cmdVgetattr: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
-    const args = [_][]const u8{ "VGETATTR", "mykey", "v1", "category" };
-    const result = try cmdVgetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
+    const ga = [_][]const u8{ "VGETATTR", "mykey", "v1" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .err);
 }
 
-test "cmdVgetattr: wrong arity too few" {
+test "cmdVgetattr: wrong arity" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{ "VGETATTR", "myvec", "v1" };
-    const result = try cmdVgetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
-}
-
-test "cmdVgetattr: wrong arity too many" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    const args = [_][]const u8{ "VGETATTR", "myvec", "v1", "attr", "extra" };
-    const result = try cmdVgetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
+    const ga = [_][]const u8{ "VGETATTR", "myvec" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expect(gr == .err);
 }
 
 // ============================================================================
-// VSETATTR tests
+// VSETATTR tests (Redis 8.0: 4-arg form — cmd key member blob)
 // ============================================================================
 
-test "cmdVsetattr: set new attribute" {
+test "cmdVsetattr: set blob returns 1" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Set attribute
-    const args2 = [_][]const u8{ "VSETATTR", "myvec", "v1", "category", "news" };
-    const result2 = try cmdVsetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 1), result2.integer);
+    const sa = [_][]const u8{ "VSETATTR", "myvec", "v1", "{\"x\":1}" };
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
+    defer sr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), sr.integer);
 }
 
-test "cmdVsetattr: replace existing attribute" {
+test "cmdVsetattr: replace blob" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector and set attribute
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VSETATTR", "myvec", "v1", "category", "old" };
-    const result2 = try cmdVsetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
+    const sa1 = [_][]const u8{ "VSETATTR", "myvec", "v1", "old" };
+    const sr1 = try cmdVsetattr(allocator, &storage, &sa1, 3); defer sr1.deinit(allocator);
+    const sa2 = [_][]const u8{ "VSETATTR", "myvec", "v1", "new" };
+    const sr2 = try cmdVsetattr(allocator, &storage, &sa2, 3); defer sr2.deinit(allocator);
 
-    // Replace attribute
-    const args3 = [_][]const u8{ "VSETATTR", "myvec", "v1", "category", "new" };
-    const result3 = try cmdVsetattr(allocator, &storage, &args3, 3);
-    defer result3.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 1), result3.integer);
-
-    // Verify the new value
-    const args4 = [_][]const u8{ "VGETATTR", "myvec", "v1", "category" };
-    const result4 = try cmdVgetattr(allocator, &storage, &args4, 3);
-    defer result4.deinit(allocator);
-
-    try std.testing.expect(result4 == .bulk_string);
-    try std.testing.expectEqualStrings("new", result4.bulk_string);
+    const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
+    const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
+    defer gr.deinit(allocator);
+    try std.testing.expectEqualStrings("new", gr.bulk_string);
 }
 
 test "cmdVsetattr: nonexistent member returns 0" {
@@ -1243,17 +1188,13 @@ test "cmdVsetattr: nonexistent member returns 0" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    // Set attribute on nonexistent member
-    const args2 = [_][]const u8{ "VSETATTR", "myvec", "v_none", "category", "test" };
-    const result2 = try cmdVsetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 0), result2.integer);
+    const sa = [_][]const u8{ "VSETATTR", "myvec", "v_none", "blob" };
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
+    defer sr.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), sr.integer);
 }
 
 test "cmdVsetattr: nonexistent key returns error" {
@@ -1261,11 +1202,10 @@ test "cmdVsetattr: nonexistent key returns error" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{ "VSETATTR", "nonexistent", "v1", "category", "test" };
-    const result = try cmdVsetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
+    const sa = [_][]const u8{ "VSETATTR", "nonexistent", "v1", "blob" };
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
+    defer sr.deinit(allocator);
+    try std.testing.expect(sr == .err);
 }
 
 test "cmdVsetattr: wrong type" {
@@ -1274,69 +1214,21 @@ test "cmdVsetattr: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
-    const args = [_][]const u8{ "VSETATTR", "mykey", "v1", "category", "test" };
-    const result = try cmdVsetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
+    const sa = [_][]const u8{ "VSETATTR", "mykey", "v1", "blob" };
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
+    defer sr.deinit(allocator);
+    try std.testing.expect(sr == .err);
 }
 
-test "cmdVsetattr: wrong arity too few" {
+test "cmdVsetattr: wrong arity" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{ "VSETATTR", "myvec", "v1", "category" };
-    const result = try cmdVsetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
-}
-
-test "cmdVsetattr: wrong arity too many" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    const args = [_][]const u8{ "VSETATTR", "myvec", "v1", "cat", "val", "extra" };
-    const result = try cmdVsetattr(allocator, &storage, &args, 3);
-    defer result.deinit(allocator);
-
-    try std.testing.expect(result == .err);
-}
-
-test "cmdVsetattr: multiple different attributes" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    // Add vector
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
-
-    // Set two different attributes
-    const args2 = [_][]const u8{ "VSETATTR", "myvec", "v1", "category", "news" };
-    const result2 = try cmdVsetattr(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-    try std.testing.expectEqual(@as(i64, 1), result2.integer);
-
-    const args3 = [_][]const u8{ "VSETATTR", "myvec", "v1", "score", "0.95" };
-    const result3 = try cmdVsetattr(allocator, &storage, &args3, 3);
-    defer result3.deinit(allocator);
-    try std.testing.expectEqual(@as(i64, 1), result3.integer);
-
-    // Verify both attributes
-    const args4 = [_][]const u8{ "VGETATTR", "myvec", "v1", "category" };
-    const result4 = try cmdVgetattr(allocator, &storage, &args4, 3);
-    defer result4.deinit(allocator);
-    try std.testing.expectEqualStrings("news", result4.bulk_string);
-
-    const args5 = [_][]const u8{ "VGETATTR", "myvec", "v1", "score" };
-    const result5 = try cmdVgetattr(allocator, &storage, &args5, 3);
-    defer result5.deinit(allocator);
-    try std.testing.expectEqualStrings("0.95", result5.bulk_string);
+    const sa = [_][]const u8{ "VSETATTR", "myvec", "v1" };
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
+    defer sr.deinit(allocator);
+    try std.testing.expect(sr == .err);
 }
 
 // ============================================================================
@@ -1348,67 +1240,55 @@ test "cmdVinfo: basic metadata" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "3", "L2", "v1", "1.0", "2.0", "3.0", "v2", "4.0", "5.0", "6.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "1.0", "2.0", "3.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "4.0", "5.0", "6.0", "v2" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
 
-    // Get info
-    const args2 = [_][]const u8{ "VINFO", "myvec" };
-    const result2 = try cmdVinfo(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 8), result2.array.len);
-
-    // Check labels and values
-    try std.testing.expectEqualStrings("dimensionality", result2.array[0].bulk_string);
-    try std.testing.expectEqual(@as(i64, 3), result2.array[1].integer);
-    try std.testing.expectEqualStrings("metric", result2.array[2].bulk_string);
-    try std.testing.expectEqualStrings("L2", result2.array[3].bulk_string);
-    try std.testing.expectEqualStrings("count", result2.array[4].bulk_string);
-    try std.testing.expectEqual(@as(i64, 2), result2.array[5].integer);
-    try std.testing.expectEqualStrings("quantization", result2.array[6].bulk_string);
-    try std.testing.expectEqualStrings("FP32", result2.array[7].bulk_string);
+    const args = [_][]const u8{ "VINFO", "myvec" };
+    const result = try cmdVinfo(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 8), result.array.len);
+    try std.testing.expectEqualStrings("dimensionality", result.array[0].bulk_string);
+    try std.testing.expectEqual(@as(i64, 3), result.array[1].integer);
+    try std.testing.expectEqualStrings("metric", result.array[2].bulk_string);
+    try std.testing.expectEqualStrings("COSINE", result.array[3].bulk_string);
+    try std.testing.expectEqualStrings("count", result.array[4].bulk_string);
+    try std.testing.expectEqual(@as(i64, 2), result.array[5].integer);
+    try std.testing.expectEqualStrings("quantization", result.array[6].bulk_string);
+    try std.testing.expectEqualStrings("FP32", result.array[7].bulk_string);
 }
 
-test "cmdVinfo: cosine metric" {
+test "cmdVinfo: metric is COSINE (default)" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "COSINE", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VINFO", "myvec" };
-    const result2 = try cmdVinfo(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqualStrings("COSINE", result2.array[3].bulk_string);
+    const args = [_][]const u8{ "VINFO", "myvec" };
+    const result = try cmdVinfo(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("COSINE", result.array[3].bulk_string);
 }
 
-test "cmdVinfo: empty vector set" {
+test "cmdVinfo: empty vector set shows dim and count=0" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Create vector set then remove all vectors
-    const args1 = [_][]const u8{ "VADD", "myvec", "4", "IP", "v1", "1.0", "2.0", "3.0", "4.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "4", "1.0", "2.0", "3.0", "4.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const rem = [_][]const u8{ "VREM", "myvec", "v1" };
+    const rr = try cmdVrem(allocator, &storage, &rem, 3); defer rr.deinit(allocator);
 
-    const args_rem = [_][]const u8{ "VREM", "myvec", "v1" };
-    const result_rem = try cmdVrem(allocator, &storage, &args_rem, 3);
-    defer result_rem.deinit(allocator);
-
-    const args2 = [_][]const u8{ "VINFO", "myvec" };
-    const result2 = try cmdVinfo(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i64, 4), result2.array[1].integer); // dimensionality preserved
-    try std.testing.expectEqualStrings("IP", result2.array[3].bulk_string);
-    try std.testing.expectEqual(@as(i64, 0), result2.array[5].integer); // count is 0
+    const args = [_][]const u8{ "VINFO", "myvec" };
+    const result = try cmdVinfo(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 4), result.array[1].integer);
+    try std.testing.expectEqual(@as(i64, 0), result.array[5].integer);
 }
 
 test "cmdVinfo: nonexistent key" {
@@ -1419,7 +1299,6 @@ test "cmdVinfo: nonexistent key" {
     const args = [_][]const u8{ "VINFO", "nonexistent" };
     const result = try cmdVinfo(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
@@ -1429,428 +1308,163 @@ test "cmdVinfo: wrong type" {
     defer storage.deinit();
 
     _ = try storage.set("mykey", .{ .string = try allocator.dupe(u8, "value") });
-
     const args = [_][]const u8{ "VINFO", "mykey" };
     const result = try cmdVinfo(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
-
     try std.testing.expect(result == .err);
 }
 
-test "cmdVinfo: wrong arity" {
+// ============================================================================
+// VSIM tests — Redis 8.0 syntax: VSIM key ELE/VALUES ... [COUNT n] [WITHSCORES]
+// ============================================================================
+
+test "cmdVsim: ELE basic search" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args = [_][]const u8{"VINFO"};
-    const result = try cmdVinfo(allocator, &storage, &args, 3);
+    // v1 at origin, v2 close, v3 far
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.9", "0.1", "v2" };
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.0", "1.0", "v3" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+
+    const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "3" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 3), result.array.len);
+    // v1 should be first (score 1.0 — identical to itself)
+    try std.testing.expectEqualStrings("v1", result.array[0].bulk_string);
+}
 
+test "cmdVsim: ELE with WITHSCORES returns flat array" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.0", "1.0", "v2" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+
+    const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "2", "WITHSCORES" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    // Flat: [id1, score1, id2, score2] = 4 elements
+    try std.testing.expectEqual(@as(usize, 4), result.array.len);
+    try std.testing.expectEqualStrings("v1", result.array[0].bulk_string);
+    // score for v1 (identical) should be 1.0
+    try std.testing.expect(result.array[1] == .bulk_string);
+}
+
+test "cmdVsim: VALUES query" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.0", "1.0", "v2" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+
+    // Query with a vector close to v1
+    const args = [_][]const u8{ "VSIM", "myvec", "VALUES", "2", "0.99", "0.01", "COUNT", "2" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    // v1 should rank higher since the query vector is close to it
+    try std.testing.expectEqualStrings("v1", result.array[0].bulk_string);
+}
+
+test "cmdVsim: nonexistent key returns empty array" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VSIM", "nonexistent", "ELE", "v1" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
+}
+
+test "cmdVsim: ELE nonexistent member returns error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+
+    const args = [_][]const u8{ "VSIM", "myvec", "ELE", "nonexistent" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
     try std.testing.expect(result == .err);
 }
 
-// ============================================================================
-// VSIM - Vector Similarity Search
-// ============================================================================
-
-/// VSIM key member K [WITHSCORES] [WITHDISTANCES] [WITHEMBEDDINGS]
-/// Find K nearest neighbors to the given member's embedding.
-/// Returns array of member IDs ordered by distance (ascending).
-/// Optional flags add metadata to each result.
-pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    if (args.len < 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vsim' command" };
-
-    const key = args[1];
-    const member = args[2];
-    const k_str = args[3];
-
-    // Parse K
-    const k = std.fmt.parseInt(usize, k_str, 10) catch {
-        return RespValue{ .error_string = "ERR invalid K value" };
-    };
-    if (k == 0) {
-        return RespValue{ .error_string = "ERR K must be positive" };
-    }
-
-    // Parse flags
-    var with_scores = false;
-    var with_distances = false;
-    var with_embeddings = false;
-    for (args[4..]) |flag| {
-        if (std.ascii.eqlIgnoreCase(flag, "WITHSCORES")) {
-            with_scores = true;
-        } else if (std.ascii.eqlIgnoreCase(flag, "WITHDISTANCES")) {
-            with_distances = true;
-        } else if (std.ascii.eqlIgnoreCase(flag, "WITHEMBEDDINGS")) {
-            with_embeddings = true;
-        } else {
-            return RespValue{ .error_string = "ERR syntax error" };
-        }
-    }
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .error_string = "ERR no such key" };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-
-    // Get query vector
-    const query_entry = vs.get(member) orelse {
-        return RespValue{ .error_string = "ERR member not found" };
-    };
-
-    // Brute-force linear scan for K nearest neighbors
-    const NeighborResult = struct {
-        id: []const u8,
-        distance: f32,
-        embedding: []const f32,
-    };
-
-    var neighbors = std.ArrayList(NeighborResult){};
-    defer neighbors.deinit(allocator);
-
-    // Calculate distances to all other vectors
-    var it = vs.vectors.iterator();
-    while (it.next()) |entry| {
-        if (std.mem.eql(u8, entry.key_ptr.*, member)) continue; // Skip self
-
-        const dist = vs.distance(query_entry.embedding, entry.value_ptr.*.embedding);
-        try neighbors.append(allocator, NeighborResult{
-            .id = entry.value_ptr.*.id,
-            .distance = dist,
-            .embedding = entry.value_ptr.*.embedding,
-        });
-    }
-
-    // Sort by distance (ascending)
-    std.mem.sort(NeighborResult, neighbors.items, {}, struct {
-        pub fn lessThan(_: void, a: NeighborResult, b: NeighborResult) bool {
-            return a.distance < b.distance;
-        }
-    }.lessThan);
-
-    // Take top K
-    const actual_k = @min(k, neighbors.items.len);
-
-    // Build response based on flags
-    if (!with_scores and !with_distances and !with_embeddings) {
-        // Simple array of IDs
-        var result = try allocator.alloc(RespValue, actual_k);
-        errdefer allocator.free(result);
-
-        for (0..actual_k) |i| {
-            const id_copy = try allocator.dupe(u8, neighbors.items[i].id);
-            result[i] = RespValue{ .bulk_string = id_copy };
-        }
-
-        return RespValue{ .array = result };
-    } else {
-        // Array of arrays: [id, distance?, score?, embedding?]
-        var result = try allocator.alloc(RespValue, actual_k);
-        errdefer allocator.free(result);
-
-        for (0..actual_k) |i| {
-            const neighbor = neighbors.items[i];
-            var item_count: usize = 1; // Always include ID
-            if (with_distances) item_count += 1;
-            if (with_scores) item_count += 1;
-            if (with_embeddings) item_count += 1;
-
-            var item = try allocator.alloc(RespValue, item_count);
-            errdefer allocator.free(item);
-
-            var idx: usize = 0;
-
-            // ID (always first)
-            const id_copy = try allocator.dupe(u8, neighbor.id);
-            errdefer allocator.free(id_copy);
-            item[idx] = RespValue{ .bulk_string = id_copy };
-            idx += 1;
-
-            // Distance
-            if (with_distances) {
-                const dist_str = try std.fmt.allocPrint(allocator, "{d}", .{neighbor.distance});
-                errdefer allocator.free(dist_str);
-                item[idx] = RespValue{ .bulk_string = dist_str };
-                idx += 1;
-            }
-
-            // Score (1.0 - distance)
-            if (with_scores) {
-                const score = 1.0 - neighbor.distance;
-                const score_str = try std.fmt.allocPrint(allocator, "{d}", .{score});
-                errdefer allocator.free(score_str);
-                item[idx] = RespValue{ .bulk_string = score_str };
-                idx += 1;
-            }
-
-            // Embedding
-            if (with_embeddings) {
-                var emb_vals = try allocator.alloc(RespValue, neighbor.embedding.len);
-                errdefer allocator.free(emb_vals);
-
-                for (neighbor.embedding, 0..) |val, j| {
-                    const val_str = try std.fmt.allocPrint(allocator, "{d}", .{val});
-                    errdefer allocator.free(val_str);
-                    emb_vals[j] = RespValue{ .bulk_string = val_str };
-                }
-                item[idx] = RespValue{ .array = emb_vals };
-                idx += 1;
-            }
-
-            result[i] = RespValue{ .array = item };
-        }
-
-        return RespValue{ .array = result };
-    }
-}
-
-// ============================================================================
-// VRANGE - Range-based vector retrieval
-// ============================================================================
-
-/// VRANGE key start stop [WITHEMBEDDINGS]
-/// Pagination-style range retrieval.
-/// start/stop support negative indices (-1 = last).
-/// Returns array of member IDs.
-pub fn cmdVrange(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    if (args.len < 4) return RespValue{ .error_string = "ERR wrong number of arguments for 'vrange' command" };
-
-    const key = args[1];
-    const start_str = args[2];
-    const stop_str = args[3];
-
-    // Parse optional flag
-    var with_embeddings = false;
-    for (args[4..]) |flag| {
-        if (std.ascii.eqlIgnoreCase(flag, "WITHEMBEDDINGS")) {
-            with_embeddings = true;
-        } else {
-            return RespValue{ .error_string = "ERR syntax error" };
-        }
-    }
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .error_string = "ERR no such key" };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-    const count = vs.cardinality();
-
-    if (count == 0) {
-        // Empty array for empty vector set
-        const empty = try allocator.alloc(RespValue, 0);
-        return RespValue{ .array = empty };
-    }
-
-    // Parse start/stop indices
-    var start = std.fmt.parseInt(i64, start_str, 10) catch {
-        return RespValue{ .error_string = "ERR invalid start index" };
-    };
-    var stop = std.fmt.parseInt(i64, stop_str, 10) catch {
-        return RespValue{ .error_string = "ERR invalid stop index" };
-    };
-
-    // Normalize negative indices
-    const count_i64 = @as(i64, @intCast(count));
-    if (start < 0) start = count_i64 + start;
-    if (stop < 0) stop = count_i64 + stop;
-
-    // Clamp to valid range
-    if (start < 0) start = 0;
-    if (stop >= count_i64) stop = count_i64 - 1;
-
-    // Empty range
-    if (start > stop) {
-        const empty = try allocator.alloc(RespValue, 0);
-        return RespValue{ .array = empty };
-    }
-
-    // Collect all member IDs
-    var members = std.ArrayList(*VectorEntry){};
-    defer members.deinit(allocator);
-
-    var it = vs.vectors.valueIterator();
-    while (it.next()) |entry_ptr| {
-        try members.append(allocator, entry_ptr.*);
-    }
-
-    // Build response for the range [start..stop]
-    const range_size = @as(usize, @intCast(stop - start + 1));
-    var result = try allocator.alloc(RespValue, range_size);
-    errdefer allocator.free(result);
-
-    for (0..range_size) |i| {
-        const idx = @as(usize, @intCast(start)) + i;
-        const entry = members.items[idx];
-
-        if (!with_embeddings) {
-            // Just the ID
-            const id_copy = try allocator.dupe(u8, entry.id);
-            errdefer allocator.free(id_copy);
-            result[i] = RespValue{ .bulk_string = id_copy };
-        } else {
-            // [ID, embedding_array]
-            var item = try allocator.alloc(RespValue, 2);
-            errdefer allocator.free(item);
-
-            const id_copy = try allocator.dupe(u8, entry.id);
-            errdefer allocator.free(id_copy);
-            item[0] = RespValue{ .bulk_string = id_copy };
-
-            var emb_vals = try allocator.alloc(RespValue, entry.embedding.len);
-            errdefer allocator.free(emb_vals);
-
-            for (entry.embedding, 0..) |val, j| {
-                const val_str = try std.fmt.allocPrint(allocator, "{d}", .{val});
-                errdefer allocator.free(val_str);
-                emb_vals[j] = RespValue{ .bulk_string = val_str };
-            }
-            item[1] = RespValue{ .array = emb_vals };
-
-            result[i] = RespValue{ .array = item };
-        }
-    }
-
-    return RespValue{ .array = result };
-}
-
-// ============================================================================
-// VLINKS - HNSW graph navigation (stub)
-// ============================================================================
-
-/// VLINKS key member
-/// Return HNSW graph neighbors for a given member.
-/// Stub implementation: return empty array (HNSW graph not yet built).
-pub fn cmdVlinks(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
-    if (args.len != 3) return RespValue{ .error_string = "ERR wrong number of arguments for 'vlinks' command" };
-
-    const key = args[1];
-    const member = args[2];
-
-    const value = storage.data.get(key) orelse {
-        return RespValue{ .error_string = "ERR no such key" };
-    };
-
-    if (value != .vector_set) {
-        return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" };
-    }
-
-    const vs = &value.vector_set;
-
-    // Verify member exists
-    _ = vs.get(member) orelse {
-        return RespValue{ .error_string = "ERR member not found" };
-    };
-
-    // Stub: return empty array (HNSW graph not implemented)
-    const empty = try allocator.alloc(RespValue, 0);
-    return RespValue{ .array = empty };
-}
-
-// ============================================================================
-// VSIM tests
-// ============================================================================
-
-test "cmdVsim: basic K=2 without flags" {
+test "cmdVsim: COUNT limits results" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    // Add 4 vectors with different distances from v1
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "0.0", "0.0", "v2", "1.0", "0.0", "v3", "0.0", "1.0", "v4", "2.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.9", "0.1", "v2" };
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.8", "0.2", "v3" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
 
-    // Find 2 nearest neighbors to v1
-    const args2 = [_][]const u8{ "VSIM", "myvec", "v1", "2" };
-    const result2 = try cmdVsim(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 2), result2.array.len);
-    // Should return v2 and v3 (both distance 1.0 from v1)
+    const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "2" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
 }
 
-test "cmdVsim: with WITHSCORES flag" {
+test "cmdVsim: WITHATTRIBS returns attribute blobs" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "0.0", "0.0", "v2", "1.0", "0.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1", "SETATTR", "meta1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VSIM", "myvec", "v1", "1", "WITHSCORES" };
-    const result2 = try cmdVsim(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 1), result2.array.len);
-    try std.testing.expect(result2.array[0] == .array);
-    try std.testing.expectEqual(@as(usize, 2), result2.array[0].array.len); // [id, score]
-}
-
-test "cmdVsim: nonexistent member" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
-
-    const args2 = [_][]const u8{ "VSIM", "myvec", "nonexistent", "1" };
-    const result2 = try cmdVsim(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .err);
+    const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "1", "WITHATTRIBS" };
+    const result = try cmdVsim(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    // Flat: [id1, attr1] = 2 elements
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
+    try std.testing.expectEqualStrings("v1", result.array[0].bulk_string);
+    try std.testing.expectEqualStrings("meta1", result.array[1].bulk_string);
 }
 
 // ============================================================================
 // VRANGE tests
 // ============================================================================
 
-test "cmdVrange: basic range [0..1]" {
+test "cmdVrange: basic range" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0", "v3", "5.0", "6.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VRANGE", "myvec", "0", "1" };
-    const result2 = try cmdVrange(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 2), result2.array.len);
-}
-
-test "cmdVrange: negative indices" {
-    const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator);
-    defer storage.deinit();
-
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0", "v2", "3.0", "4.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
-
-    const args2 = [_][]const u8{ "VRANGE", "myvec", "-1", "-1" };
-    const result2 = try cmdVrange(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 1), result2.array.len); // Last element only
+    const args = [_][]const u8{ "VRANGE", "myvec", "0", "1" };
+    const result = try cmdVrange(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array.len);
 }
 
 test "cmdVrange: with WITHEMBEDDINGS flag" {
@@ -1858,18 +1472,16 @@ test "cmdVrange: with WITHEMBEDDINGS flag" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VRANGE", "myvec", "0", "0", "WITHEMBEDDINGS" };
-    const result2 = try cmdVrange(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 1), result2.array.len);
-    try std.testing.expect(result2.array[0] == .array);
-    try std.testing.expectEqual(@as(usize, 2), result2.array[0].array.len); // [id, embedding]
+    const args = [_][]const u8{ "VRANGE", "myvec", "0", "0", "WITHEMBEDDINGS" };
+    const result = try cmdVrange(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 1), result.array.len);
+    try std.testing.expect(result.array[0] == .array);
+    try std.testing.expectEqual(@as(usize, 2), result.array[0].array.len); // [id, embedding]
 }
 
 // ============================================================================
@@ -1881,16 +1493,14 @@ test "cmdVlinks: stub returns empty array" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VLINKS", "myvec", "v1" };
-    const result2 = try cmdVlinks(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .array);
-    try std.testing.expectEqual(@as(usize, 0), result2.array.len);
+    const args = [_][]const u8{ "VLINKS", "myvec", "v1" };
+    const result = try cmdVlinks(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .array);
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
 
 test "cmdVlinks: nonexistent member" {
@@ -1898,13 +1508,11 @@ test "cmdVlinks: nonexistent member" {
     var storage = try Storage.init(allocator);
     defer storage.deinit();
 
-    const args1 = [_][]const u8{ "VADD", "myvec", "2", "L2", "v1", "1.0", "2.0" };
-    const result1 = try cmdVadd(allocator, &storage, &args1, 3);
-    defer result1.deinit(allocator);
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
 
-    const args2 = [_][]const u8{ "VLINKS", "myvec", "nonexistent" };
-    const result2 = try cmdVlinks(allocator, &storage, &args2, 3);
-    defer result2.deinit(allocator);
-
-    try std.testing.expect(result2 == .err);
+    const args = [_][]const u8{ "VLINKS", "myvec", "nonexistent" };
+    const result = try cmdVlinks(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .err);
 }
