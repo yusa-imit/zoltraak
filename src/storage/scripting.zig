@@ -31,17 +31,20 @@ pub const ScriptStore = struct {
         const sha1_hash = try computeSHA1(self.allocator, script);
         errdefer self.allocator.free(sha1_hash);
 
-        // Check if script already exists
+        // Script already cached: return caller-owned sha1_hash (map keeps its own key)
         if (self.scripts.get(sha1_hash)) |_| {
             return sha1_hash;
         }
 
-        // Store the script
+        // New script: map needs its own key copy so caller and map can free independently
+        const key_copy = try self.allocator.dupe(u8, sha1_hash);
+        errdefer self.allocator.free(key_copy);
+
         const script_copy = try self.allocator.dupe(u8, script);
         errdefer self.allocator.free(script_copy);
 
-        try self.scripts.put(sha1_hash, script_copy);
-        return sha1_hash;
+        try self.scripts.put(key_copy, script_copy);
+        return sha1_hash; // caller owns sha1_hash; map owns key_copy
     }
 
     /// Check if a script exists

@@ -32,23 +32,22 @@ pub const LuaEngine = struct {
         // bit module is already built into LuaJIT
         try lua_libraries.registerLibraries(L);
 
-        // Apply sandboxing to restrict dangerous operations
-        applySandbox(L);
-
-        const engine = LuaEngine{
-            .L = L,
-            .allocator = allocator,
-            .redis_ctx = redis_ctx,
-            .timeout_ms = timeout_ms,
-            .deadline_ns = 0, // set when script starts
-        };
-
-        // Register redis.call() and redis.pcall() if context provided
+        // Register redis.call() and redis.pcall() BEFORE sandbox — the sandbox sets
+        // __newindex on _G that blocks new global creation, so 'redis' must exist first.
         if (redis_ctx) |ctx| {
             try redis_api.registerRedisApi(L, ctx);
         }
 
-        return engine;
+        // Apply sandboxing AFTER registering built-in globals (redis, KEYS, ARGV come later)
+        applySandbox(L);
+
+        return LuaEngine{
+            .L = L,
+            .allocator = allocator,
+            .redis_ctx = redis_ctx,
+            .timeout_ms = timeout_ms,
+            .deadline_ns = 0,
+        };
     }
 
     /// Apply Redis-compatible sandboxing to Lua environment
@@ -113,9 +112,7 @@ pub const LuaEngine = struct {
 
     /// Clean up Lua state
     pub fn deinit(self: *LuaEngine) void {
-        if (self.redis_ctx) |ctx| {
-            self.allocator.destroy(ctx);
-        }
+        // redis_ctx is NOT owned by LuaEngine — caller manages its lifetime
         lua.lua_close(self.L);
     }
 
@@ -155,88 +152,177 @@ pub const LuaEngine = struct {
         }
     }
 
-    /// Execute a Lua script and return the result
-    /// Returns error if script fails to compile or execute
+    /// Execute a Lua script and return RESP2-formatted response bytes.
+    /// Handles compilation errors, runtime errors, and all Lua return types.
     pub fn eval(self: *LuaEngine, script: []const u8, numkeys: usize, keys: []const []const u8, argv: []const []const u8) ![]const u8 {
         // Set up timeout if enabled
         if (self.timeout_ms > 0) {
             const now_ns: i64 = @intCast(std.time.nanoTimestamp());
-            const timeout_ns: i64 = @intCast(self.timeout_ms * 1_000_000); // ms to ns
+            const timeout_ns: i64 = @intCast(self.timeout_ms * 1_000_000);
             self.deadline_ns = now_ns + timeout_ns;
 
-            // Store engine pointer in registry for hook access
             lua.lua_pushstring(self.L, "LUA_ENGINE");
             lua.lua_pushlightuserdata(self.L, @ptrCast(self));
             lua.lua_settable(self.L, lua.LUA_REGISTRYINDEX);
 
-            // Set debug hook to check timeout every 1000 instructions
             _ = lua.lua_sethook(self.L, timeoutHook, lua.LUA_MASKCOUNT, 1000);
         }
         defer {
-            // Clear hook and deadline after execution
             if (self.timeout_ms > 0) {
                 _ = lua.lua_sethook(self.L, null, 0, 0);
                 self.deadline_ns = 0;
             }
         }
 
-        // Load the script
         const script_z = try self.allocator.dupeZ(u8, script);
         defer self.allocator.free(script_z);
 
         const load_result = lua.luaL_loadstring(self.L, script_z.ptr);
         if (load_result != lua.LUA_OK) {
-            // Script failed to compile
             const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
             const err_str = std.mem.span(err_msg);
-            const result = try std.fmt.allocPrint(self.allocator, "ERR Error compiling script: {s}", .{err_str});
-            lua.lua_pop(self.L, 1); // pop error message
+            const result = try std.fmt.allocPrint(self.allocator, "-ERR Error compiling script: {s}\r\n", .{err_str});
+            lua.lua_pop(self.L, 1);
             return result;
         }
 
-        // Create KEYS table
+        // Use rawset to bypass __newindex sandbox when setting KEYS and ARGV globals.
+        // Pattern: push key-string, push table, then lua_rawset on LUA_GLOBALSINDEX.
+        lua.lua_pushstring(self.L, "KEYS");
         lua.lua_createtable(self.L, @intCast(keys.len), 0);
         for (keys, 0..) |key, i| {
             lua.lua_pushlstring(self.L, key.ptr, key.len);
-            lua.lua_rawseti(self.L, -2, @intCast(i + 1)); // Lua arrays are 1-indexed
+            lua.lua_rawseti(self.L, -2, @intCast(i + 1));
         }
-        lua.lua_setfield(self.L, lua.LUA_GLOBALSINDEX, "KEYS");
+        lua.lua_rawset(self.L, lua.LUA_GLOBALSINDEX);
 
-        // Create ARGV table
+        lua.lua_pushstring(self.L, "ARGV");
         lua.lua_createtable(self.L, @intCast(argv.len), 0);
         for (argv, 0..) |arg, i| {
             lua.lua_pushlstring(self.L, arg.ptr, arg.len);
-            lua.lua_rawseti(self.L, -2, @intCast(i + 1)); // Lua arrays are 1-indexed
+            lua.lua_rawseti(self.L, -2, @intCast(i + 1));
         }
-        lua.lua_setfield(self.L, lua.LUA_GLOBALSINDEX, "ARGV");
+        lua.lua_rawset(self.L, lua.LUA_GLOBALSINDEX);
 
-        // Execute the script (0 args pushed explicitly, script gets KEYS/ARGV from globals)
         const call_result = lua.lua_pcall(self.L, 0, 1, 0);
         if (call_result != lua.LUA_OK) {
-            // Script failed to execute
             const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
             const err_str = std.mem.span(err_msg);
-            const result = try std.fmt.allocPrint(self.allocator, "ERR Error running script: {s}", .{err_str});
-            lua.lua_pop(self.L, 1); // pop error message
+            const result = try std.fmt.allocPrint(self.allocator, "-ERR Error running script: {s}\r\n", .{err_str});
+            lua.lua_pop(self.L, 1);
             return result;
         }
 
-        // Get the return value
-        const result = try self.luaValueToString(-1);
-        lua.lua_pop(self.L, 1); // pop return value
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(self.allocator);
+        try self.luaToRESP2Buf(&buf, lua.lua_gettop(self.L));
+        lua.lua_pop(self.L, 1);
 
-        _ = numkeys; // unused for now
-        return result;
+        _ = numkeys;
+        return buf.toOwnedSlice(self.allocator);
     }
 
-    /// Convert Lua stack value to Zig string
-    fn luaValueToString(self: *LuaEngine, idx: c_int) ![]const u8 {
-        const vtype = lua.lua_type(self.L, idx);
-
+    /// Convert a Lua value at absolute stack index to RESP2 bytes, appended to buf.
+    /// Redis conversion rules:
+    ///   number  → integer reply (:N\r\n)
+    ///   string  → bulk string reply ($N\r\n...\r\n)
+    ///   nil     → null bulk string ($-1\r\n)
+    ///   true    → integer 1 (:1\r\n)
+    ///   false   → null bulk string ($-1\r\n)
+    ///   {err=s} → error reply (-s\r\n)
+    ///   {ok=s}  → simple string (+s\r\n)
+    ///   table   → array reply (*N\r\n...)
+    fn luaToRESP2Buf(self: *LuaEngine, buf: *std.ArrayList(u8), abs_idx: c_int) !void {
+        const vtype = lua.lua_type(self.L, abs_idx);
         switch (vtype) {
             lua.LUA_TNIL => {
-                return try self.allocator.dupe(u8, "nil");
+                try buf.appendSlice(self.allocator, "$-1\r\n");
             },
+            lua.LUA_TBOOLEAN => {
+                if (lua.lua_toboolean(self.L, abs_idx) != 0) {
+                    try buf.appendSlice(self.allocator, ":1\r\n");
+                } else {
+                    try buf.appendSlice(self.allocator, "$-1\r\n");
+                }
+            },
+            lua.LUA_TNUMBER => {
+                const num = lua.lua_tonumber(self.L, abs_idx);
+                const int_val: i64 = @intFromFloat(num);
+                try std.fmt.format(buf.writer(self.allocator), ":{d}\r\n", .{int_val});
+            },
+            lua.LUA_TSTRING => {
+                var len: usize = 0;
+                const str_ptr = lua.lua_tolstring(self.L, abs_idx, &len);
+                if (str_ptr) |ptr| {
+                    try std.fmt.format(buf.writer(self.allocator), "${d}\r\n", .{len});
+                    try buf.appendSlice(self.allocator, ptr[0..len]);
+                    try buf.appendSlice(self.allocator, "\r\n");
+                } else {
+                    try buf.appendSlice(self.allocator, "$-1\r\n");
+                }
+            },
+            lua.LUA_TTABLE => {
+                // Check for {err = "..."} — redis.call error table
+                lua.lua_pushstring(self.L, "err");
+                lua.lua_rawget(self.L, abs_idx);
+                if (lua.lua_type(self.L, -1) == lua.LUA_TSTRING) {
+                    var err_len: usize = 0;
+                    const err_ptr = lua.lua_tolstring(self.L, -1, &err_len);
+                    lua.lua_pop(self.L, 1);
+                    if (err_ptr) |ptr| {
+                        try buf.append(self.allocator, '-');
+                        try buf.appendSlice(self.allocator, ptr[0..err_len]);
+                        try buf.appendSlice(self.allocator, "\r\n");
+                        return;
+                    }
+                } else {
+                    lua.lua_pop(self.L, 1);
+                }
+
+                // Check for {ok = "..."} — status reply table
+                lua.lua_pushstring(self.L, "ok");
+                lua.lua_rawget(self.L, abs_idx);
+                if (lua.lua_type(self.L, -1) == lua.LUA_TSTRING) {
+                    var ok_len: usize = 0;
+                    const ok_ptr = lua.lua_tolstring(self.L, -1, &ok_len);
+                    lua.lua_pop(self.L, 1);
+                    if (ok_ptr) |ptr| {
+                        try buf.append(self.allocator, '+');
+                        try buf.appendSlice(self.allocator, ptr[0..ok_len]);
+                        try buf.appendSlice(self.allocator, "\r\n");
+                        return;
+                    }
+                } else {
+                    lua.lua_pop(self.L, 1);
+                }
+
+                // Array table: count sequential integer keys starting at 1
+                var count: usize = 0;
+                while (true) {
+                    lua.lua_rawgeti(self.L, abs_idx, @intCast(count + 1));
+                    const elem_type = lua.lua_type(self.L, -1);
+                    lua.lua_pop(self.L, 1);
+                    if (elem_type == lua.LUA_TNIL) break;
+                    count += 1;
+                }
+                try std.fmt.format(buf.writer(self.allocator), "*{d}\r\n", .{count});
+                for (0..count) |i| {
+                    lua.lua_rawgeti(self.L, abs_idx, @intCast(i + 1));
+                    try self.luaToRESP2Buf(buf, lua.lua_gettop(self.L));
+                    lua.lua_pop(self.L, 1);
+                }
+            },
+            else => {
+                try buf.appendSlice(self.allocator, "$-1\r\n");
+            },
+        }
+    }
+
+    /// Convert Lua stack value to a raw Zig string (used by callFunction for FCALL).
+    fn luaValueToString(self: *LuaEngine, idx: c_int) ![]const u8 {
+        const vtype = lua.lua_type(self.L, idx);
+        switch (vtype) {
+            lua.LUA_TNIL => return try self.allocator.dupe(u8, "nil"),
             lua.LUA_TBOOLEAN => {
                 const val = lua.lua_toboolean(self.L, idx);
                 return if (val != 0) try self.allocator.dupe(u8, "true") else try self.allocator.dupe(u8, "false");
@@ -253,10 +339,6 @@ pub const LuaEngine = struct {
                 } else {
                     return try self.allocator.dupe(u8, "");
                 }
-            },
-            lua.LUA_TTABLE => {
-                // For now, return a simple table representation
-                return try self.allocator.dupe(u8, "[table]");
             },
             else => {
                 const type_name = lua.lua_typename(self.L, vtype);
@@ -348,20 +430,22 @@ pub const LuaEngine = struct {
             return result;
         }
 
-        // Create KEYS and ARGV globals
+        // Set KEYS using rawset to bypass __newindex sandbox
+        lua.lua_pushstring(self.L, "KEYS");
         lua.lua_createtable(self.L, @intCast(keys.len), 0);
         for (keys, 0..) |key, i| {
             lua.lua_pushlstring(self.L, key.ptr, key.len);
             lua.lua_rawseti(self.L, -2, @intCast(i + 1));
         }
-        lua.lua_setfield(self.L, lua.LUA_GLOBALSINDEX, "KEYS");
+        lua.lua_rawset(self.L, lua.LUA_GLOBALSINDEX);
 
+        lua.lua_pushstring(self.L, "ARGV");
         lua.lua_createtable(self.L, @intCast(argv.len), 0);
         for (argv, 0..) |arg, i| {
             lua.lua_pushlstring(self.L, arg.ptr, arg.len);
             lua.lua_rawseti(self.L, -2, @intCast(i + 1));
         }
-        lua.lua_setfield(self.L, lua.LUA_GLOBALSINDEX, "ARGV");
+        lua.lua_rawset(self.L, lua.LUA_GLOBALSINDEX);
 
         // Get the function from global table
         const func_z = try self.allocator.dupeZ(u8, function_name);
@@ -407,14 +491,10 @@ test "LuaEngine: simple script evaluation" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return 42";
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return 42", 0, &.{}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("42", result);
+    try std.testing.expectEqualStrings(":42\r\n", result);
 }
 
 test "LuaEngine: script with string return" {
@@ -422,14 +502,10 @@ test "LuaEngine: script with string return" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return 'hello world'";
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return 'hello world'", 0, &.{}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("hello world", result);
+    try std.testing.expectEqualStrings("$11\r\nhello world\r\n", result);
 }
 
 test "LuaEngine: script with KEYS access" {
@@ -437,14 +513,10 @@ test "LuaEngine: script with KEYS access" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return KEYS[1]";
-    const keys: []const []const u8 = &.{"mykey"};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 1, keys, argv);
+    const result = try engine.eval("return KEYS[1]", 1, &.{"mykey"}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("mykey", result);
+    try std.testing.expectEqualStrings("$5\r\nmykey\r\n", result);
 }
 
 test "LuaEngine: script with ARGV access" {
@@ -452,14 +524,10 @@ test "LuaEngine: script with ARGV access" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return ARGV[1] .. ' ' .. ARGV[2]";
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{"hello", "world"};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return ARGV[1] .. ' ' .. ARGV[2]", 0, &.{}, &.{ "hello", "world" });
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("hello world", result);
+    try std.testing.expectEqualStrings("$11\r\nhello world\r\n", result);
 }
 
 test "LuaEngine: script compilation error" {
@@ -467,14 +535,10 @@ test "LuaEngine: script compilation error" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return 42 +"; // Invalid syntax
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return 42 +", 0, &.{}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.startsWith(u8, result, "ERR Error compiling script"));
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR Error compiling script"));
 }
 
 test "LuaEngine: script runtime error" {
@@ -482,29 +546,32 @@ test "LuaEngine: script runtime error" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return nil + 1"; // Runtime error: attempt to perform arithmetic on nil
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return nil + 1", 0, &.{}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.startsWith(u8, result, "ERR Error running script"));
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR Error running script"));
 }
 
-test "LuaEngine: boolean return value" {
+test "LuaEngine: boolean true return value" {
     const allocator = std.testing.allocator;
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return true";
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return true", 0, &.{}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("true", result);
+    try std.testing.expectEqualStrings(":1\r\n", result);
+}
+
+test "LuaEngine: boolean false return value" {
+    const allocator = std.testing.allocator;
+    var engine = try LuaEngine.init(allocator, null, 0);
+    defer engine.deinit();
+
+    const result = try engine.eval("return false", 0, &.{}, &.{});
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "LuaEngine: nil return value" {
@@ -512,14 +579,10 @@ test "LuaEngine: nil return value" {
     var engine = try LuaEngine.init(allocator, null, 0);
     defer engine.deinit();
 
-    const script = "return nil";
-    const keys: []const []const u8 = &.{};
-    const argv: []const []const u8 = &.{};
-
-    const result = try engine.eval(script, 0, keys, argv);
+    const result = try engine.eval("return nil", 0, &.{}, &.{});
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("nil", result);
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 // Tests for redis.call() and redis.pcall()

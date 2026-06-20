@@ -100,16 +100,8 @@ pub fn cmdEval(
     var lua_engine = try LuaEngine.init(allocator, &redis_ctx, timeout_ms);
     defer lua_engine.deinit();
 
-    const result_str = try lua_engine.eval(script, numkeys, keys, argv);
-    defer allocator.free(result_str);
-
-    // Check if result is an error
-    if (std.mem.startsWith(u8, result_str, "ERR ")) {
-        return w.writeError(result_str);
-    }
-
-    // Return the result as a bulk string
-    return w.writeBulkString(result_str);
+    // eval() now returns RESP2-formatted bytes directly
+    return try lua_engine.eval(script, numkeys, keys, argv);
 }
 
 /// EVALSHA sha1 numkeys key [key ...] arg [arg ...]
@@ -211,16 +203,7 @@ pub fn cmdEvalSHA(
     var lua_engine = try LuaEngine.init(allocator, &redis_ctx, timeout_ms);
     defer lua_engine.deinit();
 
-    const result_str = try lua_engine.eval(script, numkeys, keys, argv);
-    defer allocator.free(result_str);
-
-    // Check if result is an error
-    if (std.mem.startsWith(u8, result_str, "ERR ")) {
-        return w.writeError(result_str);
-    }
-
-    // Return the result as a bulk string
-    return w.writeBulkString(result_str);
+    return try lua_engine.eval(script, numkeys, keys, argv);
 }
 
 /// EVAL_RO script numkeys key [key ...] arg [arg ...]
@@ -302,14 +285,7 @@ pub fn cmdEvalRo(
     var lua_engine = try LuaEngine.init(allocator, &redis_ctx, timeout_ms);
     defer lua_engine.deinit();
 
-    const result_str = try lua_engine.eval(script, numkeys, keys, argv);
-    defer allocator.free(result_str);
-
-    if (std.mem.startsWith(u8, result_str, "ERR ")) {
-        return w.writeError(result_str);
-    }
-
-    return w.writeBulkString(result_str);
+    return try lua_engine.eval(script, numkeys, keys, argv);
 }
 
 /// EVALSHA_RO sha1 numkeys key [key ...] arg [arg ...]
@@ -401,14 +377,7 @@ pub fn cmdEvalShaRo(
     var lua_engine = try LuaEngine.init(allocator, &redis_ctx, timeout_ms);
     defer lua_engine.deinit();
 
-    const result_str = try lua_engine.eval(script, numkeys, keys, argv);
-    defer allocator.free(result_str);
-
-    if (std.mem.startsWith(u8, result_str, "ERR ")) {
-        return w.writeError(result_str);
-    }
-
-    return w.writeBulkString(result_str);
+    return try lua_engine.eval(script, numkeys, keys, argv);
 }
 
 /// SCRIPT LOAD script
