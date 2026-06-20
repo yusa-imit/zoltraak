@@ -355,25 +355,49 @@ pub fn cmdDebug(
             defer buf.deinit(allocator);
             const buf_writer = buf.writer(allocator);
 
-            const type_str = switch (value_type) {
-                .string => "string",
+            // Redis TYPE string (used in type: field — matches TYPE command output)
+            const type_str: []const u8 = switch (value_type) {
+                .string, .hyperloglog => "string",
                 .list => "list",
                 .set => "set",
                 .hash => "hash",
                 .sorted_set => "zset",
                 .stream => "stream",
-                .hyperloglog => "hyperloglog",
-                .json => "ReJSON-RL",
-                .timeseries => "TSDB-TYPE",
-                .bloom => "BloomFilter",
-                .cuckoo => "CuckooFilter",
-                .count_min_sketch => "CountMinSketch",
-                .top_k => "TopK",
-                .t_digest => "TDigest",
-                .vector_set => "VectorSet",
+                else => "string",
             };
 
-            try buf_writer.print("Value at:{s} refcount:1 encoding:raw serializedlength:0 lru:0 lru_seconds_idle:0", .{type_str});
+            // Actual encoding (simplified — avoids duplicating full OBJECT ENCODING logic)
+            const encoding: []const u8 = switch (value_type) {
+                .string => storage.peekStringEncoding(key) orelse "embstr",
+                .list => "quicklist",
+                .set => blk: {
+                    const se = storage.getSetEncoding(key) orelse break :blk "hashtable";
+                    break :blk switch (se) {
+                        .intset => "intset",
+                        .hashmap => "hashtable",
+                    };
+                },
+                .hash => blk: {
+                    const hl = storage.hlen(key) orelse 0;
+                    break :blk if (hl <= 128) "listpack" else "hashtable";
+                },
+                .sorted_set => blk: {
+                    const zc = storage.zcard(key) orelse 0;
+                    break :blk if (zc <= 128) "listpack" else "skiplist";
+                },
+                .stream => "stream",
+                .hyperloglog => "raw",
+                else => "raw",
+            };
+
+            // Idle time in seconds (LRU-based; 0 if not tracked or LFU policy active)
+            const idle_secs: u32 = storage.getObjectIdleTime(key) orelse 0;
+
+            // Format: matches real Redis DEBUG OBJECT output (Redis 7.4+ includes type: field)
+            try buf_writer.print(
+                "Value at:0x0 refcount:1 encoding:{s} serializedlength:0 lru:0 lru_seconds_idle:{d} type:{s}",
+                .{ encoding, idle_secs, type_str },
+            );
             const result = try buf.toOwnedSlice(allocator);
             defer allocator.free(result);
             return try w.writeBulkString(result);
@@ -918,23 +942,25 @@ test "cmdMonitor - wrong number of arguments" {
 
 test "cmdDebug - OBJECT subcommand" {
     const allocator = std.testing.allocator;
-    var storage = Storage.init(allocator);
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
     var pubsub = PubSub.init(allocator);
     defer pubsub.deinit();
     var client_registry = ClientRegistry.init(allocator);
     defer client_registry.deinit();
-    var config = ServerConfig.init();
+    const config = storage.config;
 
     // Set a key
-    _ = try storage.set("testkey", "testvalue", null);
+    try storage.set("testkey", "testvalue", null);
 
     const args = [_][]const u8{ "DEBUG", "OBJECT", "testkey" };
-    const result = try cmdDebug(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
     defer allocator.free(result);
 
-    // Should contain type info
-    try std.testing.expect(std.mem.indexOf(u8, result, "string") != null);
+    // Should contain proper format fields
+    try std.testing.expect(std.mem.indexOf(u8, result, "Value at:0x0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "type:string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "encoding:") != null);
 }
 
 test "cmdDebug - HELP subcommand" {
@@ -1221,9 +1247,9 @@ test "cmdReset - wrong number of arguments" {
 
 // ── DEBUG command tests ───────────────────────────────────────────────────────
 
-test "cmdDebug - DEBUG OBJECT shows key info" {
+test "cmdDebug - DEBUG OBJECT shows key info with correct format" {
     const allocator = std.testing.allocator;
-    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
     var pubsub = PubSub.init(allocator);
     defer pubsub.deinit();
@@ -1231,16 +1257,18 @@ test "cmdDebug - DEBUG OBJECT shows key info" {
     defer client_registry.deinit();
     const config = storage.config;
 
-    // Set a string key
-    const key = try allocator.dupe(u8, "testkey");
-    const value = try allocator.dupe(u8, "testvalue");
-    try storage.set(key, value, null);
+    // Set a short string key — should report embstr encoding
+    try storage.set("testkey", "hello", null);
 
     const args = [_][]const u8{ "DEBUG", "OBJECT", "testkey" };
     const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "Value at:string") != null);
+    // Verify correct Redis-compatible format (type: field, hex address, no type name in addr field)
+    try std.testing.expect(std.mem.indexOf(u8, result, "Value at:0x0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "type:string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "encoding:embstr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Value at:string") == null);
 }
 
 test "cmdDebug - DEBUG SET-ACTIVE-EXPIRE toggles flag" {
