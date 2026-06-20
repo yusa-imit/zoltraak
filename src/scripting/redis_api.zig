@@ -102,6 +102,46 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
         return 1;
     }
 
+    // Check read-only mode BEFORE building args (no allocations yet, so lua_error is safe).
+    // Peek at Lua stack position 1 (the command name string) without allocating.
+    if (ctx.read_only and nargs > 0) {
+        const arg1_type = lua.lua_type(L, 1);
+        if (arg1_type == lua.LUA_TSTRING) {
+            var len: usize = 0;
+            const str_ptr = lua.lua_tolstring(L, 1, &len);
+            if (str_ptr) |ptr| {
+                const cmd_name = ptr[0..len];
+                const classifyCommand = @import("../commands/strings.zig").classifyCommand;
+                const cmd_type = classifyCommand(cmd_name);
+                if (cmd_type == .write) {
+                    // No heap allocations yet — safe to call lua_error (longjmp) or return table.
+                    const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR Write commands are not allowed from scripts in read-only mode (command: {s})", .{cmd_name});
+                    if (propagate_errors) {
+                        const err_z = ctx.allocator.dupeZ(u8, err_msg) catch {
+                            ctx.allocator.free(err_msg);
+                            lua.lua_pushstring(L, "ERR out of memory");
+                            _ = lua.lua_error(L);
+                            return 0;
+                        };
+                        ctx.allocator.free(err_msg);
+                        lua.lua_pushstring(L, err_z.ptr);
+                        ctx.allocator.free(err_z);
+                        _ = lua.lua_error(L);
+                        return 0; // unreachable
+                    } else {
+                        defer ctx.allocator.free(err_msg);
+                        lua.lua_createtable(L, 0, 1);
+                        const err_z = try ctx.allocator.dupeZ(u8, err_msg);
+                        defer ctx.allocator.free(err_z);
+                        lua.lua_pushstring(L, err_z.ptr);
+                        lua.lua_setfield(L, -2, "err");
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+
     // Build RespValue array from Lua arguments
     var args = std.ArrayList(RespValue){};
     defer {
@@ -158,35 +198,6 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
     }
     const cmd = RespValue{ .array = cmd_array };
 
-    // Check if read-only mode is enforced (FCALL_RO/EVAL_RO)
-    if (ctx.read_only and cmd_array.len > 0) {
-        if (cmd_array[0] == .bulk_string) {
-            const cmd_name = cmd_array[0].bulk_string;
-            // Import classifyCommand to check if command is write
-            const classifyCommand = @import("../commands/strings.zig").classifyCommand;
-            const cmd_type = classifyCommand(cmd_name);
-            if (cmd_type == .write) {
-                const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR Write commands are not allowed from scripts in read-only mode (command: {s})", .{cmd_name});
-                defer ctx.allocator.free(err_msg);
-
-                if (propagate_errors) {
-                    const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-                    defer ctx.allocator.free(err_z);
-                    lua.lua_pushstring(L, err_z.ptr);
-                    _ = lua.lua_error(L);
-                    return 0;
-                } else {
-                    lua.lua_createtable(L, 0, 1);
-                    const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-                    defer ctx.allocator.free(err_z);
-                    lua.lua_pushstring(L, err_z.ptr);
-                    lua.lua_setfield(L, -2, "err");
-                    return 1;
-                }
-            }
-        }
-    }
-
     // Import executeCommand at compile time
     const executeCommand = @import("../commands/strings.zig").executeCommand;
 
@@ -234,19 +245,31 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
     var parser = protocol.Parser.init(ctx.allocator);
     defer parser.deinit();
     const parsed = try parser.parse(result);
+    // parsed must be freed via parser.freeValue(parsed) on ALL exit paths.
+    // We cannot use defer here for the propagate_errors=true path because
+    // lua_error() uses longjmp which bypasses Zig defer cleanup.
 
     // Check if result is an error
     if (parsed == .error_string or parsed == .bulk_error) {
         const err_msg = if (parsed == .error_string) parsed.error_string else parsed.bulk_error;
 
         if (propagate_errors) {
-            const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-            defer ctx.allocator.free(err_z);
+            // Dupe err_msg before freeing parsed (err_msg points into parsed).
+            const err_z = ctx.allocator.dupeZ(u8, err_msg) catch {
+                parser.freeValue(parsed);
+                lua.lua_pushstring(L, "ERR out of memory");
+                _ = lua.lua_error(L);
+                return 0; // unreachable
+            };
+            // Free all allocations before lua_error (longjmp bypasses defer).
+            parser.freeValue(parsed);
             lua.lua_pushstring(L, err_z.ptr);
+            ctx.allocator.free(err_z);
             _ = lua.lua_error(L);
-            return 0;
+            return 0; // unreachable
         } else {
-            // pcall: return {err = "..."}
+            // pcall: no longjmp, defer is safe.
+            defer parser.freeValue(parsed);
             lua.lua_createtable(L, 0, 1);
             const err_z = try ctx.allocator.dupeZ(u8, err_msg);
             defer ctx.allocator.free(err_z);
@@ -256,7 +279,9 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
         }
     }
 
-    // Push result to Lua stack
+    // Normal result: push to Lua stack then free parsed.
+    // pushRespValueToLua is a Zig function so defer runs on both normal and error return.
+    defer parser.freeValue(parsed);
     try pushRespValueToLua(L, ctx.allocator, parsed);
     return 1;
 }

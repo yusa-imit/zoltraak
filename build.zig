@@ -959,6 +959,25 @@ pub fn build(b: *std.Build) void {
     const run_iter367_tests = b.addRunArtifact(iter367_tests);
     test_step.dependOn(&run_iter367_tests.step);
 
+    // Iteration 368: EVAL redis.call() integration tests
+    const iter368_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter368.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter368_tests.linkSystemLibrary("luajit-5.1");
+    iter368_tests.linkLibC();
+    iter368_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter368_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter368_tests = b.addRunArtifact(iter368_tests);
+    test_step.dependOn(&run_iter368_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
