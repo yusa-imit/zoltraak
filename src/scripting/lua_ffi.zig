@@ -81,6 +81,10 @@ pub extern "c" fn lua_rawgeti(L: *lua_State, idx: c_int, n: c_int) void;
 pub extern "c" fn lua_rawset(L: *lua_State, idx: c_int) void;
 pub extern "c" fn lua_rawseti(L: *lua_State, idx: c_int, n: c_int) void;
 
+// Table iteration and length
+pub extern "c" fn lua_next(L: *lua_State, idx: c_int) c_int;
+pub extern "c" fn lua_objlen(L: *lua_State, idx: c_int) usize;
+
 // Table manipulation
 pub extern "c" fn lua_createtable(L: *lua_State, narr: c_int, nrec: c_int) void;
 

@@ -40,8 +40,118 @@ fn registerCJson(L: *lua.lua_State) !void {
     lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "cjson");
 }
 
-/// cjson.encode(value) - encode Lua value to JSON string
-/// Minimal implementation - handles: nil, boolean, number, string, table (array/object)
+/// Append a properly JSON-escaped string (including surrounding quotes) to buf.
+/// Uses c_allocator passed as parameter to match unmanaged ArrayList API.
+fn appendJsonString(bytes: []const u8, buf: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+    try buf.append(alloc, '"');
+    for (bytes) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(alloc, "\\\""),
+            '\\' => try buf.appendSlice(alloc, "\\\\"),
+            '\n' => try buf.appendSlice(alloc, "\\n"),
+            '\r' => try buf.appendSlice(alloc, "\\r"),
+            '\t' => try buf.appendSlice(alloc, "\\t"),
+            // Other control chars: exclude \t (0x09), \n (0x0a), \r (0x0d) already handled
+            0x00...0x08, 0x0B...0x0C, 0x0E...0x1F => {
+                var esc: [7]u8 = undefined;
+                const esc_s = std.fmt.bufPrint(&esc, "\\u{X:0>4}", .{c}) catch unreachable;
+                try buf.appendSlice(alloc, esc_s);
+            },
+            else => try buf.append(alloc, c),
+        }
+    }
+    try buf.append(alloc, '"');
+}
+
+/// Recursively encode a Lua value at stack index idx into buf.
+/// Caller must ensure idx is a valid (absolute) stack index.
+fn encodeValueToBuffer(L: *lua.lua_State, idx: c_int, buf: *std.ArrayList(u8), alloc: std.mem.Allocator, depth: u8) anyerror!void {
+    if (depth > 64) {
+        try buf.appendSlice(alloc, "null");
+        return;
+    }
+    const vtype = lua.lua_type(L, idx);
+    switch (vtype) {
+        lua.LUA_TNIL => try buf.appendSlice(alloc, "null"),
+        lua.LUA_TBOOLEAN => {
+            if (lua.lua_toboolean(L, idx) != 0) {
+                try buf.appendSlice(alloc, "true");
+            } else {
+                try buf.appendSlice(alloc, "false");
+            }
+        },
+        lua.LUA_TNUMBER => {
+            const num = lua.lua_tonumber(L, idx);
+            // Redis cjson serializes integers without decimal point
+            const is_int = @floor(num) == num and num >= -9007199254740992.0 and num <= 9007199254740992.0;
+            if (is_int) {
+                const n: i64 = @intFromFloat(num);
+                try buf.writer(alloc).print("{d}", .{n});
+            } else {
+                try buf.writer(alloc).print("{d}", .{num});
+            }
+        },
+        lua.LUA_TSTRING => {
+            var slen: usize = 0;
+            const sp = lua.lua_tolstring(L, idx, &slen);
+            if (sp) |s| {
+                try appendJsonString(s[0..slen], buf, alloc);
+            } else {
+                try buf.appendSlice(alloc, "\"\"");
+            }
+        },
+        lua.LUA_TTABLE => {
+            // Convert to absolute index for safe recursion
+            const abs: c_int = if (idx < 0) lua.lua_gettop(L) + idx + 1 else idx;
+            const arr_len = lua.lua_objlen(L, abs);
+            if (arr_len > 0) {
+                // Encode as JSON array using sequential integer keys 1..arr_len
+                try buf.append(alloc, '[');
+                var i: c_int = 1;
+                while (i <= @as(c_int, @intCast(arr_len))) : (i += 1) {
+                    if (i > 1) try buf.append(alloc, ',');
+                    lua.lua_rawgeti(L, abs, i);
+                    try encodeValueToBuffer(L, -1, buf, alloc, depth + 1);
+                    lua.lua_pop(L, 1);
+                }
+                try buf.append(alloc, ']');
+            } else {
+                // Encode as JSON object: iterate all key-value pairs
+                try buf.append(alloc, '{');
+                var first = true;
+                lua.lua_pushnil(L); // first key for lua_next
+                while (lua.lua_next(L, abs) != 0) {
+                    if (!first) try buf.append(alloc, ',');
+                    first = false;
+                    // Key: coerce to string
+                    const ktype = lua.lua_type(L, -2);
+                    if (ktype == lua.LUA_TSTRING) {
+                        var klen: usize = 0;
+                        const kp = lua.lua_tolstring(L, -2, &klen);
+                        if (kp) |k| {
+                            try appendJsonString(k[0..klen], buf, alloc);
+                        } else {
+                            try buf.appendSlice(alloc, "\"\"");
+                        }
+                    } else if (ktype == lua.LUA_TNUMBER) {
+                        const knum = lua.lua_tonumber(L, -2);
+                        const kn: i64 = @intFromFloat(knum);
+                        try buf.writer(alloc).print("\"{d}\"", .{kn});
+                    } else {
+                        try buf.appendSlice(alloc, "\"?\"");
+                    }
+                    try buf.append(alloc, ':');
+                    try encodeValueToBuffer(L, -1, buf, alloc, depth + 1);
+                    lua.lua_pop(L, 1); // pop value, keep key for next()
+                }
+                try buf.append(alloc, '}');
+            }
+        },
+        else => try buf.appendSlice(alloc, "null"),
+    }
+}
+
+/// cjson.encode(value) - full recursive JSON encoder for Lua values
 export fn cjsonEncode(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
@@ -51,69 +161,58 @@ export fn cjsonEncode(L: ?*lua.lua_State) callconv(.c) c_int {
         return 0;
     }
 
-    // Simple implementation: use Lua's own tostring for now
-    // A full implementation would recursively serialize tables
-    const value_type = lua.lua_type(state, 1);
+    const alloc = std.heap.c_allocator;
+    var buf = std.ArrayList(u8).initCapacity(alloc, 64) catch {
+        lua.lua_pushstring(state, "ERR out of memory");
+        _ = lua.lua_error(state);
+        return 0;
+    };
+    defer buf.deinit(alloc);
 
-    switch (value_type) {
-        lua.LUA_TNIL => {
-            lua.lua_pushstring(state, "null");
-            return 1;
+    encodeValueToBuffer(state, 1, &buf, alloc, 0) catch {
+        lua.lua_pushstring(state, "ERR cjson encode failed");
+        _ = lua.lua_error(state);
+        return 0;
+    };
+
+    lua.lua_pushlstring(state, buf.items.ptr, buf.items.len);
+    return 1;
+}
+
+/// Push a parsed std.json.Value onto the Lua stack.
+/// Caller owns the memory until after the push (Lua copies strings).
+fn pushJsonValue(L: *lua.lua_State, value: std.json.Value) void {
+    switch (value) {
+        .null => lua.lua_pushnil(L),
+        .bool => |b| lua.lua_pushboolean(L, if (b) @as(c_int, 1) else @as(c_int, 0)),
+        .integer => |n| lua.lua_pushnumber(L, @floatFromInt(n)),
+        .float => |f| lua.lua_pushnumber(L, f),
+        .number_string => |s| {
+            const f = std.fmt.parseFloat(f64, s) catch 0.0;
+            lua.lua_pushnumber(L, f);
         },
-        lua.LUA_TBOOLEAN => {
-            const val = lua.lua_toboolean(state, 1);
-            if (val != 0) {
-                lua.lua_pushstring(state, "true");
-            } else {
-                lua.lua_pushstring(state, "false");
+        .string => |s| lua.lua_pushlstring(L, s.ptr, s.len),
+        .array => |arr| {
+            lua.lua_createtable(L, @intCast(arr.items.len), 0);
+            for (arr.items, 1..) |item, i| {
+                pushJsonValue(L, item);
+                lua.lua_rawseti(L, -2, @intCast(i));
             }
-            return 1;
         },
-        lua.LUA_TNUMBER => {
-            const num = lua.lua_tonumber(state, 1);
-            // Format number as JSON (no trailing .0 for integers)
-            const is_int = @floor(num) == num and num >= -2147483648 and num <= 2147483647;
-            if (is_int) {
-                var buf: [64]u8 = undefined;
-                const s = std.fmt.bufPrintZ(&buf, "{d}", .{@as(i64, @intFromFloat(num))}) catch "0";
-                lua.lua_pushstring(state, s.ptr);
-            } else {
-                var buf: [64]u8 = undefined;
-                const s = std.fmt.bufPrintZ(&buf, "{d}", .{num}) catch "0.0";
-                lua.lua_pushstring(state, s.ptr);
+        .object => |obj| {
+            lua.lua_createtable(L, 0, @intCast(obj.count()));
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                const k = entry.key_ptr.*;
+                lua.lua_pushlstring(L, k.ptr, k.len);
+                pushJsonValue(L, entry.value_ptr.*);
+                lua.lua_rawset(L, -3);
             }
-            return 1;
-        },
-        lua.LUA_TSTRING => {
-            // For strings, we need to escape and quote them
-            const str = lua.lua_tostring(state, 1);
-            if (str) |s| {
-                // Simple quote wrapping (full impl would escape \, ", \n, etc.)
-                var buf: [1024]u8 = undefined;
-                const quoted = std.fmt.bufPrintZ(&buf, "\"{s}\"", .{std.mem.span(s)}) catch "\"\"";
-                lua.lua_pushstring(state, quoted.ptr);
-                return 1;
-            }
-            lua.lua_pushstring(state, "\"\"");
-            return 1;
-        },
-        lua.LUA_TTABLE => {
-            // Minimal table encoding: check if array or object
-            // Array: {"key":value,...}
-            // Object: [value1,value2,...]
-            // For now, just return "{}" to avoid complexity
-            lua.lua_pushstring(state, "{}");
-            return 1;
-        },
-        else => {
-            lua.lua_pushstring(state, "null");
-            return 1;
         },
     }
 }
 
-/// cjson.decode(json_string) - decode JSON string to Lua value
-/// Minimal implementation
+/// cjson.decode(json_string) - full JSON parser using std.json
 export fn cjsonDecode(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
@@ -123,55 +222,22 @@ export fn cjsonDecode(L: ?*lua.lua_State) callconv(.c) c_int {
         return 0;
     }
 
-    const json_str = lua.lua_tostring(state, 1);
-    if (json_str == null) {
+    var slen: usize = 0;
+    const sp = lua.lua_tolstring(state, 1, &slen);
+    if (sp == null or slen == 0) {
         lua.lua_pushnil(state);
         return 1;
     }
+    const json_str = sp.?[0..slen];
 
-    const str = std.mem.span(json_str.?);
-
-    // Minimal parser: recognize literals and return simple values
-    if (std.mem.eql(u8, str, "null")) {
+    const parsed = std.json.parseFromSlice(std.json.Value, std.heap.c_allocator, json_str, .{}) catch {
+        // Return nil on parse error (Redis cjson behavior for invalid input)
         lua.lua_pushnil(state);
         return 1;
-    }
-    if (std.mem.eql(u8, str, "true")) {
-        lua.lua_pushboolean(state, 1);
-        return 1;
-    }
-    if (std.mem.eql(u8, str, "false")) {
-        lua.lua_pushboolean(state, 0);
-        return 1;
-    }
+    };
+    defer parsed.deinit();
 
-    // Try parsing as number
-    if (str.len > 0 and (str[0] == '-' or std.ascii.isDigit(str[0]))) {
-        const num = std.fmt.parseFloat(f64, str) catch {
-            lua.lua_pushnil(state);
-            return 1;
-        };
-        lua.lua_pushnumber(state, num);
-        return 1;
-    }
-
-    // Try parsing as quoted string
-    if (str.len >= 2 and str[0] == '"' and str[str.len - 1] == '"') {
-        // Remove quotes
-        const unquoted = str[1 .. str.len - 1];
-        lua.lua_pushlstring(state, unquoted.ptr, unquoted.len);
-        return 1;
-    }
-
-    // For arrays and objects, return empty table
-    if (str.len >= 2 and ((str[0] == '{' and str[str.len - 1] == '}') or
-                          (str[0] == '[' and str[str.len - 1] == ']'))) {
-        lua.lua_newtable(state);
-        return 1;
-    }
-
-    // Default: return nil
-    lua.lua_pushnil(state);
+    pushJsonValue(state, parsed.value);
     return 1;
 }
 
@@ -402,6 +468,114 @@ test "cjson decode: string" {
 
     const result = lua.lua_tostring(L, -1);
     try std.testing.expectEqualStrings("hello", std.mem.span(result.?));
+}
+
+test "cjson encode: array table" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L, "return cjson.encode({1, 2, 3})");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    const result = lua.lua_tostring(L, -1);
+    try std.testing.expectEqualStrings("[1,2,3]", std.mem.span(result.?));
+}
+
+test "cjson encode: object table" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    // Single-key table for deterministic output
+    _ = lua.luaL_loadstring(L, "return cjson.encode({x = 42})");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    const result = lua.lua_tostring(L, -1);
+    try std.testing.expectEqualStrings("{\"x\":42}", std.mem.span(result.?));
+}
+
+test "cjson encode: nested array" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L, "return cjson.encode({'a', 'b'})");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    const result = lua.lua_tostring(L, -1);
+    try std.testing.expectEqualStrings("[\"a\",\"b\"]", std.mem.span(result.?));
+}
+
+test "cjson encode: string with special chars" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L, "return cjson.encode('a\\nb')");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    const result = lua.lua_tostring(L, -1);
+    try std.testing.expectEqualStrings("\"a\\nb\"", std.mem.span(result.?));
+}
+
+test "cjson decode: JSON array" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L, "local t = cjson.decode('[1,2,3]'); return t[1], t[2], t[3]");
+    _ = lua.lua_pcall(L, 0, 3, 0);
+
+    try std.testing.expectEqual(@as(f64, 1.0), lua.lua_tonumber(L, -3));
+    try std.testing.expectEqual(@as(f64, 2.0), lua.lua_tonumber(L, -2));
+    try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(L, -1));
+}
+
+test "cjson decode: JSON object" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L, "local t = cjson.decode('{\"count\":5}'); return t['count']");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 5.0), lua.lua_tonumber(L, -1));
+}
+
+test "cjson decode: nested object" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L, "local t = cjson.decode('{\"a\":{\"b\":99}}'); return t['a']['b']");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 99.0), lua.lua_tonumber(L, -1));
+}
+
+test "cjson encode-decode roundtrip" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCJson(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local orig = {name="alice", score=100}
+        \\local json = cjson.encode(orig)
+        \\local back = cjson.decode(json)
+        \\return back['score']
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 100.0), lua.lua_tonumber(L, -1));
 }
 
 test "cmsgpack pack returns binary" {

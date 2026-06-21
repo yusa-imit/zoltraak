@@ -997,6 +997,25 @@ pub fn build(b: *std.Build) void {
     const run_iter369_tests = b.addRunArtifact(iter369_tests);
     test_step.dependOn(&run_iter369_tests.step);
 
+    // Iteration 370: cjson.encode/decode table support
+    const iter370_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter370.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter370_tests.linkSystemLibrary("luajit-5.1");
+    iter370_tests.linkLibC();
+    iter370_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter370_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter370_tests = b.addRunArtifact(iter370_tests);
+    test_step.dependOn(&run_iter370_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
