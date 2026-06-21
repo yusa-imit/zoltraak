@@ -1016,6 +1016,25 @@ pub fn build(b: *std.Build) void {
     const run_iter370_tests = b.addRunArtifact(iter370_tests);
     test_step.dependOn(&run_iter370_tests.step);
 
+    // Iteration 371: struct.pack/unpack/size Lua library integration tests
+    const iter371_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter371.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter371_tests.linkSystemLibrary("luajit-5.1");
+    iter371_tests.linkLibC();
+    iter371_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter371_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter371_tests = b.addRunArtifact(iter371_tests);
+    test_step.dependOn(&run_iter371_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

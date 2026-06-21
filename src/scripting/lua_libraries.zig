@@ -289,7 +289,7 @@ export fn cmsgpackUnpack(L: ?*lua.lua_State) callconv(.c) c_int {
 }
 
 /// Register struct library - binary data packing/unpacking
-/// Redis uses lua-struct 0.2 - we provide a minimal compatible API
+/// Redis uses lua-struct 0.2 - we provide a compatible API
 fn registerStruct(L: *lua.lua_State) !void {
     lua.lua_newtable(L);
 
@@ -308,37 +308,400 @@ fn registerStruct(L: *lua.lua_State) !void {
     lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "struct");
 }
 
-/// struct.pack(format, ...) - pack values according to format string
-/// Format: c (char), b (byte), h (short), i (int), l (long), f (float), d (double)
-/// Minimal stub implementation
+const STRUCT_MAX_PACK = 4096;
+
+// Safe f64 → i64 conversion (clamps instead of panicking on out-of-range)
+fn f64ToI64Safe(n: f64) i64 {
+    if (std.math.isNan(n) or n >= @as(f64, @floatFromInt(std.math.maxInt(i64)))) return std.math.maxInt(i64);
+    if (n <= @as(f64, @floatFromInt(std.math.minInt(i64)))) return std.math.minInt(i64);
+    return @intFromFloat(@trunc(n));
+}
+
+// Compute the byte size of each format specifier (advances fi past any digit suffix)
+fn structSpecSize(fmt: []const u8, fi: *usize) usize {
+    const fc = fmt[fi.*];
+    switch (fc) {
+        'b', 'B', 'x' => return 1,
+        'h', 'H' => return 2,
+        'i', 'I', 'l', 'L', 'f' => return 4,
+        'd', 'q', 'Q' => return 8,
+        'c' => {
+            fi.* += 1;
+            var count: usize = 0;
+            while (fi.* < fmt.len and std.ascii.isDigit(fmt[fi.*])) : (fi.* += 1) {
+                count = count * 10 + (fmt[fi.*] - '0');
+            }
+            fi.* -= 1;
+            return count;
+        },
+        else => return 0,
+    }
+}
+
+/// struct.pack(format, ...) - pack values into binary string.
+/// Supported: >, <, =, b, B, h, H, i, I, l, L, f, d, q, Q, x, cN, z
 export fn structPack(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
 
     if (lua.lua_gettop(state) < 1) {
-        lua.lua_pushstring(state, "expected at least 1 argument");
+        lua.lua_pushstring(state, "bad argument #1 to 'pack' (string expected)");
         _ = lua.lua_error(state);
         return 0;
     }
 
-    // Stub: return empty string
-    lua.lua_pushstring(state, "");
+    var fmt_len: usize = 0;
+    const fmt_ptr = lua.lua_tolstring(state, 1, &fmt_len) orelse {
+        lua.lua_pushstring(state, "bad argument #1 to 'pack' (string expected)");
+        _ = lua.lua_error(state);
+        return 0;
+    };
+    const fmt = fmt_ptr[0..fmt_len];
+
+    var buf: [STRUCT_MAX_PACK]u8 = undefined;
+    var pos: usize = 0;
+    var arg_idx: c_int = 2;
+    var big_endian = false;
+
+    var fi: usize = 0;
+    while (fi < fmt.len) : (fi += 1) {
+        const fc = fmt[fi];
+        switch (fc) {
+            '>' => big_endian = true,
+            '<' => big_endian = false,
+            '=' => big_endian = false, // native (x86 = little)
+            '!' => big_endian = true,
+            'b' => {
+                if (pos + 1 > STRUCT_MAX_PACK) break;
+                const n: i8 = @truncate(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)));
+                buf[pos] = @bitCast(n);
+                pos += 1;
+                arg_idx += 1;
+            },
+            'B' => {
+                if (pos + 1 > STRUCT_MAX_PACK) break;
+                const n: u8 = @truncate(@as(u64, @bitCast(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)))));
+                buf[pos] = n;
+                pos += 1;
+                arg_idx += 1;
+            },
+            'h' => {
+                if (pos + 2 > STRUCT_MAX_PACK) break;
+                const n: i16 = @truncate(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)));
+                std.mem.writeInt(i16, buf[pos..][0..2], n, if (big_endian) .big else .little);
+                pos += 2;
+                arg_idx += 1;
+            },
+            'H' => {
+                if (pos + 2 > STRUCT_MAX_PACK) break;
+                const n: u16 = @truncate(@as(u64, @bitCast(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)))));
+                std.mem.writeInt(u16, buf[pos..][0..2], n, if (big_endian) .big else .little);
+                pos += 2;
+                arg_idx += 1;
+            },
+            'i', 'l' => {
+                if (pos + 4 > STRUCT_MAX_PACK) break;
+                const n: i32 = @truncate(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)));
+                std.mem.writeInt(i32, buf[pos..][0..4], n, if (big_endian) .big else .little);
+                pos += 4;
+                arg_idx += 1;
+            },
+            'I', 'L' => {
+                if (pos + 4 > STRUCT_MAX_PACK) break;
+                const n: u32 = @truncate(@as(u64, @bitCast(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)))));
+                std.mem.writeInt(u32, buf[pos..][0..4], n, if (big_endian) .big else .little);
+                pos += 4;
+                arg_idx += 1;
+            },
+            'f' => {
+                if (pos + 4 > STRUCT_MAX_PACK) break;
+                const n: f32 = @floatCast(lua.lua_tonumber(state, arg_idx));
+                std.mem.writeInt(u32, buf[pos..][0..4], @bitCast(n), if (big_endian) .big else .little);
+                pos += 4;
+                arg_idx += 1;
+            },
+            'd' => {
+                if (pos + 8 > STRUCT_MAX_PACK) break;
+                const n: f64 = lua.lua_tonumber(state, arg_idx);
+                std.mem.writeInt(u64, buf[pos..][0..8], @bitCast(n), if (big_endian) .big else .little);
+                pos += 8;
+                arg_idx += 1;
+            },
+            'q' => {
+                if (pos + 8 > STRUCT_MAX_PACK) break;
+                const n: i64 = f64ToI64Safe(lua.lua_tonumber(state, arg_idx));
+                std.mem.writeInt(i64, buf[pos..][0..8], n, if (big_endian) .big else .little);
+                pos += 8;
+                arg_idx += 1;
+            },
+            'Q' => {
+                if (pos + 8 > STRUCT_MAX_PACK) break;
+                const n: u64 = @bitCast(f64ToI64Safe(lua.lua_tonumber(state, arg_idx)));
+                std.mem.writeInt(u64, buf[pos..][0..8], n, if (big_endian) .big else .little);
+                pos += 8;
+                arg_idx += 1;
+            },
+            'x' => {
+                if (pos + 1 > STRUCT_MAX_PACK) break;
+                buf[pos] = 0;
+                pos += 1;
+            },
+            'c' => {
+                fi += 1;
+                var count: usize = 0;
+                while (fi < fmt.len and std.ascii.isDigit(fmt[fi])) : (fi += 1) {
+                    count = count * 10 + (fmt[fi] - '0');
+                }
+                fi -= 1;
+                if (pos + count > STRUCT_MAX_PACK) break;
+                var str_len: usize = 0;
+                const str_ptr = lua.lua_tolstring(state, arg_idx, &str_len);
+                if (str_ptr != null) {
+                    const copy_len = @min(count, str_len);
+                    @memcpy(buf[pos .. pos + copy_len], str_ptr.?[0..copy_len]);
+                    if (copy_len < count) @memset(buf[pos + copy_len .. pos + count], 0);
+                } else {
+                    @memset(buf[pos .. pos + count], 0);
+                }
+                pos += count;
+                arg_idx += 1;
+            },
+            'z' => {
+                var str_len: usize = 0;
+                const str_ptr = lua.lua_tolstring(state, arg_idx, &str_len);
+                if (str_ptr != null and pos + str_len + 1 <= STRUCT_MAX_PACK) {
+                    @memcpy(buf[pos .. pos + str_len], str_ptr.?[0..str_len]);
+                    pos += str_len;
+                }
+                if (pos + 1 <= STRUCT_MAX_PACK) {
+                    buf[pos] = 0;
+                    pos += 1;
+                }
+                arg_idx += 1;
+            },
+            's' => {
+                // 1-byte length-prefixed string
+                var str_len: usize = 0;
+                const str_ptr = lua.lua_tolstring(state, arg_idx, &str_len);
+                const slen: u8 = @truncate(str_len);
+                if (pos + 1 + slen <= STRUCT_MAX_PACK) {
+                    buf[pos] = slen;
+                    pos += 1;
+                    if (str_ptr != null) {
+                        @memcpy(buf[pos .. pos + slen], str_ptr.?[0..slen]);
+                        pos += slen;
+                    }
+                }
+                arg_idx += 1;
+            },
+            else => {},
+        }
+    }
+
+    lua.lua_pushlstring(state, &buf, pos);
     return 1;
 }
 
-/// struct.unpack(format, binary) - unpack values from binary
-/// Minimal stub implementation
+/// struct.unpack(format, binary [, init]) - unpack binary string.
+/// Returns unpacked values followed by the next read position (1-indexed).
 export fn structUnpack(L: ?*lua.lua_State) callconv(.c) c_int {
-    _ = L;
-    // Return empty results
-    return 0;
+    const state = L orelse return 0;
+
+    if (lua.lua_gettop(state) < 2) {
+        lua.lua_pushstring(state, "bad argument to 'unpack'");
+        _ = lua.lua_error(state);
+        return 0;
+    }
+
+    var fmt_len: usize = 0;
+    const fmt_ptr = lua.lua_tolstring(state, 1, &fmt_len) orelse {
+        lua.lua_pushstring(state, "bad argument #1 to 'unpack' (string expected)");
+        _ = lua.lua_error(state);
+        return 0;
+    };
+    const fmt = fmt_ptr[0..fmt_len];
+
+    var data_len: usize = 0;
+    const data_ptr = lua.lua_tolstring(state, 2, &data_len) orelse {
+        lua.lua_pushstring(state, "bad argument #2 to 'unpack' (string expected)");
+        _ = lua.lua_error(state);
+        return 0;
+    };
+    const data = data_ptr[0..data_len];
+
+    // Optional starting position (1-indexed Lua style)
+    var data_pos: usize = 0;
+    if (lua.lua_gettop(state) >= 3) {
+        const start = lua.lua_tointeger(state, 3);
+        if (start > 1) data_pos = @intCast(start - 1);
+    }
+
+    var return_count: c_int = 0;
+    var big_endian = false;
+
+    var fi: usize = 0;
+    while (fi < fmt.len) : (fi += 1) {
+        const fc = fmt[fi];
+        switch (fc) {
+            '>' => big_endian = true,
+            '<' => big_endian = false,
+            '=' => big_endian = false,
+            '!' => big_endian = true,
+            'b' => {
+                if (data_pos + 1 > data.len) break;
+                const n: i8 = @bitCast(data[data_pos]);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 1;
+                return_count += 1;
+            },
+            'B' => {
+                if (data_pos + 1 > data.len) break;
+                lua.lua_pushnumber(state, @floatFromInt(data[data_pos]));
+                data_pos += 1;
+                return_count += 1;
+            },
+            'h' => {
+                if (data_pos + 2 > data.len) break;
+                const n = std.mem.readInt(i16, data[data_pos..][0..2], if (big_endian) .big else .little);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 2;
+                return_count += 1;
+            },
+            'H' => {
+                if (data_pos + 2 > data.len) break;
+                const n = std.mem.readInt(u16, data[data_pos..][0..2], if (big_endian) .big else .little);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 2;
+                return_count += 1;
+            },
+            'i', 'l' => {
+                if (data_pos + 4 > data.len) break;
+                const n = std.mem.readInt(i32, data[data_pos..][0..4], if (big_endian) .big else .little);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 4;
+                return_count += 1;
+            },
+            'I', 'L' => {
+                if (data_pos + 4 > data.len) break;
+                const n = std.mem.readInt(u32, data[data_pos..][0..4], if (big_endian) .big else .little);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 4;
+                return_count += 1;
+            },
+            'f' => {
+                if (data_pos + 4 > data.len) break;
+                const bits = std.mem.readInt(u32, data[data_pos..][0..4], if (big_endian) .big else .little);
+                const n: f32 = @bitCast(bits);
+                lua.lua_pushnumber(state, n);
+                data_pos += 4;
+                return_count += 1;
+            },
+            'd' => {
+                if (data_pos + 8 > data.len) break;
+                const bits = std.mem.readInt(u64, data[data_pos..][0..8], if (big_endian) .big else .little);
+                const n: f64 = @bitCast(bits);
+                lua.lua_pushnumber(state, n);
+                data_pos += 8;
+                return_count += 1;
+            },
+            'q' => {
+                if (data_pos + 8 > data.len) break;
+                const n = std.mem.readInt(i64, data[data_pos..][0..8], if (big_endian) .big else .little);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 8;
+                return_count += 1;
+            },
+            'Q' => {
+                if (data_pos + 8 > data.len) break;
+                const n = std.mem.readInt(u64, data[data_pos..][0..8], if (big_endian) .big else .little);
+                lua.lua_pushnumber(state, @floatFromInt(n));
+                data_pos += 8;
+                return_count += 1;
+            },
+            'x' => {
+                data_pos += 1;
+            },
+            'c' => {
+                fi += 1;
+                var count: usize = 0;
+                while (fi < fmt.len and std.ascii.isDigit(fmt[fi])) : (fi += 1) {
+                    count = count * 10 + (fmt[fi] - '0');
+                }
+                fi -= 1;
+                if (data_pos + count > data.len) break;
+                lua.lua_pushlstring(state, data[data_pos..].ptr, count);
+                data_pos += count;
+                return_count += 1;
+            },
+            'z' => {
+                // null-terminated string
+                const start = data_pos;
+                while (data_pos < data.len and data[data_pos] != 0) : (data_pos += 1) {}
+                lua.lua_pushlstring(state, data[start..].ptr, data_pos - start);
+                if (data_pos < data.len) data_pos += 1; // skip the null
+                return_count += 1;
+            },
+            's' => {
+                // 1-byte length-prefixed string
+                if (data_pos + 1 > data.len) break;
+                const slen: usize = data[data_pos];
+                data_pos += 1;
+                if (data_pos + slen > data.len) break;
+                lua.lua_pushlstring(state, data[data_pos..].ptr, slen);
+                data_pos += slen;
+                return_count += 1;
+            },
+            'A' => {
+                // remaining bytes
+                lua.lua_pushlstring(state, data[data_pos..].ptr, data.len - data_pos);
+                data_pos = data.len;
+                return_count += 1;
+            },
+            else => {},
+        }
+    }
+
+    // Return next position (1-indexed)
+    lua.lua_pushnumber(state, @floatFromInt(data_pos + 1));
+    return_count += 1;
+
+    return return_count;
 }
 
-/// struct.size(format) - calculate size of packed data
-/// Minimal stub implementation
+/// struct.size(format) - calculate the number of bytes required for struct.pack.
 export fn structSize(L: ?*lua.lua_State) callconv(.c) c_int {
-    if (L) |state| {
+    const state = L orelse return 0;
+
+    var fmt_len: usize = 0;
+    const fmt_ptr = lua.lua_tolstring(state, 1, &fmt_len) orelse {
         lua.lua_pushnumber(state, 0);
+        return 1;
+    };
+    const fmt = fmt_ptr[0..fmt_len];
+
+    var total: usize = 0;
+    var fi: usize = 0;
+    while (fi < fmt.len) : (fi += 1) {
+        const fc = fmt[fi];
+        switch (fc) {
+            '>', '<', '=', '!' => {},
+            'b', 'B', 'x' => total += 1,
+            'h', 'H' => total += 2,
+            'i', 'I', 'l', 'L', 'f' => total += 4,
+            'd', 'q', 'Q' => total += 8,
+            'c' => {
+                fi += 1;
+                var count: usize = 0;
+                while (fi < fmt.len and std.ascii.isDigit(fmt[fi])) : (fi += 1) {
+                    count = count * 10 + (fmt[fi] - '0');
+                }
+                fi -= 1;
+                total += count;
+            },
+            else => {},
+        }
     }
+
+    lua.lua_pushnumber(state, @floatFromInt(total));
     return 1;
 }
 
@@ -591,14 +954,163 @@ test "cmsgpack pack returns binary" {
     try std.testing.expect(lua.lua_isstring(L, -1));
 }
 
-test "struct pack returns string" {
+test "struct pack: i (little-endian 4-byte int)" {
     const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
     defer lua.lua_close(L);
 
     try registerStruct(L);
 
-    _ = lua.luaL_loadstring(L, "return struct.pack('i', 42)");
+    _ = lua.luaL_loadstring(L, "return struct.pack('<i', 1)");
     _ = lua.lua_pcall(L, 0, 1, 0);
 
-    try std.testing.expect(lua.lua_isstring(L, -1));
+    var len: usize = 0;
+    const ptr = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(ptr != null);
+    try std.testing.expectEqual(@as(usize, 4), len);
+    const bytes = ptr.?[0..len];
+    // 1 in little-endian = 0x01 0x00 0x00 0x00
+    try std.testing.expectEqual(@as(u8, 1), bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0), bytes[1]);
+    try std.testing.expectEqual(@as(u8, 0), bytes[2]);
+    try std.testing.expectEqual(@as(u8, 0), bytes[3]);
+}
+
+test "struct pack: >i (big-endian 4-byte int)" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L, "return struct.pack('>i', 1)");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const ptr = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(ptr != null);
+    try std.testing.expectEqual(@as(usize, 4), len);
+    const bytes = ptr.?[0..len];
+    // 1 in big-endian = 0x00 0x00 0x00 0x01
+    try std.testing.expectEqual(@as(u8, 0), bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0), bytes[1]);
+    try std.testing.expectEqual(@as(u8, 0), bytes[2]);
+    try std.testing.expectEqual(@as(u8, 1), bytes[3]);
+}
+
+test "struct pack/unpack: double roundtrip" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local s = struct.pack('d', 3.14)
+        \\local v, _ = struct.unpack('d', s)
+        \\return v
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    const result = lua.lua_tonumber(L, -1);
+    try std.testing.expect(@abs(result - 3.14) < 0.0001);
+}
+
+test "struct pack/unpack: big-endian short" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local s = struct.pack('>h', 256)
+        \\local v, _ = struct.unpack('>h', s)
+        \\return v
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 256.0), lua.lua_tonumber(L, -1));
+}
+
+test "struct pack/unpack: multiple values" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local s = struct.pack('<bBh', -1, 255, 1000)
+        \\local a, b, c, _ = struct.unpack('<bBh', s)
+        \\return a, b, c
+    );
+    _ = lua.lua_pcall(L, 0, 3, 0);
+
+    try std.testing.expectEqual(@as(f64, -1.0), lua.lua_tonumber(L, -3));
+    try std.testing.expectEqual(@as(f64, 255.0), lua.lua_tonumber(L, -2));
+    try std.testing.expectEqual(@as(f64, 1000.0), lua.lua_tonumber(L, -1));
+}
+
+test "struct size: format size calculation" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L, "return struct.size('<bhi d')");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    // b=1 + h=2 + i=4 + d=8 = 15
+    try std.testing.expectEqual(@as(f64, 15.0), lua.lua_tonumber(L, -1));
+}
+
+test "struct pack/unpack: c8 fixed string" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local s = struct.pack('c5', 'hello')
+        \\local v, _ = struct.unpack('c5', s)
+        \\return v
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const ptr = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expectEqual(@as(usize, 5), len);
+    try std.testing.expectEqualSlices(u8, "hello", ptr.?[0..5]);
+}
+
+test "struct pack/unpack: z (null-terminated string)" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local s = struct.pack('z', 'world')
+        \\local v, _ = struct.unpack('z', s)
+        \\return v
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const ptr = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expectEqual(@as(usize, 5), len);
+    try std.testing.expectEqualSlices(u8, "world", ptr.?[0..5]);
+}
+
+test "struct unpack: init position" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerStruct(L);
+
+    // Pack two ints, then unpack the second one using init=5
+    _ = lua.luaL_loadstring(L,
+        \\local s = struct.pack('<ii', 111, 222)
+        \\local v, _ = struct.unpack('<i', s, 5)
+        \\return v
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 222.0), lua.lua_tonumber(L, -1));
 }
