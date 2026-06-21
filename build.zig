@@ -978,6 +978,25 @@ pub fn build(b: *std.Build) void {
     const run_iter368_tests = b.addRunArtifact(iter368_tests);
     test_step.dependOn(&run_iter368_tests.step);
 
+    // Iteration 369: Lua script helper functions (redis.status_reply, redis.error_reply, etc.)
+    const iter369_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter369.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter369_tests.linkSystemLibrary("luajit-5.1");
+    iter369_tests.linkLibC();
+    iter369_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter369_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter369_tests = b.addRunArtifact(iter369_tests);
+    test_step.dependOn(&run_iter369_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
