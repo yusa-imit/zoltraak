@@ -13,6 +13,28 @@ pub fn registerLibraries(L: *lua.lua_State) !void {
     try registerCJson(L);
     try registerCMsgPack(L);
     try registerStruct(L);
+    registerTableUnpack(L);
+}
+
+/// Add table.unpack = unpack for Lua 5.2+ compatibility.
+/// LuaJIT/Lua 5.1 provides the global `unpack`, but modern code uses `table.unpack`.
+/// Redis scripts expect table.unpack to be available (Redis 7.x Lua compat layer).
+fn registerTableUnpack(L: *lua.lua_State) void {
+    // Push the `table` global table onto the stack via _G["table"]
+    lua.lua_getfield(L, lua.LUA_GLOBALSINDEX, "table");
+    if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
+        lua.lua_pop(L, 1);
+        return;
+    }
+    // Push the global `unpack` function via _G["unpack"]
+    lua.lua_getfield(L, lua.LUA_GLOBALSINDEX, "unpack");
+    if (lua.lua_type(L, -1) == lua.LUA_TFUNCTION) {
+        // table["unpack"] = unpack
+        lua.lua_setfield(L, -2, "unpack");
+    } else {
+        lua.lua_pop(L, 1); // pop nil/non-function
+    }
+    lua.lua_pop(L, 1); // pop table
 }
 
 /// Register cjson library - minimal JSON encode/decode
@@ -1113,4 +1135,63 @@ test "struct unpack: init position" {
     _ = lua.lua_pcall(L, 0, 1, 0);
 
     try std.testing.expectEqual(@as(f64, 222.0), lua.lua_tonumber(L, -1));
+}
+
+// ── table.unpack unit tests ───────────────────────────────────────────────────
+
+test "registerTableUnpack: table.unpack is a function" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+    lua.luaL_openlibs(L);
+
+    registerTableUnpack(L);
+
+    // table.unpack should be a function
+    _ = lua.luaL_loadstring(L, "return type(table.unpack)");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const ptr = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expectEqualSlices(u8, "function", ptr.?[0..len]);
+}
+
+test "registerTableUnpack: table.unpack unpacks array elements" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+    lua.luaL_openlibs(L);
+
+    registerTableUnpack(L);
+
+    _ = lua.luaL_loadstring(L, "local a,b,c = table.unpack({10,20,30}); return a+b+c");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 60.0), lua.lua_tonumber(L, -1));
+}
+
+test "registerTableUnpack: table.unpack with start index" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+    lua.luaL_openlibs(L);
+
+    registerTableUnpack(L);
+
+    // table.unpack({10,20,30}, 2) skips first element
+    _ = lua.luaL_loadstring(L, "local a,b = table.unpack({10,20,30}, 2); return a+b");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 50.0), lua.lua_tonumber(L, -1));
+}
+
+test "registerTableUnpack: table.unpack is same as global unpack" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+    lua.luaL_openlibs(L);
+
+    registerTableUnpack(L);
+
+    // table.unpack should be identical to global unpack
+    _ = lua.luaL_loadstring(L, "return table.unpack == unpack");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expect(lua.lua_toboolean(L, -1) != 0);
 }

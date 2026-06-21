@@ -536,15 +536,20 @@ pub fn executeCommand(
         const timestamp_sec = @divTrunc(now, 1000);
         const timestamp_usec = @mod(now, 1000) * 1000;
 
-        // Get client address (default to "127.0.0.1:0" if not available)
-        const client_addr = "127.0.0.1:0"; // TODO: Get from client_registry
+        // Get client address from registry
+        const client_addr = client_registry.getClientAddr(client_id, allocator) catch
+            try allocator.dupe(u8, "127.0.0.1:0");
+        defer allocator.free(client_addr);
+
+        // Get selected database for this client
+        const client_db: u8 = @truncate(client_registry.getSelectedDb(client_id));
 
         // Broadcast to monitoring clients (we don't await responses, fire-and-forget)
         var monitor_messages = client_registry.broadcastToMonitors(
             allocator,
             timestamp_sec,
             timestamp_usec,
-            0, // database (always 0 for now)
+            client_db,
             client_addr,
             cmd_args,
         ) catch |err| blk: {
