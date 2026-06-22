@@ -124,26 +124,27 @@ pub fn cmdFcall(
     shutdown_state: ?*@import("../server.zig").ShutdownState,
     databases: []Storage,
     num_databases: u16,
-) !RespValue {
-    if (args.len < 4) {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'fcall' command") };
+) ![]const u8 {
+    // args are stripped of "FCALL": args[0]=function, args[1]=numkeys, args[2..]=keys+argv
+    if (args.len < 2) {
+        return try allocator.dupe(u8, "-ERR wrong number of arguments for 'fcall' command\r\n");
     }
 
-    const function_name = args[2];
-    const numkeys_str = args[3];
+    const function_name = args[0];
+    const numkeys_str = args[1];
 
     // Parse numkeys
     const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR value is not an integer or out of range") };
+        return try allocator.dupe(u8, "-ERR value is not an integer or out of range\r\n");
     };
 
-    if (args.len < 4 + numkeys) {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR Number of keys can't be greater than number of args") };
+    if (args.len < 2 + numkeys) {
+        return try allocator.dupe(u8, "-ERR Number of keys can't be greater than number of args\r\n");
     }
 
     // Extract keys and argv
-    const keys = if (numkeys > 0) args[4 .. 4 + numkeys] else &[_][]const u8{};
-    const argv = if (args.len > 4 + numkeys) args[4 + numkeys ..] else &[_][]const u8{};
+    const keys = if (numkeys > 0) args[2 .. 2 + numkeys] else &[_][]const u8{};
+    const argv = if (args.len > 2 + numkeys) args[2 + numkeys ..] else &[_][]const u8{};
 
     // Lock storage
     storage.mutex.lock();
@@ -151,16 +152,16 @@ pub fn cmdFcall(
 
     // Lookup function
     const func_info = storage.functions.getFunction(function_name) orelse {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR Function not found") };
+        return try std.fmt.allocPrint(allocator, "-ERR Function not found\r\n", .{});
     };
 
     // Get library code
     const library = storage.functions.getLibrary(func_info.library_name) orelse {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR Library not found (internal error)") };
+        return try allocator.dupe(u8, "-ERR Library not found (internal error)\r\n");
     };
 
     // Start execution tracking
-    try storage.functions.startExecution(function_name, args[1..]);
+    try storage.functions.startExecution(function_name, args);
     defer storage.functions.stopExecution();
 
     // Create RedisContext for redis.call/pcall
@@ -187,19 +188,18 @@ pub fn cmdFcall(
     // Create Lua engine with RedisContext
     var lua_engine = scripting.LuaEngine.init(allocator, redis_ctx, 5000) catch |err| {
         allocator.destroy(redis_ctx);
-        const err_msg = try std.fmt.allocPrint(allocator, "ERR Failed to initialize Lua engine: {}", .{err});
-        return RespValue{ .error_string = err_msg };
+        const err_msg = try std.fmt.allocPrint(allocator, "-ERR Failed to initialize Lua engine: {}\r\n", .{err});
+        return err_msg;
     };
-    defer lua_engine.deinit(); // deinit will destroy redis_ctx
+    defer allocator.destroy(redis_ctx); // LuaEngine does not own redis_ctx
+    defer lua_engine.deinit();
 
-    // Call the function
-    const result_str = lua_engine.callFunction(library.code, function_name, numkeys, keys, argv) catch |err| {
-        const err_msg = try std.fmt.allocPrint(allocator, "ERR Failed to call function: {}", .{err});
-        return RespValue{ .error_string = err_msg };
+    // Call the function — returns raw RESP bytes
+    const result_bytes = lua_engine.callFunction(library.code, function_name, numkeys, keys, argv) catch |err| {
+        return try std.fmt.allocPrint(allocator, "-ERR Failed to call function: {}\r\n", .{err});
     };
 
-    // Return result as bulk string
-    return RespValue{ .bulk_string = result_str };
+    return result_bytes;
 }
 
 /// FCALL_RO <function> <numkeys> [key...] [arg...]
@@ -222,26 +222,27 @@ pub fn cmdFcallRo(
     shutdown_state: ?*@import("../server.zig").ShutdownState,
     databases: []Storage,
     num_databases: u16,
-) !RespValue {
-    if (args.len < 4) {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'fcall_ro' command") };
+) ![]const u8 {
+    // args are stripped of "FCALL_RO": args[0]=function, args[1]=numkeys, args[2..]=keys+argv
+    if (args.len < 2) {
+        return try allocator.dupe(u8, "-ERR wrong number of arguments for 'fcall_ro' command\r\n");
     }
 
-    const function_name = args[2];
-    const numkeys_str = args[3];
+    const function_name = args[0];
+    const numkeys_str = args[1];
 
     // Parse numkeys
     const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR value is not an integer or out of range") };
+        return try allocator.dupe(u8, "-ERR value is not an integer or out of range\r\n");
     };
 
-    if (args.len < 4 + numkeys) {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR Number of keys can't be greater than number of args") };
+    if (args.len < 2 + numkeys) {
+        return try allocator.dupe(u8, "-ERR Number of keys can't be greater than number of args\r\n");
     }
 
     // Extract keys and argv
-    const keys = if (numkeys > 0) args[4 .. 4 + numkeys] else &[_][]const u8{};
-    const argv = if (args.len > 4 + numkeys) args[4 + numkeys ..] else &[_][]const u8{};
+    const keys = if (numkeys > 0) args[2 .. 2 + numkeys] else &[_][]const u8{};
+    const argv = if (args.len > 2 + numkeys) args[2 + numkeys ..] else &[_][]const u8{};
 
     // Lock storage
     storage.mutex.lock();
@@ -249,16 +250,16 @@ pub fn cmdFcallRo(
 
     // Lookup function
     const func_info = storage.functions.getFunction(function_name) orelse {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR Function not found") };
+        return try allocator.dupe(u8, "-ERR Function not found\r\n");
     };
 
     // Get library code
     const library = storage.functions.getLibrary(func_info.library_name) orelse {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR Library not found (internal error)") };
+        return try allocator.dupe(u8, "-ERR Library not found (internal error)\r\n");
     };
 
     // Start execution tracking
-    try storage.functions.startExecution(function_name, args[1..]);
+    try storage.functions.startExecution(function_name, args);
     defer storage.functions.stopExecution();
 
     // Create RedisContext for redis.call/pcall with read_only=true
@@ -286,19 +287,17 @@ pub fn cmdFcallRo(
     // Create Lua engine with RedisContext
     var lua_engine = scripting.LuaEngine.init(allocator, redis_ctx, 5000) catch |err| {
         allocator.destroy(redis_ctx);
-        const err_msg = try std.fmt.allocPrint(allocator, "ERR Failed to initialize Lua engine: {}", .{err});
-        return RespValue{ .error_string = err_msg };
+        return try std.fmt.allocPrint(allocator, "-ERR Failed to initialize Lua engine: {}\r\n", .{err});
     };
-    defer lua_engine.deinit(); // deinit will destroy redis_ctx
+    defer allocator.destroy(redis_ctx); // LuaEngine does not own redis_ctx
+    defer lua_engine.deinit();
 
-    // Call the function
-    const result_str = lua_engine.callFunction(library.code, function_name, numkeys, keys, argv) catch |err| {
-        const err_msg = try std.fmt.allocPrint(allocator, "ERR Failed to call function: {}", .{err});
-        return RespValue{ .error_string = err_msg };
+    // Call the function — returns raw RESP bytes
+    const result_bytes = lua_engine.callFunction(library.code, function_name, numkeys, keys, argv) catch |err| {
+        return try std.fmt.allocPrint(allocator, "-ERR Failed to call function: {}\r\n", .{err});
     };
 
-    // Return result as bulk string
-    return RespValue{ .bulk_string = result_str };
+    return result_bytes;
 }
 
 /// FUNCTION FLUSH [ASYNC|SYNC]

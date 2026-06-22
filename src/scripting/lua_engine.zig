@@ -407,6 +407,11 @@ pub const LuaEngine = struct {
             }
         }
 
+        // Register FCALL-mode redis.register_function() so library code can execute.
+        // This version sets each function as a Lua global (rather than into a context),
+        // allowing lua_getfield to find it by name when calling the function.
+        redis_api.registerFcallModeApi(self.L);
+
         // Load library code
         const code_z = try self.allocator.dupeZ(u8, library_code);
         defer self.allocator.free(code_z);
@@ -415,64 +420,68 @@ pub const LuaEngine = struct {
         if (load_result != lua.LUA_OK) {
             const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
             const err_str = std.mem.span(err_msg);
-            const result = try std.fmt.allocPrint(self.allocator, "ERR Error compiling library: {s}", .{err_str});
+            const result = try std.fmt.allocPrint(self.allocator, "-ERR Error compiling library: {s}\r\n", .{err_str});
             lua.lua_pop(self.L, 1);
             return result;
         }
 
-        // Execute library to define functions
+        // Execute library to define functions as Lua globals
         const exec_result = lua.lua_pcall(self.L, 0, 0, 0);
         if (exec_result != lua.LUA_OK) {
             const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
             const err_str = std.mem.span(err_msg);
-            const result = try std.fmt.allocPrint(self.allocator, "ERR Error loading library: {s}", .{err_str});
+            const result = try std.fmt.allocPrint(self.allocator, "-ERR Error loading library: {s}\r\n", .{err_str});
             lua.lua_pop(self.L, 1);
             return result;
         }
 
-        // Set KEYS using rawset to bypass __newindex sandbox
-        lua.lua_pushstring(self.L, "KEYS");
+        // Retrieve function from registry under "FCALL_<function_name>" (bypass sandbox)
+        var reg_key_buf: [256]u8 = undefined;
+        const fcall_prefix = "FCALL_";
+        if (fcall_prefix.len + function_name.len >= reg_key_buf.len) {
+            return try std.fmt.allocPrint(self.allocator, "-ERR Function name too long\r\n", .{});
+        }
+        @memcpy(reg_key_buf[0..fcall_prefix.len], fcall_prefix);
+        @memcpy(reg_key_buf[fcall_prefix.len .. fcall_prefix.len + function_name.len], function_name);
+        reg_key_buf[fcall_prefix.len + function_name.len] = 0;
+
+        lua.lua_getfield(self.L, lua.LUA_REGISTRYINDEX, @as([*:0]const u8, @ptrCast(&reg_key_buf)));
+        if (lua.lua_type(self.L, -1) != lua.LUA_TFUNCTION) {
+            lua.lua_pop(self.L, 1);
+            return try std.fmt.allocPrint(self.allocator, "-ERR Function '{s}' not found\r\n", .{function_name});
+        }
+
+        // Push KEYS table as first argument (function(keys, args))
         lua.lua_createtable(self.L, @intCast(keys.len), 0);
         for (keys, 0..) |key, i| {
             lua.lua_pushlstring(self.L, key.ptr, key.len);
             lua.lua_rawseti(self.L, -2, @intCast(i + 1));
         }
-        lua.lua_rawset(self.L, lua.LUA_GLOBALSINDEX);
 
-        lua.lua_pushstring(self.L, "ARGV");
+        // Push ARGV table as second argument
         lua.lua_createtable(self.L, @intCast(argv.len), 0);
         for (argv, 0..) |arg, i| {
             lua.lua_pushlstring(self.L, arg.ptr, arg.len);
             lua.lua_rawseti(self.L, -2, @intCast(i + 1));
         }
-        lua.lua_rawset(self.L, lua.LUA_GLOBALSINDEX);
 
-        // Get the function from global table
-        const func_z = try self.allocator.dupeZ(u8, function_name);
-        defer self.allocator.free(func_z);
-
-        lua.lua_getfield(self.L, lua.LUA_GLOBALSINDEX, func_z.ptr);
-        if (lua.lua_type(self.L, -1) != lua.LUA_TFUNCTION) {
-            lua.lua_pop(self.L, 1);
-            return try std.fmt.allocPrint(self.allocator, "ERR Function '{s}' not found", .{function_name});
-        }
-
-        // Call the function
-        const call_result = lua.lua_pcall(self.L, 0, 1, 0);
+        // Call function(keys, argv) with 2 args → 1 return value
+        _ = numkeys;
+        const call_result = lua.lua_pcall(self.L, 2, 1, 0);
         if (call_result != lua.LUA_OK) {
             const err_msg = lua.lua_tostring(self.L, -1) orelse "unknown error";
             const err_str = std.mem.span(err_msg);
-            const result = try std.fmt.allocPrint(self.allocator, "ERR Error calling function: {s}", .{err_str});
+            const result = try std.fmt.allocPrint(self.allocator, "-ERR Error calling function: {s}\r\n", .{err_str});
             lua.lua_pop(self.L, 1);
             return result;
         }
 
-        // Get the return value
-        const result = try self.luaValueToString(-1);
+        // Convert return value to RESP format using the same encoding as EVAL
+        var buf = try std.ArrayList(u8).initCapacity(self.allocator, 64);
+        try self.luaToRESP2Buf(&buf, lua.lua_gettop(self.L));
         lua.lua_pop(self.L, 1);
 
-        _ = numkeys;
-        return result;
+        return try buf.toOwnedSlice(self.allocator);
     }
 };
 

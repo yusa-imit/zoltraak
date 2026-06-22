@@ -1054,6 +1054,25 @@ pub fn build(b: *std.Build) void {
     const run_iter372_tests = b.addRunArtifact(iter372_tests);
     test_step.dependOn(&run_iter372_tests.step);
 
+    // Iteration 373: FCALL/FCALL_RO proper RESP encoding fix
+    const iter373_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter373.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter373_tests.linkSystemLibrary("luajit-5.1");
+    iter373_tests.linkLibC();
+    iter373_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter373_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter373_tests = b.addRunArtifact(iter373_tests);
+    test_step.dependOn(&run_iter373_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

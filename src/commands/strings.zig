@@ -1753,6 +1753,11 @@ pub fn executeCommand(
 
             if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
                 const result = try function_cmds.cmdFunctionLoad(allocator, storage, args_func);
+                defer switch (result) {
+                    .bulk_string => |s| allocator.free(s),
+                    .error_string => |s| allocator.free(s),
+                    else => {},
+                };
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
@@ -1805,7 +1810,7 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
-            const result = try function_cmds.cmdFcall(
+            break :blk try function_cmds.cmdFcall(
                 allocator,
                 storage,
                 script_store,
@@ -1824,14 +1829,11 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
-            var w = Writer.init(allocator);
-            defer w.deinit();
-            break :blk try w.writeRespValue(result);
         }
         else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
             const args_fcall_ro = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall_ro);
-            const result = try function_cmds.cmdFcallRo(
+            break :blk try function_cmds.cmdFcallRo(
                 allocator,
                 storage,
                 script_store,
@@ -1850,9 +1852,6 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
-            var w = Writer.init(allocator);
-            defer w.deinit();
-            break :blk try w.writeRespValue(result);
         }
         // CLUSTER commands
         else if (std.mem.eql(u8, cmd_upper, "CLUSTER")) {

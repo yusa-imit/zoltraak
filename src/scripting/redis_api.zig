@@ -507,19 +507,24 @@ pub fn registerRedisApi(L: *lua.lua_State, ctx: *RedisContext) !void {
 /// Register redis.register_function() for Functions API
 /// Must be called with a FunctionRegistrationContext stored in Lua registry
 pub fn registerFunctionsApi(L: *lua.lua_State) void {
-    // Get existing redis table or create it
-    lua.lua_getfield(L, lua.LUA_GLOBALSINDEX, "redis");
+    // Use rawget to bypass sandbox __index (redis may not exist when redis_ctx is null)
+    lua.lua_pushstring(L, "redis");
+    lua.lua_rawget(L, lua.LUA_GLOBALSINDEX);
     if (lua.lua_isnil(L, -1)) {
         lua.lua_pop(L, 1);
-        lua.lua_createtable(L, 0, 1);
+        lua.lua_createtable(L, 0, 2);
+        // Use rawset to bypass sandbox __newindex when registering the new table
+        lua.lua_pushstring(L, "redis");
+        lua.lua_pushvalue(L, -2); // dup table
+        lua.lua_rawset(L, lua.LUA_GLOBALSINDEX);
     }
+    // Stack: [... redis_table]
 
     // Add redis.register_function
     lua.lua_pushcfunction(L, redis_register_function_impl);
     lua.lua_setfield(L, -2, "register_function");
 
-    // Set redis as global (if it wasn't already)
-    lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "redis");
+    lua.lua_pop(L, 1); // pop redis table
 }
 
 /// C callback for redis.register_function()
@@ -549,48 +554,50 @@ fn redis_register_function_internal(L: *lua.lua_State) !c_int {
     const ctx: *FunctionRegistrationContext = @ptrCast(@alignCast(ctx_ptr));
     lua.lua_pop(L, 1); // pop context
 
-    // Expect one table argument
-    if (lua.lua_gettop(L) != 1 or lua.lua_type(L, 1) != lua.LUA_TTABLE) {
-        lua.lua_pushstring(L, "ERR redis.register_function expects exactly one table argument");
+    const nargs = lua.lua_gettop(L);
+    var function_name: []const u8 = "";
+    var description: []const u8 = "";
+
+    if (nargs == 2 and lua.lua_type(L, 1) == lua.LUA_TSTRING and lua.lua_type(L, 2) == lua.LUA_TFUNCTION) {
+        // Two-arg form: redis.register_function('name', function(keys, args) ... end)
+        var name_len: usize = 0;
+        const name_ptr = lua.lua_tolstring(L, 1, &name_len);
+        function_name = if (name_ptr != null and name_len > 0) name_ptr.?[0..name_len] else "";
+    } else if (nargs == 1 and lua.lua_type(L, 1) == lua.LUA_TTABLE) {
+        // Table form: redis.register_function({function_name=..., callback=..., description=...})
+        lua.lua_getfield(L, 1, "function_name");
+        if (lua.lua_isnil(L, -1)) {
+            lua.lua_pushstring(L, "ERR function_name is required");
+            _ = lua.lua_error(L);
+            return 0;
+        }
+        var fn_len: usize = 0;
+        const fn_ptr = lua.lua_tolstring(L, -1, &fn_len);
+        function_name = if (fn_ptr != null and fn_len > 0) fn_ptr.?[0..fn_len] else "";
+        lua.lua_pop(L, 1);
+
+        lua.lua_getfield(L, 1, "description");
+        var desc_len: usize = 0;
+        description = if (!lua.lua_isnil(L, -1)) blk: {
+            const desc_ptr = lua.lua_tolstring(L, -1, &desc_len);
+            break :blk if (desc_ptr != null and desc_len > 0) desc_ptr.?[0..desc_len] else "";
+        } else "";
+        lua.lua_pop(L, 1);
+
+        // Validate callback field exists
+        lua.lua_getfield(L, 1, "callback");
+        if (lua.lua_type(L, -1) != lua.LUA_TFUNCTION) {
+            lua.lua_pushstring(L, "ERR callback must be a function");
+            _ = lua.lua_error(L);
+            return 0;
+        }
+        lua.lua_pop(L, 1);
+    } else {
+        lua.lua_pushstring(L, "ERR redis.register_function expects (name, callback) or ({function_name=..., callback=...})");
         _ = lua.lua_error(L);
         return 0;
     }
 
-    // Extract function_name (required)
-    lua.lua_getfield(L, 1, "function_name");
-    if (lua.lua_isnil(L, -1)) {
-        lua.lua_pushstring(L, "ERR function_name is required");
-        _ = lua.lua_error(L);
-        return 0;
-    }
-    var function_name_len: usize = 0;
-    const function_name_ptr = lua.lua_tolstring(L, -1, &function_name_len);
-    const function_name = if (function_name_len > 0 and function_name_ptr != null)
-        function_name_ptr.?[0..function_name_len]
-    else
-        "";
-    lua.lua_pop(L, 1);
-
-    // Extract description (optional, default to empty string)
-    lua.lua_getfield(L, 1, "description");
-    var description_len: usize = 0;
-    const description: []const u8 = if (!lua.lua_isnil(L, -1)) blk: {
-        const desc_ptr = lua.lua_tolstring(L, -1, &description_len);
-        break :blk if (description_len > 0 and desc_ptr != null) desc_ptr.?[0..description_len] else "";
-    } else "";
-    lua.lua_pop(L, 1);
-
-    // Extract callback (required)
-    lua.lua_getfield(L, 1, "callback");
-    if (lua.lua_type(L, -1) != lua.LUA_TFUNCTION) {
-        lua.lua_pushstring(L, "ERR callback must be a function");
-        _ = lua.lua_error(L);
-        return 0;
-    }
-    lua.lua_pop(L, 1);
-
-    // Extract flags (optional, default to 0)
-    // TODO: Parse flags table in future iterations (no-writes, allow-oom, etc.)
     const flags: u8 = 0;
 
     // Register function in context
@@ -604,6 +611,90 @@ fn redis_register_function_internal(L: *lua.lua_State) !c_int {
         return 0;
     };
 
-    // Return nothing on success
+    return 0;
+}
+
+/// Register a FCALL-mode redis.register_function() that stores functions in the Lua registry.
+/// Used in callFunction() so library code can execute without a FunctionRegistrationContext.
+/// Functions are stored in the registry under "FCALL_<name>" to bypass the sandbox.
+pub fn registerFcallModeApi(L: *lua.lua_State) void {
+    // Access the redis table using rawget to bypass sandbox __index
+    lua.lua_pushstring(L, "redis");
+    lua.lua_rawget(L, lua.LUA_GLOBALSINDEX);
+    if (lua.lua_isnil(L, -1)) {
+        lua.lua_pop(L, 1);
+        lua.lua_createtable(L, 0, 1);
+        // Set redis table via rawset to bypass sandbox __newindex
+        lua.lua_pushstring(L, "redis");
+        lua.lua_pushvalue(L, -2); // dup the table
+        lua.lua_rawset(L, lua.LUA_GLOBALSINDEX);
+    }
+    // Set redis.register_function on the redis table (modifying the table itself, not _G)
+    lua.lua_pushcfunction(L, redis_register_function_fcall_impl);
+    lua.lua_setfield(L, -2, "register_function");
+    lua.lua_pop(L, 1); // pop redis table (no need to re-set as global, we modified it in-place)
+}
+
+/// FCALL-mode redis.register_function(name, callback) or redis.register_function({table})
+/// Stores callback in Lua registry under "FCALL_<name>" to bypass sandbox restrictions.
+export fn redis_register_function_fcall_impl(L: *lua.lua_State) callconv(.c) c_int {
+    const nargs = lua.lua_gettop(L);
+    var name_str: [*c]const u8 = undefined;
+    var name_len: usize = 0;
+
+    if (nargs == 2 and lua.lua_type(L, 1) == lua.LUA_TSTRING and lua.lua_type(L, 2) == lua.LUA_TFUNCTION) {
+        // Two-arg form: redis.register_function('name', function(keys, args) ... end)
+        name_str = lua.lua_tolstring(L, 1, &name_len);
+        // callback is already at stack index 2 — move it to top and remember its index
+        lua.lua_pushvalue(L, 2); // dup callback to top
+    } else if (nargs == 1 and lua.lua_type(L, 1) == lua.LUA_TTABLE) {
+        // Table form: redis.register_function({function_name=..., callback=...})
+        lua.lua_pushstring(L, "function_name");
+        lua.lua_rawget(L, 1);
+        if (lua.lua_isnil(L, -1)) {
+            lua.lua_pop(L, 1);
+            lua.lua_pushstring(L, "ERR function_name is required");
+            _ = lua.lua_error(L);
+            return 0;
+        }
+        name_str = lua.lua_tolstring(L, -1, &name_len);
+        lua.lua_pop(L, 1); // pop function_name string
+
+        lua.lua_pushstring(L, "callback");
+        lua.lua_rawget(L, 1);
+        if (lua.lua_type(L, -1) != lua.LUA_TFUNCTION) {
+            lua.lua_pop(L, 1);
+            lua.lua_pushstring(L, "ERR callback must be a function");
+            _ = lua.lua_error(L);
+            return 0;
+        }
+        // callback is now at stack top
+    } else {
+        lua.lua_pushstring(L, "ERR redis.register_function expects (name, callback) or ({function_name=..., callback=...})");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+
+    if (name_len == 0 or name_str == null) {
+        lua.lua_pushstring(L, "ERR invalid function name");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+
+    // Build registry key: "FCALL_<name>"
+    var key_buf: [256]u8 = undefined;
+    const prefix = "FCALL_";
+    if (prefix.len + name_len >= key_buf.len) {
+        lua.lua_pushstring(L, "ERR function name too long");
+        _ = lua.lua_error(L);
+        return 0;
+    }
+    @memcpy(key_buf[0..prefix.len], prefix);
+    @memcpy(key_buf[prefix.len .. prefix.len + name_len], name_str[0..name_len]);
+    key_buf[prefix.len + name_len] = 0; // null-terminate
+
+    // Store callback (at stack top) in registry under "FCALL_<name>"
+    lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, @as([*:0]const u8, @ptrCast(&key_buf)));
+
     return 0;
 }
