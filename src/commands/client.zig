@@ -1893,10 +1893,9 @@ fn cmdClientUnblock(
     return w.writeInteger(if (found) 1 else 0);
 }
 
-/// CLIENT NO-EVICT [ON|OFF]
+/// CLIENT NO-EVICT ON|OFF
 /// Control whether the client's keys should be protected from eviction.
 /// When enabled, keys created by this client won't be evicted when maxmemory is reached.
-/// Returns current status if no argument provided.
 fn cmdClientNoEvict(
     allocator: std.mem.Allocator,
     client_registry: *ClientRegistry,
@@ -1906,14 +1905,8 @@ fn cmdClientNoEvict(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len > 2) {
+    if (args.len != 2) {
         return w.writeError("ERR wrong number of arguments for 'client|no-evict' command");
-    }
-
-    // If no argument, return current status
-    if (args.len == 1) {
-        const no_evict = client_registry.getNoEvict(client_id);
-        return w.writeSimpleString(if (no_evict) "on" else "off");
     }
 
     // Parse ON|OFF argument
@@ -1933,11 +1926,10 @@ fn cmdClientNoEvict(
     return w.writeSimpleString("OK");
 }
 
-/// CLIENT NO-TOUCH [ON|OFF]
+/// CLIENT NO-TOUCH ON|OFF
 /// Control whether commands sent by the client will alter LRU/LFU stats.
 /// When ON, the client will not change LFU/LRU stats unless it sends TOUCH.
 /// When OFF, the client touches LFU/LRU stats like normal (default).
-/// Returns current status if no argument provided.
 fn cmdClientNoTouch(
     allocator: std.mem.Allocator,
     client_registry: *ClientRegistry,
@@ -1947,14 +1939,8 @@ fn cmdClientNoTouch(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    if (args.len > 2) {
+    if (args.len != 2) {
         return w.writeError("ERR wrong number of arguments for 'client|no-touch' command");
-    }
-
-    // If no argument, return current status
-    if (args.len == 1) {
-        const no_touch = client_registry.getNoTouch(client_id);
-        return w.writeSimpleString(if (no_touch) "on" else "off");
     }
 
     // Parse ON|OFF argument

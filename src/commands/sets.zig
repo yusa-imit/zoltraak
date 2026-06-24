@@ -817,6 +817,8 @@ pub fn cmdSintercard(allocator: std.mem.Allocator, storage: *Storage, args: []co
             limit = std.fmt.parseInt(usize, limit_str, 10) catch {
                 return w.writeError("ERR value is not an integer or out of range");
             };
+        } else {
+            return w.writeError("ERR syntax error");
         }
     }
 

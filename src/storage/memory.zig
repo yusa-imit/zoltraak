@@ -3051,8 +3051,7 @@ pub const Storage = struct {
                             }
                         }
                     }
-                    // Reverse to return positions in ascending order
-                    std.mem.reverse(usize, results.items);
+                    // Positions remain in descending order (tail→head) per Redis spec
                 }
 
                 return try results.toOwnedSlice(allocator);

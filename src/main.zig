@@ -22,6 +22,7 @@ pub const streams_commands = @import("commands/streams.zig");
 pub const streams_advanced_commands = @import("commands/streams_advanced.zig");
 pub const keys_commands = @import("commands/keys.zig");
 pub const lists_commands = @import("commands/lists.zig");
+pub const sets_commands = @import("commands/sets.zig");
 pub const blocking = @import("storage/blocking.zig");
 pub const acl_commands = @import("commands/acl.zig");
 pub const acl_storage = @import("storage/acl.zig");
