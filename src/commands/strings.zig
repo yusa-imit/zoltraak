@@ -909,7 +909,8 @@ pub fn executeCommand(
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try cmdDecrby(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "INCRBYFLOAT")) {
-            break :blk try cmdIncrbyfloat(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try cmdIncrbyfloat(allocator, storage, array, protocol_version);
         }
         // String utility commands
         else if (std.mem.eql(u8, cmd_upper, "APPEND")) {
@@ -1621,7 +1622,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "GEOPOS")) {
             break :blk try geo_cmds.cmdGeopos(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEODIST")) {
-            break :blk try geo_cmds.cmdGeodist(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeodist(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEOHASH")) {
             break :blk try geo_cmds.cmdGeohash(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS")) {
@@ -3927,7 +3929,7 @@ fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
 /// INCRBYFLOAT key increment
 /// Increment the float value of key by increment.
-fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3960,6 +3962,11 @@ fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const
         error.NanOrInfinity => return w.writeError("ERR increment would produce NaN or Infinity"),
         else => return err,
     };
+
+    // RESP3: return native double type
+    if (protocol_version == .RESP3) {
+        return w.writeDouble(new_val);
+    }
 
     // Format matching storage's formatFloat (decimal, no trailing zeros)
     var buf: [64]u8 = undefined;
@@ -6438,7 +6445,7 @@ test "commands - INCRBYFLOAT basic" {
         RespValue{ .bulk_string = "key" },
         RespValue{ .bulk_string = "0.1" },
     };
-    const result = try cmdIncrbyfloat(allocator, storage, &args);
+    const result = try cmdIncrbyfloat(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
     // Result should be a bulk string starting with $
     try std.testing.expect(result[0] == '$');
@@ -6454,7 +6461,7 @@ test "commands - INCRBYFLOAT non-float error" {
         RespValue{ .bulk_string = "key" },
         RespValue{ .bulk_string = "notafloat" },
     };
-    const result = try cmdIncrbyfloat(allocator, storage, &args);
+    const result = try cmdIncrbyfloat(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
     try std.testing.expect(result[0] == '-');
 }

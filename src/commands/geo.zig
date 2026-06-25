@@ -4,6 +4,7 @@ const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const notifications_mod = @import("../storage/notifications.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
+const client_mod = @import("./client.zig");
 const zuda = @import("zuda");
 
 const RespValue = protocol.RespValue;
@@ -11,6 +12,7 @@ const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const PubSub = pubsub_mod.PubSub;
 const Coord = zuda.algorithms.geometry.Coord;
+const RespProtocol = client_mod.RespProtocol;
 
 // Geospatial constants
 const EARTH_RADIUS_METERS = 6372797.560856; // Earth radius in meters (WGS84)
@@ -320,7 +322,7 @@ pub fn cmdGeopos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 }
 
 /// GEODIST key member1 member2 [unit]
-pub fn cmdGeodist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdGeodist(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -371,6 +373,11 @@ pub fn cmdGeodist(allocator: std.mem.Allocator, storage: *Storage, args: []const
         distance /= 0.3048;
     } else {
         return w.writeError("ERR unsupported unit provided. please use M, KM, FT, MI");
+    }
+
+    // RESP3: return native double type
+    if (protocol_version == .RESP3) {
+        return w.writeDouble(distance);
     }
 
     var dist_buf: [64]u8 = undefined;
@@ -2028,7 +2035,7 @@ test "GEODIST - accepts uppercase unit KM" {
         .{ .bulk_string = "Catania" },
         .{ .bulk_string = "KM" },
     };
-    const result = try cmdGeodist(testing.allocator, &storage, &dist_args);
+    const result = try cmdGeodist(testing.allocator, &storage, &dist_args, .RESP2);
     defer testing.allocator.free(result);
     // Should return a bulk string with a numeric distance, not an error
     try testing.expect(std.mem.startsWith(u8, result, "$"));
@@ -2059,7 +2066,7 @@ test "GEODIST - accepts mixed case unit Km" {
         .{ .bulk_string = "Catania" },
         .{ .bulk_string = "Km" },
     };
-    const result = try cmdGeodist(testing.allocator, &storage, &dist_args);
+    const result = try cmdGeodist(testing.allocator, &storage, &dist_args, .RESP2);
     defer testing.allocator.free(result);
     try testing.expect(std.mem.startsWith(u8, result, "$"));
     try testing.expect(!std.mem.startsWith(u8, result, "-ERR"));
