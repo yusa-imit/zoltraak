@@ -1092,6 +1092,25 @@ pub fn build(b: *std.Build) void {
     const run_iter374_tests = b.addRunArtifact(iter374_tests);
     test_step.dependOn(&run_iter374_tests.step);
 
+    // Iteration 375: sailor v2.57.0 + INCRBYFLOAT format + HRANDFIELD WITHVALUES RESP3 + ZUNION/ZINTER/ZDIFF numkeys=0 + ZRANGESTORE WITHSCORES
+    const iter375_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter375.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter375_tests.linkSystemLibrary("luajit-5.1");
+    iter375_tests.linkLibC();
+    iter375_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter375_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter375_tests = b.addRunArtifact(iter375_tests);
+    test_step.dependOn(&run_iter375_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

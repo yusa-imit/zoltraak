@@ -3958,7 +3958,14 @@ fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
     // Format matching storage's formatFloat (decimal, no trailing zeros)
     var buf: [64]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buf, "{d}", .{new_val});
+    const raw = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch return error.OutOfMemory;
+    const formatted = blk: {
+        if (std.mem.indexOf(u8, raw, ".") == null) break :blk raw;
+        var end = raw.len;
+        while (end > 0 and raw[end - 1] == '0') end -= 1;
+        if (end > 0 and raw[end - 1] == '.') end -= 1;
+        break :blk raw[0..end];
+    };
     return w.writeBulkString(formatted);
 }
 

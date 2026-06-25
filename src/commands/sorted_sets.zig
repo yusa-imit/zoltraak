@@ -1519,23 +1519,12 @@ pub fn cmdZrangestore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    // Check for WITHSCORES option (though it doesn't affect storage, just parsing)
-    var with_scores = false;
+    // ZRANGESTORE takes no extra options at rank-range level — reject anything after stop
     if (args.len >= 6) {
-        const opt = switch (args[5]) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR syntax error"),
-        };
-        const upper_opt = try std.ascii.allocUpperString(allocator, opt);
-        defer allocator.free(upper_opt);
-        if (std.mem.eql(u8, upper_opt, "WITHSCORES")) {
-            with_scores = true;
-        } else {
-            return w.writeError("ERR syntax error");
-        }
+        return w.writeError("ERR syntax error");
     }
 
-    const count = storage.zrangestore(allocator, dest, source, start, stop, with_scores) catch |err| switch (err) {
+    const count = storage.zrangestore(allocator, dest, source, start, stop, false) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         else => return err,
     };
@@ -3409,6 +3398,10 @@ pub fn cmdZunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeError("ERR numkeys must be a valid integer");
     };
 
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zunion' command");
+    }
+
     if (args.len < 2 + numkeys) {
         return w.writeError("ERR syntax error");
     }
@@ -3503,6 +3496,10 @@ pub fn cmdZinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeError("ERR numkeys must be a valid integer");
     };
 
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zinter' command");
+    }
+
     if (args.len < 2 + numkeys) {
         return w.writeError("ERR syntax error");
     }
@@ -3596,6 +3593,10 @@ pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
         return w.writeError("ERR numkeys must be a valid integer");
     };
+
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zdiff' command");
+    }
 
     if (args.len < 2 + numkeys) {
         return w.writeError("ERR syntax error");
@@ -3696,6 +3697,10 @@ pub fn cmdZunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return w.writeError("ERR numkeys must be a valid integer");
     };
 
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zunionstore' command");
+    }
+
     if (args.len < 3 + numkeys) {
         return w.writeError("ERR syntax error");
     }
@@ -3750,6 +3755,10 @@ pub fn cmdZinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
         return w.writeError("ERR numkeys must be a valid integer");
     };
 
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zinterstore' command");
+    }
+
     if (args.len < 3 + numkeys) {
         return w.writeError("ERR syntax error");
     }
@@ -3803,6 +3812,10 @@ pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
     const numkeys = std.fmt.parseInt(usize, numkeys_str, 10) catch {
         return w.writeError("ERR numkeys must be a valid integer");
     };
+
+    if (numkeys == 0) {
+        return w.writeError("ERR at least 1 input key is needed for 'zdiffstore' command");
+    }
 
     if (args.len < 3 + numkeys) {
         return w.writeError("ERR syntax error");

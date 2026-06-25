@@ -1373,6 +1373,7 @@ test "cmdHstrlen - returns 0 for non-existent key" {
 /// Return random field(s) from a hash
 /// Returns bulk string (single field), array of fields, or array of field-value pairs
 pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
+    _ = protocol_version;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1431,33 +1432,15 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
         } else {
             // Multiple fields - return array
             if (with_values) {
-                // Return array of field-value pairs
-                // For RESP3 with protocol_version == RESP3, return a map
-                if (protocol_version == .RESP3) {
-                    // Build map pairs
-                    var pairs = try std.ArrayList(MapPair).initCapacity(allocator, fields.len / 2);
-                    defer pairs.deinit(allocator);
+                // Return flat array of field-value pairs (same for RESP2 and RESP3 per Redis spec)
+                var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
+                defer resp_values.deinit(allocator);
 
-                    var i: usize = 0;
-                    while (i < fields.len) : (i += 2) {
-                        try pairs.append(allocator, .{
-                            .key = .{ .bulk_string = fields[i] },
-                            .value = .{ .bulk_string = fields[i + 1] },
-                        });
-                    }
-
-                    return w.writeMap(pairs.items);
-                } else {
-                    // RESP2: flat array - convert to RespValue
-                    var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
-                    defer resp_values.deinit(allocator);
-
-                    for (fields) |field| {
-                        try resp_values.append(allocator, RespValue{ .bulk_string = field });
-                    }
-
-                    return w.writeArray(resp_values.items);
+                for (fields) |field| {
+                    try resp_values.append(allocator, RespValue{ .bulk_string = field });
                 }
+
+                return w.writeArray(resp_values.items);
             } else {
                 // Return array of fields - convert to RespValue
                 var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
