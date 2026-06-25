@@ -603,7 +603,8 @@ fn handleZrangeBylex(
 /// ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]
 /// Get members with scores in range [min, max]
 /// Supports exclusive intervals with ( prefix, and -inf/+inf
-pub fn cmdZrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: WITHSCORES returns map type (%) instead of flat array.
+pub fn cmdZrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -713,6 +714,27 @@ pub fn cmdZrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: [
             allocator.free(items);
         }
 
+        // RESP3: WITHSCORES returns map (member → score)
+        if (with_scores and protocol_version == .RESP3 and items.len > 0) {
+            const map_len = items.len / 2;
+            const map_pairs = try allocator.alloc(MapPair, map_len);
+            errdefer allocator.free(map_pairs);
+            defer allocator.free(map_pairs);
+            var pair_idx: usize = 0;
+            var i: usize = 0;
+            while (i < items.len) : (i += 2) {
+                map_pairs[pair_idx] = MapPair{
+                    .key = RespValue{ .bulk_string = items[i] },
+                    .value = RespValue{ .bulk_string = items[i + 1] },
+                };
+                pair_idx += 1;
+            }
+            return w.writeMap(map_pairs);
+        }
+        if (with_scores and protocol_version == .RESP3) {
+            return w.writeMap(&[_]MapPair{});
+        }
+
         var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, items.len);
         defer resp_values.deinit(allocator);
 
@@ -722,6 +744,7 @@ pub fn cmdZrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: [
 
         return w.writeArray(resp_values.items);
     } else {
+        if (with_scores and protocol_version == .RESP3) return w.writeMap(&[_]MapPair{});
         return w.writeArray(&[_]RespValue{});
     }
 }
@@ -1323,7 +1346,8 @@ pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
 /// ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
 /// Score range descending (max first).
-pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: WITHSCORES returns map type (%) instead of flat array.
+pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1402,6 +1426,29 @@ pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
             for (ms) |sm| allocator.free(sm.member);
             allocator.free(ms);
         }
+
+        // RESP3: WITHSCORES returns map (member → score)
+        if (with_scores and protocol_version == .RESP3) {
+            var pairs = try std.ArrayList(MapPair).initCapacity(allocator, ms.len);
+            defer pairs.deinit(allocator);
+            var score_strs = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+            defer {
+                for (score_strs.items) |s| allocator.free(s);
+                score_strs.deinit(allocator);
+            }
+            for (ms) |sm| {
+                var score_buf: [64]u8 = undefined;
+                const score_str = formatScore(&score_buf, sm.score);
+                const owned = try allocator.dupe(u8, score_str);
+                try score_strs.append(allocator, owned);
+                try pairs.append(allocator, MapPair{
+                    .key = RespValue{ .bulk_string = sm.member },
+                    .value = RespValue{ .bulk_string = owned },
+                });
+            }
+            return w.writeMap(pairs.items);
+        }
+
         const result_len = if (with_scores) ms.len * 2 else ms.len;
         var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
         defer resp_values.deinit(allocator);
@@ -1422,12 +1469,14 @@ pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
         }
         return w.writeArray(resp_values.items);
     }
+    if (with_scores and protocol_version == .RESP3) return w.writeMap(&[_]MapPair{});
     return w.writeArray(&[_]RespValue{});
 }
 
 /// ZRANDMEMBER key [count [WITHSCORES]]
 /// Return random member(s) from sorted set.
-pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: positive count with WITHSCORES returns map type (%) since members are unique.
+pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1488,6 +1537,29 @@ pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
                 for (ms) |sm| allocator.free(sm.member);
                 allocator.free(ms);
             }
+
+            // RESP3: positive count with WITHSCORES → map (unique members)
+            if (with_scores and count > 0 and protocol_version == .RESP3) {
+                var pairs = try std.ArrayList(MapPair).initCapacity(allocator, ms.len);
+                defer pairs.deinit(allocator);
+                var score_strs = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
+                defer {
+                    for (score_strs.items) |s| allocator.free(s);
+                    score_strs.deinit(allocator);
+                }
+                for (ms) |sm| {
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = formatScore(&score_buf, sm.score);
+                    const owned = try allocator.dupe(u8, score_str);
+                    try score_strs.append(allocator, owned);
+                    try pairs.append(allocator, MapPair{
+                        .key = RespValue{ .bulk_string = sm.member },
+                        .value = RespValue{ .bulk_string = owned },
+                    });
+                }
+                return w.writeMap(pairs.items);
+            }
+
             const result_len = if (with_scores) ms.len * 2 else ms.len;
             var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, result_len);
             defer resp_values.deinit(allocator);
@@ -1508,6 +1580,8 @@ pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
             }
             return w.writeArray(resp_values.items);
         }
+        // RESP3: positive count with WITHSCORES → empty map
+        if (with_scores and count > 0 and protocol_version == .RESP3) return w.writeMap(&[_]MapPair{});
         return w.writeArray(&[_]RespValue{});
     }
 }
@@ -2175,7 +2249,7 @@ test "cmdZrangebyscore - score range" {
         .{ .bulk_string = "1" },
         .{ .bulk_string = "2" },
     };
-    const response = try cmdZrangebyscore(allocator, storage, &args);
+    const response = try cmdZrangebyscore(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", response);
@@ -2202,7 +2276,7 @@ test "cmdZrangebyscore - with -inf and +inf" {
         .{ .bulk_string = "-inf" },
         .{ .bulk_string = "+inf" },
     };
-    const response = try cmdZrangebyscore(allocator, storage, &args);
+    const response = try cmdZrangebyscore(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", response);

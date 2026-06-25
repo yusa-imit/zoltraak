@@ -533,7 +533,8 @@ pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
 /// SPOP key [count]
 /// Remove and return random member(s) from set.
 /// Returns bulk string (single pop) or array (with count).
-pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+/// RESP3: with count, returns set type (~) since popped elements are always unique.
+pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -607,8 +608,12 @@ pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
             for (members) |m| {
                 try resp_values.append(allocator, RespValue{ .bulk_string = m });
             }
+            // RESP3: popped elements are always unique → set type
+            if (protocol_version == .RESP3) return w.writeSet(resp_values.items);
             return w.writeArray(resp_values.items);
         }
+        // RESP3: empty set
+        if (protocol_version == .RESP3) return w.writeSet(&[_]RespValue{});
         return w.writeArray(&[_]RespValue{});
     }
 }
@@ -618,7 +623,8 @@ pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// Without count: returns one bulk string.
 /// With positive count: up to count distinct members.
 /// With negative count: abs(count) members (may repeat).
-pub fn cmdSrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: positive count returns set type (~) since elements are unique; negative count returns array.
+pub fn cmdSrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -669,8 +675,12 @@ pub fn cmdSrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
             for (ms) |m| {
                 try resp_values.append(allocator, RespValue{ .bulk_string = m });
             }
+            // RESP3 with positive count: elements are unique → set type
+            if (count > 0 and protocol_version == .RESP3) return w.writeSet(resp_values.items);
             return w.writeArray(resp_values.items);
         }
+        // RESP3 with positive count: empty set
+        if (count > 0 and protocol_version == .RESP3) return w.writeSet(&[_]RespValue{});
         return w.writeArray(&[_]RespValue{});
     }
 }

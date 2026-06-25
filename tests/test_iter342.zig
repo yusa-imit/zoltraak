@@ -212,7 +212,7 @@ test "ZRANGEBYSCORE WITHSCORES returns correct score for +inf member" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "WITHSCORES" },
     };
-    const result = try ss_cmds.cmdZrangebyscore(allocator, storage, &args);
+    const result = try ss_cmds.cmdZrangebyscore(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Score should be "+inf" not "inf"

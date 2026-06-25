@@ -173,7 +173,7 @@ test "SPOP fires spop notification on pop" {
         RespValue{ .bulk_string = "SPOP" },
         RespValue{ .bulk_string = "myset" },
     };
-    const spop_result = try sets.cmdSpop(allocator, &storage, &spop_args, &ps, 0);
+    const spop_result = try sets.cmdSpop(allocator, &storage, &spop_args, &ps, 0, .RESP2);
     defer allocator.free(spop_result);
 
     // Verify response is a bulk string (the popped member)
@@ -207,7 +207,7 @@ test "SPOP fires del notification when last member popped" {
         RespValue{ .bulk_string = "SPOP" },
         RespValue{ .bulk_string = "myset" },
     };
-    const spop_result = try sets.cmdSpop(allocator, &storage, &spop_args, &ps, 0);
+    const spop_result = try sets.cmdSpop(allocator, &storage, &spop_args, &ps, 0, .RESP2);
     defer allocator.free(spop_result);
 
     // Verify response is the member

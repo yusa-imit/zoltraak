@@ -1191,7 +1191,8 @@ pub fn executeCommand(
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZrange(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYSCORE")) {
-            break :blk try sorted_sets.cmdZrangebyscore(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrangebyscore(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZSCORE")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZscore(allocator, storage, array, protocol_version);
@@ -1227,9 +1228,11 @@ pub fn executeCommand(
         // Set commands (new)
         else if (std.mem.eql(u8, cmd_upper, "SPOP")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sets.cmdSpop(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sets.cmdSpop(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SRANDMEMBER")) {
-            break :blk try sets.cmdSrandmember(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sets.cmdSrandmember(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SMOVE")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try sets.cmdSmove(allocator, storage, array, ps, selected_db);
@@ -1264,9 +1267,11 @@ pub fn executeCommand(
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZrevrange(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGEBYSCORE")) {
-            break :blk try sorted_sets.cmdZrevrangebyscore(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrevrangebyscore(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANDMEMBER")) {
-            break :blk try sorted_sets.cmdZrandmember(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrandmember(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZUNION")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZunion(allocator, storage, array, protocol_version);
