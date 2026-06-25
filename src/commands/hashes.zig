@@ -516,7 +516,7 @@ pub fn cmdHincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
 /// HINCRBYFLOAT key field increment
 /// Increment float field in a hash by increment
 /// Returns new value as bulk string
-pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -558,10 +558,14 @@ pub fn cmdHincrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []
     // Publish notification
     notifyHashEvent(allocator, storage, ps, db_index, key, "hincrbyfloat");
 
-    // Format result as bulk string with no trailing zeros
+    // RESP3: return native double type
+    if (protocol_version == .RESP3) {
+        return w.writeDouble(new_value);
+    }
+
+    // RESP2: bulk string with no trailing zeros
     var buf: [64]u8 = undefined;
     const raw = std.fmt.bufPrint(&buf, "{d}", .{new_value}) catch "0";
-    // Trim trailing zeros after decimal point
     const result_str = blk: {
         if (std.mem.indexOf(u8, raw, ".") != null) {
             var end = raw.len;

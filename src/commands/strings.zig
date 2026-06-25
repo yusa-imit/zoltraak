@@ -1135,7 +1135,8 @@ pub fn executeCommand(
             break :blk try hashes.cmdHincrby(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "HINCRBYFLOAT")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try hashes.cmdHincrbyfloat(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try hashes.cmdHincrbyfloat(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HSETNX")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try hashes.cmdHsetnx(allocator, storage, array, ps, selected_db);
@@ -1180,7 +1181,8 @@ pub fn executeCommand(
         // Sorted set commands
         else if (std.mem.eql(u8, cmd_upper, "ZADD")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdZadd(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZadd(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZREM")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try sorted_sets.cmdZrem(allocator, storage, array, ps, selected_db);
@@ -1190,7 +1192,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "ZRANGEBYSCORE")) {
             break :blk try sorted_sets.cmdZrangebyscore(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZSCORE")) {
-            break :blk try sorted_sets.cmdZscore(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZscore(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
             break :blk try sorted_sets.cmdZcard(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANK")) {
@@ -1199,7 +1202,8 @@ pub fn executeCommand(
             break :blk try sorted_sets.cmdZrevrank(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZINCRBY")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdZincrby(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZincrby(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZCOUNT")) {
             break :blk try sorted_sets.cmdZcount(allocator, storage, array);
         }
@@ -1253,7 +1257,8 @@ pub fn executeCommand(
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try sorted_sets.cmdBzmpop(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
-            break :blk try sorted_sets.cmdZmscore(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZmscore(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANGE")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZrevrange(allocator, storage, array, protocol_version);

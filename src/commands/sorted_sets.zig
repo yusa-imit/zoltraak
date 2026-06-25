@@ -75,8 +75,8 @@ fn formatScore(buf: []u8, score: f64) []const u8 {
 /// ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]
 /// Sets members with scores in a sorted set (Redis 6.2.0+: GT/LT/INCR options)
 /// Returns integer - count of new members added (or changed if CH flag set)
-/// With INCR: returns new score as bulk string (or null if condition not met)
-pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+/// With INCR: returns new score as bulk string (RESP2) or double (RESP3)
+pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -222,6 +222,9 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
 
         const final_score = storage.zscore(key, member) orelse new_score;
+        if (protocol_version == .RESP3) {
+            return w.writeDouble(final_score);
+        }
         var score_buf: [64]u8 = undefined;
         const score_str_out = formatScore(&score_buf, final_score);
         return w.writeBulkString(score_str_out);
@@ -726,7 +729,7 @@ pub fn cmdZrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: [
 /// ZSCORE key member
 /// Get score of member in sorted set
 /// Returns bulk string (score) or null if not found
-pub fn cmdZscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -747,6 +750,9 @@ pub fn cmdZscore(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     const score = storage.zscore(key, member);
 
     if (score) |s| {
+        if (protocol_version == .RESP3) {
+            return w.writeDouble(s);
+        }
         var score_buf: [64]u8 = undefined;
         const score_str = formatScore(&score_buf, s);
         return w.writeBulkString(score_str);
@@ -893,7 +899,7 @@ pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 /// ZINCRBY key increment member
 /// Increment score of member in sorted set by increment
 /// Returns new score as bulk string
-pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -933,6 +939,9 @@ pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
     // Publish notification
     notifyZsetEvent(allocator, storage, ps, db_index, key, "zincrby");
 
+    if (protocol_version == .RESP3) {
+        return w.writeDouble(new_score);
+    }
     var score_buf: [64]u8 = undefined;
     const score_str = formatScore(&score_buf, new_score);
     return w.writeBulkString(score_str);
@@ -1122,7 +1131,7 @@ pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
 /// ZMSCORE key member [member ...]
 /// Bulk ZSCORE. Returns array of scores (null bulk string for missing members).
-pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1153,6 +1162,27 @@ pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const
         return err;
     };
     defer allocator.free(scores);
+
+    if (protocol_version == .RESP3) {
+        // RESP3: return array of doubles (or null bulk string for missing members)
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{scores.len});
+        for (scores) |maybe_score| {
+            if (maybe_score) |score| {
+                if (std.math.isPositiveInf(score)) {
+                    try buf.appendSlice(allocator, ",inf\r\n");
+                } else if (std.math.isNegativeInf(score)) {
+                    try buf.appendSlice(allocator, ",-inf\r\n");
+                } else {
+                    try std.fmt.format(buf.writer(allocator), ",{d}\r\n", .{score});
+                }
+            } else {
+                try buf.appendSlice(allocator, "$-1\r\n");
+            }
+        }
+        return buf.toOwnedSlice(allocator);
+    }
 
     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, scores.len);
     defer resp_values.deinit(allocator);

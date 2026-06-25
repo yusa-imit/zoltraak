@@ -29,7 +29,7 @@ test "ZSCORE returns +inf for positive infinity score" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "alpha" },
     };
-    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0);
+    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0, .RESP2);
     defer allocator.free(r1);
 
     const args_zscore = [_]RespValue{
@@ -37,7 +37,7 @@ test "ZSCORE returns +inf for positive infinity score" {
         .{ .bulk_string = "zs" },
         .{ .bulk_string = "alpha" },
     };
-    const result = try ss_cmds.cmdZscore(allocator, storage, &args_zscore);
+    const result = try ss_cmds.cmdZscore(allocator, storage, &args_zscore, .RESP2);
     defer allocator.free(result);
 
     // Redis returns "+inf" not "inf"
@@ -58,7 +58,7 @@ test "ZSCORE returns -inf for negative infinity score" {
         .{ .bulk_string = "-inf" },
         .{ .bulk_string = "beta" },
     };
-    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0);
+    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0, .RESP2);
     defer allocator.free(r1);
 
     const args_zscore = [_]RespValue{
@@ -66,7 +66,7 @@ test "ZSCORE returns -inf for negative infinity score" {
         .{ .bulk_string = "zs" },
         .{ .bulk_string = "beta" },
     };
-    const result = try ss_cmds.cmdZscore(allocator, storage, &args_zscore);
+    const result = try ss_cmds.cmdZscore(allocator, storage, &args_zscore, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$4\r\n-inf\r\n", result);
@@ -87,7 +87,7 @@ test "ZINCRBY returns +inf when incrementing by +inf" {
         .{ .bulk_string = "5" },
         .{ .bulk_string = "m" },
     };
-    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0);
+    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0, .RESP2);
     defer allocator.free(r1);
 
     // ZINCRBY zs +inf m → "+inf"
@@ -97,7 +97,7 @@ test "ZINCRBY returns +inf when incrementing by +inf" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "m" },
     };
-    const result = try ss_cmds.cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdZincrby(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$4\r\n+inf\r\n", result);
@@ -117,7 +117,7 @@ test "ZPOPMIN returns +inf score formatted as +inf" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "member1" },
     };
-    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0);
+    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0, .RESP2);
     defer allocator.free(r1);
 
     const args = [_]RespValue{
@@ -148,7 +148,7 @@ test "ZADD INCR with +inf returns +inf" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "m" },
     };
-    const result = try ss_cmds.cmdZadd(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdZadd(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$4\r\n+inf\r\n", result);
@@ -171,7 +171,7 @@ test "ZRANGE WITHSCORES returns +inf for infinity scores" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "high" },
     };
-    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0);
+    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0, .RESP2);
     defer allocator.free(r1);
 
     const args = [_]RespValue{
@@ -202,7 +202,7 @@ test "ZRANGEBYSCORE WITHSCORES returns correct score for +inf member" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "top" },
     };
-    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0);
+    const r1 = try ss_cmds.cmdZadd(allocator, storage, &args_zadd, &pubsub, 0, .RESP2);
     defer allocator.free(r1);
 
     const args = [_]RespValue{

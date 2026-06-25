@@ -29,7 +29,7 @@ test "ZADD - rejects NaN score lowercase" {
         .{ .bulk_string = "nan" },
         .{ .bulk_string = "m1" },
     };
-    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("-ERR score is not a valid float\r\n", result);
     // NaN must not have been stored
@@ -50,7 +50,7 @@ test "ZADD - rejects NaN score uppercase NaN" {
         .{ .bulk_string = "NaN" },
         .{ .bulk_string = "m1" },
     };
-    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("-ERR score is not a valid float\r\n", result);
 }
@@ -69,7 +69,7 @@ test "ZADD - accepts +inf score" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "highscore" },
     };
-    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(":1\r\n", result);
     // Verify the score is actually +inf
@@ -91,7 +91,7 @@ test "ZADD - accepts -inf score" {
         .{ .bulk_string = "-inf" },
         .{ .bulk_string = "lowscore" },
     };
-    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(":1\r\n", result);
     const score = storage.zscore("zs", "lowscore") orelse return error.ExpectedScore;
@@ -113,7 +113,7 @@ test "ZADD INCR - rejects NaN result from pos-inf incremented by neg-inf" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "m" },
     };
-    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0);
+    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0, .RESP2);
     defer allocator.free(r_setup);
     try std.testing.expectEqualStrings(":1\r\n", r_setup);
 
@@ -125,7 +125,7 @@ test "ZADD INCR - rejects NaN result from pos-inf incremented by neg-inf" {
         .{ .bulk_string = "-inf" },
         .{ .bulk_string = "m" },
     };
-    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZadd(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("-ERR resulting score is not a number (NaN)\r\n", result);
 
@@ -148,7 +148,7 @@ test "ZINCRBY - rejects NaN increment" {
         .{ .bulk_string = "nan" },
         .{ .bulk_string = "m" },
     };
-    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("-ERR value is not a valid float\r\n", result);
 }
@@ -168,7 +168,7 @@ test "ZINCRBY - rejects NaN result from pos-inf incremented by neg-inf" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "m" },
     };
-    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0);
+    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0, .RESP2);
     defer allocator.free(r_setup);
 
     // ZINCRBY by -inf: +inf + (-inf) = NaN
@@ -178,7 +178,7 @@ test "ZINCRBY - rejects NaN result from pos-inf incremented by neg-inf" {
         .{ .bulk_string = "-inf" },
         .{ .bulk_string = "m" },
     };
-    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("-ERR resulting score is not a number (NaN)\r\n", result);
 
@@ -202,7 +202,7 @@ test "ZINCRBY - valid +inf increment on finite score gives +inf" {
         .{ .bulk_string = "5" },
         .{ .bulk_string = "m" },
     };
-    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0);
+    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0, .RESP2);
     defer allocator.free(r_setup);
 
     // Increment by +inf → result is +inf
@@ -212,7 +212,7 @@ test "ZINCRBY - valid +inf increment on finite score gives +inf" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "m" },
     };
-    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("$4\r\n+inf\r\n", result);
 }
@@ -232,7 +232,7 @@ test "ZINCRBY - neg-inf incremented by pos-inf gives NaN error" {
         .{ .bulk_string = "-inf" },
         .{ .bulk_string = "m" },
     };
-    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0);
+    const r_setup = try sorted_sets.cmdZadd(allocator, storage, &setup, &pubsub, 0, .RESP2);
     defer allocator.free(r_setup);
 
     // ZINCRBY by +inf: -inf + (+inf) = NaN
@@ -242,7 +242,7 @@ test "ZINCRBY - neg-inf incremented by pos-inf gives NaN error" {
         .{ .bulk_string = "+inf" },
         .{ .bulk_string = "m" },
     };
-    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0);
+    const result = try sorted_sets.cmdZincrby(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("-ERR resulting score is not a number (NaN)\r\n", result);
 }
