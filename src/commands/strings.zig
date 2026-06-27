@@ -1358,9 +1358,11 @@ pub fn executeCommand(
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try streams_adv.cmdXgroup(allocator, storage, array, ps, selected_db);
         } else if (std.mem.eql(u8, cmd_upper, "XREAD")) {
-            break :blk try streams_adv.cmdXread(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try streams_adv.cmdXread(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "XREADGROUP")) {
-            break :blk try streams_adv.cmdXreadgroup(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try streams_adv.cmdXreadgroup(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "XACK")) {
             break :blk try streams_adv.cmdXack(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XCLAIM")) {

@@ -5,6 +5,7 @@ const storage_mod = @import("../storage/memory.zig");
 const notifications_mod = @import("../storage/notifications.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
 const streams = @import("streams.zig");
+const client_mod = @import("./client.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
@@ -13,6 +14,7 @@ const StreamId = storage_mod.Value.StreamId;
 const StreamEntry = storage_mod.Value.StreamEntry;
 const XRefMode = storage_mod.XRefMode;
 const PubSub = pubsub_mod.PubSub;
+const RespProtocol = client_mod.RespProtocol;
 
 /// Publish keyspace notification for a stream command
 fn notifyStreamEvent(
@@ -270,7 +272,8 @@ pub fn cmdXgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 }
 
 /// XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]
-pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: returns map (stream_name -> entries), RESP2: returns array of [name, entries] pairs
+pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -533,12 +536,18 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeArray(null);
     }
 
-    // Write array of streams
-    try result_writer.print("*{d}\r\n", .{stream_count});
+    // RESP3: map of stream_name -> entries; RESP2: array of [name, entries] pairs
+    if (protocol_version == .RESP3) {
+        try result_writer.print("%{d}\r\n", .{stream_count});
+    } else {
+        try result_writer.print("*{d}\r\n", .{stream_count});
+    }
 
     for (temp_results.items) |item| {
-        // Each stream is [key, array_of_entries]
-        try result_writer.writeAll("*2\r\n");
+        if (protocol_version != .RESP3) {
+            // RESP2: wrap each stream as [key, entries] pair
+            try result_writer.writeAll("*2\r\n");
+        }
         try result_writer.print("${d}\r\n{s}\r\n", .{ item.key.len, item.key });
 
         // Array of entries
@@ -564,7 +573,8 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 }
 
 /// XREADGROUP GROUP groupname consumer [COUNT count] [BLOCK milliseconds] [NOACK] STREAMS key [key ...] id [id ...]
-pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: returns map (stream_name -> entries), RESP2: returns array of [name, entries] pairs
+pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -786,11 +796,17 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
         return w.writeArray(null);
     }
 
-    // Write array of streams (same format as XREAD)
-    try result_writer.print("*{d}\r\n", .{stream_count});
+    // RESP3: map of stream_name -> entries; RESP2: array of [name, entries] pairs
+    if (protocol_version == .RESP3) {
+        try result_writer.print("%{d}\r\n", .{stream_count});
+    } else {
+        try result_writer.print("*{d}\r\n", .{stream_count});
+    }
 
     for (temp_results.items) |item| {
-        try result_writer.writeAll("*2\r\n");
+        if (protocol_version != .RESP3) {
+            try result_writer.writeAll("*2\r\n");
+        }
         try result_writer.print("${d}\r\n{s}\r\n", .{ item.key.len, item.key });
 
         try result_writer.print("*{d}\r\n", .{item.entries.items.len});

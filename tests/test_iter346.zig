@@ -8,6 +8,7 @@ const zoltraak = @import("zoltraak");
 const Storage = zoltraak.storage.Storage;
 const RespValue = zoltraak.protocol.RespValue;
 const streams_adv = zoltraak.streams_advanced_commands;
+const RespProtocol = zoltraak.client.RespProtocol;
 
 test "iter346 - XREAD BLOCK timeout returns null array not null bulk string" {
     const allocator = testing.allocator;
@@ -26,7 +27,7 @@ test "iter346 - XREAD BLOCK timeout returns null array not null bulk string" {
         .{ .bulk_string = "mystream" },
         .{ .bulk_string = "$" },
     };
-    const result = try streams_adv.cmdXread(allocator, storage, &xread_args);
+    const result = try streams_adv.cmdXread(allocator, storage, &xread_args, .RESP2);
     defer allocator.free(result);
 
     // Must be null array (*-1\r\n), NOT null bulk string ($-1\r\n)
@@ -48,7 +49,7 @@ test "iter346 - XREAD BLOCK timeout on non-existent stream returns null array" {
         .{ .bulk_string = "nonexistent" },
         .{ .bulk_string = "$" },
     };
-    const result = try streams_adv.cmdXread(allocator, storage, &xread_args);
+    const result = try streams_adv.cmdXread(allocator, storage, &xread_args, .RESP2);
     defer allocator.free(result);
 
     try testing.expectEqualStrings("*-1\r\n", result);
@@ -75,7 +76,7 @@ test "iter346 - XREADGROUP BLOCK timeout returns null array not null bulk string
         .{ .bulk_string = "mystream" },
         .{ .bulk_string = ">" },
     };
-    const result = try streams_adv.cmdXreadgroup(allocator, storage, &xreadgroup_args);
+    const result = try streams_adv.cmdXreadgroup(allocator, storage, &xreadgroup_args, .RESP2);
     defer allocator.free(result);
 
     // Must be null array (*-1\r\n), NOT null bulk string ($-1\r\n)
@@ -97,7 +98,7 @@ test "iter346 - XREAD without BLOCK returns null array when no data matches" {
         .{ .bulk_string = "mystream" },
         .{ .bulk_string = "9999-0" },
     };
-    const result = try streams_adv.cmdXread(allocator, storage, &xread_args);
+    const result = try streams_adv.cmdXread(allocator, storage, &xread_args, .RESP2);
     defer allocator.free(result);
 
     // No BLOCK, no data: null array
@@ -118,7 +119,7 @@ test "iter346 - XREAD with data returns valid array not null" {
         .{ .bulk_string = "mystream" },
         .{ .bulk_string = "0-0" },
     };
-    const result = try streams_adv.cmdXread(allocator, storage, &xread_args);
+    const result = try streams_adv.cmdXread(allocator, storage, &xread_args, .RESP2);
     defer allocator.free(result);
 
     // Should NOT be null — there's data

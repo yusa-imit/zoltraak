@@ -1167,6 +1167,25 @@ pub fn build(b: *std.Build) void {
     const run_iter378_tests = b.addRunArtifact(iter378_tests);
     test_step.dependOn(&run_iter378_tests.step);
 
+    // RESP3 map type for XREAD/XREADGROUP (Iteration 379)
+    const iter379_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter379.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter379_tests.linkSystemLibrary("luajit-5.1");
+    iter379_tests.linkLibC();
+    iter379_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter379_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter379_tests = b.addRunArtifact(iter379_tests);
+    test_step.dependOn(&run_iter379_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
