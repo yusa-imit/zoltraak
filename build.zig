@@ -1204,6 +1204,25 @@ pub fn build(b: *std.Build) void {
     const run_iter380_tests = b.addRunArtifact(iter380_tests);
     test_step.dependOn(&run_iter380_tests.step);
 
+    // RESP3 HSCAN map + SSCAN set + sailor v2.61.0 (Iteration 381)
+    const iter381_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter381.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter381_tests.linkSystemLibrary("luajit-5.1");
+    iter381_tests.linkLibC();
+    iter381_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter381_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter381_tests = b.addRunArtifact(iter381_tests);
+    test_step.dependOn(&run_iter381_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

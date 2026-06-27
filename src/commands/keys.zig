@@ -5,11 +5,14 @@ const storage_mod = @import("../storage/memory.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
 const notifications_mod = @import("../storage/notifications.zig");
 const glob = @import("../utils/glob.zig");
+const client_mod = @import("./client.zig");
 
 const RespValue = protocol.RespValue;
+const MapPair = writer_mod.MapPair;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const PubSub = pubsub_mod.PubSub;
+const RespProtocol = client_mod.RespProtocol;
 
 /// Publish keyspace notification for a key modification
 /// This helper function handles both keyspace and keyevent channels based on config flags
@@ -991,8 +994,9 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 }
 
 /// HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]
-/// Hash field iterator. Returns [next_cursor, [field, value, ...]] or [next_cursor, [field, ...]] with NOVALUES.
-pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Hash field iterator. Returns [next_cursor, {field: value, ...}] in RESP3, [next_cursor, [field, value, ...]] in RESP2.
+/// RESP3 + NOVALUES: returns [next_cursor, ~N set of fields]. RESP3 without NOVALUES: returns [next_cursor, %N map].
+pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1098,21 +1102,53 @@ pub fn cmdHscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits_h.len, cursor_digits_h });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
-    const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
-    defer allocator.free(items_header);
-    try buf.appendSlice(allocator, items_header);
-    for (page_pairs) |item| {
-        const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
-        defer allocator.free(item_resp);
-        try buf.appendSlice(allocator, item_resp);
+
+    if (protocol_version == .RESP3) {
+        if (novalues) {
+            // RESP3 + NOVALUES: field names as set (~N)
+            const count_str = try std.fmt.allocPrint(allocator, "~{d}\r\n", .{page_pairs.len});
+            defer allocator.free(count_str);
+            try buf.appendSlice(allocator, count_str);
+            for (page_pairs) |item| {
+                const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
+                defer allocator.free(item_resp);
+                try buf.appendSlice(allocator, item_resp);
+            }
+        } else {
+            // RESP3 without NOVALUES: map (%N) of field→value
+            const pair_count = page_pairs.len / 2;
+            const count_str = try std.fmt.allocPrint(allocator, "%{d}\r\n", .{pair_count});
+            defer allocator.free(count_str);
+            try buf.appendSlice(allocator, count_str);
+            var k: usize = 0;
+            while (k + 1 < page_pairs.len) : (k += 2) {
+                const field = page_pairs[k];
+                const val = page_pairs[k + 1];
+                const field_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ field.len, field });
+                defer allocator.free(field_resp);
+                try buf.appendSlice(allocator, field_resp);
+                const val_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ val.len, val });
+                defer allocator.free(val_resp);
+                try buf.appendSlice(allocator, val_resp);
+            }
+        }
+    } else {
+        const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
+        defer allocator.free(items_header);
+        try buf.appendSlice(allocator, items_header);
+        for (page_pairs) |item| {
+            const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
+            defer allocator.free(item_resp);
+            try buf.appendSlice(allocator, item_resp);
+        }
     }
 
     return buf.toOwnedSlice(allocator);
 }
 
 /// SSCAN key cursor [MATCH pattern] [COUNT count]
-/// Set member iterator. Returns [next_cursor, [member, ...]].
-pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Set member iterator. RESP3: returns [next_cursor, ~N set]. RESP2: returns [next_cursor, [member, ...]].
+pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1201,9 +1237,17 @@ pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits_s.len, cursor_digits_s });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
-    const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
-    defer allocator.free(items_header);
-    try buf.appendSlice(allocator, items_header);
+
+    if (protocol_version == .RESP3) {
+        // RESP3: set members are unique → set type (~N)
+        const count_str = try std.fmt.allocPrint(allocator, "~{d}\r\n", .{page.len});
+        defer allocator.free(count_str);
+        try buf.appendSlice(allocator, count_str);
+    } else {
+        const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
+        defer allocator.free(items_header);
+        try buf.appendSlice(allocator, items_header);
+    }
     for (page) |m| {
         const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ m.len, m });
         defer allocator.free(item_resp);
@@ -2314,7 +2358,7 @@ test "HSCAN NOVALUES - basic with populated hash" {
         .{ .bulk_string = "0" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return array with fields only (not values)
@@ -2340,7 +2384,7 @@ test "HSCAN NOVALUES - empty hash" {
         .{ .bulk_string = "0" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return [0, []]
@@ -2360,7 +2404,7 @@ test "HSCAN NOVALUES - non-existent key" {
         .{ .bulk_string = "0" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return [0, []] - empty result
@@ -2385,7 +2429,7 @@ test "HSCAN NOVALUES - with MATCH pattern" {
         .{ .bulk_string = "foo*" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return only foo1 and foo2 (2 fields)
@@ -2423,7 +2467,7 @@ test "HSCAN NOVALUES - with COUNT" {
         .{ .bulk_string = "3" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should have at most COUNT fields (3)
@@ -2453,7 +2497,7 @@ test "HSCAN NOVALUES - combined MATCH COUNT NOVALUES" {
         .{ .bulk_string = "2" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should match pattern AND respect COUNT AND return no values
@@ -2478,7 +2522,7 @@ test "HSCAN NOVALUES - WRONGTYPE error on string key" {
         .{ .bulk_string = "0" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Should return WRONGTYPE error
@@ -2499,7 +2543,7 @@ test "HSCAN NOVALUES - order matters (field-only vs field-value pairs)" {
         .{ .bulk_string = "h" },
         .{ .bulk_string = "0" },
     };
-    const response_with = try cmdHscan(allocator, &storage, &args_with);
+    const response_with = try cmdHscan(allocator, &storage, &args_with, .RESP2);
     defer allocator.free(response_with);
 
     // WITH NOVALUES: should have 1 item (field only)
@@ -2509,7 +2553,7 @@ test "HSCAN NOVALUES - order matters (field-only vs field-value pairs)" {
         .{ .bulk_string = "0" },
         .{ .bulk_string = "NOVALUES" },
     };
-    const response_without = try cmdHscan(allocator, &storage, &args_without);
+    const response_without = try cmdHscan(allocator, &storage, &args_without, .RESP2);
     defer allocator.free(response_without);
 
     // WITH: should have "*2" (field + value in nested array)
@@ -3634,7 +3678,7 @@ test "SSCAN COUNT 0 returns all matching members" {
         .{ .bulk_string = "COUNT" },
         .{ .bulk_string = "0" },
     };
-    const response = try cmdSscan(allocator, &storage, &args);
+    const response = try cmdSscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Cursor should be 0 as bulk string and all members returned
@@ -3676,7 +3720,7 @@ test "HSCAN cursor is returned as bulk string (Redis protocol compliance)" {
         .{ .bulk_string = "myhash" },
         .{ .bulk_string = "0" },
     };
-    const response = try cmdHscan(allocator, &storage, &args);
+    const response = try cmdHscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
@@ -3696,7 +3740,7 @@ test "SSCAN cursor is returned as bulk string (Redis protocol compliance)" {
         .{ .bulk_string = "myset" },
         .{ .bulk_string = "0" },
     };
-    const response = try cmdSscan(allocator, &storage, &args);
+    const response = try cmdSscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)

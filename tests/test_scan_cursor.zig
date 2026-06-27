@@ -60,7 +60,7 @@ test "HSCAN cursor is bulk string (not integer)" {
         .{ .bulk_string = "myhash" },
         .{ .bulk_string = "0" },
     };
-    const response = try keys_cmds.cmdHscan(allocator, storage, &args);
+    const response = try keys_cmds.cmdHscan(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Must start with *2\r\n$  (bulk string cursor)
@@ -82,7 +82,7 @@ test "SSCAN cursor is bulk string (not integer)" {
         .{ .bulk_string = "myset" },
         .{ .bulk_string = "0" },
     };
-    const response = try keys_cmds.cmdSscan(allocator, storage, &args);
+    const response = try keys_cmds.cmdSscan(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Must start with *2\r\n$  (bulk string cursor)

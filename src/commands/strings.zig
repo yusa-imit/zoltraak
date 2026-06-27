@@ -1213,9 +1213,11 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "SCAN")) {
             break :blk try keys_cmds.cmdScan(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "HSCAN")) {
-            break :blk try keys_cmds.cmdHscan(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try keys_cmds.cmdHscan(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SSCAN")) {
-            break :blk try keys_cmds.cmdSscan(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try keys_cmds.cmdSscan(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZSCAN")) {
             break :blk try keys_cmds.cmdZscan(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SORT")) {
