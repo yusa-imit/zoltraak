@@ -4,12 +4,14 @@ const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const notifications_mod = @import("../storage/notifications.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
+const client_cmds = @import("client.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
 const StreamId = storage_mod.Value.StreamId;
 const PubSub = pubsub_mod.PubSub;
+const RespProtocol = client_cmds.RespProtocol;
 
 /// Publish keyspace notification for a stream command
 fn notifyStreamEvent(
@@ -256,7 +258,8 @@ pub fn cmdXlen(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 /// XRANGE key start end [COUNT count]
 /// Returns entries with IDs in the specified range.
 /// start and end can be "-" (minimum) or "+" (maximum) or explicit IDs.
-pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: entry fields returned as map type (%N) instead of flat array (*2N).
+pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -321,6 +324,7 @@ pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     // Build raw RESP response directly to avoid use-after-free from deferred frees in loop.
     // Each entry is formatted as *2\r\n$<id_len>\r\n<id>\r\n*<n>\r\n<fields...>
+    // In RESP3, the inner fields list uses map type: %<n/2>\r\n instead of *<n>\r\n
     var result_buf = std.ArrayList(u8){};
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
@@ -334,7 +338,13 @@ pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         defer allocator.free(id_str);
         try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
 
-        try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+        if (protocol_version == .RESP3) {
+            // RESP3: fields as map (field_count = items / 2 pairs)
+            try result_writer.print("%{d}\r\n", .{entry.fields.items.len / 2});
+        } else {
+            // RESP2: fields as flat array
+            try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+        }
         for (entry.fields.items) |field| {
             try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
         }
@@ -346,7 +356,8 @@ pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// XREVRANGE key start end [COUNT count]
 /// Returns entries with IDs in reverse order (newest to oldest).
 /// start and end are swapped compared to XRANGE.
-pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: entry fields returned as map type (%N) instead of flat array (*2N).
+pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -409,6 +420,7 @@ pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
     defer allocator.free(entries.?);
 
     // Build raw RESP response directly to avoid use-after-free from deferred frees in loop.
+    // In RESP3, the inner fields list uses map type: %<n/2>\r\n instead of *<n>\r\n
     var result_buf = std.ArrayList(u8){};
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
@@ -422,7 +434,13 @@ pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
         defer allocator.free(id_str);
         try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
 
-        try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+        if (protocol_version == .RESP3) {
+            // RESP3: fields as map (field_count = items / 2 pairs)
+            try result_writer.print("%{d}\r\n", .{entry.fields.items.len / 2});
+        } else {
+            // RESP2: fields as flat array
+            try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+        }
         for (entry.fields.items) |field| {
             try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
         }
@@ -1041,7 +1059,7 @@ test "streams - XREVRANGE returns entries in reverse" {
         RespValue{ .bulk_string = "+" },
         RespValue{ .bulk_string = "-" },
     };
-    const result = try cmdXrevrange(allocator, storage, &args);
+    const result = try cmdXrevrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Should contain 2000-0 before 1000-0
@@ -1171,7 +1189,7 @@ test "streams - XRANGE returns entries with correct content" {
         RespValue{ .bulk_string = "-" },
         RespValue{ .bulk_string = "+" },
     };
-    const result = try cmdXrange(allocator, storage, &args);
+    const result = try cmdXrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Should start with *2\r\n (2 entries)
@@ -1231,7 +1249,7 @@ test "streams - XRANGE with COUNT limit" {
         RespValue{ .bulk_string = "COUNT" },
         RespValue{ .bulk_string = "2" },
     };
-    const result = try cmdXrange(allocator, storage, &args);
+    const result = try cmdXrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Should start with *2\r\n (2 entries, not 3)
@@ -1276,7 +1294,7 @@ test "streams - XREVRANGE returns entries in reverse with correct content" {
         RespValue{ .bulk_string = "+" },
         RespValue{ .bulk_string = "-" },
     };
-    const result = try cmdXrevrange(allocator, storage, &args);
+    const result = try cmdXrevrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Should start with *2\r\n (2 entries)

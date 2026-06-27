@@ -1345,9 +1345,11 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "XLEN")) {
             break :blk try streams.cmdXlen(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XRANGE")) {
-            break :blk try streams.cmdXrange(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try streams.cmdXrange(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "XREVRANGE")) {
-            break :blk try streams.cmdXrevrange(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try streams.cmdXrevrange(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "XDEL")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try streams.cmdXdel(allocator, storage, array, ps, selected_db);

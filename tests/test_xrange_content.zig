@@ -4,6 +4,7 @@ const zoltraak = @import("zoltraak");
 const Storage = zoltraak.storage.Storage;
 const PubSub = zoltraak.pubsub.PubSub;
 const RespValue = zoltraak.protocol.RespValue;
+const RespProtocol = zoltraak.client.RespProtocol;
 const streams = zoltraak.streams_commands;
 
 // Regression test: XRANGE used to return 0xaa garbage bytes due to use-after-free.
@@ -49,7 +50,7 @@ test "XRANGE - returns actual field values not garbage bytes" {
         .{ .bulk_string = "-" },
         .{ .bulk_string = "+" },
     };
-    const result = try streams.cmdXrange(allocator, storage, &args);
+    const result = try streams.cmdXrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Must start with *2\r\n (2 entries)
@@ -87,7 +88,7 @@ test "XRANGE - empty result for non-existent key" {
         .{ .bulk_string = "-" },
         .{ .bulk_string = "+" },
     };
-    const result = try streams.cmdXrange(allocator, storage, &args);
+    const result = try streams.cmdXrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("*0\r\n", result);
@@ -118,7 +119,7 @@ test "XRANGE - COUNT limits entries, no garbage" {
         .{ .bulk_string = "COUNT" },
         .{ .bulk_string = "2" },
     };
-    const result = try streams.cmdXrange(allocator, storage, &args);
+    const result = try streams.cmdXrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
@@ -155,7 +156,7 @@ test "XREVRANGE - returns entries in reverse with correct content" {
         .{ .bulk_string = "+" },
         .{ .bulk_string = "-" },
     };
-    const result = try streams.cmdXrevrange(allocator, storage, &args);
+    const result = try streams.cmdXrevrange(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));

@@ -1186,6 +1186,24 @@ pub fn build(b: *std.Build) void {
     const run_iter379_tests = b.addRunArtifact(iter379_tests);
     test_step.dependOn(&run_iter379_tests.step);
 
+    const iter380_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter380.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter380_tests.linkSystemLibrary("luajit-5.1");
+    iter380_tests.linkLibC();
+    iter380_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter380_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter380_tests = b.addRunArtifact(iter380_tests);
+    test_step.dependOn(&run_iter380_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

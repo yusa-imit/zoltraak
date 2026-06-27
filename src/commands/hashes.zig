@@ -1374,10 +1374,9 @@ test "cmdHstrlen - returns 0 for non-existent key" {
 }
 
 /// HRANDFIELD key [count [WITHVALUES]]
-/// Return random field(s) from a hash
-/// Returns bulk string (single field), array of fields, or array of field-value pairs
+/// Return random field(s) from a hash.
+/// RESP3 + WITHVALUES: returns map type (%N) instead of flat array (*2N).
 pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
-    _ = protocol_version;
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1436,7 +1435,20 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
         } else {
             // Multiple fields - return array
             if (with_values) {
-                // Return flat array of field-value pairs (same for RESP2 and RESP3 per Redis spec)
+                if (protocol_version == .RESP3) {
+                    // RESP3: return as map (%N) where N = fields.len / 2
+                    const pair_count = fields.len / 2;
+                    var pairs = try allocator.alloc(MapPair, pair_count);
+                    defer allocator.free(pairs);
+                    for (0..pair_count) |i| {
+                        pairs[i] = MapPair{
+                            .key = RespValue{ .bulk_string = fields[i * 2] },
+                            .value = RespValue{ .bulk_string = fields[i * 2 + 1] },
+                        };
+                    }
+                    return w.writeMap(pairs);
+                }
+                // RESP2: flat array of field-value pairs
                 var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, fields.len);
                 defer resp_values.deinit(allocator);
 
