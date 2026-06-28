@@ -1940,7 +1940,7 @@ test "XGROUP SETID ENTRIESREAD - sets entries_read and enables lag" {
     try std.testing.expectEqualStrings("+OK\r\n", result);
 
     // XINFO GROUPS should show entries-read:2 and lag:0
-    const info = try storage.xinfoGroups(allocator, "mystream");
+    const info = try storage.xinfoGroups(allocator, "mystream", false);
     defer allocator.free(info);
     try std.testing.expect(std.mem.indexOf(u8, info, "entries-read") != null);
     try std.testing.expect(std.mem.indexOf(u8, info, "$-1") == null); // no null lag
@@ -1999,7 +1999,7 @@ test "XGROUP CREATE ENTRIESREAD - sets accurate lag for arbitrary start" {
     try std.testing.expectEqualStrings("+OK\r\n", result);
 
     // Group should have non-null lag: entries_added=3, entries_read=1, lag=2
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
     try std.testing.expect(std.mem.indexOf(u8, info, "$-1") == null); // no null lag
     try std.testing.expect(std.mem.indexOf(u8, info, ":2") != null); // lag is 2

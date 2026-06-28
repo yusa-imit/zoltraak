@@ -1417,7 +1417,8 @@ pub fn cmdXpending(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
 /// XINFO STREAM key [FULL [COUNT count]]
 /// Returns information about the stream
-pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: GROUPS/CONSUMERS subcommands return each entry as a map type (%N\r\n)
+pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1429,6 +1430,8 @@ pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []c
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid subcommand"),
     };
+
+    const resp3 = protocol_version == .RESP3;
 
     // Route to appropriate XINFO subcommand handler
     if (std.mem.eql(u8, subcommand, "CONSUMERS")) {
@@ -1447,7 +1450,7 @@ pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []c
             else => return w.writeError("ERR invalid group name"),
         };
 
-        const info = storage.xinfoConsumers(allocator, key, group_name) catch |err| switch (err) {
+        const info = storage.xinfoConsumers(allocator, key, group_name, resp3) catch |err| switch (err) {
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             error.NoGroup => return w.writeError("NOGROUP No such consumer group for this key"),
             else => return err,
@@ -1465,7 +1468,7 @@ pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []c
             else => return w.writeError("ERR invalid key"),
         };
 
-        const info = storage.xinfoGroups(allocator, key) catch |err| switch (err) {
+        const info = storage.xinfoGroups(allocator, key, resp3) catch |err| switch (err) {
             error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
             else => return err,
         };
@@ -1577,7 +1580,7 @@ test "streams - XINFO STREAM shows basic metadata" {
         RespValue{ .bulk_string = "STREAM" },
         RespValue{ .bulk_string = "s" },
     };
-    const result = try cmdXinfoStream(allocator, storage, &args);
+    const result = try cmdXinfoStream(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Redis 7.x format: 20-element flat array
@@ -1614,7 +1617,7 @@ test "streams - XINFO STREAM FULL includes entries-added and max-deleted-entry-i
         RespValue{ .bulk_string = "mystream" },
         RespValue{ .bulk_string = "FULL" },
     };
-    const result = try cmdXinfoStream(allocator, storage, &args);
+    const result = try cmdXinfoStream(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Full mode: 18-element flat array
@@ -1652,7 +1655,7 @@ test "streams - XINFO STREAM FULL last-delivered-id has correct bulk string leng
         RespValue{ .bulk_string = "s" },
         RespValue{ .bulk_string = "FULL" },
     };
-    const result = try cmdXinfoStream(allocator, storage, &args);
+    const result = try cmdXinfoStream(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Must contain correctly-sized bulk string for "last-delivered-id" (17 chars)
@@ -1748,7 +1751,7 @@ test "streams - XINFO STREAM radix-tree-nodes has correct bulk string length" {
         RespValue{ .bulk_string = "STREAM" },
         RespValue{ .bulk_string = "s" },
     };
-    const result = try cmdXinfoStream(allocator, storage, &args);
+    const result = try cmdXinfoStream(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Must contain the correctly-sized bulk string for "radix-tree-nodes" (16 chars)
@@ -1778,7 +1781,7 @@ test "streams - XINFO STREAM empty stream shows 0-0 IDs" {
         RespValue{ .bulk_string = "STREAM" },
         RespValue{ .bulk_string = "empty" },
     };
-    const result = try cmdXinfoStream(allocator, storage, &args);
+    const result = try cmdXinfoStream(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // 20-element array, length=0, last-generated-id=0-0

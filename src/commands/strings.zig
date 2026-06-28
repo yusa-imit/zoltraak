@@ -1382,7 +1382,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "XPENDING")) {
             break :blk try streams.cmdXpending(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XINFO")) {
-            break :blk try streams.cmdXinfoStream(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try streams.cmdXinfoStream(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "XSETID")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try streams.cmdXsetid(allocator, storage, array, ps, selected_db);

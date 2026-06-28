@@ -11302,6 +11302,7 @@ pub const Storage = struct {
         allocator: std.mem.Allocator,
         key: []const u8,
         group_name: []const u8,
+        resp3: bool,
     ) ![]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -11328,8 +11329,12 @@ pub const Storage = struct {
                 while (it.next()) |cons_entry| {
                     const consumer = cons_entry.value_ptr.*;
 
-                    // Each consumer is a flat array of 8 elements (4 fields × 2)
-                    try writer.writeAll("*8\r\n");
+                    // RESP3: map type (%4\r\n); RESP2: flat array (*8\r\n)
+                    if (resp3) {
+                        try writer.writeAll("%4\r\n");
+                    } else {
+                        try writer.writeAll("*8\r\n");
+                    }
 
                     // name
                     try writer.writeAll("$4\r\nname\r\n");
@@ -11358,10 +11363,12 @@ pub const Storage = struct {
 
     /// Get consumer group information (XINFO GROUPS)
     /// Returns array of groups with name, consumers, pending, last-delivered-id, entries-read, lag fields
+    /// RESP3: each group entry is a map (%6\r\n); RESP2: flat array (*12\r\n)
     pub fn xinfoGroups(
         self: *Storage,
         allocator: std.mem.Allocator,
         key: []const u8,
+        resp3: bool,
     ) ![]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -11388,8 +11395,12 @@ pub const Storage = struct {
                 while (it.next()) |group_entry| {
                     const group = group_entry.value_ptr.*;
 
-                    // Each group is a flat array of 12 elements (6 fields × 2)
-                    try writer.writeAll("*12\r\n");
+                    // RESP3: map type (%6\r\n); RESP2: flat array (*12\r\n)
+                    if (resp3) {
+                        try writer.writeAll("%6\r\n");
+                    } else {
+                        try writer.writeAll("*12\r\n");
+                    }
 
                     // name
                     try writer.writeAll("$4\r\nname\r\n");
@@ -13361,7 +13372,7 @@ test "storage - xinfoConsumers returns consumer list with timing fields" {
     _ = try storage.xreadgroup(allocator, "g", "c1", "s", ">", null, false);
 
     // Get consumer info
-    const info = try storage.xinfoConsumers(allocator, "s", "g");
+    const info = try storage.xinfoConsumers(allocator, "s", "g", false);
     defer allocator.free(info);
 
     // Should contain consumer "c1" with pending, idle, inactive fields
@@ -13379,7 +13390,7 @@ test "storage - xinfoConsumers returns NOGROUP for missing group" {
     const fields = [_][]const u8{ "x", "1" };
     _ = try storage.xadd("s", "1000-0", &fields, null, .{});
 
-    const result = storage.xinfoConsumers(allocator, "s", "nogroup");
+    const result = storage.xinfoConsumers(allocator, "s", "nogroup", false);
     try std.testing.expectError(error.NoGroup, result);
 }
 
@@ -13407,7 +13418,7 @@ test "storage - xinfoGroups returns group list with lag" {
     }
 
     // Get group info
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
 
     // Should contain group "g" with lag field
@@ -13430,7 +13441,7 @@ test "storage - xinfoGroups lag is null for arbitrary start" {
     // Create group at arbitrary position (not 0 or $)
     try storage.xgroupCreate("s", "g", "1500-0", null);
 
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
 
     // Lag should be null ($-1 in RESP)
@@ -13442,7 +13453,7 @@ test "storage - xinfoGroups returns empty array for missing key" {
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const info = try storage.xinfoGroups(allocator, "nosuchkey");
+    const info = try storage.xinfoGroups(allocator, "nosuchkey", false);
     defer allocator.free(info);
 
     try std.testing.expectEqualStrings("*0\r\n", info);
@@ -13461,7 +13472,7 @@ test "storage - xgroupCreate with ENTRIESREAD sets non-arbitrary lag" {
     // Arbitrary ID but ENTRIESREAD=1 provided — should have non-null lag
     try storage.xgroupCreate("s", "g", "1500-0", 1);
 
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
 
     // entries_added=3, entries_read=1 → lag=2; no null lag
@@ -13481,7 +13492,7 @@ test "storage - xgroupCreate ENTRIESREAD=0 with $ id overrides default" {
     // $ normally means entries_read=entries_added; ENTRIESREAD=0 overrides
     try storage.xgroupCreate("s", "g", "$", 0);
 
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
 
     // entries_added=2, entries_read=0 → lag=2
@@ -13505,7 +13516,7 @@ test "storage - xgroupSetId with ENTRIESREAD enables accurate lag" {
     // XGROUP SETID with ENTRIESREAD 1 (we've read 1 entry logically)
     try storage.xgroupSetId("s", "g", "1500-0", 1);
 
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
 
     // Lag should now be available (not null): entries_added=3, entries_read=1, lag=2
@@ -13528,7 +13539,7 @@ test "storage - xgroupSetId without ENTRIESREAD preserves arbitrary_start" {
     // XGROUP SETID without ENTRIESREAD should still be arbitrary
     try storage.xgroupSetId("s", "g", "1800-0", null);
 
-    const info = try storage.xinfoGroups(allocator, "s");
+    const info = try storage.xinfoGroups(allocator, "s", false);
     defer allocator.free(info);
 
     // Lag should be null because arbitrary_start is still true
