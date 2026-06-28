@@ -1258,8 +1258,8 @@ pub fn cmdSscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 }
 
 /// ZSCAN key cursor [MATCH pattern] [COUNT count]
-/// Sorted set iterator. Returns [next_cursor, [member, score, ...]].
-pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// Sorted set iterator. RESP3: returns [next_cursor, %N map (member → double score)]. RESP2: returns [next_cursor, [member, score, ...]].
+pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1361,13 +1361,33 @@ pub fn cmdZscan(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits_z.len, cursor_digits_z });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
-    const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
-    defer allocator.free(items_header);
-    try buf.appendSlice(allocator, items_header);
-    for (page_pairs) |item| {
-        const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
-        defer allocator.free(item_resp);
-        try buf.appendSlice(allocator, item_resp);
+
+    const pair_page_count = page_pairs.len / 2;
+    if (protocol_version == .RESP3) {
+        // RESP3: map of member → double score
+        const map_header = try std.fmt.allocPrint(allocator, "%{d}\r\n", .{pair_page_count});
+        defer allocator.free(map_header);
+        try buf.appendSlice(allocator, map_header);
+        var k: usize = 0;
+        while (k + 1 < page_pairs.len) : (k += 2) {
+            const member = page_pairs[k];
+            const score_str = page_pairs[k + 1];
+            const member_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ member.len, member });
+            defer allocator.free(member_resp);
+            try buf.appendSlice(allocator, member_resp);
+            const double_resp = try std.fmt.allocPrint(allocator, ",{s}\r\n", .{score_str});
+            defer allocator.free(double_resp);
+            try buf.appendSlice(allocator, double_resp);
+        }
+    } else {
+        const items_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page_pairs.len});
+        defer allocator.free(items_header);
+        try buf.appendSlice(allocator, items_header);
+        for (page_pairs) |item| {
+            const item_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ item.len, item });
+            defer allocator.free(item_resp);
+            try buf.appendSlice(allocator, item_resp);
+        }
     }
 
     return buf.toOwnedSlice(allocator);
@@ -3760,7 +3780,7 @@ test "ZSCAN cursor is returned as bulk string (Redis protocol compliance)" {
         .{ .bulk_string = "myzset" },
         .{ .bulk_string = "0" },
     };
-    const response = try cmdZscan(allocator, &storage, &args);
+    const response = try cmdZscan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)

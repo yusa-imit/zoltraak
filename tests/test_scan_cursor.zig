@@ -4,6 +4,7 @@ const zoltraak = @import("zoltraak");
 const Storage = zoltraak.storage.Storage;
 const RespValue = zoltraak.protocol.RespValue;
 const keys_cmds = zoltraak.commands.keys_cmds;
+const RespProtocol = zoltraak.client.RespProtocol;
 
 // Integration tests for SCAN family cursor format compliance (Iteration 337)
 // Redis returns cursor as bulk string ($N\r\n...\r\n), not integer (:N\r\n).
@@ -102,7 +103,7 @@ test "ZSCAN cursor is bulk string (not integer)" {
         .{ .bulk_string = "myzset" },
         .{ .bulk_string = "0" },
     };
-    const response = try keys_cmds.cmdZscan(allocator, storage, &args);
+    const response = try keys_cmds.cmdZscan(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Must start with *2\r\n$  (bulk string cursor)

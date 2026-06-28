@@ -1219,7 +1219,8 @@ pub fn executeCommand(
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try keys_cmds.cmdSscan(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZSCAN")) {
-            break :blk try keys_cmds.cmdZscan(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try keys_cmds.cmdZscan(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SORT")) {
             break :blk try keys_cmds.cmdSort(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "SORT_RO")) {
