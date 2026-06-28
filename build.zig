@@ -1279,6 +1279,25 @@ pub fn build(b: *std.Build) void {
     const run_iter384_tests = b.addRunArtifact(iter384_tests);
     test_step.dependOn(&run_iter384_tests.step);
 
+    // Iteration 385: sailor v2.65.0 + RESP3 map type for XINFO STREAM
+    const iter385_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter385.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter385_tests.linkSystemLibrary("luajit-5.1");
+    iter385_tests.linkLibC();
+    iter385_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter385_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter385_tests = b.addRunArtifact(iter385_tests);
+    test_step.dependOn(&run_iter385_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

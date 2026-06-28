@@ -11034,6 +11034,7 @@ pub const Storage = struct {
         key: []const u8,
         full_mode: bool,
         count_limit: ?usize,
+        resp3: bool,
     ) ![]const u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -11052,7 +11053,8 @@ pub const Storage = struct {
                 const writer = buf.writer(allocator);
 
                 if (!full_mode) {
-                    // Simple mode: Redis 7.x format — 10 key-value pairs = 20 elements
+                    // Simple mode: Redis 7.x format — 10 key-value pairs
+                    // RESP3: outer object is map (%10), RESP2: flat array (*20)
                     const last_id = stream_val.last_id orelse Value.StreamId{ .ms = 0, .seq = 0 };
                     const max_del = stream_val.max_deleted_entry_id;
                     // recorded-first-entry-id: first entry ID, or 0-0 if stream is empty
@@ -11061,7 +11063,11 @@ pub const Storage = struct {
                     else
                         Value.StreamId{ .ms = 0, .seq = 0 };
 
-                    try writer.print("*20\r\n", .{});
+                    if (resp3) {
+                        try writer.print("%10\r\n", .{});
+                    } else {
+                        try writer.print("*20\r\n", .{});
+                    }
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
                     try writer.print("$16\r\nradix-tree-nodes\r\n:2\r\n", .{});
@@ -11085,12 +11091,23 @@ pub const Storage = struct {
                     try writer.print("$11\r\nfirst-entry\r\n", .{});
                     if (stream_val.entries.items.len > 0) {
                         const first_entry = stream_val.entries.items[0];
-                        try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
-                            std.fmt.count("{d}-{d}", .{ first_entry.id.ms, first_entry.id.seq }),
-                            first_entry.id.ms,
-                            first_entry.id.seq,
-                            first_entry.fields.items.len,
-                        });
+                        const n_fields = first_entry.fields.items.len;
+                        if (resp3) {
+                            // RESP3: *2 [id, %{n/2} {field-map}]
+                            try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n%{d}\r\n", .{
+                                std.fmt.count("{d}-{d}", .{ first_entry.id.ms, first_entry.id.seq }),
+                                first_entry.id.ms,
+                                first_entry.id.seq,
+                                n_fields / 2,
+                            });
+                        } else {
+                            try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                                std.fmt.count("{d}-{d}", .{ first_entry.id.ms, first_entry.id.seq }),
+                                first_entry.id.ms,
+                                first_entry.id.seq,
+                                n_fields,
+                            });
+                        }
                         for (first_entry.fields.items) |field| {
                             try writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
                         }
@@ -11100,12 +11117,23 @@ pub const Storage = struct {
                     try writer.print("$10\r\nlast-entry\r\n", .{});
                     if (stream_val.entries.items.len > 0) {
                         const last_entry = stream_val.entries.items[stream_val.entries.items.len - 1];
-                        try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
-                            std.fmt.count("{d}-{d}", .{ last_entry.id.ms, last_entry.id.seq }),
-                            last_entry.id.ms,
-                            last_entry.id.seq,
-                            last_entry.fields.items.len,
-                        });
+                        const n_fields = last_entry.fields.items.len;
+                        if (resp3) {
+                            // RESP3: *2 [id, %{n/2} {field-map}]
+                            try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n%{d}\r\n", .{
+                                std.fmt.count("{d}-{d}", .{ last_entry.id.ms, last_entry.id.seq }),
+                                last_entry.id.ms,
+                                last_entry.id.seq,
+                                n_fields / 2,
+                            });
+                        } else {
+                            try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                                std.fmt.count("{d}-{d}", .{ last_entry.id.ms, last_entry.id.seq }),
+                                last_entry.id.ms,
+                                last_entry.id.seq,
+                                n_fields,
+                            });
+                        }
                         for (last_entry.fields.items) |field| {
                             try writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
                         }
@@ -11113,7 +11141,8 @@ pub const Storage = struct {
                         try writer.print("$-1\r\n", .{});
                     }
                 } else {
-                    // Full mode: Redis 7.x format — 9 key-value pairs = 18 elements
+                    // Full mode: Redis 7.x format — 9 key-value pairs
+                    // RESP3: outer object is map (%9), RESP2: flat array (*18)
                     const limit = count_limit orelse stream_val.entries.items.len;
                     const num_entries = @min(limit, stream_val.entries.items.len);
 
@@ -11124,7 +11153,11 @@ pub const Storage = struct {
                     else
                         Value.StreamId{ .ms = 0, .seq = 0 };
 
-                    try writer.print("*18\r\n", .{});
+                    if (resp3) {
+                        try writer.print("%9\r\n", .{});
+                    } else {
+                        try writer.print("*18\r\n", .{});
+                    }
                     try writer.print("$6\r\nlength\r\n:{d}\r\n", .{stream_val.entries.items.len});
                     try writer.print("$15\r\nradix-tree-keys\r\n:1\r\n", .{});
                     try writer.print("$16\r\nradix-tree-nodes\r\n:2\r\n", .{});
@@ -11147,12 +11180,23 @@ pub const Storage = struct {
 
                     try writer.print("$7\r\nentries\r\n*{d}\r\n", .{num_entries});
                     for (stream_val.entries.items[0..num_entries]) |stream_entry| {
-                        try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
-                            std.fmt.count("{d}-{d}", .{ stream_entry.id.ms, stream_entry.id.seq }),
-                            stream_entry.id.ms,
-                            stream_entry.id.seq,
-                            stream_entry.fields.items.len,
-                        });
+                        const n_fields = stream_entry.fields.items.len;
+                        if (resp3) {
+                            // RESP3: *2 [id, %{n/2} {field-map}]
+                            try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n%{d}\r\n", .{
+                                std.fmt.count("{d}-{d}", .{ stream_entry.id.ms, stream_entry.id.seq }),
+                                stream_entry.id.ms,
+                                stream_entry.id.seq,
+                                n_fields / 2,
+                            });
+                        } else {
+                            try writer.print("*2\r\n${d}\r\n{d}-{d}\r\n*{d}\r\n", .{
+                                std.fmt.count("{d}-{d}", .{ stream_entry.id.ms, stream_entry.id.seq }),
+                                stream_entry.id.ms,
+                                stream_entry.id.seq,
+                                n_fields,
+                            });
+                        }
                         for (stream_entry.fields.items) |field| {
                             try writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
                         }
@@ -11162,8 +11206,13 @@ pub const Storage = struct {
                     var group_it = stream_val.consumer_groups.iterator();
                     while (group_it.next()) |group_kv| {
                         const group = group_kv.value_ptr;
-                        // 6 key-value pairs = 12 elements per group (Redis 7.x format)
-                        try writer.print("*12\r\n", .{});
+                        // 6 key-value pairs per group
+                        // RESP3: %6, RESP2: *12
+                        if (resp3) {
+                            try writer.print("%6\r\n", .{});
+                        } else {
+                            try writer.print("*12\r\n", .{});
+                        }
 
                         // 1. name
                         try writer.print("$4\r\nname\r\n${d}\r\n{s}\r\n", .{ group_kv.key_ptr.len, group_kv.key_ptr.* });
@@ -11206,8 +11255,13 @@ pub const Storage = struct {
                         var consumer_it = group.consumers.iterator();
                         while (consumer_it.next()) |consumer_kv| {
                             const consumer = consumer_kv.value_ptr;
-                            // 5 key-value pairs = 10 elements per consumer
-                            try writer.print("*10\r\n", .{});
+                            // 5 key-value pairs per consumer
+                            // RESP3: %5, RESP2: *10
+                            if (resp3) {
+                                try writer.print("%5\r\n", .{});
+                            } else {
+                                try writer.print("*10\r\n", .{});
+                            }
 
                             // consumer name
                             try writer.print("$4\r\nname\r\n${d}\r\n{s}\r\n", .{ consumer_kv.key_ptr.len, consumer_kv.key_ptr.* });
@@ -15009,7 +15063,7 @@ test "storage - xinfoStream FULL empty group has 12 elements" {
     _ = try storage.xadd(allocator, "mystream", null, null, false, &[_][]const u8{ "f", "v" });
     try storage.xgroupCreate("mystream", "grp1", "0-0", null);
 
-    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    const result = try storage.xinfoStream(allocator, "mystream", true, null, false);
     defer allocator.free(result);
 
     // Full mode group should have *12 elements (6 key-value pairs)
@@ -15031,7 +15085,7 @@ test "storage - xinfoStream FULL entries-read is nil for arbitrary_start" {
     // "0-0" is not matched by "0" or "$" checks, so arbitrary_start=true
     try storage.xgroupCreate("mystream", "grp1", "0-0", null);
 
-    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    const result = try storage.xinfoStream(allocator, "mystream", true, null, false);
     defer allocator.free(result);
 
     // entries-read should be nil ($-1\r\n) for arbitrary_start groups
@@ -15047,7 +15101,7 @@ test "storage - xinfoStream FULL entries-read is numeric for groups starting at 
     // "0" exactly sets arbitrary_start=false and entries_read=0
     try storage.xgroupCreate("mystream", "grp1", "0", null);
 
-    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    const result = try storage.xinfoStream(allocator, "mystream", true, null, false);
     defer allocator.free(result);
 
     // entries-read should be integer (not $-1) for non-arbitrary groups
@@ -15070,7 +15124,7 @@ test "storage - xinfoStream FULL pending array has id/consumer/time/count" {
         list.deinit(allocator);
     };
 
-    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    const result = try storage.xinfoStream(allocator, "mystream", true, null, false);
     defer allocator.free(result);
 
     // Group's pending array should have *4 entries (id, consumer, delivery_time, delivery_count)
@@ -15095,7 +15149,7 @@ test "storage - xinfoStream FULL consumers array has proper objects" {
         list.deinit(allocator);
     };
 
-    const result = try storage.xinfoStream(allocator, "mystream", true, null);
+    const result = try storage.xinfoStream(allocator, "mystream", true, null, false);
     defer allocator.free(result);
 
     // Each consumer object has 10 elements (5 key-value pairs)

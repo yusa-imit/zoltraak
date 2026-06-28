@@ -1513,7 +1513,7 @@ pub fn cmdXinfoStream(allocator: std.mem.Allocator, storage: *Storage, args: []c
         }
     }
 
-    return storage.xinfoStream(allocator, key, full_mode, count_limit) catch |err| switch (err) {
+    return storage.xinfoStream(allocator, key, full_mode, count_limit, resp3) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         error.NoSuchKey => return w.writeError("ERR no such key"),
         else => return err,
