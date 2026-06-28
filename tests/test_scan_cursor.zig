@@ -21,7 +21,7 @@ test "SCAN cursor is bulk string (not integer)" {
         .{ .bulk_string = "SCAN" },
         .{ .bulk_string = "0" },
     };
-    const response = try keys_cmds.cmdScan(allocator, storage, &args);
+    const response = try keys_cmds.cmdScan(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Must start with *2\r\n$  (bulk string cursor, not integer :N)
@@ -42,7 +42,7 @@ test "SCAN cursor 0 is bulk string $1\\r\\n0\\r\\n" {
         .{ .bulk_string = "COUNT" },
         .{ .bulk_string = "100" },
     };
-    const response = try keys_cmds.cmdScan(allocator, storage, &args);
+    const response = try keys_cmds.cmdScan(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // With a single key and count=100, cursor should be 0 as bulk string
@@ -126,7 +126,7 @@ test "SCAN full iteration returns all keys with bulk string cursor" {
         .{ .bulk_string = "COUNT" },
         .{ .bulk_string = "100" },
     };
-    const response = try keys_cmds.cmdScan(allocator, storage, &args);
+    const response = try keys_cmds.cmdScan(allocator, storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Cursor 0 as bulk string means done

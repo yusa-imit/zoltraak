@@ -1211,7 +1211,8 @@ pub fn executeCommand(
         }
         // SCAN family commands
         else if (std.mem.eql(u8, cmd_upper, "SCAN")) {
-            break :blk try keys_cmds.cmdScan(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try keys_cmds.cmdScan(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HSCAN")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try keys_cmds.cmdHscan(allocator, storage, array, protocol_version);

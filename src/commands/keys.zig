@@ -859,9 +859,9 @@ fn cmdExpireatImpl(
 // ── SCAN family ──────────────────────────────────────────────────────────────
 
 /// SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
-/// Keyspace iterator. Returns [next_cursor, [keys]].
+/// Keyspace iterator. Returns [next_cursor, [keys]] in RESP2, [next_cursor, ~N set{keys}] in RESP3.
 /// Uses simple index-based cursor: integer offset into sorted key list.
-pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -968,7 +968,7 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     const next_cursor: usize = if (end >= matching.items.len) 0 else end;
     const page = matching.items[start..end];
 
-    // Build response: *2 array: cursor (bulk string), then array of keys
+    // Build response: *2 array: cursor (bulk string), then array/set of keys
     var buf: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
 
@@ -980,10 +980,16 @@ pub fn cmdScan(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     const cursor_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ cursor_digits.len, cursor_digits });
     defer allocator.free(cursor_resp);
     try buf.appendSlice(allocator, cursor_resp);
-    // Write keys array
-    const keys_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
-    defer allocator.free(keys_header);
-    try buf.appendSlice(allocator, keys_header);
+    // RESP3: keys are unique → use set type (~N). RESP2: plain array (*N).
+    if (protocol_version == .RESP3) {
+        const set_header = try std.fmt.allocPrint(allocator, "~{d}\r\n", .{page.len});
+        defer allocator.free(set_header);
+        try buf.appendSlice(allocator, set_header);
+    } else {
+        const keys_header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{page.len});
+        defer allocator.free(keys_header);
+        try buf.appendSlice(allocator, keys_header);
+    }
     for (page) |k| {
         const key_resp = try std.fmt.allocPrint(allocator, "${d}\r\n{s}\r\n", .{ k.len, k });
         defer allocator.free(key_resp);
@@ -3639,7 +3645,7 @@ test "SCAN COUNT 0 returns all matching keys (no infinite loop)" {
         .{ .bulk_string = "COUNT" },
         .{ .bulk_string = "0" },
     };
-    const response = try cmdScan(allocator, &storage, &args);
+    const response = try cmdScan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Cursor should be 0 (done) as bulk string and all 3 keys returned
@@ -3664,7 +3670,7 @@ test "SCAN TYPE filter is case-insensitive" {
         .{ .bulk_string = "TYPE" },
         .{ .bulk_string = "STRING" },
     };
-    const response_upper = try cmdScan(allocator, &storage, &args_upper);
+    const response_upper = try cmdScan(allocator, &storage, &args_upper, .RESP2);
     defer allocator.free(response_upper);
 
     try std.testing.expect(std.mem.indexOf(u8, response_upper, "strkey") != null);
@@ -3677,7 +3683,7 @@ test "SCAN TYPE filter is case-insensitive" {
         .{ .bulk_string = "TYPE" },
         .{ .bulk_string = "string" },
     };
-    const response_lower = try cmdScan(allocator, &storage, &args_lower);
+    const response_lower = try cmdScan(allocator, &storage, &args_lower, .RESP2);
     defer allocator.free(response_lower);
 
     try std.testing.expect(std.mem.indexOf(u8, response_lower, "strkey") != null);
@@ -3719,7 +3725,7 @@ test "SCAN cursor is returned as bulk string (Redis protocol compliance)" {
         .{ .bulk_string = "SCAN" },
         .{ .bulk_string = "0" },
     };
-    const response = try cmdScan(allocator, &storage, &args);
+    const response = try cmdScan(allocator, &storage, &args, .RESP2);
     defer allocator.free(response);
 
     // Redis returns cursor as bulk string: *2\r\n$1\r\n0\r\n (not :0\r\n)
