@@ -982,7 +982,8 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "TYPE")) {
             break :blk try keys_cmds.cmdType(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "KEYS")) {
-            break :blk try keys_cmds.cmdKeys(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try keys_cmds.cmdKeys(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "RENAME")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try keys_cmds.cmdRename(allocator, storage, array, ps, selected_db);
@@ -1643,16 +1644,21 @@ pub fn executeCommand(
             break :blk try geo_cmds.cmdGeohash(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try geo_cmds.cmdGeoradius(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeoradius(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUS_RO")) {
-            break :blk try geo_cmds.cmdGeoradiusRo(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeoradiusRo(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUSBYMEMBER")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try geo_cmds.cmdGeoradiusbymember(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeoradiusbymember(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEORADIUSBYMEMBER_RO")) {
-            break :blk try geo_cmds.cmdGeoradiusbymemberRo(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeoradiusbymemberRo(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCH")) {
-            break :blk try geo_cmds.cmdGeosearch(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeosearch(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEOSEARCHSTORE")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             break :blk try geo_cmds.cmdGeosearchstore(allocator, storage, array, ps, selected_db);

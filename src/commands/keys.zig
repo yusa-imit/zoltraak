@@ -242,7 +242,8 @@ pub fn cmdType(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
 /// KEYS pattern
 /// Returns array of all keys matching the glob pattern.
-pub fn cmdKeys(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: returns set type (~N) since keys are always unique.
+pub fn cmdKeys(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -272,7 +273,17 @@ pub fn cmdKeys(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         }
     }
 
-    // Build array response
+    // RESP3: keys are unique → use set type (~N). RESP2: plain array (*N).
+    if (protocol_version == .RESP3) {
+        var resp_values = std.ArrayList(RespValue){ .items = &.{}, .capacity = 0 };
+        defer resp_values.deinit(allocator);
+        for (matching.items) |k| {
+            try resp_values.append(allocator, .{ .bulk_string = k });
+        }
+        return w.writeSet(resp_values.items);
+    }
+
+    // Build RESP2 array response
     var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
 
@@ -2115,7 +2126,7 @@ test "keys - KEYS star returns all keys" {
         .{ .bulk_string = "KEYS" },
         .{ .bulk_string = "*" },
     };
-    const result = try cmdKeys(allocator, storage, &args);
+    const result = try cmdKeys(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Response starts with *2
@@ -2137,7 +2148,7 @@ test "keys - KEYS pattern filters correctly" {
         .{ .bulk_string = "KEYS" },
         .{ .bulk_string = "h?llo" },
     };
-    const result = try cmdKeys(allocator, storage, &args);
+    const result = try cmdKeys(allocator, storage, &args, .RESP2);
     defer allocator.free(result);
 
     // Should match hello, hallo, hxllo (3 keys), not world

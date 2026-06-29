@@ -41,7 +41,7 @@ test "GEOSEARCH BYBOX" {
         }
         allocator.free(geosearch_args);
     }
-    const result = try geo_cmds.cmdGeosearch(allocator, &storage, geosearch_args);
+    const result = try geo_cmds.cmdGeosearch(allocator, &storage, geosearch_args, .RESP2);
     defer allocator.free(result);
 
     // Should find both Palermo and Catania

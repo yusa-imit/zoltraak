@@ -1316,6 +1316,25 @@ pub fn build(b: *std.Build) void {
     const run_iter386_tests = b.addRunArtifact(iter386_tests);
     test_step.dependOn(&run_iter386_tests.step);
 
+    // Iteration 387: RESP3 set type for KEYS + RESP3 double type for GEORADIUS/GEOSEARCH WITHDIST/WITHCOORD
+    const iter387_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter387.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter387_tests.linkSystemLibrary("luajit-5.1");
+    iter387_tests.linkLibC();
+    iter387_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter387_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter387_tests = b.addRunArtifact(iter387_tests);
+    test_step.dependOn(&run_iter387_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
