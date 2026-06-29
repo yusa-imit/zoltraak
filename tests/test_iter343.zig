@@ -93,7 +93,7 @@ test "ZMPOP all-empty keys returns null array *-1" {
         .{ .bulk_string = "nokey2" },
         .{ .bulk_string = "MIN" },
     };
-    const result = try ss_cmds.cmdZmpop(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdZmpop(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     // Must be null array, not null bulk string
@@ -114,7 +114,7 @@ test "ZMPOP non-existent single key returns null array *-1" {
         .{ .bulk_string = "nosuchzset" },
         .{ .bulk_string = "MAX" },
     };
-    const result = try ss_cmds.cmdZmpop(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdZmpop(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("*-1\r\n", result);
@@ -136,7 +136,7 @@ test "ZMPOP existing key returns *2 array, not null" {
         .{ .bulk_string = "myzset" },
         .{ .bulk_string = "MIN" },
     };
-    const result = try ss_cmds.cmdZmpop(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdZmpop(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     // Should start with *2 (key + array of member-score pairs)
@@ -181,7 +181,7 @@ test "BZMPOP timeout 0.001 on empty key returns null array *-1" {
         .{ .bulk_string = "nosuchzset" },
         .{ .bulk_string = "MIN" },
     };
-    const result = try ss_cmds.cmdBzmpop(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdBzmpop(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("*-1\r\n", result);

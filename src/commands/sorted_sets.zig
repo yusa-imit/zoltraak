@@ -1021,8 +1021,8 @@ pub fn cmdZcount(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
 /// ZPOPMIN key [count]
 /// Remove and return lowest-score members.
-/// Returns interleaved array of [member, score, ...].
-pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+/// RESP3: scores are returned as doubles (,score\r\n). RESP2: scores as bulk strings.
+pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1067,7 +1067,7 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
         }
         var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, members.len * 2);
         defer resp_values.deinit(allocator);
-        // Collect allocated score strings so we can free them after writeArray
+        // Collect allocated score strings (RESP2 only) so we can free them after writeArray
         var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, members.len);
         defer {
             for (score_strings.items) |s| allocator.free(s);
@@ -1075,11 +1075,15 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
         }
         for (members) |sm| {
             try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
-            var score_buf: [64]u8 = undefined;
-            const score_str = formatScore(&score_buf, sm.score);
-            const owned_score = try allocator.dupe(u8, score_str);
-            try score_strings.append(allocator, owned_score);
-            try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+            if (protocol_version == .RESP3) {
+                try resp_values.append(allocator, RespValue{ .double = sm.score });
+            } else {
+                var score_buf: [64]u8 = undefined;
+                const score_str = formatScore(&score_buf, sm.score);
+                const owned_score = try allocator.dupe(u8, score_str);
+                try score_strings.append(allocator, owned_score);
+                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+            }
         }
         return w.writeArray(resp_values.items);
     }
@@ -1088,8 +1092,8 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
 /// ZPOPMAX key [count]
 /// Remove and return highest-score members.
-/// Returns interleaved array of [member, score, ...].
-pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+/// RESP3: scores are returned as doubles (,score\r\n). RESP2: scores as bulk strings.
+pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1141,11 +1145,15 @@ pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const
         }
         for (members) |sm| {
             try resp_values.append(allocator, RespValue{ .bulk_string = sm.member });
-            var score_buf: [64]u8 = undefined;
-            const score_str = formatScore(&score_buf, sm.score);
-            const owned_score = try allocator.dupe(u8, score_str);
-            try score_strings.append(allocator, owned_score);
-            try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+            if (protocol_version == .RESP3) {
+                try resp_values.append(allocator, RespValue{ .double = sm.score });
+            } else {
+                var score_buf: [64]u8 = undefined;
+                const score_str = formatScore(&score_buf, sm.score);
+                const owned_score = try allocator.dupe(u8, score_str);
+                try score_strings.append(allocator, owned_score);
+                try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+            }
         }
         return w.writeArray(resp_values.items);
     }
@@ -2568,7 +2576,8 @@ test "cmdZcount - exclusive bounds" {
 /// ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]
 /// Pops members with the highest or lowest scores from the first non-empty sorted set.
 /// Returns array [key, [member, score, ...]] or null if all sorted sets are empty.
-pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+/// RESP3: scores in the inner array are returned as doubles (,score\r\n). RESP2: scores as bulk strings.
+pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2667,7 +2676,7 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             }
 
             // Return [key, [member, score, ...]]
-            // Build member-score array
+            // Build member-score array; RESP3: scores as double (,val\r\n), RESP2: bulk strings
             var member_score_buf = std.ArrayList(u8){};
             defer member_score_buf.deinit(allocator);
             const ms_writer = member_score_buf.writer(allocator);
@@ -2677,9 +2686,19 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             for (members) |sm| {
                 try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
 
-                var score_buf: [64]u8 = undefined;
-                const score_str = formatScore(&score_buf, sm.score);
-                try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+                if (protocol_version == .RESP3) {
+                    if (std.math.isPositiveInf(sm.score)) {
+                        try ms_writer.writeAll(",inf\r\n");
+                    } else if (std.math.isNegativeInf(sm.score)) {
+                        try ms_writer.writeAll(",-inf\r\n");
+                    } else {
+                        try ms_writer.print(",{d}\r\n", .{sm.score});
+                    }
+                } else {
+                    var score_buf: [64]u8 = undefined;
+                    const score_str = formatScore(&score_buf, sm.score);
+                    try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+                }
             }
 
             const ms_str = try member_score_buf.toOwnedSlice(allocator);
@@ -2706,8 +2725,9 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// BZMPOP timeout numkeys key [key ...] <MIN | MAX> [COUNT count]
 /// Blocking version of ZMPOP - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// RESP3: scores in inner array are returned as doubles (,score\r\n). RESP2: bulk strings.
 /// Returns [key, [member, score, ...]] or null if timeout expires.
-pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2832,7 +2852,7 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 }
 
                 // Return [key, [member, score, ...]]
-                // Build member-score array
+                // Build member-score array; RESP3: scores as double (,val\r\n), RESP2: bulk strings
                 var member_score_buf = std.ArrayList(u8){};
                 defer member_score_buf.deinit(allocator);
                 const ms_writer = member_score_buf.writer(allocator);
@@ -2842,9 +2862,19 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 for (members) |sm| {
                     try ms_writer.print("${d}\r\n{s}\r\n", .{ sm.member.len, sm.member });
 
-                    var score_buf: [64]u8 = undefined;
-                    const score_str = formatScore(&score_buf, sm.score);
-                    try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+                    if (protocol_version == .RESP3) {
+                        if (std.math.isPositiveInf(sm.score)) {
+                            try ms_writer.writeAll(",inf\r\n");
+                        } else if (std.math.isNegativeInf(sm.score)) {
+                            try ms_writer.writeAll(",-inf\r\n");
+                        } else {
+                            try ms_writer.print(",{d}\r\n", .{sm.score});
+                        }
+                    } else {
+                        var score_buf: [64]u8 = undefined;
+                        const score_str = formatScore(&score_buf, sm.score);
+                        try ms_writer.print("${d}\r\n{s}\r\n", .{ score_str.len, score_str });
+                    }
                 }
 
                 const ms_str = try member_score_buf.toOwnedSlice(allocator);
@@ -2873,8 +2903,9 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// BZPOPMIN key [key ...] timeout
 /// Blocking version of ZPOPMIN - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// RESP3: score is returned as double (,score\r\n). RESP2: score as bulk string.
 /// Returns array [key, member, score] or null if timeout expires.
-pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -2936,19 +2967,22 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                         notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
                     }
 
-                    // Return [key, member, score]
+                    // Return [key, member, score]; RESP3: score as double
                     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
                     defer resp_values.deinit(allocator);
 
                     try resp_values.append(allocator, RespValue{ .bulk_string = key });
                     try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
 
-                    var score_buf: [64]u8 = undefined;
-                    const score_str = formatScore(&score_buf, members[0].score);
-                    const owned_score = try allocator.dupe(u8, score_str);
-                    defer allocator.free(owned_score);
-
-                    try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+                    if (protocol_version == .RESP3) {
+                        try resp_values.append(allocator, RespValue{ .double = members[0].score });
+                    } else {
+                        var score_buf: [64]u8 = undefined;
+                        const score_str = formatScore(&score_buf, members[0].score);
+                        const owned_score = try allocator.dupe(u8, score_str);
+                        defer allocator.free(owned_score);
+                        try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+                    }
 
                     return w.writeArray(resp_values.items);
                 }
@@ -2968,8 +3002,9 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 /// BZPOPMAX key [key ...] timeout
 /// Blocking version of ZPOPMAX - blocks until an element is available.
 /// Uses polling with 100ms sleep interval to implement blocking semantics.
+/// RESP3: score is returned as double (,score\r\n). RESP2: score as bulk string.
 /// Returns array [key, member, score] or null if timeout expires.
-pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32) ![]const u8 {
+pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, ps: *PubSub, db_index: u32, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -3031,19 +3066,22 @@ pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                         notifyGenericEvent(allocator, storage, ps, db_index, key, "del");
                     }
 
-                    // Return [key, member, score]
+                    // Return [key, member, score]; RESP3: score as double
                     var resp_values = try std.ArrayList(RespValue).initCapacity(allocator, 3);
                     defer resp_values.deinit(allocator);
 
                     try resp_values.append(allocator, RespValue{ .bulk_string = key });
                     try resp_values.append(allocator, RespValue{ .bulk_string = members[0].member });
 
-                    var score_buf: [64]u8 = undefined;
-                    const score_str = formatScore(&score_buf, members[0].score);
-                    const owned_score = try allocator.dupe(u8, score_str);
-                    defer allocator.free(owned_score);
-
-                    try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+                    if (protocol_version == .RESP3) {
+                        try resp_values.append(allocator, RespValue{ .double = members[0].score });
+                    } else {
+                        var score_buf: [64]u8 = undefined;
+                        const score_str = formatScore(&score_buf, members[0].score);
+                        const owned_score = try allocator.dupe(u8, score_str);
+                        defer allocator.free(owned_score);
+                        try resp_values.append(allocator, RespValue{ .bulk_string = owned_score });
+                    }
 
                     return w.writeArray(resp_values.items);
                 }
@@ -3066,6 +3104,8 @@ test "sorted_sets - ZMPOP pops min from first non-empty sorted set" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup
     const setup_args = [_]RespValue{
@@ -3089,7 +3129,7 @@ test "sorted_sets - ZMPOP pops min from first non-empty sorted set" {
         RespValue{ .bulk_string = "MIN" },
     };
 
-    const result = try cmdZmpop(allocator, storage, &args);
+    const result = try cmdZmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return [myzset, [one, 1]]
@@ -3102,6 +3142,8 @@ test "sorted_sets - ZMPOP pops max with COUNT" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup
     const setup_args = [_]RespValue{
@@ -3129,7 +3171,7 @@ test "sorted_sets - ZMPOP pops max with COUNT" {
         RespValue{ .bulk_string = "2" },
     };
 
-    const result = try cmdZmpop(allocator, storage, &args);
+    const result = try cmdZmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return [myzset, [d, 4, c, 3]]
@@ -3142,6 +3184,8 @@ test "sorted_sets - ZMPOP on all empty sorted sets returns null" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ZMPOP" },
@@ -3151,16 +3195,18 @@ test "sorted_sets - ZMPOP on all empty sorted sets returns null" {
         RespValue{ .bulk_string = "MIN" },
     };
 
-    const result = try cmdZmpop(allocator, storage, &args);
+    const result = try cmdZmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("$-1\r\n", result);
+    try std.testing.expectEqualStrings("*-1\r\n", result);
 }
 
 test "sorted_sets - BZMPOP pops min from first non-empty sorted set" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup
     const setup_args = [_]RespValue{
@@ -3184,7 +3230,7 @@ test "sorted_sets - BZMPOP pops min from first non-empty sorted set" {
         RespValue{ .bulk_string = "MIN" },
     };
 
-    const result = try cmdBzmpop(allocator, storage, &args);
+    const result = try cmdBzmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return [zset2, [ten, 10]]
@@ -3196,6 +3242,8 @@ test "sorted_sets - BZMPOP with MAX and COUNT" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup
     const setup_args = [_]RespValue{
@@ -3222,7 +3270,7 @@ test "sorted_sets - BZMPOP with MAX and COUNT" {
         RespValue{ .bulk_string = "2" },
     };
 
-    const result = try cmdBzmpop(allocator, storage, &args);
+    const result = try cmdBzmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return [myzset, [c, 3, b, 2]]
@@ -3237,6 +3285,8 @@ test "sorted_sets - BZPOPMIN returns from first non-empty sorted set" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup: zset2 has data
     const setup = [_]RespValue{
@@ -3256,7 +3306,7 @@ test "sorted_sets - BZPOPMIN returns from first non-empty sorted set" {
         RespValue{ .bulk_string = "zset2" },
         RespValue{ .bulk_string = "0" },
     };
-    const result = try cmdBzpopmin(allocator, storage, &args);
+    const result = try cmdBzpopmin(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return [zset2, a, 1]
@@ -4328,6 +4378,8 @@ test "sorted_sets - BZPOPMAX returns from first non-empty sorted set" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup: zset2 has data
     const setup = [_]RespValue{
@@ -4345,9 +4397,9 @@ test "sorted_sets - BZPOPMAX returns from first non-empty sorted set" {
         RespValue{ .bulk_string = "BZPOPMAX" },
         RespValue{ .bulk_string = "zset1" },
         RespValue{ .bulk_string = "zset2" },
-        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "1" },
     };
-    const result = try cmdBzpopmax(allocator, storage, &args);
+    const result = try cmdBzpopmax(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return [zset2, b, 2]
@@ -4360,14 +4412,16 @@ test "sorted_sets - BZPOPMIN on all empty sorted sets returns null" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "BZPOPMIN" },
         RespValue{ .bulk_string = "zset1" },
         RespValue{ .bulk_string = "zset2" },
-        RespValue{ .bulk_string = "0" },
+        RespValue{ .bulk_string = "0.1" },
     };
-    const result = try cmdBzpopmin(allocator, storage, &args);
+    const result = try cmdBzpopmin(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("$-1\r\n", result);
@@ -4922,6 +4976,8 @@ test "sorted_sets - ZMPOP accepts lowercase modifier" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     // Setup: add members to sorted set
     const setup_args = [_]RespValue{
@@ -4942,7 +4998,7 @@ test "sorted_sets - ZMPOP accepts lowercase modifier" {
         RespValue{ .bulk_string = "myzset" },
         RespValue{ .bulk_string = "min" },
     };
-    const result = try cmdZmpop(allocator, storage, &args);
+    const result = try cmdZmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     // Should return the key and the popped member
@@ -4954,6 +5010,8 @@ test "sorted_sets - ZMPOP accepts lowercase COUNT keyword" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator);
     defer storage.deinit();
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
 
     const setup_args = [_]RespValue{
         RespValue{ .bulk_string = "ZADD" },
@@ -4977,7 +5035,7 @@ test "sorted_sets - ZMPOP accepts lowercase COUNT keyword" {
         RespValue{ .bulk_string = "count" },
         RespValue{ .bulk_string = "2" },
     };
-    const result = try cmdZmpop(allocator, storage, &args);
+    const result = try cmdZmpop(allocator, storage, &args, &ps, 0, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "myzset") != null);

@@ -1249,22 +1249,28 @@ pub fn executeCommand(
         // Sorted set commands (new)
         else if (std.mem.eql(u8, cmd_upper, "ZPOPMIN")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdZpopmin(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZpopmin(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZPOPMAX")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdZpopmax(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZpopmax(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZMPOP")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdZmpop(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZmpop(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "BZPOPMIN")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdBzpopmin(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdBzpopmin(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "BZPOPMAX")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdBzpopmax(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "BZMPOP")) {
             const selected_db = client_registry.getSelectedDb(client_id);
-            break :blk try sorted_sets.cmdBzmpop(allocator, storage, array, ps, selected_db);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdBzmpop(allocator, storage, array, ps, selected_db, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZMSCORE")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try sorted_sets.cmdZmscore(allocator, storage, array, protocol_version);

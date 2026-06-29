@@ -124,7 +124,7 @@ test "ZPOPMIN returns +inf score formatted as +inf" {
         .{ .bulk_string = "ZPOPMIN" },
         .{ .bulk_string = "zs" },
     };
-    const result = try ss_cmds.cmdZpopmin(allocator, storage, &args, &pubsub, 0);
+    const result = try ss_cmds.cmdZpopmin(allocator, storage, &args, &pubsub, 0, .RESP2);
     defer allocator.free(result);
 
     // Should contain "member1" and "+inf"
