@@ -1,4 +1,6 @@
 const std = @import("std");
+const client_mod = @import("./client.zig");
+const RespProtocol = client_mod.RespProtocol;
 
 /// Redis command metadata for introspection
 pub const CommandInfo = struct {
@@ -1114,22 +1116,27 @@ pub const COMMAND_DOCS = [_]CommandDoc{
 };
 
 /// COMMAND DOCS [command-name [command-name ...]] — Return documentation for commands (Redis 7.0+)
-/// Returns a map-like structure: [name, {summary, since, group, complexity, arguments, ...}, ...]
-pub fn cmdCommandDocs(allocator: std.mem.Allocator, args: []const []const u8) ![]const u8 {
+/// RESP2: flat array *N (name, doc_entry alternating).
+/// RESP3: map %N (name → doc_entry map).
+pub fn cmdCommandDocs(allocator: std.mem.Allocator, args: []const []const u8, protocol_version: RespProtocol) ![]const u8 {
+    const resp3 = protocol_version == .RESP3;
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
     if (args.len == 0) {
         // Return docs for all commands
-        try buf.append(allocator, '*');
-        try std.fmt.format(buf.writer(allocator), "{d}", .{COMMAND_DOCS.len * 2});
-        try buf.appendSlice(allocator, "\r\n");
+        const count = COMMAND_DOCS.len;
+        if (resp3) {
+            try std.fmt.format(buf.writer(allocator), "%{d}\r\n", .{count});
+        } else {
+            try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{count * 2});
+        }
         for (COMMAND_DOCS) |doc| {
             try writeBulkString(allocator, &buf, doc.name);
-            try writeDocEntry(allocator, &buf, doc);
+            try writeDocEntry(allocator, &buf, doc, resp3);
         }
     } else {
-        // Return docs for specified commands
+        // Count found commands
         var found_count: usize = 0;
         for (args) |arg| {
             for (COMMAND_DOCS) |doc| {
@@ -1139,14 +1146,16 @@ pub fn cmdCommandDocs(allocator: std.mem.Allocator, args: []const []const u8) ![
                 }
             }
         }
-        try buf.append(allocator, '*');
-        try std.fmt.format(buf.writer(allocator), "{d}", .{found_count * 2});
-        try buf.appendSlice(allocator, "\r\n");
+        if (resp3) {
+            try std.fmt.format(buf.writer(allocator), "%{d}\r\n", .{found_count});
+        } else {
+            try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{found_count * 2});
+        }
         for (args) |arg| {
             for (COMMAND_DOCS) |doc| {
                 if (std.ascii.eqlIgnoreCase(doc.name, arg)) {
                     try writeBulkString(allocator, &buf, doc.name);
-                    try writeDocEntry(allocator, &buf, doc);
+                    try writeDocEntry(allocator, &buf, doc, resp3);
                     break;
                 }
             }
@@ -1156,17 +1165,20 @@ pub fn cmdCommandDocs(allocator: std.mem.Allocator, args: []const []const u8) ![
     return buf.toOwnedSlice(allocator);
 }
 
-/// Write a single command doc entry as a flat-map array
-fn writeDocEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), doc: CommandDoc) !void {
-    // Count fields (summary, since, group, complexity always present; doc_flags and replaced_by if non-empty)
-    var field_count: usize = 4 * 2; // summary, since, group, complexity
-    if (doc.doc_flags.len > 0) field_count += 2;
-    if (doc.replaced_by.len > 0) field_count += 2;
-    field_count += 2; // arguments (always present, may be empty)
+/// Write a single command doc entry.
+/// RESP2: flat array *N (2 elements per field-value pair).
+/// RESP3: map %M (M = number of field-value pairs).
+fn writeDocEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), doc: CommandDoc, resp3: bool) !void {
+    // Count pairs (summary, since, group, complexity always; doc_flags, replaced_by optional; arguments always)
+    var pair_count: usize = 5; // summary, since, group, complexity, arguments
+    if (doc.doc_flags.len > 0) pair_count += 1;
+    if (doc.replaced_by.len > 0) pair_count += 1;
 
-    try buf.append(allocator, '*');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{field_count});
-    try buf.appendSlice(allocator, "\r\n");
+    if (resp3) {
+        try std.fmt.format(buf.writer(allocator), "%{d}\r\n", .{pair_count});
+    } else {
+        try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{pair_count * 2});
+    }
 
     // summary
     try writeBulkString(allocator, buf, "summary");
@@ -1708,7 +1720,7 @@ test "COMMAND DOCS - specific command lookup" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"get"};
-    const result = try cmdCommandDocs(allocator, &args);
+    const result = try cmdCommandDocs(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // Should contain "get" and "summary"
@@ -1722,7 +1734,7 @@ test "COMMAND DOCS - unknown command returns empty" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"nonexistent_command_xyz"};
-    const result = try cmdCommandDocs(allocator, &args);
+    const result = try cmdCommandDocs(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // Should return empty array *0\r\n
@@ -1733,7 +1745,7 @@ test "COMMAND DOCS - deprecated command has doc_flags" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"getset"};
-    const result = try cmdCommandDocs(allocator, &args);
+    const result = try cmdCommandDocs(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "deprecated") != null);
@@ -1743,7 +1755,7 @@ test "COMMAND DOCS - deprecated command has doc_flags" {
 test "COMMAND DOCS - no args returns all commands" {
     const allocator = std.testing.allocator;
 
-    const result = try cmdCommandDocs(allocator, &.{});
+    const result = try cmdCommandDocs(allocator, &.{}, .RESP2);
     defer allocator.free(result);
 
     // Should be a large response covering many commands
@@ -1755,7 +1767,7 @@ test "COMMAND DOCS - multiple commands" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "set", "get", "hset" };
-    const result = try cmdCommandDocs(allocator, &args);
+    const result = try cmdCommandDocs(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "set") != null);

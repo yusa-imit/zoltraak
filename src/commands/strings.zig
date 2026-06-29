@@ -1620,7 +1620,8 @@ pub fn executeCommand(
                 } else if (std.mem.eql(u8, subcmd_upper, "DOCS")) {
                     const cmd_args = try extractBulkStrings(allocator, array[2..]);
                     defer allocator.free(cmd_args);
-                    break :blk try command_cmds.cmdCommandDocs(allocator, cmd_args);
+                    const protocol_version = getClientProtocol(client_registry, client_id);
+                    break :blk try command_cmds.cmdCommandDocs(allocator, cmd_args, protocol_version);
                 } else {
                     var w = Writer.init(allocator);
                     defer w.deinit();
