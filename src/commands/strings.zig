@@ -1547,7 +1547,8 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "COMMAND")) {
             if (array.len == 1) {
                 // COMMAND - return all commands
-                break :blk try command_cmds.cmdCommand(allocator);
+                const cmd_proto = getClientProtocol(client_registry, client_id);
+                break :blk try command_cmds.cmdCommand(allocator, cmd_proto);
             } else {
                 const subcmd = switch (array[1]) {
                     .bulk_string => |s| s,
@@ -1565,7 +1566,8 @@ pub fn executeCommand(
                 } else if (std.mem.eql(u8, subcmd_upper, "INFO")) {
                     const cmd_args = try extractBulkStrings(allocator, array[2..]);
                     defer allocator.free(cmd_args);
-                    break :blk try command_cmds.cmdCommandInfo(allocator, cmd_args);
+                    const info_proto = getClientProtocol(client_registry, client_id);
+                    break :blk try command_cmds.cmdCommandInfo(allocator, cmd_args, info_proto);
                 } else if (std.mem.eql(u8, subcmd_upper, "GETKEYS")) {
                     const cmd_args = try extractBulkStrings(allocator, array[2..]);
                     defer allocator.free(cmd_args);
@@ -1615,7 +1617,8 @@ pub fn executeCommand(
                             };
                         }
                     }
-                    break :blk try command_cmds.cmdCommandList(allocator, filter_type, filter_value);
+                    const list_proto = getClientProtocol(client_registry, client_id);
+                    break :blk try command_cmds.cmdCommandList(allocator, filter_type, filter_value, list_proto);
                 } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                     break :blk try command_cmds.cmdCommandHelp(allocator);
                 } else if (std.mem.eql(u8, subcmd_upper, "DOCS")) {

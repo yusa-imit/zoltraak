@@ -486,17 +486,18 @@ pub const ALL_COMMANDS = [_]CommandInfo{
 };
 
 /// COMMAND - Return all commands
-pub fn cmdCommand(allocator: std.mem.Allocator) ![]const u8 {
+/// RESP3: each entry is a map instead of an array
+pub fn cmdCommand(allocator: std.mem.Allocator, protocol_version: RespProtocol) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
-    // Write array header
+    // Write array header (outer array is always array, not map)
     try buf.append(allocator, '*');
     try std.fmt.format(buf.writer(allocator), "{d}", .{ALL_COMMANDS.len});
     try buf.appendSlice(allocator, "\r\n");
 
     for (ALL_COMMANDS) |cmd| {
-        try writeCommandInfo(allocator, &buf, cmd);
+        try writeCommandInfo(allocator, &buf, cmd, protocol_version == .RESP3);
     }
 
     return buf.toOwnedSlice(allocator);
@@ -515,7 +516,8 @@ pub fn cmdCommandCount(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// COMMAND INFO - Return specific command info
-pub fn cmdCommandInfo(allocator: std.mem.Allocator, args: []const []const u8) ![]const u8 {
+/// RESP3: each entry is a map with flags/acl-categories as sets
+pub fn cmdCommandInfo(allocator: std.mem.Allocator, args: []const []const u8, protocol_version: RespProtocol) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
@@ -527,7 +529,7 @@ pub fn cmdCommandInfo(allocator: std.mem.Allocator, args: []const []const u8) ![
         var found = false;
         for (ALL_COMMANDS) |cmd| {
             if (std.ascii.eqlIgnoreCase(cmd.name, name)) {
-                try writeCommandInfo(allocator, &buf, cmd);
+                try writeCommandInfo(allocator, &buf, cmd, protocol_version == .RESP3);
                 found = true;
                 break;
             }
@@ -637,7 +639,8 @@ fn getCommandGroup(name: []const u8) ?[]const u8 {
 /// COMMAND LIST [FILTERBY (ACLCAT category | PATTERN pattern | MODULE module)] (Redis 7.0+)
 /// filter_type: "ACLCAT", "PATTERN", or "MODULE" (case-insensitive, null = no filter)
 /// filter_value: the category name, glob pattern, or module name
-pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, filter_value: ?[]const u8) ![]const u8 {
+/// RESP3: returns a set (~) since command names are unique
+pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, filter_value: ?[]const u8, protocol_version: RespProtocol) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
@@ -645,7 +648,11 @@ pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, fi
 
     // MODULE filter: built-in commands don't belong to any module → return empty list
     if (ft != null and std.ascii.eqlIgnoreCase(ft.?, "MODULE")) {
-        try buf.appendSlice(allocator, "*0\r\n");
+        if (protocol_version == .RESP3) {
+            try buf.appendSlice(allocator, "~0\r\n");
+        } else {
+            try buf.appendSlice(allocator, "*0\r\n");
+        }
         return buf.toOwnedSlice(allocator);
     }
 
@@ -681,8 +688,12 @@ pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, fi
         try matching.append(allocator, cmd.name);
     }
 
-    // Write RESP array of command names
-    try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{matching.items.len});
+    // RESP3: return as set (~), RESP2: return as array (*)
+    if (protocol_version == .RESP3) {
+        try std.fmt.format(buf.writer(allocator), "~{d}\r\n", .{matching.items.len});
+    } else {
+        try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{matching.items.len});
+    }
     for (matching.items) |name| {
         try writeBulkString(allocator, &buf, name);
     }
@@ -1483,67 +1494,104 @@ fn deriveAclCategories(allocator: std.mem.Allocator, cmd: CommandInfo) ![]const 
 }
 
 /// Write command info in Redis 7.0+ 10-element format
-fn writeCommandInfo(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), cmd: CommandInfo) !void {
-    // Redis 7.0+ format: 10 elements
-    // 1. name, 2. arity, 3. flags, 4. first_key, 5. last_key, 6. step,
-    // 7. acl_categories, 8. tips, 9. key_specifications, 10. subcommands
-    try buf.append(allocator, '*');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{10});
-    try buf.appendSlice(allocator, "\r\n");
+fn writeCommandInfo(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), cmd: CommandInfo, resp3: bool) !void {
+    // Redis 7.0+ format: 10 elements (RESP2: array, RESP3: map)
+    // 1/name, 2/arity, 3/flags, 4/first-key, 5/last-key, 6/step,
+    // 7/acl-categories, 8/tips, 9/key-specifications, 10/subcommands
 
-    // 1. Command name (bulk string)
-    try writeBulkString(allocator, buf, cmd.name);
-
-    // 2. Arity
-    try buf.append(allocator, ':');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.arity});
-    try buf.appendSlice(allocator, "\r\n");
-
-    // 3. Flags (array of simple strings using + prefix as Redis does)
-    try buf.append(allocator, '*');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.flags.len});
-    try buf.appendSlice(allocator, "\r\n");
-    for (cmd.flags) |flag| {
-        try buf.append(allocator, '+');
-        try buf.appendSlice(allocator, flag);
-        try buf.appendSlice(allocator, "\r\n");
-    }
-
-    // 4. First key position
-    try buf.append(allocator, ':');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.first_key});
-    try buf.appendSlice(allocator, "\r\n");
-
-    // 5. Last key position
-    try buf.append(allocator, ':');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.last_key});
-    try buf.appendSlice(allocator, "\r\n");
-
-    // 6. Step
-    try buf.append(allocator, ':');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{cmd.step});
-    try buf.appendSlice(allocator, "\r\n");
-
-    // 7. ACL categories (array of simple strings)
     const acl_cats = try deriveAclCategories(allocator, cmd);
     defer allocator.free(acl_cats);
-    try buf.append(allocator, '*');
-    try std.fmt.format(buf.writer(allocator), "{d}", .{acl_cats.len});
-    try buf.appendSlice(allocator, "\r\n");
-    for (acl_cats) |cat| {
-        try buf.append(allocator, '+');
-        try buf.appendSlice(allocator, cat);
-        try buf.appendSlice(allocator, "\r\n");
+
+    if (resp3) {
+        // RESP3: map with 10 key-value pairs
+        try buf.appendSlice(allocator, "%10\r\n");
+
+        // name
+        try buf.appendSlice(allocator, "$4\r\nname\r\n");
+        try writeBulkString(allocator, buf, cmd.name);
+
+        // arity
+        try buf.appendSlice(allocator, "$5\r\narity\r\n");
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.arity});
+
+        // flags → set type (~)
+        try buf.appendSlice(allocator, "$5\r\nflags\r\n");
+        try std.fmt.format(buf.writer(allocator), "~{d}\r\n", .{cmd.flags.len});
+        for (cmd.flags) |flag| {
+            try buf.append(allocator, '+');
+            try buf.appendSlice(allocator, flag);
+            try buf.appendSlice(allocator, "\r\n");
+        }
+
+        // first-key (hyphenated in RESP3 map)
+        try buf.appendSlice(allocator, "$9\r\nfirst-key\r\n");
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.first_key});
+
+        // last-key
+        try buf.appendSlice(allocator, "$8\r\nlast-key\r\n");
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.last_key});
+
+        // step
+        try buf.appendSlice(allocator, "$4\r\nstep\r\n");
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.step});
+
+        // acl-categories → set type (~)
+        try buf.appendSlice(allocator, "$14\r\nacl-categories\r\n");
+        try std.fmt.format(buf.writer(allocator), "~{d}\r\n", .{acl_cats.len});
+        for (acl_cats) |cat| {
+            try buf.append(allocator, '+');
+            try buf.appendSlice(allocator, cat);
+            try buf.appendSlice(allocator, "\r\n");
+        }
+
+        // tips, key-specifications, subcommands → empty arrays
+        try buf.appendSlice(allocator, "$4\r\ntips\r\n*0\r\n");
+        try buf.appendSlice(allocator, "$18\r\nkey-specifications\r\n*0\r\n");
+        try buf.appendSlice(allocator, "$11\r\nsubcommands\r\n*0\r\n");
+    } else {
+        // RESP2: array with 10 elements
+        try buf.appendSlice(allocator, "*10\r\n");
+
+        // 1. Command name (bulk string)
+        try writeBulkString(allocator, buf, cmd.name);
+
+        // 2. Arity
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.arity});
+
+        // 3. Flags (array of simple strings)
+        try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{cmd.flags.len});
+        for (cmd.flags) |flag| {
+            try buf.append(allocator, '+');
+            try buf.appendSlice(allocator, flag);
+            try buf.appendSlice(allocator, "\r\n");
+        }
+
+        // 4. First key position
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.first_key});
+
+        // 5. Last key position
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.last_key});
+
+        // 6. Step
+        try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{cmd.step});
+
+        // 7. ACL categories (array of simple strings)
+        try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{acl_cats.len});
+        for (acl_cats) |cat| {
+            try buf.append(allocator, '+');
+            try buf.appendSlice(allocator, cat);
+            try buf.appendSlice(allocator, "\r\n");
+        }
+
+        // 8. Tips (empty array)
+        try buf.appendSlice(allocator, "*0\r\n");
+
+        // 9. Key specifications (empty array)
+        try buf.appendSlice(allocator, "*0\r\n");
+
+        // 10. Subcommands (empty array)
+        try buf.appendSlice(allocator, "*0\r\n");
     }
-
-    // 8. Tips (empty array — not yet populated)
-    try buf.appendSlice(allocator, "*0\r\n");
-
-    // 9. Key specifications (empty array — not yet populated)
-    try buf.appendSlice(allocator, "*0\r\n");
-
-    // 10. Subcommands (empty array — not yet populated)
-    try buf.appendSlice(allocator, "*0\r\n");
 }
 
 /// Write a bulk string to buffer
@@ -1599,7 +1647,7 @@ test "COMMAND INFO - returns 10-element format for Redis 7.0+" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"get"};
-    const result = try cmdCommandInfo(allocator, &args);
+    const result = try cmdCommandInfo(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // Outer array: *1 (one command result)
@@ -1616,7 +1664,7 @@ test "COMMAND INFO - flags as simple strings with + prefix" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"get"};
-    const result = try cmdCommandInfo(allocator, &args);
+    const result = try cmdCommandInfo(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // Flags should use simple string format (+readonly, +fast)
@@ -1629,14 +1677,14 @@ test "COMMAND INFO - acl_categories populated" {
 
     // GET command should have @read and @string categories
     const get_args = [_][]const u8{"get"};
-    const get_result = try cmdCommandInfo(allocator, &get_args);
+    const get_result = try cmdCommandInfo(allocator, &get_args, .RESP2);
     defer allocator.free(get_result);
     try std.testing.expect(std.mem.indexOf(u8, get_result, "@read") != null);
     try std.testing.expect(std.mem.indexOf(u8, get_result, "@string") != null);
 
     // SET command should have @write
     const set_args = [_][]const u8{"set"};
-    const set_result = try cmdCommandInfo(allocator, &set_args);
+    const set_result = try cmdCommandInfo(allocator, &set_args, .RESP2);
     defer allocator.free(set_result);
     try std.testing.expect(std.mem.indexOf(u8, set_result, "@write") != null);
 }
@@ -1645,7 +1693,7 @@ test "COMMAND INFO - write command has @write category" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"hset"};
-    const result = try cmdCommandInfo(allocator, &args);
+    const result = try cmdCommandInfo(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "@write") != null);
@@ -1656,7 +1704,7 @@ test "COMMAND INFO - unknown command returns nil bulk string" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"nonexistent_xyz_command"};
-    const result = try cmdCommandInfo(allocator, &args);
+    const result = try cmdCommandInfo(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // Should return *1\r\n$-1\r\n (nil bulk string for unknown command)
@@ -1667,7 +1715,7 @@ test "COMMAND INFO - list commands returns multiple 10-element entries" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "get", "set" };
-    const result = try cmdCommandInfo(allocator, &args);
+    const result = try cmdCommandInfo(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // Outer array: *2 (two command results)
@@ -1686,7 +1734,7 @@ test "COMMAND - deriveAclCategories for server commands" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{"flushdb"};
-    const result = try cmdCommandInfo(allocator, &args);
+    const result = try cmdCommandInfo(allocator, &args, .RESP2);
     defer allocator.free(result);
 
     // FLUSHDB should have @write and @server categories
@@ -1879,7 +1927,7 @@ test "COMMAND HELP - includes GETKEYSANDFLAGS" {
 
 test "COMMAND LIST - no filter returns all commands" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, null, null);
+    const result = try cmdCommandList(allocator, null, null, .RESP2);
     defer allocator.free(result);
     // Should start with a large array
     try std.testing.expect(std.mem.startsWith(u8, result, "*"));
@@ -1890,7 +1938,7 @@ test "COMMAND LIST - no filter returns all commands" {
 
 test "COMMAND LIST FILTERBY ACLCAT string - returns string commands" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "ACLCAT", "string");
+    const result = try cmdCommandList(allocator, "ACLCAT", "string", .RESP2);
     defer allocator.free(result);
     // Should contain string commands like "get", "set"
     try std.testing.expect(std.mem.indexOf(u8, result, "get") != null);
@@ -1901,7 +1949,7 @@ test "COMMAND LIST FILTERBY ACLCAT string - returns string commands" {
 
 test "COMMAND LIST FILTERBY ACLCAT list - returns list commands" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "ACLCAT", "list");
+    const result = try cmdCommandList(allocator, "ACLCAT", "list", .RESP2);
     defer allocator.free(result);
     // Should contain list commands
     try std.testing.expect(std.mem.indexOf(u8, result, "lpush") != null);
@@ -1912,7 +1960,7 @@ test "COMMAND LIST FILTERBY ACLCAT list - returns list commands" {
 
 test "COMMAND LIST FILTERBY ACLCAT hash - returns hash commands" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "ACLCAT", "hash");
+    const result = try cmdCommandList(allocator, "ACLCAT", "hash", .RESP2);
     defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "hset") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "hget") != null);
@@ -1920,7 +1968,7 @@ test "COMMAND LIST FILTERBY ACLCAT hash - returns hash commands" {
 
 test "COMMAND LIST FILTERBY ACLCAT @sortedset - returns zset commands (with @ prefix)" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "ACLCAT", "@sortedset");
+    const result = try cmdCommandList(allocator, "ACLCAT", "@sortedset", .RESP2);
     defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "zadd") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "zrange") != null);
@@ -1928,7 +1976,7 @@ test "COMMAND LIST FILTERBY ACLCAT @sortedset - returns zset commands (with @ pr
 
 test "COMMAND LIST FILTERBY PATTERN z* - returns commands starting with z" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "PATTERN", "z*");
+    const result = try cmdCommandList(allocator, "PATTERN", "z*", .RESP2);
     defer allocator.free(result);
     // Should contain zadd, zrange, etc.
     try std.testing.expect(std.mem.indexOf(u8, result, "zadd") != null);
@@ -1938,7 +1986,7 @@ test "COMMAND LIST FILTERBY PATTERN z* - returns commands starting with z" {
 
 test "COMMAND LIST FILTERBY PATTERN *get* - returns commands with 'get' substring" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "PATTERN", "*get*");
+    const result = try cmdCommandList(allocator, "PATTERN", "*get*", .RESP2);
     defer allocator.free(result);
     // "get", "getset", "getdel", "getex" should all match
     try std.testing.expect(std.mem.indexOf(u8, result, "getset") != null or std.mem.indexOf(u8, result, "get") != null);
@@ -1946,7 +1994,7 @@ test "COMMAND LIST FILTERBY PATTERN *get* - returns commands with 'get' substrin
 
 test "COMMAND LIST FILTERBY MODULE - returns empty (built-in commands have no module)" {
     const allocator = std.testing.allocator;
-    const result = try cmdCommandList(allocator, "MODULE", "any_module");
+    const result = try cmdCommandList(allocator, "MODULE", "any_module", .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("*0\r\n", result);
 }
@@ -1967,4 +2015,93 @@ test "groupMatchesAclCat - mapping correctness" {
     // Non-matches
     try std.testing.expect(!groupMatchesAclCat("string", "list"));
     try std.testing.expect(!groupMatchesAclCat("list", "hash"));
+}
+
+test "COMMAND INFO RESP3 - returns map per entry" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"get"};
+    const result = try cmdCommandInfo(allocator, &args, .RESP3);
+    defer allocator.free(result);
+
+    // Outer: *1\r\n (array of 1)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    // Each entry: %10\r\n (map with 10 pairs)
+    try std.testing.expect(std.mem.indexOf(u8, result, "%10\r\n") != null);
+    // name key: $4\r\nname\r\n
+    try std.testing.expect(std.mem.indexOf(u8, result, "$4\r\nname\r\n") != null);
+    // flags key: $5\r\nflags\r\n
+    try std.testing.expect(std.mem.indexOf(u8, result, "$5\r\nflags\r\n") != null);
+    // flags value: set type ~
+    try std.testing.expect(std.mem.indexOf(u8, result, "~2\r\n") != null);
+    // first-key with hyphen: $9\r\nfirst-key\r\n
+    try std.testing.expect(std.mem.indexOf(u8, result, "$9\r\nfirst-key\r\n") != null);
+    // last-key with hyphen: $8\r\nlast-key\r\n
+    try std.testing.expect(std.mem.indexOf(u8, result, "$8\r\nlast-key\r\n") != null);
+    // acl-categories with hyphen: $14\r\nacl-categories\r\n
+    try std.testing.expect(std.mem.indexOf(u8, result, "$14\r\nacl-categories\r\n") != null);
+    // acl-categories value: set type ~
+    try std.testing.expect(std.mem.indexOf(u8, result, "$14\r\nacl-categories\r\n~") != null);
+}
+
+test "COMMAND INFO RESP3 - multiple commands return map per entry" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{ "get", "set" };
+    const result = try cmdCommandInfo(allocator, &args, .RESP3);
+    defer allocator.free(result);
+
+    // Outer: *2\r\n
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
+    // Both entries use %10\r\n map format
+    var count: usize = 0;
+    var remaining = result;
+    while (std.mem.indexOf(u8, remaining, "%10\r\n")) |pos| {
+        count += 1;
+        remaining = remaining[pos + 5 ..];
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "COMMAND INFO RESP3 - unknown command still returns nil" {
+    const allocator = std.testing.allocator;
+
+    const args = [_][]const u8{"no_such_cmd"};
+    const result = try cmdCommandInfo(allocator, &args, .RESP3);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "$-1\r\n") != null);
+}
+
+test "COMMAND LIST RESP3 - returns set type" {
+    const allocator = std.testing.allocator;
+
+    const result = try cmdCommandList(allocator, null, null, .RESP3);
+    defer allocator.free(result);
+
+    // RESP3: starts with ~ (set type)
+    try std.testing.expect(std.mem.startsWith(u8, result, "~"));
+    // Should include "get" and "set" as bulk strings
+    try std.testing.expect(std.mem.indexOf(u8, result, "get") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "set") != null);
+}
+
+test "COMMAND LIST RESP3 - MODULE filter returns empty set" {
+    const allocator = std.testing.allocator;
+
+    const result = try cmdCommandList(allocator, "MODULE", "any_module", .RESP3);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("~0\r\n", result);
+}
+
+test "COMMAND LIST RESP3 - PATTERN filter returns set" {
+    const allocator = std.testing.allocator;
+
+    const result = try cmdCommandList(allocator, "PATTERN", "z*", .RESP3);
+    defer allocator.free(result);
+
+    // Should be set type (~) containing zadd
+    try std.testing.expect(std.mem.startsWith(u8, result, "~"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "zadd") != null);
 }
