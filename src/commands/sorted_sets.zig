@@ -421,9 +421,10 @@ pub fn cmdZrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             var i: usize = 0;
             var pair_idx: usize = 0;
             while (i < items.len) : (i += 2) {
+                const score_val = parseScore(items[i + 1]) catch 0.0;
                 map_pairs[pair_idx] = MapPair{
                     .key = RespValue{ .bulk_string = items[i] },
-                    .value = RespValue{ .bulk_string = items[i + 1] },
+                    .value = RespValue{ .double = score_val },
                 };
                 pair_idx += 1;
             }
@@ -723,9 +724,10 @@ pub fn cmdZrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args: [
             var pair_idx: usize = 0;
             var i: usize = 0;
             while (i < items.len) : (i += 2) {
+                const score_val = parseScore(items[i + 1]) catch 0.0;
                 map_pairs[pair_idx] = MapPair{
                     .key = RespValue{ .bulk_string = items[i] },
-                    .value = RespValue{ .bulk_string = items[i + 1] },
+                    .value = RespValue{ .double = score_val },
                 };
                 pair_idx += 1;
             }
@@ -1297,25 +1299,15 @@ pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
             allocator.free(ms);
         }
 
-        // RESP3 with WITHSCORES: return as map (member -> score)
+        // RESP3 with WITHSCORES: return as map (member -> score as double)
         if (protocol_version == .RESP3 and with_scores and ms.len > 0) {
             const map_pairs = try allocator.alloc(MapPair, ms.len);
             defer allocator.free(map_pairs);
-            var score_strings = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
-            defer {
-                for (score_strings.items) |s| allocator.free(s);
-                score_strings.deinit(allocator);
-            }
 
             for (ms, 0..) |sm, i| {
-                var score_buf: [64]u8 = undefined;
-                const score_str = formatScore(&score_buf, sm.score);
-                const owned_score = try allocator.dupe(u8, score_str);
-                try score_strings.append(allocator, owned_score);
-
                 map_pairs[i] = MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
-                    .value = RespValue{ .bulk_string = owned_score },
+                    .value = RespValue{ .double = sm.score },
                 };
             }
 
@@ -1435,23 +1427,14 @@ pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
             allocator.free(ms);
         }
 
-        // RESP3: WITHSCORES returns map (member → score)
+        // RESP3: WITHSCORES returns map (member → double score)
         if (with_scores and protocol_version == .RESP3) {
             var pairs = try std.ArrayList(MapPair).initCapacity(allocator, ms.len);
             defer pairs.deinit(allocator);
-            var score_strs = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
-            defer {
-                for (score_strs.items) |s| allocator.free(s);
-                score_strs.deinit(allocator);
-            }
             for (ms) |sm| {
-                var score_buf: [64]u8 = undefined;
-                const score_str = formatScore(&score_buf, sm.score);
-                const owned = try allocator.dupe(u8, score_str);
-                try score_strs.append(allocator, owned);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
-                    .value = RespValue{ .bulk_string = owned },
+                    .value = RespValue{ .double = sm.score },
                 });
             }
             return w.writeMap(pairs.items);
@@ -1546,23 +1529,14 @@ pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
                 allocator.free(ms);
             }
 
-            // RESP3: positive count with WITHSCORES → map (unique members)
+            // RESP3: positive count with WITHSCORES → map (unique members, double scores)
             if (with_scores and count > 0 and protocol_version == .RESP3) {
                 var pairs = try std.ArrayList(MapPair).initCapacity(allocator, ms.len);
                 defer pairs.deinit(allocator);
-                var score_strs = try std.ArrayList([]const u8).initCapacity(allocator, ms.len);
-                defer {
-                    for (score_strs.items) |s| allocator.free(s);
-                    score_strs.deinit(allocator);
-                }
                 for (ms) |sm| {
-                    var score_buf: [64]u8 = undefined;
-                    const score_str = formatScore(&score_buf, sm.score);
-                    const owned = try allocator.dupe(u8, score_str);
-                    try score_strs.append(allocator, owned);
                     try pairs.append(allocator, MapPair{
                         .key = RespValue{ .bulk_string = sm.member },
-                        .value = RespValue{ .bulk_string = owned },
+                        .value = RespValue{ .double = sm.score },
                     });
                 }
                 return w.writeMap(pairs.items);
@@ -3598,15 +3572,13 @@ pub fn cmdZunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     if (with_scores) {
         if (protocol_version == .RESP3) {
-            // Return as RESP3 map: member -> score
+            // Return as RESP3 map: member -> double score
             var pairs = try std.ArrayList(MapPair).initCapacity(allocator, members.len);
             defer pairs.deinit(allocator);
             for (members) |sm| {
-                var score_buf: [32]u8 = undefined;
-                const score_str = formatScore(&score_buf, sm.score);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
-                    .value = RespValue{ .bulk_string = score_str },
+                    .value = RespValue{ .double = sm.score },
                 });
             }
             return w.writeMap(pairs.items);
@@ -3696,15 +3668,13 @@ pub fn cmdZinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     if (with_scores) {
         if (protocol_version == .RESP3) {
-            // Return as RESP3 map: member -> score
+            // Return as RESP3 map: member -> double score
             var pairs = try std.ArrayList(MapPair).initCapacity(allocator, members.len);
             defer pairs.deinit(allocator);
             for (members) |sm| {
-                var score_buf: [32]u8 = undefined;
-                const score_str = formatScore(&score_buf, sm.score);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
-                    .value = RespValue{ .bulk_string = score_str },
+                    .value = RespValue{ .double = sm.score },
                 });
             }
             return w.writeMap(pairs.items);
@@ -3794,15 +3764,13 @@ pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     if (with_scores) {
         if (protocol_version == .RESP3) {
-            // Return as RESP3 map: member -> score
+            // Return as RESP3 map: member -> double score
             var pairs = try std.ArrayList(MapPair).initCapacity(allocator, members.len);
             defer pairs.deinit(allocator);
             for (members) |sm| {
-                var score_buf: [32]u8 = undefined;
-                const score_str = formatScore(&score_buf, sm.score);
                 try pairs.append(allocator, MapPair{
                     .key = RespValue{ .bulk_string = sm.member },
-                    .value = RespValue{ .bulk_string = score_str },
+                    .value = RespValue{ .double = sm.score },
                 });
             }
             return w.writeMap(pairs.items);
