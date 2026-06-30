@@ -40,7 +40,7 @@ test "CLIENT SETNAME - rejects tab character" {
     // Name contains a tab character (0x09 < 0x21)
     try args.append(aa, RespValue{ .bulk_string = "my\tclient" });
 
-    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, &blocking_queue);
+    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Must reject with error
@@ -67,7 +67,7 @@ test "CLIENT SETNAME - rejects newline character" {
     // Name contains newline (0x0A < 0x21)
     try args.append(aa, RespValue{ .bulk_string = "my\nclient" });
 
-    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, &blocking_queue);
+    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -93,7 +93,7 @@ test "CLIENT SETNAME - rejects DEL character (0x7F)" {
     // Name contains DEL (0x7F > 0x7E)
     try args.append(aa, RespValue{ .bulk_string = "my\x7fclient" });
 
-    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, &blocking_queue);
+    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -119,7 +119,7 @@ test "CLIENT SETNAME - accepts printable ASCII including punctuation" {
     // All printable ASCII (hyphen, underscore, alphanumeric)
     try args.append(aa, RespValue{ .bulk_string = "my-client_123" });
 
-    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, &blocking_queue);
+    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -147,7 +147,7 @@ test "CLIENT SETNAME - accepts empty string (resets name)" {
     try args.append(aa, RespValue{ .bulk_string = "SETNAME" });
     try args.append(aa, RespValue{ .bulk_string = "" });
 
-    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, &blocking_queue);
+    const response = try client_cmds.cmdClient(allocator, &registry, client_id, args.items, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Empty string resets the name — should succeed

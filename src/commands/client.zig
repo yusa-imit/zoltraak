@@ -1322,10 +1322,12 @@ fn cmdClientSetname(
 
 /// CLIENT LIST - List all client connections
 /// Syntax: CLIENT LIST [TYPE normal|master|replica|pubsub] [ID id [id ...]]
+/// RESP3: returns verbatim string (=N\r\ntxt:...) instead of bulk string.
 fn cmdClientList(
     allocator: std.mem.Allocator,
     registry: *ClientRegistry,
     args: []const RespValue,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     var filter_type: ?[]const u8 = null;
     var id_filter = std.ArrayList(u64){};
@@ -1413,16 +1415,20 @@ fn cmdClientList(
 
     var w = Writer.init(allocator);
     defer w.deinit();
+    if (protocol_version == .RESP3) {
+        return w.writeVerbatimString("txt", list_output);
+    }
     return w.writeBulkString(list_output);
 }
 
-/// CLIENT command dispatcher
 /// CLIENT INFO - Get current client connection info
+/// RESP3: returns verbatim string (=N\r\ntxt:...) instead of bulk string.
 fn cmdClientInfo(
     allocator: std.mem.Allocator,
     registry: *ClientRegistry,
     client_id: u64,
     args: []const RespValue,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     if (args.len != 1) {
         var w = Writer.init(allocator);
@@ -1489,6 +1495,9 @@ fn cmdClientInfo(
 
     var w = Writer.init(allocator);
     defer w.deinit();
+    if (protocol_version == .RESP3) {
+        return w.writeVerbatimString("txt", result);
+    }
     return w.writeBulkString(result);
 }
 
@@ -2419,6 +2428,7 @@ pub fn cmdClient(
     registry: *ClientRegistry,
     client_id: u64,
     args: []const RespValue,
+    protocol_version: RespProtocol,
     blocking_queue: *@import("../storage/blocking.zig").BlockingQueue,
 ) ![]const u8 {
     if (args.len < 1) {
@@ -2445,9 +2455,9 @@ pub fn cmdClient(
     } else if (std.ascii.eqlIgnoreCase(subcmd, "SETNAME")) {
         return cmdClientSetname(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "LIST")) {
-        return cmdClientList(allocator, registry, args);
+        return cmdClientList(allocator, registry, args, protocol_version);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "INFO")) {
-        return cmdClientInfo(allocator, registry, client_id, args);
+        return cmdClientInfo(allocator, registry, client_id, args, protocol_version);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "KILL")) {
         return cmdClientKill(allocator, registry, client_id, args);
     } else if (std.ascii.eqlIgnoreCase(subcmd, "PAUSE")) {
@@ -2601,7 +2611,7 @@ test "CLIENT ID command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return ":1\r\n"
@@ -2626,7 +2636,7 @@ test "CLIENT GETNAME command - no name set" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "GETNAME" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return null bulk string
@@ -2652,7 +2662,7 @@ test "CLIENT SETNAME command - success" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "my-client" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -2683,7 +2693,7 @@ test "CLIENT SETNAME command - rejects spaces" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "my client" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -2713,7 +2723,7 @@ test "CLIENT LIST command - basic" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should be bulk string containing both clients
@@ -2745,7 +2755,7 @@ test "CLIENT LIST command - with TYPE filter" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "normal" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, 1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, 1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return list with normal clients
@@ -2771,7 +2781,7 @@ test "CLIENT unknown subcommand" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNKNOWN" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -2798,7 +2808,7 @@ test "CLIENT LIST command - invalid TYPE" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "invalid" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, 1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, 1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return error for unknown client type
@@ -2856,7 +2866,7 @@ test "CLIENT INFO command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INFO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return bulk string with client info
@@ -2885,7 +2895,7 @@ test "CLIENT HELP command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "HELP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return array of help items
@@ -2916,7 +2926,7 @@ test "CLIENT KILL command - old format" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "192.168.1.100:9999" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return OK
@@ -2948,7 +2958,7 @@ test "CLIENT KILL command - by ID" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "2" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :1\r\n (killed count)
@@ -2980,7 +2990,7 @@ test "CLIENT KILL command - by ADDR" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "127.0.0.1:12345" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client2, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client2, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :1\r\n
@@ -3010,7 +3020,7 @@ test "CLIENT KILL command - SKIPME YES" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "YES" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :0\r\n (caller skipped)
@@ -3040,7 +3050,7 @@ test "CLIENT KILL command - SKIPME NO" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :1\r\n (caller included)
@@ -3071,7 +3081,7 @@ test "CLIENT KILL command - by TYPE" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return :2\r\n (both clients are normal type)
@@ -3105,7 +3115,7 @@ test "CLIENT KILL command - by MAXAGE" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should kill client older than 1 second
@@ -3137,7 +3147,7 @@ test "CLIENT KILL command - multiple filters" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "2" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should only kill client2 (matches both filters)
@@ -3190,7 +3200,7 @@ test "CLIENT PAUSE command - WRITE mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "WRITE" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3219,7 +3229,7 @@ test "CLIENT PAUSE command - ALL mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ALL" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3247,7 +3257,7 @@ test "CLIENT PAUSE command - default WRITE mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3275,7 +3285,7 @@ test "CLIENT PAUSE command - zero timeout" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "0" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3302,7 +3312,7 @@ test "CLIENT PAUSE command - negative timeout rejected" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "-1" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3332,7 +3342,7 @@ test "CLIENT UNPAUSE command" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNPAUSE" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3379,7 +3389,7 @@ test "CLIENT PAUSE command - invalid mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3404,7 +3414,7 @@ test "CLIENT UNBLOCK command - client not blocked" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" }); // Non-existent client
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return 0 (client not found or not blocked)
@@ -3447,7 +3457,7 @@ test "CLIENT UNBLOCK command - default TIMEOUT mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return 1 (client found and unblock requested)
@@ -3496,7 +3506,7 @@ test "CLIENT UNBLOCK command - ERROR mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ERROR" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return 1 (client found and unblock requested)
@@ -3527,7 +3537,7 @@ test "CLIENT UNBLOCK command - invalid mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return error
@@ -3553,7 +3563,7 @@ test "CLIENT UNBLOCK command - invalid client ID" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "not-a-number" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return error
@@ -3580,7 +3590,7 @@ test "CLIENT NO-EVICT command - enable" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
@@ -3609,7 +3619,7 @@ test "CLIENT NO-EVICT command - disable" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
@@ -3635,7 +3645,7 @@ test "CLIENT NO-EVICT command - get status" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.eql(u8, response, "+on\r\n"));
@@ -3659,7 +3669,7 @@ test "CLIENT REPLY command - ON mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
@@ -3684,7 +3694,7 @@ test "CLIENT REPLY command - OFF mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
@@ -3709,7 +3719,7 @@ test "CLIENT REPLY command - SKIP mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "SKIP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.eql(u8, response, "+OK\r\n"));
@@ -3738,7 +3748,7 @@ test "CLIENT REPLY command - invalid mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3762,7 +3772,7 @@ test "CLIENT NO-TOUCH command - enable" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3790,7 +3800,7 @@ test "CLIENT NO-TOUCH command - disable" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3815,7 +3825,7 @@ test "CLIENT NO-TOUCH command - get status" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+off\r\n", response);
@@ -3839,7 +3849,7 @@ test "CLIENT NO-TOUCH command - invalid argument" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3864,7 +3874,7 @@ test "CLIENT SETINFO command - LIB-NAME" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "redis-py" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3889,7 +3899,7 @@ test "CLIENT SETINFO command - LIB-VER" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "4.5.1" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("+OK\r\n", response);
@@ -3914,7 +3924,7 @@ test "CLIENT SETINFO command - invalid attribute" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "value" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3940,7 +3950,7 @@ test "CLIENT SETINFO command - value with space (rejected)" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "redis py" }); // space not allowed
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3966,7 +3976,7 @@ test "CLIENT SETINFO command - wrong number of arguments" {
     // Missing value
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -3993,7 +4003,7 @@ test "CLIENT TRACKING - enable and disable" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4008,7 +4018,7 @@ test "CLIENT TRACKING - enable and disable" {
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "OFF" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
-    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, .RESP2, &blocking_queue);
     defer allocator.free(response2);
 
     try std.testing.expect(std.mem.startsWith(u8, response2, "+OK"));
@@ -4035,7 +4045,7 @@ test "CLIENT TRACKING - with OPTIN and OPTOUT" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4063,7 +4073,7 @@ test "CLIENT TRACKING - OPTIN and OPTOUT mutually exclusive" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTOUT" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -4095,7 +4105,7 @@ test "CLIENT TRACKING - with PREFIX in BCAST mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "product:" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4121,7 +4131,7 @@ test "CLIENT TRACKINGINFO - basic functionality" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Get tracking info
@@ -4133,7 +4143,7 @@ test "CLIENT TRACKINGINFO - basic functionality" {
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
-    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, .RESP2, &blocking_queue);
     defer allocator.free(response2);
 
     // Should contain flags, redirect, and prefixes
@@ -4163,7 +4173,7 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Get tracking info
@@ -4175,7 +4185,7 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
-    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, .RESP2, &blocking_queue);
     defer allocator.free(response2);
 
     // Should contain "optin" flag
@@ -4200,7 +4210,7 @@ test "CLIENT GETREDIR - returns -1 when tracking disabled" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "GETREDIR" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return -1 (tracking disabled)
@@ -4232,7 +4242,7 @@ test "CLIENT GETREDIR - returns redirect client ID when enabled" {
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = redirect_str });
     const tracking_args = try args_tracking.toOwnedSlice(arena_allocator);
 
-    const tracking_response = try cmdClient(allocator, &registry, client_id, tracking_args, &blocking_queue);
+    const tracking_response = try cmdClient(allocator, &registry, client_id, tracking_args, .RESP2, &blocking_queue);
     defer allocator.free(tracking_response);
 
     // Call GETREDIR
@@ -4244,7 +4254,7 @@ test "CLIENT GETREDIR - returns redirect client ID when enabled" {
     try args.append(arena_allocator2, RespValue{ .bulk_string = "GETREDIR" });
     const args_slice = try args.toOwnedSlice(arena_allocator2);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return redirect_id
@@ -4273,7 +4283,7 @@ test "CLIENT GETREDIR - returns -1 when redirect is 0 (self)" {
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const tracking_args = try args_tracking.toOwnedSlice(arena_allocator);
 
-    const tracking_response = try cmdClient(allocator, &registry, client_id, tracking_args, &blocking_queue);
+    const tracking_response = try cmdClient(allocator, &registry, client_id, tracking_args, .RESP2, &blocking_queue);
     defer allocator.free(tracking_response);
 
     // Call GETREDIR
@@ -4285,7 +4295,7 @@ test "CLIENT GETREDIR - returns -1 when redirect is 0 (self)" {
     try args.append(arena_allocator2, RespValue{ .bulk_string = "GETREDIR" });
     const args_slice = try args.toOwnedSlice(arena_allocator2);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should return -1 (redirect is 0 = self)
@@ -4312,7 +4322,7 @@ test "CLIENT CACHING - YES and NO" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "YES" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4327,7 +4337,7 @@ test "CLIENT CACHING - YES and NO" {
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "NO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
-    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, &blocking_queue);
+    const response2 = try cmdClient(allocator, &registry, client_id, args_slice2, .RESP2, &blocking_queue);
     defer allocator.free(response2);
 
     try std.testing.expect(std.mem.startsWith(u8, response2, "+OK"));
@@ -4353,7 +4363,7 @@ test "CLIENT CACHING - invalid argument" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -4382,7 +4392,7 @@ test "CLIENT TRACKING - invalid redirect client" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -4413,7 +4423,7 @@ test "CLIENT TRACKING - valid redirect to another client" {
     try args.append(arena_allocator, RespValue{ .bulk_string = redirect_str });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4440,7 +4450,7 @@ test "CLIENT TRACKING - with NOLOOP flag" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NOLOOP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4465,7 +4475,7 @@ test "CLIENT TRACKING - missing ON/OFF argument" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "-ERR"));
@@ -4496,7 +4506,7 @@ test "CLIENT TRACKING - combination BCAST NOLOOP PREFIX" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "user:" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4524,7 +4534,7 @@ test "CLIENT TRACKING - OPTIN with NOLOOP" {
     try args.append(arena_allocator, RespValue{ .bulk_string = "NOLOOP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
@@ -4728,7 +4738,7 @@ test "CLIENT LIST - includes resp field" {
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "resp=3") != null);
@@ -4754,7 +4764,7 @@ test "CLIENT LIST - includes user and library fields" {
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "library-name=redis-py") != null);
@@ -4780,7 +4790,7 @@ test "CLIENT INFO - includes library fields after SETINFO" {
     try set_args.append(arena.allocator(), RespValue{ .bulk_string = "LIB-NAME" });
     try set_args.append(arena.allocator(), RespValue{ .bulk_string = "ioredis" });
     const set_slice = try set_args.toOwnedSlice(arena.allocator());
-    const set_resp = try cmdClient(allocator, &registry, client_id, set_slice, &blocking_queue);
+    const set_resp = try cmdClient(allocator, &registry, client_id, set_slice, .RESP2, &blocking_queue);
     defer allocator.free(set_resp);
 
     // Get CLIENT INFO
@@ -4788,7 +4798,7 @@ test "CLIENT INFO - includes library fields after SETINFO" {
     try info_args.append(arena.allocator(), RespValue{ .bulk_string = "INFO" });
     const info_slice = try info_args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client_id, info_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, info_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "library-name=ioredis") != null);
@@ -4812,7 +4822,7 @@ test "CLIENT LIST - redir=-1 when tracking disabled" {
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "redir=-1") != null);
@@ -4845,7 +4855,7 @@ test "CLIENT LIST ID filter - returns only specified clients" {
     try args.append(arena.allocator(), RespValue{ .bulk_string = id2_str });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client1, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     // Should include client1 and client2 but NOT client3
@@ -4870,7 +4880,7 @@ test "CLIENT LIST - includes watch=0 and type=normal fields (Redis 7.x compat)" 
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "watch=0") != null);
@@ -4893,7 +4903,7 @@ test "CLIENT INFO - includes watch=0 and type=normal fields (Redis 7.x compat)" 
     try args.append(arena.allocator(), RespValue{ .bulk_string = "INFO" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
-    const response = try cmdClient(allocator, &registry, client_id, args_slice, &blocking_queue);
+    const response = try cmdClient(allocator, &registry, client_id, args_slice, .RESP2, &blocking_queue);
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "watch=0") != null);
