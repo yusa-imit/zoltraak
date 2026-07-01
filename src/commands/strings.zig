@@ -1379,9 +1379,9 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "XACK")) {
             break :blk try streams_adv.cmdXack(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XCLAIM")) {
-            break :blk try streams_adv.cmdXclaim(allocator, storage, array);
+            break :blk try streams_adv.cmdXclaim(allocator, storage, array, getClientProtocol(client_registry, client_id));
         } else if (std.mem.eql(u8, cmd_upper, "XAUTOCLAIM")) {
-            break :blk try streams_adv.cmdXautoclaim(allocator, storage, array);
+            break :blk try streams_adv.cmdXautoclaim(allocator, storage, array, getClientProtocol(client_registry, client_id));
         } else if (std.mem.eql(u8, cmd_upper, "XACKDEL")) {
             break :blk try streams_adv.cmdXackdel(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "XDELEX")) {
@@ -1530,13 +1530,14 @@ pub fn executeCommand(
                 .start_time_seconds = storage.server_start_time,
             };
 
+            const info_proto = getClientProtocol(client_registry, client_id);
             if (repl) |r| {
-                break :blk try info_cmds.cmdInfo(allocator, storage, r, server_config, server_stats, str_args, databases, num_databases);
+                break :blk try info_cmds.cmdInfo(allocator, storage, r, server_config, server_stats, str_args, databases, num_databases, info_proto);
             }
             // Fallback without replication
             var fallback_repl = try ReplicationState.initPrimary(allocator);
             defer fallback_repl.deinit();
-            break :blk try info_cmds.cmdInfo(allocator, storage, &fallback_repl, server_config, server_stats, str_args, databases, num_databases);
+            break :blk try info_cmds.cmdInfo(allocator, storage, &fallback_repl, server_config, server_stats, str_args, databases, num_databases, info_proto);
         }
         // Client connection commands
         else if (std.mem.eql(u8, cmd_upper, "CLIENT")) {

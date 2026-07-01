@@ -997,7 +997,7 @@ test "XACK - acknowledges messages" {
 
 /// XCLAIM key group consumer min-idle-time ID [ID ...] [IDLE ms] [TIME ms-unix-time]
 ///        [RETRYCOUNT count] [FORCE] [JUSTID]
-pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1136,12 +1136,18 @@ pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const 
             defer allocator.free(id_str);
             try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
         } else {
-            // Return [ID, [field, value, ...]]
+            // Return [ID, field-value-map-or-array]
             try result_writer.writeAll("*2\r\n");
             const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ entry.id.ms, entry.id.seq });
             defer allocator.free(id_str);
             try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
-            try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+            // RESP3: fields as map (%N), RESP2: fields as flat array (*N)
+            const num_pairs = entry.fields.items.len / 2;
+            if (protocol_version == .RESP3) {
+                try result_writer.print("%{d}\r\n", .{num_pairs});
+            } else {
+                try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+            }
             for (entry.fields.items) |field| {
                 try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
             }
@@ -1152,7 +1158,7 @@ pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 }
 
 /// XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]
-pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -1274,7 +1280,13 @@ pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []co
                 const id_str = try std.fmt.allocPrint(allocator, "{d}-{d}", .{ entry.id.ms, entry.id.seq });
                 defer allocator.free(id_str);
                 try result_writer.print("${d}\r\n{s}\r\n", .{ id_str.len, id_str });
-                try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+                // RESP3: fields as map (%N pairs), RESP2: flat array (*N items)
+                const num_pairs = entry.fields.items.len / 2;
+                if (protocol_version == .RESP3) {
+                    try result_writer.print("%{d}\r\n", .{num_pairs});
+                } else {
+                    try result_writer.print("*{d}\r\n", .{entry.fields.items.len});
+                }
                 for (entry.fields.items) |field| {
                     try result_writer.print("${d}\r\n{s}\r\n", .{ field.len, field });
                 }
@@ -1347,7 +1359,7 @@ test "XCLAIM basic functionality" {
         RespValue{ .bulk_string = "0" },
         RespValue{ .bulk_string = "1000-0" },
     };
-    const xclaim_result = try cmdXclaim(allocator, &storage, &xclaim_args);
+    const xclaim_result = try cmdXclaim(allocator, &storage, &xclaim_args, .RESP2);
     defer allocator.free(xclaim_result);
 
     try std.testing.expect(std.mem.indexOf(u8, xclaim_result, "1000-0") != null);
@@ -1406,7 +1418,7 @@ test "XAUTOCLAIM basic functionality" {
         RespValue{ .bulk_string = "0" },
         RespValue{ .bulk_string = "0-0" },
     };
-    const xautoclaim_result = try cmdXautoclaim(allocator, &storage, &xautoclaim_args);
+    const xautoclaim_result = try cmdXautoclaim(allocator, &storage, &xautoclaim_args, .RESP2);
     defer allocator.free(xautoclaim_result);
 
     try std.testing.expect(std.mem.indexOf(u8, xautoclaim_result, "1000-0") != null);
@@ -1454,7 +1466,7 @@ test "XAUTOCLAIM returns 3-element array with empty deleted_ids when none delete
         RespValue{ .bulk_string = "g" },          RespValue{ .bulk_string = "c2" },
         RespValue{ .bulk_string = "0" },          RespValue{ .bulk_string = "0-0" },
     };
-    const xac_r = try cmdXautoclaim(allocator, &storage, &xac_args);
+    const xac_r = try cmdXautoclaim(allocator, &storage, &xac_args, .RESP2);
     defer allocator.free(xac_r);
 
     // Should start with *3 (3-element array)
@@ -1517,7 +1529,7 @@ test "XAUTOCLAIM deleted_ids contains XDEL'd pending entries" {
         RespValue{ .bulk_string = "g" },          RespValue{ .bulk_string = "c2" },
         RespValue{ .bulk_string = "0" },          RespValue{ .bulk_string = "0-0" },
     };
-    const xac_r = try cmdXautoclaim(allocator, &storage, &xac_args);
+    const xac_r = try cmdXautoclaim(allocator, &storage, &xac_args, .RESP2);
     defer allocator.free(xac_r);
 
     // 3-element response
