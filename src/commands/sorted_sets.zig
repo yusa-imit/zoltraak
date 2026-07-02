@@ -810,7 +810,7 @@ pub fn cmdZcard(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// Returns rank (0-based) of member in sorted set (ascending order)
 /// Returns null bulk string if member not found
 /// If WITHSCORE is given, returns two-element array [rank, score]
-pub fn cmdZrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -850,15 +850,23 @@ pub fn cmdZrank(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     if (with_score) {
         const score = storage.zrankScore(key, member) orelse return w.writeNull();
-        var score_buf: [64]u8 = undefined;
-        const score_str = formatScore(&score_buf, score);
-        const owned_score = try allocator.dupe(u8, score_str);
-        defer allocator.free(owned_score);
-        const items = [_]RespValue{
-            .{ .integer = @intCast(rank.?) },
-            .{ .bulk_string = owned_score },
-        };
-        return w.writeArray(&items);
+        if (protocol_version == .RESP3) {
+            const items = [_]RespValue{
+                .{ .integer = @intCast(rank.?) },
+                .{ .double = score },
+            };
+            return w.writeArray(&items);
+        } else {
+            var score_buf: [64]u8 = undefined;
+            const score_str = formatScore(&score_buf, score);
+            const owned_score = try allocator.dupe(u8, score_str);
+            defer allocator.free(owned_score);
+            const items = [_]RespValue{
+                .{ .integer = @intCast(rank.?) },
+                .{ .bulk_string = owned_score },
+            };
+            return w.writeArray(&items);
+        }
     }
 
     return w.writeInteger(@intCast(rank.?));
@@ -867,7 +875,7 @@ pub fn cmdZrank(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// ZREVRANK key member [WITHSCORE]
 /// Returns rank (0-based) of member in sorted set (descending order)
 /// Returns null bulk string if member not found
-pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
 
@@ -907,15 +915,23 @@ pub fn cmdZrevrank(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     if (with_score) {
         const score = storage.zrankScore(key, member) orelse return w.writeNull();
-        var score_buf: [64]u8 = undefined;
-        const score_str = formatScore(&score_buf, score);
-        const owned_score = try allocator.dupe(u8, score_str);
-        defer allocator.free(owned_score);
-        const items = [_]RespValue{
-            .{ .integer = @intCast(rank.?) },
-            .{ .bulk_string = owned_score },
-        };
-        return w.writeArray(&items);
+        if (protocol_version == .RESP3) {
+            const items = [_]RespValue{
+                .{ .integer = @intCast(rank.?) },
+                .{ .double = score },
+            };
+            return w.writeArray(&items);
+        } else {
+            var score_buf: [64]u8 = undefined;
+            const score_str = formatScore(&score_buf, score);
+            const owned_score = try allocator.dupe(u8, score_str);
+            defer allocator.free(owned_score);
+            const items = [_]RespValue{
+                .{ .integer = @intCast(rank.?) },
+                .{ .bulk_string = owned_score },
+            };
+            return w.writeArray(&items);
+        }
     }
 
     return w.writeInteger(@intCast(rank.?));

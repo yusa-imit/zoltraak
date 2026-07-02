@@ -1200,9 +1200,11 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "ZCARD")) {
             break :blk try sorted_sets.cmdZcard(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "ZRANK")) {
-            break :blk try sorted_sets.cmdZrank(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrank(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZREVRANK")) {
-            break :blk try sorted_sets.cmdZrevrank(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try sorted_sets.cmdZrevrank(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "ZINCRBY")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             const protocol_version = getClientProtocol(client_registry, client_id);
