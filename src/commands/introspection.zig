@@ -3,6 +3,8 @@ const Storage = @import("../storage/memory.zig").Storage;
 const Writer = @import("../protocol/writer.zig").Writer;
 const LatencyMonitor = @import("../storage/latency.zig").LatencyMonitor;
 const EventType = @import("../storage/latency.zig").EventType;
+const client_mod = @import("./client.zig");
+const RespProtocol = client_mod.RespProtocol;
 
 /// MEMORY STATS - Return memory usage statistics as flat RESP array (Redis-compatible)
 /// Redis returns alternating bulk string keys and integer/bulk-string values.
@@ -374,7 +376,7 @@ pub fn cmdMemory(
 }
 
 /// SLOWLOG GET - Get slow log entries
-pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?usize) ![]const u8 {
+pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?usize, protocol_version: RespProtocol) ![]const u8 {
     const entries = storage.slowlog.getEntries(count);
 
     var buf = std.ArrayList(u8){};
@@ -391,18 +393,6 @@ pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?us
         i -= 1;
         const entry = entries[i];
 
-        // Each entry is an array: [id, timestamp, duration_us, command_array, client_addr, client_name]
-        try w.writeAll("*6\r\n");
-
-        // ID
-        try w.print(":{d}\r\n", .{entry.id});
-
-        // Timestamp (Unix seconds)
-        try w.print(":{d}\r\n", .{@divTrunc(entry.timestamp, 1_000_000)});
-
-        // Duration (microseconds)
-        try w.print(":{d}\r\n", .{entry.duration_us});
-
         // Command (as array of strings) - split by spaces
         var cmd_parts = std.ArrayList([]const u8){};
         defer cmd_parts.deinit(allocator);
@@ -414,16 +404,31 @@ pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?us
             }
         }
 
-        try w.print("*{d}\r\n", .{cmd_parts.items.len});
-        for (cmd_parts.items) |part| {
-            try w.print("${d}\r\n{s}\r\n", .{ part.len, part });
+        if (protocol_version == .RESP3) {
+            // RESP3: each entry is a map with 6 named fields
+            try w.writeAll("%6\r\n");
+            try w.print("$2\r\nid\r\n:{d}\r\n", .{entry.id});
+            try w.print("$9\r\ntimestamp\r\n:{d}\r\n", .{@divTrunc(entry.timestamp, 1_000_000)});
+            try w.print("$8\r\nduration\r\n:{d}\r\n", .{entry.duration_us});
+            try w.print("$4\r\nargs\r\n*{d}\r\n", .{cmd_parts.items.len});
+            for (cmd_parts.items) |part| {
+                try w.print("${d}\r\n{s}\r\n", .{ part.len, part });
+            }
+            try w.print("$11\r\nclient-addr\r\n${d}\r\n{s}\r\n", .{ entry.client_addr.len, entry.client_addr });
+            try w.print("$11\r\nclient-name\r\n${d}\r\n{s}\r\n", .{ entry.client_name.len, entry.client_name });
+        } else {
+            // RESP2: each entry is a 6-element array
+            try w.writeAll("*6\r\n");
+            try w.print(":{d}\r\n", .{entry.id});
+            try w.print(":{d}\r\n", .{@divTrunc(entry.timestamp, 1_000_000)});
+            try w.print(":{d}\r\n", .{entry.duration_us});
+            try w.print("*{d}\r\n", .{cmd_parts.items.len});
+            for (cmd_parts.items) |part| {
+                try w.print("${d}\r\n{s}\r\n", .{ part.len, part });
+            }
+            try w.print("${d}\r\n{s}\r\n", .{ entry.client_addr.len, entry.client_addr });
+            try w.print("${d}\r\n{s}\r\n", .{ entry.client_name.len, entry.client_name });
         }
-
-        // Client IP:port
-        try w.print("${d}\r\n{s}\r\n", .{ entry.client_addr.len, entry.client_addr });
-
-        // Client name
-        try w.print("${d}\r\n{s}\r\n", .{ entry.client_name.len, entry.client_name });
     }
 
     return buf.toOwnedSlice(allocator);
@@ -473,6 +478,7 @@ pub fn cmdSlowlog(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const []const u8,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     if (args.len < 1) {
         return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'slowlog' command\r\n", .{});
@@ -487,7 +493,7 @@ pub fn cmdSlowlog(
                 return std.fmt.allocPrint(allocator, "-ERR value is not an integer or out of range\r\n", .{});
             };
         }
-        return cmdSlowlogGet(allocator, storage, count);
+        return cmdSlowlogGet(allocator, storage, count, protocol_version);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "len")) {
         return cmdSlowlogLen(allocator, storage);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "reset")) {
@@ -588,7 +594,7 @@ test "SLOWLOG GET empty" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdSlowlogGet(allocator, storage, null);
+    const result = try cmdSlowlogGet(allocator, storage, null, .RESP2);
     defer allocator.free(result);
     try std.testing.expectEqualStrings("*0\r\n", result);
 }
@@ -628,13 +634,13 @@ test "SLOWLOG integration" {
     try std.testing.expectEqualStrings(":2\r\n", len_result);
 
     // Test GET
-    const get_result = try cmdSlowlogGet(allocator, storage, null);
+    const get_result = try cmdSlowlogGet(allocator, storage, null, .RESP2);
     defer allocator.free(get_result);
     try std.testing.expect(std.mem.indexOf(u8, get_result, "GET key1") != null);
     try std.testing.expect(std.mem.indexOf(u8, get_result, "SET key2 value2") != null);
 
     // Test GET with count
-    const get_one = try cmdSlowlogGet(allocator, storage, 1);
+    const get_one = try cmdSlowlogGet(allocator, storage, 1, .RESP2);
     defer allocator.free(get_one);
     try std.testing.expect(std.mem.indexOf(u8, get_one, "*1\r\n") != null);
 
@@ -1264,4 +1270,79 @@ test "cmdMemory dispatcher" {
     const help_result = try cmdMemory(std.testing.allocator, &storage, &help_args);
     defer std.testing.allocator.free(help_result);
     try std.testing.expect(std.mem.indexOf(u8, help_result, "MEMORY STATS") != null);
+}
+
+test "SLOWLOG GET RESP2 returns flat arrays" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.slowlog.logCommand(15000, "GET mykey", "127.0.0.1:12345", "myapp");
+
+    const result = try cmdSlowlogGet(allocator, storage, null, .RESP2);
+    defer allocator.free(result);
+
+    // RESP2: outer array with 1 entry, each entry is *6 array
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "*6\r\n") != null);
+    // Should NOT contain map marker
+    try std.testing.expect(std.mem.indexOf(u8, result, "%6\r\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "GET") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "mykey") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "127.0.0.1:12345") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "myapp") != null);
+}
+
+test "SLOWLOG GET RESP3 returns maps" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.slowlog.logCommand(20000, "SET foo bar", "127.0.0.1:9999", "client1");
+
+    const result = try cmdSlowlogGet(allocator, storage, null, .RESP3);
+    defer allocator.free(result);
+
+    // RESP3: outer array with 1 entry, each entry is %6 map
+    try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "%6\r\n") != null);
+    // Should NOT contain RESP2 array-per-entry marker
+    try std.testing.expect(std.mem.indexOf(u8, result, "*6\r\n") == null);
+    // Map keys present
+    try std.testing.expect(std.mem.indexOf(u8, result, "id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "timestamp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "duration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "args") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "client-addr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "client-name") != null);
+    // Values present
+    try std.testing.expect(std.mem.indexOf(u8, result, "SET") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "127.0.0.1:9999") != null);
+}
+
+test "SLOWLOG GET RESP3 empty returns empty outer array" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdSlowlogGet(allocator, storage, null, .RESP3);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("*0\r\n", result);
+}
+
+test "SLOWLOG GET RESP3 duration field reflects microseconds" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.slowlog.logCommand(12345, "HSET myhash f1 v1", "127.0.0.1:1111", "");
+
+    const result = try cmdSlowlogGet(allocator, storage, null, .RESP3);
+    defer allocator.free(result);
+
+    // Duration 12345 µs should appear as integer after "duration" key
+    try std.testing.expect(std.mem.indexOf(u8, result, "duration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, ":12345\r\n") != null);
 }

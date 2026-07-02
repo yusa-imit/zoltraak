@@ -1694,7 +1694,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "SLOWLOG")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
-            break :blk try introspection_cmds.cmdSlowlog(allocator, storage, args);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try introspection_cmds.cmdSlowlog(allocator, storage, args, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "LATENCY")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
