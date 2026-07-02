@@ -1463,6 +1463,25 @@ pub fn build(b: *std.Build) void {
     const run_iter394_tests = b.addRunArtifact(iter394_tests);
     test_step.dependOn(&run_iter394_tests.step);
 
+    // Iteration 395: RESP3 double type for GEOPOS + sailor v2.73.0
+    const iter395_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter395.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter395_tests.linkSystemLibrary("luajit-5.1");
+    iter395_tests.linkLibC();
+    iter395_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter395_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter395_tests = b.addRunArtifact(iter395_tests);
+    test_step.dependOn(&run_iter395_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -1648,7 +1648,8 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "GEOADD")) {
             break :blk try geo_cmds.cmdGeoadd(allocator, storage, array);
         } else if (std.mem.eql(u8, cmd_upper, "GEOPOS")) {
-            break :blk try geo_cmds.cmdGeopos(allocator, storage, array);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try geo_cmds.cmdGeopos(allocator, storage, array, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "GEODIST")) {
             const protocol_version = getClientProtocol(client_registry, client_id);
             break :blk try geo_cmds.cmdGeodist(allocator, storage, array, protocol_version);

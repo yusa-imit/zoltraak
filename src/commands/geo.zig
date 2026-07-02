@@ -265,7 +265,9 @@ pub fn cmdGeoadd(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 }
 
 /// GEOPOS key member [member ...]
-pub fn cmdGeopos(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
+/// RESP3: coordinates returned as native double type (,val\r\n); missing members as null (_\r\n).
+/// RESP2: coordinates as bulk strings; missing members as null array (*-1\r\n).
+pub fn cmdGeopos(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue, protocol_version: RespProtocol) ![]const u8 {
     if (args.len < 2) {
         var w = Writer.init(allocator);
         defer w.deinit();
@@ -308,13 +310,20 @@ pub fn cmdGeopos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
             var lon_buf: [64]u8 = undefined;
             const lon_str = try std.fmt.bufPrint(&lon_buf, "{d:.6}", .{coords.lon});
-            try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ lon_str.len, lon_str });
-
             var lat_buf: [64]u8 = undefined;
             const lat_str = try std.fmt.bufPrint(&lat_buf, "{d:.6}", .{coords.lat});
-            try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n", .{ lat_str.len, lat_str });
+
+            if (protocol_version == .RESP3) {
+                try std.fmt.format(buf.writer(allocator), ",{s}\r\n,{s}\r\n", .{ lon_str, lat_str });
+            } else {
+                try std.fmt.format(buf.writer(allocator), "${d}\r\n{s}\r\n${d}\r\n{s}\r\n", .{ lon_str.len, lon_str, lat_str.len, lat_str });
+            }
         } else {
-            try buf.appendSlice(allocator, "*-1\r\n");
+            if (protocol_version == .RESP3) {
+                try buf.appendSlice(allocator, "_\r\n");
+            } else {
+                try buf.appendSlice(allocator, "*-1\r\n");
+            }
         }
     }
 
