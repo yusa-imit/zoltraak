@@ -1444,6 +1444,25 @@ pub fn build(b: *std.Build) void {
     const run_iter393_tests = b.addRunArtifact(iter393_tests);
     test_step.dependOn(&run_iter393_tests.step);
 
+    // Iteration 394: RESP3 map/set types for FUNCTION LIST and FUNCTION STATS
+    const iter394_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter394.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
+        }),
+    });
+    iter394_tests.linkSystemLibrary("luajit-5.1");
+    iter394_tests.linkLibC();
+    iter394_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter394_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter394_tests = b.addRunArtifact(iter394_tests);
+    test_step.dependOn(&run_iter394_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

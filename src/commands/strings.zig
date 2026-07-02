@@ -1807,10 +1807,8 @@ pub fn executeCommand(
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "LIST")) {
-                const result = try function_cmds.cmdFunctionList(allocator, storage, args_func);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
+                const protocol_version = getClientProtocol(client_registry, client_id);
+                break :blk try function_cmds.cmdFunctionList(allocator, storage, args_func, protocol_version);
             } else if (std.mem.eql(u8, subcmd_upper, "DELETE")) {
                 const result = try function_cmds.cmdFunctionDelete(allocator, storage, args_func);
                 var w = Writer.init(allocator);
@@ -1827,10 +1825,8 @@ pub fn executeCommand(
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, subcmd_upper, "STATS")) {
-                const result = try function_cmds.cmdFunctionStats(allocator, storage, args_func);
-                var w = Writer.init(allocator);
-                defer w.deinit();
-                break :blk try w.writeRespValue(result);
+                const protocol_version = getClientProtocol(client_registry, client_id);
+                break :blk try function_cmds.cmdFunctionStats(allocator, storage, args_func, protocol_version);
             } else if (std.mem.eql(u8, subcmd_upper, "KILL")) {
                 const result = try function_cmds.cmdFunctionKill(allocator, storage, args_func);
                 var w = Writer.init(allocator);

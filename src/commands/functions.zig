@@ -10,6 +10,7 @@ const PubSub = @import("../storage/pubsub.zig").PubSub;
 const TxState = @import("../commands/transactions.zig").TxState;
 const ReplicationState = @import("../storage/replication.zig").ReplicationState;
 const ClientRegistry = @import("../commands/client.zig").ClientRegistry;
+const RespProtocol = @import("../commands/client.zig").RespProtocol;
 
 /// FUNCTION LOAD [REPLACE] <code>
 /// Register a Lua function library
@@ -370,22 +371,33 @@ fn deinitRespValue(value: *const RespValue, allocator: std.mem.Allocator) void {
     }
 }
 
+/// Write a bulk string to a buffer (helper for RESP building)
+fn appendBulkString(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
+    try std.fmt.format(buf.writer(alloc), "${d}\r\n", .{s.len});
+    try buf.appendSlice(alloc, s);
+    try buf.appendSlice(alloc, "\r\n");
+}
+
 /// FUNCTION LIST [LIBRARYNAME <pattern>] [WITHCODE]
-/// List all function libraries
+/// List all function libraries.
+/// RESP3: each library entry is a map; each function sub-entry is a map; flags is a set.
+/// RESP2: each library entry is a flat array of key-value pairs (unchanged).
 pub fn cmdFunctionList(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: [][]const u8,
-) !RespValue {
+    protocol_version: RespProtocol,
+) ![]const u8 {
     var library_pattern: ?[]const u8 = null;
     var with_code = false;
 
-    // Parse optional arguments
     var i: usize = 2;
     while (i < args.len) {
         if (std.ascii.eqlIgnoreCase(args[i], "LIBRARYNAME")) {
             if (i + 1 >= args.len) {
-                return RespValue{ .error_string = try allocator.dupe(u8, "ERR LIBRARYNAME requires a pattern argument") };
+                var w = @import("../protocol/writer.zig").Writer.init(allocator);
+                defer w.deinit();
+                return w.writeError("ERR LIBRARYNAME requires a pattern argument");
             }
             library_pattern = args[i + 1];
             i += 2;
@@ -393,100 +405,105 @@ pub fn cmdFunctionList(
             with_code = true;
             i += 1;
         } else {
-            const err_msg = try std.fmt.allocPrint(allocator, "ERR unknown FUNCTION LIST option: {s}", .{args[i]});
-            return RespValue{ .error_string = err_msg };
+            var w = @import("../protocol/writer.zig").Writer.init(allocator);
+            defer w.deinit();
+            var err_buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&err_buf, "ERR unknown FUNCTION LIST option: {s}", .{args[i]}) catch "ERR unknown option";
+            return w.writeError(msg);
         }
     }
+
+    const resp3 = protocol_version == .RESP3;
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
-    // Build response array (one entry per library)
-    var libraries_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-    errdefer {
-        for (libraries_array.items) |*item| {
-            deinitRespValue(item, allocator);
+    // First pass: count matching libraries
+    var lib_count: usize = 0;
+    {
+        var it = storage.functions.libraries.iterator();
+        while (it.next()) |entry| {
+            if (library_pattern) |pat| {
+                if (!std.mem.eql(u8, pat, entry.value_ptr.name) and !std.mem.eql(u8, pat, "*")) continue;
+            }
+            lib_count += 1;
         }
-        libraries_array.deinit(allocator);
     }
+
+    var buf = std.ArrayList(u8){ .items = &[_]u8{}, .capacity = 0 };
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    // Outer array: one entry per library
+    try w.print("*{d}\r\n", .{lib_count});
 
     var lib_iter = storage.functions.libraries.iterator();
     while (lib_iter.next()) |lib_entry| {
         const lib = lib_entry.value_ptr;
 
-        // Filter by library name pattern if specified
-        if (library_pattern) |pattern| {
-            // Simple glob matching (exact or wildcard)
-            if (!std.mem.eql(u8, pattern, lib.name) and !std.mem.eql(u8, pattern, "*")) {
-                continue;
-            }
+        if (library_pattern) |pat| {
+            if (!std.mem.eql(u8, pat, lib.name) and !std.mem.eql(u8, pat, "*")) continue;
         }
 
-        // Build library entry (flat array of key-value pairs)
-        var lib_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-        errdefer {
-            for (lib_array.items) |*item| {
-                deinitRespValue(item, allocator);
-            }
-            lib_array.deinit(allocator);
+        // Library entry header: map or flat array
+        if (resp3) {
+            // %3 or %4 (with WITHCODE)
+            const nfields: usize = if (with_code) 4 else 3;
+            try w.print("%{d}\r\n", .{nfields});
+        } else {
+            // *8 or *10 (flat array of key-value pairs)
+            const nitems: usize = if (with_code) 10 else 8;
+            try w.print("*{d}\r\n", .{nitems});
         }
 
-        // library_name field
-        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "library_name") });
-        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, lib.name) });
+        // library_name
+        try appendBulkString(&buf, allocator, "library_name");
+        try appendBulkString(&buf, allocator, lib.name);
 
-        // engine field
-        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "engine") });
-        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, lib.engine) });
+        // engine
+        try appendBulkString(&buf, allocator, "engine");
+        try appendBulkString(&buf, allocator, lib.engine);
 
-        // functions field (nested array of function metadata)
-        try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "functions") });
-        var funcs_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-        errdefer {
-            for (funcs_array.items) |*item| {
-                deinitRespValue(item, allocator);
-            }
-            funcs_array.deinit(allocator);
-        }
+        // functions
+        try appendBulkString(&buf, allocator, "functions");
+        const func_count = lib.functions.count();
+        try w.print("*{d}\r\n", .{func_count});
 
         var func_iter = lib.functions.iterator();
         while (func_iter.next()) |func_entry| {
             const func = func_entry.value_ptr;
 
-            // Build function metadata (flat array)
-            var func_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-            errdefer {
-                for (func_array.items) |*item| {
-                    deinitRespValue(item, allocator);
-                }
-                func_array.deinit(allocator);
+            if (resp3) {
+                // %3 map per function: name, description, flags
+                try w.print("%3\r\n", .{});
+            } else {
+                // *8 flat array: name, <val>, description, <val>, flags, <val>
+                try w.print("*8\r\n", .{});
             }
 
-            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
-            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, func.name) });
+            try appendBulkString(&buf, allocator, "name");
+            try appendBulkString(&buf, allocator, func.name);
 
-            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "description") });
-            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, func.description) });
+            try appendBulkString(&buf, allocator, "description");
+            try appendBulkString(&buf, allocator, func.description);
 
-            try func_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "flags") });
-            var flags_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-            // No flags yet, return empty array
-            try func_array.append(allocator, RespValue{ .array = try flags_array.toOwnedSlice(allocator) });
-
-            try funcs_array.append(allocator, RespValue{ .array = try func_array.toOwnedSlice(allocator) });
+            try appendBulkString(&buf, allocator, "flags");
+            // flags: RESP3 set (~0), RESP2 array (*0)
+            if (resp3) {
+                try buf.appendSlice(allocator, "~0\r\n");
+            } else {
+                try buf.appendSlice(allocator, "*0\r\n");
+            }
         }
-        try lib_array.append(allocator,RespValue{ .array = try funcs_array.toOwnedSlice(allocator) });
 
-        // library_code field (optional, only if WITHCODE)
+        // library_code (WITHCODE only)
         if (with_code) {
-            try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "library_code") });
-            try lib_array.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, lib.code) });
+            try appendBulkString(&buf, allocator, "library_code");
+            try appendBulkString(&buf, allocator, lib.code);
         }
-
-        try libraries_array.append(allocator, RespValue{ .array = try lib_array.toOwnedSlice(allocator) });
     }
 
-    return RespValue{ .array = try libraries_array.toOwnedSlice(allocator) };
+    return buf.toOwnedSlice(allocator);
 }
 
 /// FUNCTION DUMP
@@ -553,96 +570,95 @@ pub fn cmdFunctionRestore(
 }
 
 /// FUNCTION STATS
-/// Return execution statistics for functions
+/// Return execution statistics for functions.
+/// RESP3: returns a map with running_script (false or map) and engines (map of maps).
+/// RESP2: returns a flat array of key-value pairs (unchanged).
 pub fn cmdFunctionStats(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: [][]const u8,
-) !RespValue {
+    protocol_version: RespProtocol,
+) ![]const u8 {
+    var w = @import("../protocol/writer.zig").Writer.init(allocator);
+    defer w.deinit();
+
     if (args.len != 2) {
-        return RespValue{ .error_string = try allocator.dupe(u8, "ERR wrong number of arguments for 'function stats' command") };
+        return w.writeError("ERR wrong number of arguments for 'function stats' command");
     }
+
+    const resp3 = protocol_version == .RESP3;
 
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
-    // Build RESP map/array
-    var top_level = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-    errdefer {
-        for (top_level.items) |*item| {
-            deinitRespValue(item, allocator);
-        }
-        top_level.deinit(allocator);
-    }
+    var buf = std.ArrayList(u8){ .items = &[_]u8{}, .capacity = 0 };
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
-    // Add "running_script" key
-    try top_level.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "running_script") });
-
-    // Add running_script value (null or map)
-    if (storage.functions.getExecutionStats()) |stats| {
-        // Build running_script map
-        var running_map = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-        errdefer {
-            for (running_map.items) |*item| {
-                deinitRespValue(item, allocator);
-            }
-            running_map.deinit(allocator);
-        }
-
-        // name field
-        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
-        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, stats.function_name) });
-
-        // command field (array)
-        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "command") });
-        var cmd_array = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-        for (stats.command_args) |arg| {
-            try cmd_array.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, arg) });
-        }
-        try running_map.append(allocator, RespValue{ .array = try cmd_array.toOwnedSlice(allocator) });
-
-        // duration_ms field
-        try running_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "duration_ms") });
-        try running_map.append(allocator, RespValue{ .integer = stats.duration_ms });
-
-        try top_level.append(allocator,RespValue{ .array = try running_map.toOwnedSlice(allocator) });
+    // Outer: RESP3 map (%2), RESP2 flat array (*4)
+    if (resp3) {
+        try writer.writeAll("%2\r\n");
     } else {
-        // No function running
-        try top_level.append(allocator,RespValue{ .null_bulk_string = {} });
+        try writer.writeAll("*4\r\n");
     }
 
-    // Add "engines" key
-    try top_level.append(allocator,RespValue{ .bulk_string = try allocator.dupe(u8, "engines") });
+    // running_script key
+    try appendBulkString(&buf, allocator, "running_script");
 
-    // Add engines value (map)
-    var engines_map = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-    errdefer {
-        for (engines_map.items) |*item| {
-            deinitRespValue(item, allocator);
+    // running_script value
+    if (storage.functions.getExecutionStats()) |stats| {
+        // Running: RESP3 %3 map, RESP2 *6 flat array
+        if (resp3) {
+            try writer.writeAll("%3\r\n");
+        } else {
+            try writer.writeAll("*6\r\n");
         }
-        engines_map.deinit(allocator);
-    }
+        try appendBulkString(&buf, allocator, "name");
+        try appendBulkString(&buf, allocator, stats.function_name);
 
-    // LUA engine entry
-    try engines_map.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "LUA") });
-    var lua_stats = std.ArrayList(RespValue){ .items = &[_]RespValue{}, .capacity = 0 };
-    errdefer {
-        for (lua_stats.items) |*item| {
-            deinitRespValue(item, allocator);
+        try appendBulkString(&buf, allocator, "command");
+        try writer.print("*{d}\r\n", .{stats.command_args.len});
+        for (stats.command_args) |arg| {
+            try appendBulkString(&buf, allocator, arg);
         }
-        lua_stats.deinit(allocator);
+
+        try appendBulkString(&buf, allocator, "duration_ms");
+        try writer.print(":{d}\r\n", .{stats.duration_ms});
+    } else {
+        // Not running: RESP3 boolean false, RESP2 null bulk string
+        if (resp3) {
+            try writer.writeAll("#f\r\n");
+        } else {
+            try writer.writeAll("$-1\r\n");
+        }
     }
 
-    try lua_stats.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "libraries_count") });
-    try lua_stats.append(allocator, RespValue{ .integer = @as(i64, @intCast(storage.functions.libraries.count())) });
+    // engines key
+    try appendBulkString(&buf, allocator, "engines");
 
-    try lua_stats.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "functions_count") });
-    try lua_stats.append(allocator, RespValue{ .integer = @as(i64, @intCast(storage.functions.getTotalFunctionCount())) });
+    // engines value: RESP3 %1 map (LUA -> %2 map), RESP2 *2 flat array
+    const lib_count = storage.functions.libraries.count();
+    const func_count = storage.functions.getTotalFunctionCount();
 
-    try engines_map.append(allocator, RespValue{ .array = try lua_stats.toOwnedSlice(allocator) });
-    try top_level.append(allocator,RespValue{ .array = try engines_map.toOwnedSlice(allocator) });
+    if (resp3) {
+        try writer.writeAll("%1\r\n");
+        try appendBulkString(&buf, allocator, "LUA");
+        try writer.writeAll("%2\r\n");
+        try appendBulkString(&buf, allocator, "libraries_count");
+        try writer.print(":{d}\r\n", .{lib_count});
+        try appendBulkString(&buf, allocator, "functions_count");
+        try writer.print(":{d}\r\n", .{func_count});
+    } else {
+        try writer.writeAll("*2\r\n");
+        try appendBulkString(&buf, allocator, "LUA");
+        try writer.writeAll("*4\r\n");
+        try appendBulkString(&buf, allocator, "libraries_count");
+        try writer.print(":{d}\r\n", .{lib_count});
+        try appendBulkString(&buf, allocator, "functions_count");
+        try writer.print(":{d}\r\n", .{func_count});
+    }
 
-    return RespValue{ .array = try top_level.toOwnedSlice(allocator) };
+    return buf.toOwnedSlice(allocator);
 }
 
 /// FUNCTION KILL
