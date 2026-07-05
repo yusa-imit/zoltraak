@@ -6,11 +6,13 @@ const EventType = @import("../storage/latency.zig").EventType;
 const client_mod = @import("./client.zig");
 const RespProtocol = client_mod.RespProtocol;
 
-/// MEMORY STATS - Return memory usage statistics as flat RESP array (Redis-compatible)
-/// Redis returns alternating bulk string keys and integer/bulk-string values.
+/// MEMORY STATS - Return memory usage statistics
+/// RESP2: flat array with alternating key/value pairs (*52\r\n)
+/// RESP3: map type with 26 key-value pairs (%26\r\n), float values use double type (,val\r\n)
 pub fn cmdMemoryStats(
     allocator: std.mem.Allocator,
     storage: *Storage,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
@@ -53,10 +55,15 @@ pub fn cmdMemoryStats(
     const defrag_stats = storage.defrag_task.getStats();
     const defrag_running: i64 = if (defrag_stats.is_running) 1 else 0;
 
-    // MEMORY STATS returns a flat array with 26 key-value pairs = 52 elements.
-    // Format: *52\r\n then alternating $key\r\n + integer or bulk-string value.
     const num_pairs: usize = 26;
-    try w.print("*{d}\r\n", .{num_pairs * 2});
+    const resp3 = protocol_version == .RESP3;
+
+    // RESP3: %26\r\n map; RESP2: *52\r\n flat array (alternating key/value)
+    if (resp3) {
+        try w.print("%{d}\r\n", .{num_pairs});
+    } else {
+        try w.print("*{d}\r\n", .{num_pairs * 2});
+    }
 
     // Helper: write a bulk-string key
     const writeBulkKey = struct {
@@ -70,12 +77,16 @@ pub fn cmdMemoryStats(
             try writer.print(":{d}\r\n", .{val});
         }
     }.call;
-    // Helper: write a float as bulk string (Redis sends doubles as bulk strings in RESP2)
+    // Helper: write a float — RESP3 uses double type (,val\r\n), RESP2 uses bulk string
     const writeFloat = struct {
-        fn call(writer: anytype, alloc: std.mem.Allocator, val: f64) !void {
-            const s = try std.fmt.allocPrint(alloc, "{d:.4}", .{val});
-            defer alloc.free(s);
-            try writer.print("${d}\r\n{s}\r\n", .{ s.len, s });
+        fn call(writer: anytype, alloc: std.mem.Allocator, val: f64, is_resp3: bool) !void {
+            if (is_resp3) {
+                try writer.print(",{d}\r\n", .{val});
+            } else {
+                const s = try std.fmt.allocPrint(alloc, "{d:.4}", .{val});
+                defer alloc.free(s);
+                try writer.print("${d}\r\n{s}\r\n", .{ s.len, s });
+            }
         }
     }.call;
 
@@ -113,31 +124,31 @@ pub fn cmdMemoryStats(
     try writeInt(w, @intCast(tracker.dataset_bytes));
 
     try writeBulkKey(w, "dataset.percentage");
-    try writeFloat(w, allocator, dataset_pct);
+    try writeFloat(w, allocator, dataset_pct, resp3);
 
     try writeBulkKey(w, "peak.percentage");
-    try writeFloat(w, allocator, peak_pct);
+    try writeFloat(w, allocator, peak_pct, resp3);
 
     try writeBulkKey(w, "fragmentation");
-    try writeFloat(w, allocator, frag_ratio);
+    try writeFloat(w, allocator, frag_ratio, resp3);
 
     try writeBulkKey(w, "fragmentation.bytes");
     try writeInt(w, frag_bytes);
 
     try writeBulkKey(w, "allocator-frag.ratio");
-    try writeFloat(w, allocator, alloc_frag_ratio);
+    try writeFloat(w, allocator, alloc_frag_ratio, resp3);
 
     try writeBulkKey(w, "allocator-frag.bytes");
     try writeInt(w, alloc_frag_bytes);
 
     try writeBulkKey(w, "allocator-rss.ratio");
-    try writeFloat(w, allocator, alloc_rss_ratio);
+    try writeFloat(w, allocator, alloc_rss_ratio, resp3);
 
     try writeBulkKey(w, "allocator-rss.bytes");
     try writeInt(w, alloc_rss_bytes);
 
     try writeBulkKey(w, "rss-overhead.ratio");
-    try writeFloat(w, allocator, rss_overhead_ratio);
+    try writeFloat(w, allocator, rss_overhead_ratio, resp3);
 
     try writeBulkKey(w, "rss-overhead.bytes");
     try writeInt(w, rss_overhead_bytes);
@@ -341,6 +352,7 @@ pub fn cmdMemory(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const []const u8,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     if (args.len < 1) {
         return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'memory' command\r\n", .{});
@@ -349,7 +361,7 @@ pub fn cmdMemory(
     const subcommand = args[0];
 
     if (std.ascii.eqlIgnoreCase(subcommand, "stats")) {
-        return cmdMemoryStats(allocator, storage);
+        return cmdMemoryStats(allocator, storage, protocol_version);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "usage")) {
         if (args.len < 2) {
             return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'memory usage' command\r\n", .{});
@@ -511,7 +523,7 @@ test "MEMORY STATS returns flat RESP array not bulk string" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdMemoryStats(allocator, &storage);
+    const result = try cmdMemoryStats(allocator, &storage, .RESP2);
     defer allocator.free(result);
 
     // Must be a flat array (*N\r\n), not a bulk string ($N\r\n)
@@ -526,7 +538,7 @@ test "MEMORY STATS contains expected keys as RESP bulk strings" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdMemoryStats(allocator, &storage);
+    const result = try cmdMemoryStats(allocator, &storage, .RESP2);
     defer allocator.free(result);
 
     // All keys appear as bulk strings in the flat array
@@ -544,7 +556,7 @@ test "MEMORY STATS keys.count reflects actual key count" {
     defer storage.deinit();
 
     // 0 keys initially — keys.count should be 0
-    const result0 = try cmdMemoryStats(allocator, &storage);
+    const result0 = try cmdMemoryStats(allocator, &storage, .RESP2);
     defer allocator.free(result0);
     // The value after "keys.count" key entry should be :0
     // Find the key entry "$10\r\nkeys.count\r\n" and check value is ":0\r\n"
@@ -555,7 +567,7 @@ test "MEMORY STATS keys.count reflects actual key count" {
     _ = try storage.set("k2", "v2", null);
     _ = try storage.set("k3", "v3", null);
 
-    const result3 = try cmdMemoryStats(allocator, &storage);
+    const result3 = try cmdMemoryStats(allocator, &storage, .RESP2);
     defer allocator.free(result3);
     try std.testing.expect(std.mem.indexOf(u8, result3, "keys.count") != null);
     // With 3 keys, "keys.count\r\n:3\r\n" should be present
@@ -567,7 +579,7 @@ test "MEMORY STATS has 26 key-value pairs (52 elements total)" {
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdMemoryStats(allocator, &storage);
+    const result = try cmdMemoryStats(allocator, &storage, .RESP2);
     defer allocator.free(result);
 
     // Should start with *52\r\n (26 pairs × 2)
@@ -663,6 +675,7 @@ test "SLOWLOG integration" {
 pub fn cmdLatencyLatest(
     allocator: std.mem.Allocator,
     storage: *Storage,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     const latest = try storage.latency_monitor.getAllLatest(allocator);
     defer allocator.free(latest);
@@ -671,28 +684,32 @@ pub fn cmdLatencyLatest(
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
+    const resp3 = protocol_version == .RESP3;
 
     try w.print("*{d}\r\n", .{latest.len});
 
     for (latest) |entry| {
-        // Each entry: *4 [name, timestamp_sec, latest_ms, max_ms]
-        try w.writeAll("*4\r\n");
-
-        // 1) Event name (bulk string)
         const event_name = entry.event.toString();
-        try w.print("${d}\r\n{s}\r\n", .{ event_name.len, event_name });
-
-        // 2) Unix timestamp in seconds (LatencySample stores milliseconds)
-        const timestamp_sec = @divTrunc(entry.sample.timestamp, 1000);
-        try w.print(":{d}\r\n", .{timestamp_sec});
-
-        // 3) Latest latency in milliseconds (stored as microseconds, convert)
         const latest_ms = @divTrunc(entry.sample.latency, 1000);
-        try w.print(":{d}\r\n", .{latest_ms});
-
-        // 4) All-time max latency in milliseconds
         const max_ms = @divTrunc(entry.max_latency, 1000);
-        try w.print(":{d}\r\n", .{max_ms});
+
+        if (resp3) {
+            // RESP3: each entry is a %4 map with named keys
+            // timestamp in milliseconds (field name ends with -msec)
+            try w.writeAll("%4\r\n");
+            try w.print("$10\r\nevent-name\r\n${d}\r\n{s}\r\n", .{ event_name.len, event_name });
+            try w.print("$27\r\nlatest-event-timestamp-msec\r\n:{d}\r\n", .{entry.sample.timestamp});
+            try w.print("$19\r\nlatest-latency-msec\r\n:{d}\r\n", .{latest_ms});
+            try w.print("$21\r\nall-time-latency-msec\r\n:{d}\r\n", .{max_ms});
+        } else {
+            // RESP2: each entry is *4 [name, timestamp_sec, latest_ms, max_ms]
+            try w.writeAll("*4\r\n");
+            try w.print("${d}\r\n{s}\r\n", .{ event_name.len, event_name });
+            const timestamp_sec = @divTrunc(entry.sample.timestamp, 1000);
+            try w.print(":{d}\r\n", .{timestamp_sec});
+            try w.print(":{d}\r\n", .{latest_ms});
+            try w.print(":{d}\r\n", .{max_ms});
+        }
     }
 
     return buf.toOwnedSlice(allocator);
@@ -970,6 +987,7 @@ pub fn cmdLatency(
     allocator: std.mem.Allocator,
     storage: *Storage,
     args: []const []const u8,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     if (args.len < 1) {
         return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'latency' command\r\n", .{});
@@ -981,7 +999,7 @@ pub fn cmdLatency(
         if (args.len != 1) {
             return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'latency latest'\r\n", .{});
         }
-        return cmdLatencyLatest(allocator, storage);
+        return cmdLatencyLatest(allocator, storage, protocol_version);
     } else if (std.ascii.eqlIgnoreCase(subcommand, "history")) {
         if (args.len != 2) {
             return std.fmt.allocPrint(allocator, "-ERR wrong number of arguments for 'latency history'\r\n", .{});
@@ -1015,7 +1033,7 @@ test "cmdLatencyLatest with no events" {
     var storage = try Storage.init(std.testing.allocator, "127.0.0.1", 6379);
     defer storage.deinit();
 
-    const result = try cmdLatencyLatest(std.testing.allocator, &storage);
+    const result = try cmdLatencyLatest(std.testing.allocator, &storage, .RESP2);
     defer std.testing.allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "*0\r\n") != null);
@@ -1029,7 +1047,7 @@ test "cmdLatencyLatest with events" {
     try storage.latency_monitor.recordEvent(.command, 1000);
     try storage.latency_monitor.recordEvent(.fork, 5000);
 
-    const result = try cmdLatencyLatest(std.testing.allocator, &storage);
+    const result = try cmdLatencyLatest(std.testing.allocator, &storage, .RESP2);
     defer std.testing.allocator.free(result);
 
     // Should start with *2 (2 event entries)
@@ -1053,7 +1071,7 @@ test "cmdLatencyLatest max_latency tracking" {
     try storage.latency_monitor.recordEvent(.command, 10000);
     try storage.latency_monitor.recordEvent(.command, 3000);
 
-    const result = try cmdLatencyLatest(std.testing.allocator, &storage);
+    const result = try cmdLatencyLatest(std.testing.allocator, &storage, .RESP2);
     defer std.testing.allocator.free(result);
 
     // Latest latency: 3ms (3000us), max latency: 10ms (10000us)
@@ -1122,7 +1140,7 @@ test "cmdLatencyReset specific event" {
     try std.testing.expectEqualStrings(":1\r\n", result);
 
     // Verify reset
-    const latest = try cmdLatencyLatest(std.testing.allocator, &storage);
+    const latest = try cmdLatencyLatest(std.testing.allocator, &storage, .RESP2);
     defer std.testing.allocator.free(latest);
     try std.testing.expect(std.mem.indexOf(u8, latest, "*0\r\n") != null);
 }
@@ -1193,7 +1211,7 @@ test "cmdMemoryStats" {
     _ = try storage.set("key1", "value1", null);
     _ = try storage.set("key2", "value2", null);
 
-    const result = try cmdMemoryStats(std.testing.allocator, &storage);
+    const result = try cmdMemoryStats(std.testing.allocator, &storage, .RESP2);
     defer std.testing.allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "peak.allocated:") != null);
@@ -1262,12 +1280,12 @@ test "cmdMemory dispatcher" {
     defer storage.deinit();
 
     const stats_args = [_][]const u8{"stats"};
-    const stats_result = try cmdMemory(std.testing.allocator, &storage, &stats_args);
+    const stats_result = try cmdMemory(std.testing.allocator, &storage, &stats_args, .RESP2);
     defer std.testing.allocator.free(stats_result);
     try std.testing.expect(std.mem.indexOf(u8, stats_result, "peak.allocated:") != null);
 
     const help_args = [_][]const u8{"help"};
-    const help_result = try cmdMemory(std.testing.allocator, &storage, &help_args);
+    const help_result = try cmdMemory(std.testing.allocator, &storage, &help_args, .RESP2);
     defer std.testing.allocator.free(help_result);
     try std.testing.expect(std.mem.indexOf(u8, help_result, "MEMORY STATS") != null);
 }

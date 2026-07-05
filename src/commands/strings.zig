@@ -1690,7 +1690,8 @@ pub fn executeCommand(
         else if (std.mem.eql(u8, cmd_upper, "MEMORY")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
-            break :blk try introspection_cmds.cmdMemory(allocator, storage, args);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try introspection_cmds.cmdMemory(allocator, storage, args, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "SLOWLOG")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
@@ -1699,7 +1700,8 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "LATENCY")) {
             const args = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args);
-            break :blk try introspection_cmds.cmdLatency(allocator, storage, args);
+            const protocol_version = getClientProtocol(client_registry, client_id);
+            break :blk try introspection_cmds.cmdLatency(allocator, storage, args, protocol_version);
         } else if (std.mem.eql(u8, cmd_upper, "HOTKEYS")) {
             break :blk try hotkeys_cmds.cmdHotkeys(allocator, storage, array[1..]);
         }

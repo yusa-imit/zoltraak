@@ -5,6 +5,7 @@ const Storage = @import("../storage/memory.zig").Storage;
 const PubSub = @import("../storage/pubsub.zig").PubSub;
 const TxState = @import("transactions.zig").TxState;
 const ClientRegistry = @import("client.zig").ClientRegistry;
+const RespProtocol = @import("client.zig").RespProtocol;
 const ServerConfig = @import("../storage/config.zig").Config;
 
 /// ECHO command - returns the message
@@ -1485,6 +1486,7 @@ test "cmdDebug - DISABLE-NEXT-AOF-FSYNC returns OK" {
 }
 
 /// LOLWUT [VERSION version] - Display Redis version and computer art
+/// RESP3: returns verbatim string (=N\r\ntxt:...) instead of bulk string.
 pub fn cmdLolwut(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -1494,10 +1496,12 @@ pub fn cmdLolwut(
     _: *ClientRegistry,
     _: u64,
     _: *ServerConfig,
-    _: u8,
+    protocol_version_raw: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
+
+    const protocol_version: RespProtocol = @enumFromInt(protocol_version_raw);
 
     // Parse VERSION parameter if provided
     var version: u32 = 0; // 0 = use Zoltraak version (0.1.0 -> version 1)
@@ -1520,6 +1524,10 @@ pub fn cmdLolwut(
     const art = try generateLolwutArt(allocator, version);
     defer allocator.free(art);
 
+    // RESP3: return verbatim string with "txt" encoding hint
+    if (protocol_version == .RESP3) {
+        return try w.writeVerbatimString("txt", art);
+    }
     return try w.writeBulkString(art);
 }
 
@@ -1710,4 +1718,65 @@ test "cmdLolwut - unknown version returns generic art" {
     // Should contain version 99 in generic art
     try std.testing.expect(std.mem.indexOf(u8, result, "99") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Unknown ver") != null);
+}
+
+test "cmdLolwut - RESP3 returns verbatim string" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{"LOLWUT"};
+    // protocol_version_raw = 3 → RESP3
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 3);
+    defer allocator.free(result);
+
+    // RESP3: verbatim string starts with '=' and contains "txt:"
+    try std.testing.expect(result[0] == '=');
+    try std.testing.expect(std.mem.indexOf(u8, result, "txt:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Zoltraak") != null);
+}
+
+test "cmdLolwut - RESP2 returns bulk string" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{"LOLWUT"};
+    // protocol_version_raw = 2 → RESP2
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    defer allocator.free(result);
+
+    // RESP2: bulk string starts with '$'
+    try std.testing.expect(result[0] == '$');
+    try std.testing.expect(std.mem.indexOf(u8, result, "Zoltraak") != null);
+}
+
+test "cmdLolwut - RESP3 version 5 returns verbatim string with Redis 5 art" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    const args = [_][]const u8{ "LOLWUT", "VERSION", "5" };
+    const result = try cmdLolwut(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 3);
+    defer allocator.free(result);
+
+    // RESP3 verbatim string with txt encoding
+    try std.testing.expect(result[0] == '=');
+    try std.testing.expect(std.mem.indexOf(u8, result, "txt:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Redis 5") != null);
 }
