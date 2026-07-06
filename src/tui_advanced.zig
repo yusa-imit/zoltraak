@@ -506,6 +506,58 @@ pub fn renderDotPlot(
     plot.render(frame.buffer, area);
 }
 
+/// Server resource utilization metrics for radial bar visualization.
+pub const ServerMetrics = struct {
+    /// CPU utilization (0.0–1.0)
+    cpu_usage: f32 = 0.0,
+    /// Memory utilization (0.0–1.0)
+    memory_usage: f32 = 0.0,
+    /// Network bandwidth utilization (0.0–1.0)
+    network_usage: f32 = 0.0,
+    /// Disk I/O utilization (0.0–1.0)
+    disk_usage: f32 = 0.0,
+};
+
+/// Render RadialBar widget for server resource utilization using sailor v2.78.0.
+/// Displays CPU, memory, network, and disk usage as concentric arcs.
+pub fn renderRadialBar(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    metrics: *const ServerMetrics,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const arcs = [_]tui.widgets.RadialArc{
+        .{
+            .label = "CPU",
+            .value = metrics.cpu_usage,
+            .style = tui.Style{ .fg = tui.Color.green },
+        },
+        .{
+            .label = "MEM",
+            .value = metrics.memory_usage,
+            .style = tui.Style{ .fg = tui.Color.cyan },
+        },
+        .{
+            .label = "NET",
+            .value = metrics.network_usage,
+            .style = tui.Style{ .fg = tui.Color.yellow },
+        },
+        .{
+            .label = "DISK",
+            .value = metrics.disk_usage,
+            .style = tui.Style{ .fg = tui.Color.magenta },
+        },
+    };
+
+    const bar = tui.widgets.RadialBar.init()
+        .withArcs(&arcs)
+        .withShowLabels(true)
+        .withShowValues(true);
+
+    bar.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
