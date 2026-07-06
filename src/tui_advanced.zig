@@ -368,7 +368,7 @@ pub fn renderFunnelChart(
 ) void {
     if (area.width == 0 or area.height == 0) return;
 
-    const stages = [_]tui.FunnelStage{
+    const stages = [_]tui.widgets.FunnelStage{
         .{
             .label = "Commands",
             .value = @floatFromInt(stats.total_commands),
@@ -391,7 +391,7 @@ pub fn renderFunnelChart(
         },
     };
 
-    const chart = tui.FunnelChart.init()
+    const chart = tui.widgets.FunnelChart.init()
         .withStages(&stages)
         .withShowValues(true)
         .withShowPercentages(true);
@@ -453,6 +453,59 @@ pub fn renderDialog(
 }
 
 /// Render Notification toast
+/// Latency distribution data for dot plot visualization.
+pub const LatencyStats = struct {
+    /// Latency buckets: label + microsecond value
+    command_name: []const u8 = "GET",
+    p50_us: f32 = 0.0,
+    p95_us: f32 = 0.0,
+    p99_us: f32 = 0.0,
+    p999_us: f32 = 0.0,
+};
+
+/// Render DotPlot widget for command latency distribution using sailor v2.77.0.
+/// Displays per-percentile latency as dots on a horizontal axis (Cleveland dot plot).
+pub fn renderDotPlot(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    stats: *const LatencyStats,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const max_lat = @max(stats.p999_us, 1.0);
+    const items = [_]tui.widgets.DotPlotItem{
+        .{
+            .label = "p50",
+            .value = stats.p50_us,
+            .style = tui.Style{ .fg = tui.Color.green },
+        },
+        .{
+            .label = "p95",
+            .value = stats.p95_us,
+            .style = tui.Style{ .fg = tui.Color.yellow },
+        },
+        .{
+            .label = "p99",
+            .value = stats.p99_us,
+            .style = tui.Style{ .fg = tui.Color.red },
+        },
+        .{
+            .label = "p999",
+            .value = stats.p999_us,
+            .style = tui.Style{ .fg = tui.Color.magenta },
+        },
+    };
+
+    const plot = tui.widgets.DotPlot.init()
+        .withItems(&items)
+        .withXMin(0.0)
+        .withXMax(max_lat)
+        .withShowLabels(true)
+        .withShowValues(true);
+
+    plot.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
