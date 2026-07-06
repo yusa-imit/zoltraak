@@ -5,6 +5,8 @@ const RespValue = @import("../protocol/parser.zig").RespValue;
 const cluster_mod = @import("../storage/cluster.zig");
 const ClusterError = cluster_mod.ClusterError;
 const ClusterState = cluster_mod.ClusterState;
+const client_mod = @import("./client.zig");
+const RespProtocol = client_mod.RespProtocol;
 
 /// Format a slot error message with the first offending slot number
 fn formatSlotError(
@@ -269,12 +271,14 @@ pub fn cmdClusterNodes(
 }
 
 /// CLUSTER INFO - Return cluster state information
+/// RESP3: returns verbatim string (=N\r\ntxt:...) instead of bulk string.
 pub fn cmdClusterInfo(
     allocator: std.mem.Allocator,
     _: []const []const u8,
     storage: *Storage,
     _: ?*anyopaque,
     _: u64,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -332,6 +336,10 @@ pub fn cmdClusterInfo(
     // total_cluster_links_buffer_limit_exceeded: Redis 7.0+ field
     try writer.print("total_cluster_links_buffer_limit_exceeded:0\r\n", .{});
 
+    // RESP3: return verbatim string with "txt" encoding hint
+    if (protocol_version == .RESP3) {
+        return w.writeVerbatimString("txt", info_buf.items);
+    }
     return w.writeBulkString(info_buf.items);
 }
 
@@ -437,7 +445,7 @@ test "cmdClusterInfo - single node returns valid info" {
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP2);
     defer allocator.free(result);
 
     // Result should be a RESP bulk string starting with $
@@ -460,7 +468,7 @@ test "cmdClusterInfo - contains all required fields" {
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP2);
     defer allocator.free(result);
 
     var it = std.mem.splitSequence(u8, result, "\r\n");
@@ -488,7 +496,7 @@ test "cmdClusterInfo - cluster_enabled is first field" {
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP2);
     defer allocator.free(result);
 
     var it = std.mem.splitSequence(u8, result, "\r\n");
@@ -506,7 +514,7 @@ test "cmdClusterInfo - Redis 7.x new fields present" {
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP2);
     defer allocator.free(result);
 
     var it = std.mem.splitSequence(u8, result, "\r\n");
@@ -4108,7 +4116,7 @@ test "CLUSTER INFO cluster_enabled is zero for standalone" {
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
 
-    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0);
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP2);
     defer allocator.free(result);
 
     var it = std.mem.splitSequence(u8, result, "\r\n");
@@ -4140,4 +4148,47 @@ test "Storage config cluster-node-timeout defaults to 15000" {
     defer if (val) |v| allocator.free(v);
     try std.testing.expect(val != null);
     try std.testing.expectEqualStrings("15000", val.?);
+}
+
+test "cmdClusterInfo - RESP2 returns bulk string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP2);
+    defer allocator.free(result);
+
+    // RESP2: bulk string starts with '$'
+    try std.testing.expect(result[0] == '$');
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_enabled:0") != null);
+}
+
+test "cmdClusterInfo - RESP3 returns verbatim string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP3);
+    defer allocator.free(result);
+
+    // RESP3: verbatim string starts with '='
+    try std.testing.expect(result[0] == '=');
+    // Content includes "txt:" prefix embedded in the verbatim string
+    try std.testing.expect(std.mem.indexOf(u8, result, "txt:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_enabled:0") != null);
+}
+
+test "cmdClusterInfo - RESP3 verbatim string contains all required fields" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try cmdClusterInfo(allocator, &[_][]const u8{}, storage, null, 0, .RESP3);
+    defer allocator.free(result);
+
+    // Check all required fields are present in RESP3 verbatim response
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_state:ok") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_slots_assigned") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_known_nodes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cluster_total_shards:0") != null);
 }

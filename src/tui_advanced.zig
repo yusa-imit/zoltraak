@@ -351,6 +351,54 @@ pub fn renderLineChart(
     frame.setString(area.x, bar_y + 2, stats_text, tui.Style{});
 }
 
+/// Cache hit/miss statistics for funnel visualization
+pub const CacheStats = struct {
+    total_commands: usize = 0,
+    keyspace_hits: usize = 0,
+    keyspace_misses: usize = 0,
+    connected_clients: usize = 0,
+};
+
+/// Render FunnelChart widget for cache hit-rate visualization using sailor v2.76.0.
+/// Displays the conversion funnel: Total Commands → Keyspace Hits → Cache Hit %.
+pub fn renderFunnelChart(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    stats: *const CacheStats,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const stages = [_]tui.FunnelStage{
+        .{
+            .label = "Commands",
+            .value = @floatFromInt(stats.total_commands),
+            .style = tui.Style{ .fg = tui.Color.cyan },
+        },
+        .{
+            .label = "Hits",
+            .value = @floatFromInt(stats.keyspace_hits),
+            .style = tui.Style{ .fg = tui.Color.green },
+        },
+        .{
+            .label = "Misses",
+            .value = @floatFromInt(stats.keyspace_misses),
+            .style = tui.Style{ .fg = tui.Color.yellow },
+        },
+        .{
+            .label = "Clients",
+            .value = @floatFromInt(stats.connected_clients),
+            .style = tui.Style{ .fg = tui.Color.magenta },
+        },
+    };
+
+    const chart = tui.FunnelChart.init()
+        .withStages(&stages)
+        .withShowValues(true)
+        .withShowPercentages(true);
+
+    chart.render(frame.buffer, area);
+}
+
 /// Render Dialog widget for DEL command confirmation
 pub fn renderDialog(
     frame: *tui.Frame,

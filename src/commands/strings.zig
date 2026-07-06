@@ -1928,7 +1928,8 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, subcmd_upper, "NODES")) {
                 break :blk try cluster_cmds.cmdClusterNodes(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "INFO")) {
-                break :blk try cluster_cmds.cmdClusterInfo(allocator, args, storage, null, 0);
+                const protocol_version = getClientProtocol(client_registry, client_id);
+                break :blk try cluster_cmds.cmdClusterInfo(allocator, args, storage, null, 0, protocol_version);
             } else if (std.mem.eql(u8, subcmd_upper, "MYID")) {
                 break :blk try cluster_cmds.cmdClusterMyId(allocator, args, storage, null, 0);
             } else if (std.mem.eql(u8, subcmd_upper, "MYSHARDID")) {
