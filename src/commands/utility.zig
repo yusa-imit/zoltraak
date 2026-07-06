@@ -333,7 +333,7 @@ pub fn cmdDebug(
     _: *ClientRegistry,
     _: u64,
     config: *ServerConfig,
-    _: u8,
+    protocol_version: u8,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -401,6 +401,11 @@ pub fn cmdDebug(
             );
             const result = try buf.toOwnedSlice(allocator);
             defer allocator.free(result);
+            // RESP3: return verbatim string (txt: format tag) for human-readable text output.
+            // RESP2: return bulk string (matching Redis behaviour for DEBUG OBJECT).
+            if (protocol_version == 3) {
+                return try w.writeVerbatimString("txt", result);
+            }
             return try w.writeBulkString(result);
         } else {
             return try w.writeError("ERR no such key");

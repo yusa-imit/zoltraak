@@ -1577,6 +1577,26 @@ pub fn build(b: *std.Build) void {
     const run_iter400_tests = b.addRunArtifact(iter400_tests);
     test_step.dependOn(&run_iter400_tests.step);
 
+    // Iteration 401: RESP3 verbatim string for DEBUG OBJECT
+    const iter401_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter401.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter401_tests.linkSystemLibrary("luajit-5.1");
+    iter401_tests.linkLibC();
+    iter401_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter401_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter401_tests = b.addRunArtifact(iter401_tests);
+    test_step.dependOn(&run_iter401_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
