@@ -558,6 +558,50 @@ pub fn renderRadialBar(
     bar.render(frame.buffer, area);
 }
 
+/// Per-command throughput history for stream graph visualization.
+/// Each layer holds a rolling series of samples (e.g. ops/sec) for one command.
+pub const CommandThroughputHistory = struct {
+    get_samples: []const f32 = &.{},
+    set_samples: []const f32 = &.{},
+    del_samples: []const f32 = &.{},
+};
+
+/// Render StreamGraph widget for command throughput over time using sailor v2.79.0.
+/// Displays per-command throughput history as a theme-river-style stacked silhouette,
+/// stacked symmetrically around a vertically centered baseline.
+pub fn renderStreamGraph(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    history: *const CommandThroughputHistory,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const layers = [_]tui.widgets.StreamLayer{
+        .{
+            .label = "GET",
+            .values = history.get_samples,
+            .style = tui.Style{ .fg = tui.Color.green },
+        },
+        .{
+            .label = "SET",
+            .values = history.set_samples,
+            .style = tui.Style{ .fg = tui.Color.cyan },
+        },
+        .{
+            .label = "DEL",
+            .values = history.del_samples,
+            .style = tui.Style{ .fg = tui.Color.red },
+        },
+    };
+
+    const graph = tui.widgets.StreamGraph.init()
+        .withLayers(&layers)
+        .withShowLabels(true)
+        .withFocused(0);
+
+    graph.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
