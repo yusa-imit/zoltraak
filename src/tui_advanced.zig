@@ -646,6 +646,44 @@ pub fn renderViolinPlot(
     plot.render(frame.buffer, area);
 }
 
+/// Render BoxPlot widget for per-type key size quartile summary using sailor v2.82.0.
+/// Companion view to renderViolinPlot: shares the same KeySizeDistribution samples
+/// but displays five-number-summary statistics (min/Q1/median/Q3/max) with outlier
+/// markers instead of a density silhouette, for a quick at-a-glance size comparison.
+pub fn renderBoxPlot(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    dist: *const KeySizeDistribution,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const series = [_]tui.widgets.BoxPlotSeries{
+        .{
+            .label = "STR",
+            .values = dist.string_sizes,
+            .style = tui.Style{ .fg = tui.Color.green },
+        },
+        .{
+            .label = "LIST",
+            .values = dist.list_sizes,
+            .style = tui.Style{ .fg = tui.Color.cyan },
+        },
+        .{
+            .label = "HASH",
+            .values = dist.hash_sizes,
+            .style = tui.Style{ .fg = tui.Color.yellow },
+        },
+    };
+
+    const plot = tui.widgets.BoxPlot.init()
+        .withSeries(&series)
+        .withShowLabels(true)
+        .withShowOutliers(true)
+        .withFocused(0);
+
+    plot.render(frame.buffer, area);
+}
+
 /// Per-database key-type counts for hierarchical keyspace visualization.
 /// Each database holds counts of keys broken down by Redis data type.
 pub const DatabaseKeyTypeCounts = struct {
