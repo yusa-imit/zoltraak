@@ -1617,6 +1617,26 @@ pub fn build(b: *std.Build) void {
     const run_iter402_tests = b.addRunArtifact(iter402_tests);
     test_step.dependOn(&run_iter402_tests.step);
 
+    // Iteration 403: sailor v2.80.0 + ViolinPlot TUI widget
+    const iter403_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter403.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter403_tests.linkSystemLibrary("luajit-5.1");
+    iter403_tests.linkLibC();
+    iter403_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter403_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter403_tests = b.addRunArtifact(iter403_tests);
+    test_step.dependOn(&run_iter403_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

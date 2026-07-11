@@ -602,6 +602,50 @@ pub fn renderStreamGraph(
     graph.render(frame.buffer, area);
 }
 
+/// Per-data-type value size samples for density-distribution visualization.
+/// Each series holds raw sizes (bytes) observed for keys of that Redis type.
+pub const KeySizeDistribution = struct {
+    string_sizes: []const f32 = &.{},
+    list_sizes: []const f32 = &.{},
+    hash_sizes: []const f32 = &.{},
+};
+
+/// Render ViolinPlot widget for per-type key size distribution using sailor v2.80.0.
+/// Displays value sizes for string/list/hash keys as mirrored density silhouettes,
+/// sharing a global min/max scale so shapes are directly comparable across types.
+pub fn renderViolinPlot(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    dist: *const KeySizeDistribution,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const series = [_]tui.widgets.ViolinSeries{
+        .{
+            .label = "STR",
+            .values = dist.string_sizes,
+            .style = tui.Style{ .fg = tui.Color.green },
+        },
+        .{
+            .label = "LIST",
+            .values = dist.list_sizes,
+            .style = tui.Style{ .fg = tui.Color.cyan },
+        },
+        .{
+            .label = "HASH",
+            .values = dist.hash_sizes,
+            .style = tui.Style{ .fg = tui.Color.yellow },
+        },
+    };
+
+    const plot = tui.widgets.ViolinPlot.init()
+        .withSeries(&series)
+        .withShowLabels(true)
+        .withFocused(0);
+
+    plot.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
