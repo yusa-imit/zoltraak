@@ -646,6 +646,57 @@ pub fn renderViolinPlot(
     plot.render(frame.buffer, area);
 }
 
+/// Per-database key-type counts for hierarchical keyspace visualization.
+/// Each database holds counts of keys broken down by Redis data type.
+pub const DatabaseKeyTypeCounts = struct {
+    db_index: u16 = 0,
+    string_count: f32 = 0,
+    list_count: f32 = 0,
+    hash_count: f32 = 0,
+    set_count: f32 = 0,
+    zset_count: f32 = 0,
+};
+
+/// Render SunburstChart widget for hierarchical keyspace breakdown using sailor v2.81.0.
+/// Root ring shows databases; second ring shows per-database key-type distribution
+/// (STRING/LIST/HASH/SET/ZSET), letting an operator see at a glance where keys live
+/// across both database and data-type dimensions.
+pub fn renderSunburstChart(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    databases: []const DatabaseKeyTypeCounts,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    var children_buf: [8][5]tui.widgets.SunburstNode = undefined;
+    var nodes_buf: [8]tui.widgets.SunburstNode = undefined;
+    const n = @min(databases.len, tui.widgets.SunburstChart.MAX_NODES);
+
+    var label_buf: [8][16]u8 = undefined;
+    for (0..n) |i| {
+        const db = databases[i];
+        children_buf[i] = [_]tui.widgets.SunburstNode{
+            .{ .label = "STR", .value = db.string_count, .style = tui.Style{ .fg = tui.Color.green } },
+            .{ .label = "LIST", .value = db.list_count, .style = tui.Style{ .fg = tui.Color.cyan } },
+            .{ .label = "HASH", .value = db.hash_count, .style = tui.Style{ .fg = tui.Color.yellow } },
+            .{ .label = "SET", .value = db.set_count, .style = tui.Style{ .fg = tui.Color.magenta } },
+            .{ .label = "ZSET", .value = db.zset_count, .style = tui.Style{ .fg = tui.Color.blue } },
+        };
+
+        const label = std.fmt.bufPrint(&label_buf[i], "db{d}", .{db.db_index}) catch "db?";
+        const total = db.string_count + db.list_count + db.hash_count + db.set_count + db.zset_count;
+        nodes_buf[i] = .{ .label = label, .value = total, .children = children_buf[i][0..] };
+    }
+
+    const chart = tui.widgets.SunburstChart.init()
+        .withNodes(nodes_buf[0..n])
+        .withShowLabels(true)
+        .withShowValues(true)
+        .withFocused(0);
+
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
