@@ -3047,7 +3047,7 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, subcmd_upper, "USERS")) {
                 break :blk try acl_cmds.cmdACLUsers(allocator, array[1..], storage);
             } else if (std.mem.eql(u8, subcmd_upper, "GETUSER")) {
-                break :blk try acl_cmds.cmdACLGetuser(allocator, array[1..], storage);
+                break :blk try acl_cmds.cmdACLGetuser(allocator, array[1..], storage, getClientProtocol(client_registry, client_id));
             } else if (std.mem.eql(u8, subcmd_upper, "SETUSER")) {
                 break :blk try acl_cmds.cmdACLSetuser(allocator, storage, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "DELUSER")) {

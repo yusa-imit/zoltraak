@@ -1,11 +1,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = @import("../protocol/writer.zig").Writer;
+const MapPair = @import("../protocol/writer.zig").MapPair;
 const RespValue = @import("../protocol/parser.zig").RespValue;
 const CommandRegistry = @import("command_registry.zig");
 const ACLStorage = @import("../storage/acl.zig");
 const Storage = @import("../storage/memory.zig").Storage;
-const ClientRegistry = @import("./client.zig").ClientRegistry;
+const client_mod = @import("./client.zig");
+const ClientRegistry = client_mod.ClientRegistry;
+const RespProtocol = client_mod.RespProtocol;
 const CommandCategory = CommandRegistry.CommandCategory;
 
 /// ACL WHOAMI - Returns current connection username
@@ -82,10 +85,70 @@ pub fn cmdACLUsers(
 }
 
 /// Build ACL GETUSER response for a user from the ACL store.
-/// Returns a flat 12-element RESP array:
-/// flags [array], passwords [array], commands string, keys [array],
-/// channels [array], selectors [array]
-fn buildGetUserResponse(allocator: Allocator, user: *const ACLStorage.User) ![]const u8 {
+/// RESP2: flat 12-element array (flags, passwords, commands, keys, channels, selectors).
+/// RESP3: 6-pair map, matching Redis 7.0+ behavior (same split as CONFIG GET, iteration 284).
+fn buildGetUserResponse(allocator: Allocator, user: *const ACLStorage.User, protocol_version: RespProtocol) ![]const u8 {
+    if (protocol_version == .RESP3) {
+        return buildGetUserResponseResp3(allocator, user);
+    }
+    return buildGetUserResponseResp2(allocator, user);
+}
+
+/// Build the RESP3 map form of ACL GETUSER.
+fn buildGetUserResponseResp3(allocator: Allocator, user: *const ACLStorage.User) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    const has_nopass = user.password == null;
+    var flags_list = std.ArrayList(RespValue){};
+    defer flags_list.deinit(allocator);
+    try flags_list.append(allocator, .{ .bulk_string = if (user.enabled) "on" else "off" });
+    if (has_nopass) try flags_list.append(allocator, .{ .bulk_string = "nopass" });
+
+    var passwords_list = std.ArrayList(RespValue){};
+    defer passwords_list.deinit(allocator);
+    var hash_repr: ?[]const u8 = null;
+    defer if (hash_repr) |h| allocator.free(h);
+    if (user.password) |pwd| {
+        hash_repr = try std.fmt.allocPrint(allocator, "#{s}", .{pwd});
+        try passwords_list.append(allocator, .{ .bulk_string = hash_repr.? });
+    }
+
+    var keys_list = std.ArrayList(RespValue){};
+    defer keys_list.deinit(allocator);
+    var key_pat_bufs = std.ArrayList([]const u8){};
+    defer {
+        for (key_pat_bufs.items) |p| allocator.free(p);
+        key_pat_bufs.deinit(allocator);
+    }
+    if (user.all_keys_allowed) {
+        try keys_list.append(allocator, .{ .bulk_string = "~*" });
+    } else {
+        for (user.allowed_key_patterns.items) |pat| {
+            const full_pat = try std.fmt.allocPrint(allocator, "~{s}", .{pat});
+            try key_pat_bufs.append(allocator, full_pat);
+            try keys_list.append(allocator, .{ .bulk_string = full_pat });
+        }
+    }
+
+    const channels_arr = [_]RespValue{.{ .bulk_string = "&*" }};
+    const selectors_arr = [_]RespValue{};
+    const commands_str: []const u8 = if (user.all_commands_allowed) "+@all" else "-@all";
+
+    var pairs = [_]MapPair{
+        .{ .key = .{ .bulk_string = "flags" }, .value = .{ .array = flags_list.items } },
+        .{ .key = .{ .bulk_string = "passwords" }, .value = .{ .array = passwords_list.items } },
+        .{ .key = .{ .bulk_string = "commands" }, .value = .{ .bulk_string = commands_str } },
+        .{ .key = .{ .bulk_string = "keys" }, .value = .{ .array = keys_list.items } },
+        .{ .key = .{ .bulk_string = "channels" }, .value = .{ .array = &channels_arr } },
+        .{ .key = .{ .bulk_string = "selectors" }, .value = .{ .array = &selectors_arr } },
+    };
+
+    return w.writeMap(&pairs);
+}
+
+/// Build the RESP2 flat-array form of ACL GETUSER.
+fn buildGetUserResponseResp2(allocator: Allocator, user: *const ACLStorage.User) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
 
@@ -159,6 +222,7 @@ pub fn cmdACLGetuser(
     allocator: Allocator,
     array: []const RespValue,
     storage: *Storage,
+    protocol_version: RespProtocol,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -176,6 +240,17 @@ pub fn cmdACLGetuser(
         // No ACL store: only "default" user exists
         if (!std.mem.eql(u8, username, "default")) return w.writeNull();
         // Return minimal default user response
+        if (protocol_version == .RESP3) {
+            var pairs = [_]MapPair{
+                .{ .key = .{ .bulk_string = "flags" }, .value = .{ .array = &[_]RespValue{.{ .bulk_string = "on" }} } },
+                .{ .key = .{ .bulk_string = "passwords" }, .value = .{ .array = &[_]RespValue{} } },
+                .{ .key = .{ .bulk_string = "commands" }, .value = .{ .bulk_string = "+@all" } },
+                .{ .key = .{ .bulk_string = "keys" }, .value = .{ .array = &[_]RespValue{.{ .bulk_string = "~*" }} } },
+                .{ .key = .{ .bulk_string = "channels" }, .value = .{ .array = &[_]RespValue{.{ .bulk_string = "&*" }} } },
+                .{ .key = .{ .bulk_string = "selectors" }, .value = .{ .array = &[_]RespValue{} } },
+            };
+            return w.writeMap(&pairs);
+        }
         return w.writeArray(&[_]RespValue{
             .{ .bulk_string = "flags" },       .{ .bulk_string = "on" },
             .{ .bulk_string = "passwords" },   .{ .bulk_string = "" },
@@ -187,7 +262,7 @@ pub fn cmdACLGetuser(
     };
 
     const user = acl_store.getUser(username) orelse return w.writeNull();
-    return buildGetUserResponse(allocator, user);
+    return buildGetUserResponse(allocator, user, protocol_version);
 }
 
 /// Parse ACL key pattern rules (~pattern, %R~pattern, %W~pattern, allkeys, resetkeys)
@@ -1142,7 +1217,7 @@ test "ACL GETUSER default user returns proper format" {
         RespValue{ .bulk_string = "default" },
     };
 
-    const result = try cmdACLGetuser(allocator, &args, &storage);
+    const result = try cmdACLGetuser(allocator, &args, &storage, .RESP2);
     defer allocator.free(result);
 
     // Should be a valid RESP array starting with *
@@ -1152,6 +1227,84 @@ test "ACL GETUSER default user returns proper format" {
     try std.testing.expect(std.mem.indexOf(u8, result, "passwords") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "commands") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "keys") != null);
+}
+
+test "ACL GETUSER default user RESP3 returns map format" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "GETUSER" },
+        RespValue{ .bulk_string = "default" },
+    };
+
+    const result = try cmdACLGetuser(allocator, &args, &storage, .RESP3);
+    defer allocator.free(result);
+
+    // RESP3 map starts with %6 (6 key-value pairs)
+    try std.testing.expect(std.mem.startsWith(u8, result, "%6\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "flags") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "passwords") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "commands") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "keys") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "channels") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "selectors") != null);
+}
+
+test "ACL GETUSER RESP3 real ACL store user returns map with nested arrays" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const setuser_args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "SETUSER" },
+        RespValue{ .bulk_string = "resp3user" },
+        RespValue{ .bulk_string = "on" },
+        RespValue{ .bulk_string = ">secret" },
+        RespValue{ .bulk_string = "~foo:*" },
+        RespValue{ .bulk_string = "+@all" },
+    };
+    const setuser_result = try cmdACLSetuser(allocator, &storage, &setuser_args);
+    defer allocator.free(setuser_result);
+
+    const getuser_args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "GETUSER" },
+        RespValue{ .bulk_string = "resp3user" },
+    };
+    const result = try cmdACLGetuser(allocator, &getuser_args, &storage, .RESP3);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "%6\r\n"));
+    // "on" flag present, nopass absent (password was set)
+    try std.testing.expect(std.mem.indexOf(u8, result, "on") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "nopass") == null);
+    // Password stored with "#" hash-prefix representation
+    try std.testing.expect(std.mem.indexOf(u8, result, "#secret") != null);
+    // Key pattern preserved with "~" prefix inside nested array
+    try std.testing.expect(std.mem.indexOf(u8, result, "~foo:*") != null);
+    // Commands string
+    try std.testing.expect(std.mem.indexOf(u8, result, "+@all") != null);
+}
+
+test "ACL GETUSER unknown user RESP3 returns nil" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "ACL" },
+        RespValue{ .bulk_string = "GETUSER" },
+        RespValue{ .bulk_string = "nonexistent" },
+    };
+
+    const result = try cmdACLGetuser(allocator, &args, &storage, .RESP3);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("$-1\r\n", result);
 }
 
 test "ACL GETUSER unknown user returns nil" {
@@ -1165,7 +1318,7 @@ test "ACL GETUSER unknown user returns nil" {
         RespValue{ .bulk_string = "nonexistent" },
     };
 
-    const result = try cmdACLGetuser(allocator, &args, &storage);
+    const result = try cmdACLGetuser(allocator, &args, &storage, .RESP2);
     defer allocator.free(result);
 
     // Non-existent user → null bulk string
