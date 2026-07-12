@@ -29,6 +29,7 @@ pub const acl_storage = @import("storage/acl.zig");
 pub const auth_commands = @import("commands/auth.zig");
 pub const scripting_storage = @import("storage/scripting.zig");
 pub const transactions_commands = @import("commands/transactions.zig");
+pub const utility_commands = @import("commands/utility.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;

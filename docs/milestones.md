@@ -3,10 +3,10 @@
 ## Current Status
 
 - **Latest release**: v0.1.0
-- **Iterations complete**: 408 (500+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-408 complete ✅, 2/5 zuda migrations, sailor v2.83.0 migrated)
+- **Iterations complete**: 409 (500+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅, **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-409 complete ✅, 2/5 zuda migrations, sailor v2.83.0 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-408 complete ✅
-- **Next milestone**: Iteration 409 (additional Redis compatibility fixes)
+- **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-409 complete ✅
+- **Next milestone**: Iteration 410 (additional Redis compatibility fixes)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
 - **Real implementations**: SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE, WAIT, AUTH, SELECT (all have real implementations as of Iteration 95-125)
@@ -38,6 +38,7 @@
 | 294 | INCRBYFLOAT/HINCRBYFLOAT NaN/Infinity handling + duplicate formatFloat fix | Done ✅ |
 | 295 | Case-insensitive LMPOP/ZMPOP direction keywords + GETEX EXAT/PXAT timestamp=0 fix | Done ✅ |
 | 296 | LPOP/RPOP null array (`*-1\r\n`) for non-existent key with count parameter | Done ✅ |
+| 409 | RESET full connection-state reset (Redis spec compliance) — RESET now deauthenticates the connection (`ClientRegistry.deauthenticate()`, requires re-AUTH), restores `CLIENT REPLY` to ON (clears SKIP/OFF), and turns off MONITOR mode, in addition to the previously-implemented MULTI/WATCH/pubsub/name/protocol/db resets; added `tests/test_iter409.zig` (5 integration tests, registered in build.zig's `test` step via the `zoltraak` module); also added `pub const utility_commands = @import("commands/utility.zig");` re-export to `src/main.zig` (utility.zig was the one command module missing from the public re-export list, blocking external test access to `cmdReset`/`cmdEcho`/etc.) | Done ✅ |
 | 303 | OBJECT ENCODING stat-neutral string peek — `peekStringEncoding()` avoids spurious keyspace_hits increment; fixes LRU-eviction accuracy for OBJECT ENCODING on string keys | Done ✅ |
 | 304 | XADD partial auto-seq ID (`ms-*`) — `StreamId.parse()` now handles `"ms-*"` format where ms is fixed and seq is auto-generated; seq increments within same ms, resets for new ms, rejects older ms; 5 storage unit tests + 4 command tests | Done ✅ |
 | 305 | INFO persistence accuracy — `rdb_changes_since_last_save` tracks actual write count via `dirty_count` atomic counter (incremented in set/del/lpush/rpush/hset/sadd/zadd, reset on `updateLastSaveTime()`); `rdb_last_save_time` reads from `storage.getLastSaveTime()` instead of hardcoded 0; 5 storage unit tests + 3 INFO command tests | Done ✅ |

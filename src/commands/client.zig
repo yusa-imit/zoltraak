@@ -312,6 +312,19 @@ pub const ClientRegistry = struct {
         }
     }
 
+    /// Clear the authenticated ACL user for a client connection (used by RESET)
+    pub fn deauthenticate(self: *ClientRegistry, client_id: u64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.clients.getPtr(client_id)) |info| {
+            if (info.authenticated_user) |old_user| {
+                self.allocator.free(old_user);
+            }
+            info.authenticated_user = null;
+        }
+    }
+
     /// Check if a client has explicitly authenticated (authenticated_user != null)
     pub fn isAuthenticated(self: *ClientRegistry, client_id: u64) bool {
         self.mutex.lock();

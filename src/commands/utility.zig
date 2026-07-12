@@ -59,6 +59,9 @@ pub fn cmdQuit(
 /// - Removes the connection name
 /// - Switches back to RESP2 protocol (default)
 /// - Returns to database 0 (if multi-DB support exists)
+/// - Deauthenticates the connection (requires re-AUTH if auth is required)
+/// - Disables CLIENT REPLY SKIP/OFF (back to ON)
+/// - Turns off MONITOR mode
 ///
 /// Returns "RESET" on success
 pub fn cmdReset(
@@ -94,6 +97,15 @@ pub fn cmdReset(
 
     // 5. Switch to database 0
     client_registry.setSelectedDb(client_id, 0);
+
+    // 6. Deauthenticate — a previously authenticated client must re-AUTH
+    client_registry.deauthenticate(client_id);
+
+    // 7. Disable CLIENT REPLY SKIP/OFF — reply mode returns to ON
+    client_registry.setReplyMode(client_id, .ON);
+
+    // 8. Turn off MONITOR mode
+    client_registry.setMonitorMode(client_id, false);
 
     // Return "RESET" as simple string
     return try w.writeSimpleString("RESET");
