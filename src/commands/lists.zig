@@ -89,16 +89,10 @@ pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     // Publish notification
     notifyListEvent(allocator, storage, ps, db_index, key, "lpush");
 
-    // Generate invalidation messages for tracking clients
-    const invalidation_messages = client_registry.getInvalidationMessages(key, client_id, allocator) catch &[_]client_mod.InvalidationMessage{};
-    defer {
-        for (invalidation_messages) |*msg| {
-            var m = msg.*;
-            m.deinit(allocator);
-        }
-        allocator.free(invalidation_messages);
-    }
-    // TODO: Send invalidation push messages to RESP3 clients
+    // Notify tracking clients (client-side caching invalidation)
+    client_mod.notifyInvalidation(client_registry, key, client_id, allocator) catch |err| {
+        std.log.warn("LPUSH: failed to notify invalidation for key '{s}': {}", .{ key, err });
+    };
 
     return w.writeInteger(@intCast(length));
 }
