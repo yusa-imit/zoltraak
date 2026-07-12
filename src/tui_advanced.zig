@@ -735,6 +735,51 @@ pub fn renderSunburstChart(
     chart.render(frame.buffer, area);
 }
 
+/// Memory usage OHLC (open/high/low/close) sample for one sampling window,
+/// summarizing used_memory (bytes) fluctuation observed within that period.
+pub const MemoryUsagePeriod = struct {
+    label: []const u8 = "",
+    open_bytes: f32 = 0,
+    high_bytes: f32 = 0,
+    low_bytes: f32 = 0,
+    close_bytes: f32 = 0,
+};
+
+/// Render CandlestickChart widget for memory usage OHLC per period using sailor v2.83.0.
+/// Each candle summarizes used_memory (bytes) fluctuation within a sampling window —
+/// bullish (green) candles show net growth over the window, bearish (red) show net
+/// shrink — letting an operator spot memory growth trends and volatility at a glance,
+/// complementing the point-in-time gauges from renderRadialBar with a time-series view.
+pub fn renderMemoryUsageCandles(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    periods: []const MemoryUsagePeriod,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    var candles_buf: [tui.widgets.CandlestickChart.MAX_CANDLES]tui.widgets.Candle = undefined;
+    const n = @min(periods.len, tui.widgets.CandlestickChart.MAX_CANDLES);
+    for (0..n) |i| {
+        const p = periods[i];
+        candles_buf[i] = .{
+            .label = p.label,
+            .open = p.open_bytes,
+            .high = p.high_bytes,
+            .low = p.low_bytes,
+            .close = p.close_bytes,
+        };
+    }
+
+    const chart = tui.widgets.CandlestickChart.init()
+        .withCandles(candles_buf[0..n])
+        .withShowLabels(true)
+        .withUpStyle(tui.Style{ .fg = tui.Color.green })
+        .withDownStyle(tui.Style{ .fg = tui.Color.red })
+        .withFocused(0);
+
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
