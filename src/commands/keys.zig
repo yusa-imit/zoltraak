@@ -763,6 +763,14 @@ fn cmdExpireImpl(
         }
     }
 
+    // NX is mutually exclusive with XX/GT/LT; GT and LT are mutually exclusive.
+    if ((options & 1) != 0 and (options & (2 | 4 | 8)) != 0) {
+        return w.writeError("ERR NX and XX, GT or LT options at the same time are not compatible");
+    }
+    if ((options & 4) != 0 and (options & 8) != 0) {
+        return w.writeError("ERR GT and LT options at the same time are not compatible");
+    }
+
     // Redis 7.0+: 0 or negative timeout deletes the key immediately.
     // NX/XX/GT/LT are ignored for past-timestamp deletes (matching Redis behaviour).
     if (time_val <= 0) {
@@ -852,6 +860,14 @@ fn cmdExpireatImpl(
         } else {
             return w.writeError("ERR syntax error");
         }
+    }
+
+    // NX is mutually exclusive with XX/GT/LT; GT and LT are mutually exclusive.
+    if ((options & 1) != 0 and (options & (2 | 4 | 8)) != 0) {
+        return w.writeError("ERR NX and XX, GT or LT options at the same time are not compatible");
+    }
+    if ((options & 4) != 0 and (options & 8) != 0) {
+        return w.writeError("ERR GT and LT options at the same time are not compatible");
     }
 
     // Convert to milliseconds if input is seconds
@@ -3567,6 +3583,104 @@ test "EXPIRE - zero timeout on non-existent key returns 0" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "EXPIRE - NX combined with XX returns incompatibility error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("nxxxkey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIRE" },
+        .{ .bulk_string = "nxxxkey" },
+        .{ .bulk_string = "100" },
+        .{ .bulk_string = "NX" },
+        .{ .bulk_string = "XX" },
+    };
+    const result = try cmdExpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("-ERR NX and XX, GT or LT options at the same time are not compatible\r\n", result);
+    // Key must be untouched: no TTL should have been set.
+    try std.testing.expectEqual(@as(i64, -1), storage.getTtlMs("nxxxkey"));
+}
+
+test "EXPIRE - NX combined with GT returns incompatibility error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("nxgtkey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIRE" },
+        .{ .bulk_string = "nxgtkey" },
+        .{ .bulk_string = "100" },
+        .{ .bulk_string = "NX" },
+        .{ .bulk_string = "GT" },
+    };
+    const result = try cmdExpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("-ERR NX and XX, GT or LT options at the same time are not compatible\r\n", result);
+}
+
+test "EXPIRE - GT combined with LT returns incompatibility error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("gtltkey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIRE" },
+        .{ .bulk_string = "gtltkey" },
+        .{ .bulk_string = "100" },
+        .{ .bulk_string = "GT" },
+        .{ .bulk_string = "LT" },
+    };
+    const result = try cmdExpire(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("-ERR GT and LT options at the same time are not compatible\r\n", result);
+}
+
+test "EXPIREAT - NX combined with XX returns incompatibility error" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("eanxxxkey", "hello", null);
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const future_ts: i64 = @divTrunc(Storage.getCurrentTimestamp(), 1000) + 1000;
+    var ts_buf: [32]u8 = undefined;
+    const ts_str = try std.fmt.bufPrint(&ts_buf, "{d}", .{future_ts});
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "EXPIREAT" },
+        .{ .bulk_string = "eanxxxkey" },
+        .{ .bulk_string = ts_str },
+        .{ .bulk_string = "NX" },
+        .{ .bulk_string = "XX" },
+    };
+    const result = try cmdExpireat(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("-ERR NX and XX, GT or LT options at the same time are not compatible\r\n", result);
 }
 
 test "PEXPIRE - zero timeout deletes key immediately (Redis 7.0+ compat)" {

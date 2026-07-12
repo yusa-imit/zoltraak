@@ -1697,6 +1697,26 @@ pub fn build(b: *std.Build) void {
     const run_iter406_tests = b.addRunArtifact(iter406_tests);
     test_step.dependOn(&run_iter406_tests.step);
 
+    // Iteration 407: EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT NX/XX/GT/LT compatibility validation
+    const iter407_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter407.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter407_tests.linkSystemLibrary("luajit-5.1");
+    iter407_tests.linkLibC();
+    iter407_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter407_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter407_tests = b.addRunArtifact(iter407_tests);
+    test_step.dependOn(&run_iter407_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
