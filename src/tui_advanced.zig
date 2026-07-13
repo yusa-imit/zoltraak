@@ -780,6 +780,57 @@ pub fn renderMemoryUsageCandles(
     chart.render(frame.buffer, area);
 }
 
+/// Memory budget for a single tracked resource, expressed as an actual value
+/// against a target ceiling (e.g. used_memory vs maxmemory).
+pub const MemoryBudget = struct {
+    label: []const u8 = "MEM",
+    used_bytes: f32 = 0,
+    limit_bytes: f32 = 0,
+};
+
+/// Render BulletChart widget for used_memory-vs-maxmemory KPI using sailor v2.84.0.
+/// Each bullet shows the current usage as a value bar, maxmemory as a target tick,
+/// and safe/warn/critical qualitative bands (60%/85%/100% of the limit) so an operator
+/// can see at a glance how close a database is to its configured memory ceiling —
+/// a compact single-row complement to the multi-arc renderRadialBar gauge.
+pub fn renderMemoryBudgetBullet(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    budgets: []const MemoryBudget,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    var ranges_buf: [tui.widgets.BulletChart.MAX_BULLETS][3]f32 = undefined;
+    var bullets_buf: [tui.widgets.BulletChart.MAX_BULLETS]tui.widgets.Bullet = undefined;
+    const n = @min(budgets.len, tui.widgets.BulletChart.MAX_BULLETS);
+
+    var max_value: f32 = 1.0;
+    for (0..n) |i| {
+        max_value = @max(max_value, budgets[i].limit_bytes);
+    }
+
+    for (0..n) |i| {
+        const b = budgets[i];
+        ranges_buf[i] = .{ b.limit_bytes * 0.6, b.limit_bytes * 0.85, b.limit_bytes };
+        bullets_buf[i] = .{
+            .label = b.label,
+            .value = b.used_bytes,
+            .target = b.limit_bytes,
+            .ranges = ranges_buf[i][0..],
+            .style = tui.Style{ .fg = tui.Color.cyan },
+        };
+    }
+
+    const chart = tui.widgets.BulletChart.init()
+        .withBullets(bullets_buf[0..n])
+        .withMaxValue(max_value)
+        .withShowLabels(true)
+        .withShowValues(true)
+        .withFocused(0);
+
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
