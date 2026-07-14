@@ -13,6 +13,31 @@ const JsonNode = json_value_mod.JsonNode;
 const JsonPath = jsonpath_mod.JsonPath;
 const PubSub = pubsub_mod.PubSub;
 
+/// Free heap-allocated string content owned by a JSON command's RespValue result.
+///
+/// cmdJsonGet/cmdJsonMget/cmdJsonArrpop build their response by calling
+/// JsonNode.stringify() (or wrapping such strings in an array), which
+/// allocates fresh memory the RESP writer only copies from — it never takes
+/// ownership. Call this immediately after the wire-format bytes have been
+/// produced (e.g. after Writer.writeRespValue()) to release that source
+/// memory. Safe to call on any RespValue: variants with no heap-owned
+/// content (error_string literals, null_bulk_string, etc.) are left alone.
+pub fn freeJsonBulkResult(allocator: std.mem.Allocator, value: RespValue) void {
+    switch (value) {
+        .bulk_string => |s| allocator.free(s),
+        .array => |arr| {
+            for (arr) |item| {
+                switch (item) {
+                    .bulk_string => |s| allocator.free(s),
+                    else => {},
+                }
+            }
+            allocator.free(arr);
+        },
+        else => {},
+    }
+}
+
 /// Publish keyspace notification for a JSON command
 /// Handles fire-and-forget notification publishing with .module flag (JSON type)
 fn notifyJsonEvent(

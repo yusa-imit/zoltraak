@@ -111,19 +111,7 @@ pub const JsonNode = union(enum) {
                 try buf.appendSlice(allocator, str);
             },
             .string => |s| {
-                try buf.append(allocator, '"');
-                // TODO: escape special characters
-                for (s) |c| {
-                    switch (c) {
-                        '"' => try buf.appendSlice(allocator, "\\\""),
-                        '\\' => try buf.appendSlice(allocator, "\\\\"),
-                        '\n' => try buf.appendSlice(allocator, "\\n"),
-                        '\r' => try buf.appendSlice(allocator, "\\r"),
-                        '\t' => try buf.appendSlice(allocator, "\\t"),
-                        else => try buf.append(allocator, c),
-                    }
-                }
-                try buf.append(allocator, '"');
+                try writeEscapedJsonString(buf, allocator, s);
             },
             .array => |arr| {
                 try buf.append(allocator, '[');
@@ -141,15 +129,39 @@ pub const JsonNode = union(enum) {
                     if (!first) try buf.append(allocator, ',');
                     first = false;
 
-                    try buf.append(allocator, '"');
-                    try buf.appendSlice(allocator, entry.key_ptr.*);
-                    try buf.append(allocator, '"');
+                    try writeEscapedJsonString(buf, allocator, entry.key_ptr.*);
                     try buf.append(allocator, ':');
                     try stringifyInternal(entry.value_ptr.*, buf, allocator);
                 }
                 try buf.append(allocator, '}');
             },
         }
+    }
+
+    /// Write `s` as a double-quoted JSON string literal, escaping quotes,
+    /// backslashes, and all control characters (0x00-0x1F) per RFC 8259 —
+    /// used for both string values and object keys, since keys come from
+    /// parsed input and may contain arbitrary bytes.
+    fn writeEscapedJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+        try buf.append(allocator, '"');
+        for (s) |c| {
+            switch (c) {
+                '"' => try buf.appendSlice(allocator, "\\\""),
+                '\\' => try buf.appendSlice(allocator, "\\\\"),
+                '\n' => try buf.appendSlice(allocator, "\\n"),
+                '\r' => try buf.appendSlice(allocator, "\\r"),
+                '\t' => try buf.appendSlice(allocator, "\\t"),
+                0x08 => try buf.appendSlice(allocator, "\\b"),
+                0x0C => try buf.appendSlice(allocator, "\\f"),
+                0x00...0x07, 0x0B, 0x0E...0x1F => {
+                    var esc_buf: [6]u8 = undefined;
+                    const esc = try std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{c});
+                    try buf.appendSlice(allocator, esc);
+                },
+                else => try buf.append(allocator, c),
+            }
+        }
+        try buf.append(allocator, '"');
     }
 
     /// Deep clone a node
@@ -372,6 +384,44 @@ test "stringify nested object" {
     }
 
     try std.testing.expectEqual(@as(usize, 1), reparsed.object.count());
+}
+
+test "stringify escapes special characters in object keys" {
+    const allocator = std.testing.allocator;
+
+    // Key itself contains a quote and a backslash — raw output would be invalid JSON.
+    const node = try JsonNode.parse(allocator, "{\"a\\\"b\\\\c\":1}");
+    defer {
+        node.deinit(allocator);
+        allocator.destroy(node);
+    }
+
+    const str = try node.stringify(allocator);
+    defer allocator.free(str);
+
+    // Must round-trip through a real JSON parser without erroring.
+    const reparsed = try JsonNode.parse(allocator, str);
+    defer {
+        reparsed.deinit(allocator);
+        allocator.destroy(reparsed);
+    }
+
+    try std.testing.expect(reparsed.object.contains("a\"b\\c"));
+}
+
+test "stringify escapes control characters in string values" {
+    const allocator = std.testing.allocator;
+
+    const node = try allocator.create(JsonNode);
+    defer allocator.destroy(node);
+    // Backspace (0x08), form feed (0x0C), and a non-printable control char (0x01)
+    // have no literal-byte representation in JSON and must be \u-escaped.
+    node.* = JsonNode{ .string = "a\x08b\x0Cc\x01d" };
+
+    const str = try node.stringify(allocator);
+    defer allocator.free(str);
+
+    try std.testing.expectEqualStrings("\"a\\bb\\fc\\u0001d\"", str);
 }
 
 test "clone node" {

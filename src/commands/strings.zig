@@ -2143,6 +2143,7 @@ pub fn executeCommand(
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.GET")) {
             const result = try json_cmds.cmdJsonGet(storage, array, allocator);
+            defer json_cmds.freeJsonBulkResult(allocator, result);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -2159,6 +2160,7 @@ pub fn executeCommand(
             break :blk try w.writeRespValue(result);
         } else if (std.mem.eql(u8, cmd_upper, "JSON.MGET")) {
             const result = try json_cmds.cmdJsonMget(storage, array, allocator);
+            defer json_cmds.freeJsonBulkResult(allocator, result);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);
@@ -2234,6 +2236,7 @@ pub fn executeCommand(
         } else if (std.mem.eql(u8, cmd_upper, "JSON.ARRPOP")) {
             const selected_db = client_registry.getSelectedDb(client_id);
             const result = try json_cmds.cmdJsonArrpop(storage, array, allocator, ps, selected_db);
+            defer json_cmds.freeJsonBulkResult(allocator, result);
             var w = Writer.init(allocator);
             defer w.deinit();
             break :blk try w.writeRespValue(result);

@@ -30,6 +30,8 @@ pub const auth_commands = @import("commands/auth.zig");
 pub const scripting_storage = @import("storage/scripting.zig");
 pub const transactions_commands = @import("commands/transactions.zig");
 pub const utility_commands = @import("commands/utility.zig");
+pub const json_value = @import("storage/json_value.zig");
+pub const json_commands = @import("commands/json.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
