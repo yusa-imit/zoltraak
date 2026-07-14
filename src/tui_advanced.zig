@@ -884,6 +884,48 @@ pub fn renderKeyspaceChangeSlope(
     chart.render(frame.buffer, area);
 }
 
+/// Per-command latency histogram — pre-binned frequency counts sampled from
+/// LATENCY HISTORY / commandstats, one bucket-count series per command.
+pub const CommandLatencyHistogram = struct {
+    command: []const u8 = "",
+    /// Frequency count per latency bucket (e.g. <1ms, <2ms, <4ms, ... doubling).
+    bucket_counts: []const f32 = &.{},
+};
+
+/// Render RidgelinePlot widget comparing per-command latency distribution
+/// shape using sailor v2.88.0. Each command draws a stacked density
+/// silhouette from its LATENCY HISTORY / commandstats bucket counts, letting
+/// an operator spot which commands have wide/bimodal/skewed latency spread
+/// at a glance — a many-category distribution-shape complement to the
+/// single-line renderKeyspaceChangeSlope.
+pub fn renderCommandLatencyRidgeline(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    histograms: []const CommandLatencyHistogram,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const n = @min(histograms.len, tui.widgets.RidgelinePlot.MAX_SERIES);
+
+    var series_buf: [tui.widgets.RidgelinePlot.MAX_SERIES]tui.widgets.RidgelineSeries = undefined;
+    for (0..n) |i| {
+        series_buf[i] = .{
+            .label = histograms[i].command,
+            .values = histograms[i].bucket_counts,
+        };
+    }
+
+    const plot = tui.widgets.RidgelinePlot.init()
+        .withSeries(series_buf[0..n])
+        .withSharedScale(true)
+        .withOverlap(1)
+        .withReverse(false)
+        .withLabelColumnWidth(10)
+        .withFocused(0);
+
+    plot.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
