@@ -831,6 +831,59 @@ pub fn renderMemoryBudgetBullet(
     chart.render(frame.buffer, area);
 }
 
+/// Per-database key count sampled at two points in time (e.g. before/after
+/// a BGSAVE, FLUSHDB, or migration window), used to visualize keyspace churn.
+pub const DatabaseKeyCountChange = struct {
+    db_index: u16 = 0,
+    before_count: f32 = 0,
+    after_count: f32 = 0,
+};
+
+/// Render SlopeChart widget for per-database keyspace change using sailor v2.87.0.
+/// Each database draws a diagonal line from its before_count to after_count,
+/// with direction-based coloring (increase/decrease/flat) so an operator can
+/// see at a glance which databases grew or shrank across a sampling window —
+/// a two-point-per-category complement to the single-point renderDotPlot.
+pub fn renderKeyspaceChangeSlope(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    databases: []const DatabaseKeyCountChange,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    var items_buf: [tui.widgets.SlopeChart.MAX_ITEMS]tui.widgets.SlopeItem = undefined;
+    const n = @min(databases.len, tui.widgets.SlopeChart.MAX_ITEMS);
+
+    var label_buf: [tui.widgets.SlopeChart.MAX_ITEMS][16]u8 = undefined;
+    var max_value: f32 = 1.0;
+    for (0..n) |i| {
+        const db = databases[i];
+        max_value = @max(max_value, @max(db.before_count, db.after_count));
+    }
+
+    for (0..n) |i| {
+        const db = databases[i];
+        const label = std.fmt.bufPrint(&label_buf[i], "db{d}", .{db.db_index}) catch "db?";
+        items_buf[i] = .{
+            .label = label,
+            .left_value = db.before_count,
+            .right_value = db.after_count,
+        };
+    }
+
+    const chart = tui.widgets.SlopeChart.init()
+        .withItems(items_buf[0..n])
+        .withMinValue(0.0)
+        .withMaxValue(max_value)
+        .withLeftLabel("before")
+        .withRightLabel("after")
+        .withShowLabels(true)
+        .withShowValues(true)
+        .withFocused(0);
+
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
