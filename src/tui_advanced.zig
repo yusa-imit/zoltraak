@@ -926,6 +926,49 @@ pub fn renderCommandLatencyRidgeline(
     plot.render(frame.buffer, area);
 }
 
+/// Per-command popularity rank sampled at successive time points, e.g. one
+/// rank per periodic COMMAND STATS / INFO commandstats snapshot ordered by
+/// call count (rank 1 = most-called command in that snapshot).
+pub const CommandRankSnapshot = struct {
+    command: []const u8 = "",
+    /// Rank at each sampled time point (1-based, 1 = most popular).
+    ranks: []const u32 = &.{},
+};
+
+/// Render BumpChart widget comparing per-command call-count rank over
+/// successive sampling intervals using sailor v2.89.0. Each command draws a
+/// polyline connecting its ranks across time points, with '/' and '\\'
+/// glyphs marking rank improvement/decline between samples — a
+/// leaderboard/standings-style complement to the distribution-shape
+/// renderCommandLatencyRidgeline.
+pub fn renderCommandPopularityBump(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    snapshots: []const CommandRankSnapshot,
+    timepoint_labels: []const []const u8,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const n = @min(snapshots.len, tui.widgets.BumpChart.MAX_SERIES);
+
+    var series_buf: [tui.widgets.BumpChart.MAX_SERIES]tui.widgets.BumpSeries = undefined;
+    for (0..n) |i| {
+        series_buf[i] = .{
+            .label = snapshots[i].command,
+            .ranks = snapshots[i].ranks,
+        };
+    }
+
+    const chart = tui.widgets.BumpChart.init()
+        .withSeries(series_buf[0..n])
+        .withTimepointLabels(timepoint_labels)
+        .withShowTimepointLabels(timepoint_labels.len > 0)
+        .withShowLabels(true)
+        .withFocused(0);
+
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
