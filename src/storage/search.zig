@@ -642,6 +642,256 @@ fn compareByScore(_: void, a: Suggestion, b: Suggestion) bool {
     return a.score > b.score;
 }
 
+const json_value = @import("json_value.zig");
+
+/// Inserts `name`/`value` into an owned `StringHashMap([]const u8)` (both keys and values
+/// heap-allocated by `allocator`), duplicating both and freeing any prior value already
+/// stored under `name`. Plain `HashMap.put` would leak here: it overwrites `value_ptr` without
+/// freeing the old value, and leaves a freshly-duplicated `name` unused since `key_ptr` is
+/// only set on first insert.
+fn putOwnedField(allocator: Allocator, fields: *std.StringHashMap([]const u8), name: []const u8, value: []const u8) !void {
+    const value_copy = try allocator.dupe(u8, value);
+    errdefer allocator.free(value_copy);
+
+    const gop = try fields.getOrPut(name);
+    if (gop.found_existing) {
+        allocator.free(gop.value_ptr.*);
+    } else {
+        gop.key_ptr.* = allocator.dupe(u8, name) catch |err| {
+            _ = fields.remove(name);
+            return err;
+        };
+    }
+    gop.value_ptr.* = value_copy;
+}
+
+/// A document that matched a query, with its indexed field values extracted.
+/// Used internally while scanning storage for FT.SEARCH / FT.AGGREGATE.
+const MatchedDoc = struct {
+    id: []const u8,
+    fields: std.StringHashMap([]const u8),
+
+    fn deinit(self: *MatchedDoc, allocator: Allocator) void {
+        allocator.free(self.id);
+        var it = self.fields.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.fields.deinit();
+    }
+};
+
+/// Strips a leading "@" from an aggregation pipeline field reference (e.g. "@price" -> "price").
+fn stripFieldPrefix(raw: []const u8) []const u8 {
+    return if (raw.len > 0 and raw[0] == '@') raw[1..] else raw;
+}
+
+fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn parseRangeBound(s: []const u8) ?f64 {
+    if (std.mem.eql(u8, s, "-inf")) return -std.math.inf(f64);
+    if (std.mem.eql(u8, s, "+inf") or std.mem.eql(u8, s, "inf")) return std.math.inf(f64);
+    return std.fmt.parseFloat(f64, s) catch null;
+}
+
+/// Matches a NUMERIC range filter, e.g. `@price:[10 20]` (range_str = "10 20").
+fn matchesNumericRange(fields: *const std.StringHashMap([]const u8), field_name: []const u8, range_str: []const u8) bool {
+    const field_val = fields.get(field_name) orelse return false;
+    const num = std.fmt.parseFloat(f64, field_val) catch return false;
+
+    var parts = std.mem.splitScalar(u8, range_str, ' ');
+    const min_str = parts.next() orelse return false;
+    const max_str = parts.next() orelse return false;
+
+    const min_val = parseRangeBound(min_str) orelse return false;
+    const max_val = parseRangeBound(max_str) orelse return false;
+
+    return num >= min_val and num <= max_val;
+}
+
+/// Matches a single query term against a document's indexed fields.
+/// Supports plain full-text terms (case-insensitive substring match across all fields),
+/// `@field:value` / `@field:{tag}` exact-ish matches, and `@field:[min max]` numeric ranges.
+fn matchesTerm(fields: *const std.StringHashMap([]const u8), term: []const u8) bool {
+    if (term.len > 1 and term[0] == '@') {
+        const colon_idx = std.mem.indexOfScalar(u8, term, ':') orelse return false;
+        const field_name = term[1..colon_idx];
+        var value_part = term[colon_idx + 1 ..];
+
+        if (value_part.len >= 2 and value_part[0] == '[' and value_part[value_part.len - 1] == ']') {
+            return matchesNumericRange(fields, field_name, value_part[1 .. value_part.len - 1]);
+        }
+        if (value_part.len >= 2 and value_part[0] == '{' and value_part[value_part.len - 1] == '}') {
+            value_part = value_part[1 .. value_part.len - 1];
+        }
+
+        const field_val = fields.get(field_name) orelse return false;
+        return containsCaseInsensitive(field_val, value_part);
+    }
+
+    var it = fields.iterator();
+    while (it.next()) |entry| {
+        if (containsCaseInsensitive(entry.value_ptr.*, term)) return true;
+    }
+    return false;
+}
+
+/// Matches a full query string (space-separated terms, ANDed together) against a document.
+/// `*` (or an empty/whitespace-only query) matches every document.
+fn matchesQuery(fields: *const std.StringHashMap([]const u8), query: []const u8) bool {
+    const trimmed = std.mem.trim(u8, query, " \t\r\n");
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "*")) return true;
+
+    var terms = std.mem.splitScalar(u8, trimmed, ' ');
+    while (terms.next()) |raw_term| {
+        if (raw_term.len == 0) continue;
+        if (!matchesTerm(fields, raw_term)) return false;
+    }
+    return true;
+}
+
+/// Resolves a simple JSONPath (e.g. "$.a.b", "a.b", or "name") to a node under root.
+/// Only supports plain object traversal (no array indices/wildcards) — sufficient for
+/// scalar field extraction used by FT.SEARCH / FT.AGGREGATE over JSON-indexed documents.
+fn resolveJsonPath(root: *json_value.JsonNode, raw_path: []const u8) ?*json_value.JsonNode {
+    var path = raw_path;
+    if (path.len > 0 and path[0] == '$') path = path[1..];
+    if (path.len > 0 and path[0] == '.') path = path[1..];
+    if (path.len == 0) return root;
+
+    var current = root;
+    var seg_iter = std.mem.splitScalar(u8, path, '.');
+    while (seg_iter.next()) |segment| {
+        if (segment.len == 0) continue;
+        switch (current.*) {
+            .object => |*obj| {
+                current = obj.get(segment) orelse return null;
+            },
+            else => return null,
+        }
+    }
+    return current;
+}
+
+/// Stringifies a scalar JsonNode for use as an indexed field value.
+/// Returns null for non-scalar nodes (array/object) or JSON null (field is omitted).
+fn jsonNodeToString(allocator: Allocator, node: *json_value.JsonNode) !?[]const u8 {
+    return switch (node.*) {
+        .string => |s| try allocator.dupe(u8, s),
+        .number => |n| try std.fmt.allocPrint(allocator, "{d}", .{n}),
+        .bool => |b| try allocator.dupe(u8, if (b) "true" else "false"),
+        .null, .array, .object => null,
+    };
+}
+
+const SortCtx = struct { field: []const u8, desc: bool, numeric: bool };
+
+fn sortLessThan(ctx: SortCtx, a: MatchedDoc, b: MatchedDoc) bool {
+    const av = a.fields.get(ctx.field) orelse "";
+    const bv = b.fields.get(ctx.field) orelse "";
+    var order: std.math.Order = undefined;
+    if (ctx.numeric) {
+        const an = std.fmt.parseFloat(f64, av) catch 0;
+        const bn = std.fmt.parseFloat(f64, bv) catch 0;
+        order = std.math.order(an, bn);
+    } else {
+        order = std.mem.order(u8, av, bv);
+    }
+    return if (ctx.desc) order == .gt else order == .lt;
+}
+
+const AggSortCtx = struct { fields: []const []const u8, orders: []const bool };
+
+fn aggSortLessThan(ctx: AggSortCtx, a: AggregateRow, b: AggregateRow) bool {
+    for (ctx.fields, 0..) |raw_field, idx| {
+        const fname = stripFieldPrefix(raw_field);
+        const desc = if (idx < ctx.orders.len) ctx.orders[idx] else false;
+        const av = a.fields.get(fname) orelse "";
+        const bv = b.fields.get(fname) orelse "";
+        var order: std.math.Order = undefined;
+        if (std.fmt.parseFloat(f64, av)) |an| {
+            if (std.fmt.parseFloat(f64, bv)) |bn| {
+                order = std.math.order(an, bn);
+            } else |_| {
+                order = std.mem.order(u8, av, bv);
+            }
+        } else |_| {
+            order = std.mem.order(u8, av, bv);
+        }
+        if (order == .eq) continue;
+        return if (desc) order == .gt else order == .lt;
+    }
+    return false;
+}
+
+/// Builds a composite group key from a document's GROUPBY field values (NUL-joined).
+fn buildGroupKey(gb_fields_raw: []const []const u8, m: *const MatchedDoc, allocator: Allocator) ![]const u8 {
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer buf.deinit(allocator);
+    for (gb_fields_raw, 0..) |raw_field, idx| {
+        if (idx != 0) try buf.append(allocator, 0);
+        const fname = stripFieldPrefix(raw_field);
+        const val = m.fields.get(fname) orelse "";
+        try buf.appendSlice(allocator, val);
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
+/// Applies a single REDUCE operation (COUNT/SUM/MIN/MAX/AVG) over a group's members into `row`.
+fn applyReduce(allocator: Allocator, row: *AggregateRow, rop: ReduceOp, members: []const *MatchedDoc) !void {
+    switch (rop.reduce_type) {
+        .count => {
+            const name = rop.as_name orelse "count";
+            const val = try std.fmt.allocPrint(allocator, "{d}", .{members.len});
+            defer allocator.free(val);
+            try row.setField(name, val);
+        },
+        .sum, .min, .max, .avg => {
+            if (rop.args.len == 0) return;
+            const fname = stripFieldPrefix(rop.args[0]);
+            var sum: f64 = 0;
+            var count: usize = 0;
+            var min_v: f64 = std.math.inf(f64);
+            var max_v: f64 = -std.math.inf(f64);
+            for (members) |m| {
+                const raw = m.fields.get(fname) orelse continue;
+                const num = std.fmt.parseFloat(f64, raw) catch continue;
+                sum += num;
+                count += 1;
+                if (num < min_v) min_v = num;
+                if (num > max_v) max_v = num;
+            }
+            const result: f64 = switch (rop.reduce_type) {
+                .sum => sum,
+                .avg => if (count > 0) sum / @as(f64, @floatFromInt(count)) else 0,
+                .min => if (count > 0) min_v else 0,
+                .max => if (count > 0) max_v else 0,
+                else => unreachable,
+            };
+            const default_name = switch (rop.reduce_type) {
+                .sum => "sum",
+                .avg => "avg",
+                .min => "min",
+                .max => "max",
+                else => unreachable,
+            };
+            const name = rop.as_name orelse default_name;
+            const val = try std.fmt.allocPrint(allocator, "{d}", .{result});
+            defer allocator.free(val);
+            try row.setField(name, val);
+        },
+    }
+}
+
 /// Search index definition
 pub const SearchIndex = struct {
     /// Index name
@@ -878,52 +1128,156 @@ pub const SearchIndex = struct {
         sortby_field: ?[]const u8,
         sortby_desc: bool,
     ) !SearchResult {
-        _ = self;
-        _ = storage;
-        _ = sortby_field;
-        _ = sortby_desc;
+        var matches = try self.collectMatches(storage, allocator, query);
+        defer {
+            for (matches.items) |*m| m.deinit(allocator);
+            matches.deinit(allocator);
+        }
 
-        // Parse query into terms (simple space-separated for now)
-        const is_wildcard = std.mem.eql(u8, query, "*");
-        var terms = try std.ArrayList([]const u8).initCapacity(allocator, 0);
-        defer terms.deinit(allocator);
+        if (sortby_field) |sf| {
+            const numeric = self.fieldTypeFor(sf) == .numeric;
+            std.mem.sort(MatchedDoc, matches.items, SortCtx{ .field = sf, .desc = sortby_desc, .numeric = numeric }, sortLessThan);
+        }
 
-        if (!is_wildcard) {
-            var iter = std.mem.splitScalar(u8, query, ' ');
-            while (iter.next()) |term| {
-                if (term.len > 0) {
-                    try terms.append(allocator, term);
+        const total = matches.items.len;
+        const start = @min(limit_offset, total);
+        const end = @min(limit_offset + limit_count, total);
+
+        const docs = try allocator.alloc(Document, end - start);
+        var built: usize = 0;
+        errdefer {
+            for (docs[0..built]) |*d| d.deinit(allocator);
+            allocator.free(docs);
+        }
+
+        for (matches.items[start..end], 0..) |*m, idx| {
+            var doc = try Document.init(allocator, m.id);
+            errdefer doc.deinit(allocator);
+
+            if (!nocontent) {
+                if (return_fields) |rf| {
+                    for (rf) |fname| {
+                        if (m.fields.get(fname)) |val| {
+                            try doc.setField(fname, val);
+                        }
+                    }
+                } else {
+                    var fit = m.fields.iterator();
+                    while (fit.next()) |entry| {
+                        try doc.setField(entry.key_ptr.*, entry.value_ptr.*);
+                    }
                 }
             }
+
+            docs[idx] = doc;
+            built += 1;
         }
-
-        // Stub: For now, return empty results
-        // Real implementation will iterate storage.data and match documents
-        var documents = try std.ArrayList(Document).initCapacity(allocator, 0);
-        errdefer {
-            for (documents.items) |*doc| {
-                doc.deinit(allocator);
-            }
-            documents.deinit(allocator);
-        }
-
-        // Apply pagination
-        const start = @min(limit_offset, documents.items.len);
-        const end = @min(limit_offset + limit_count, documents.items.len);
-
-        // Create return slice
-        const result_docs = try allocator.alloc(Document, end - start);
-        errdefer allocator.free(result_docs);
-
-        // Copy documents (this is a stub - real implementation will populate from storage)
-        _ = nocontent;
-        _ = return_fields;
 
         return SearchResult{
-            .total_count = documents.items.len,
-            .documents = result_docs,
+            .total_count = total,
+            .documents = docs,
             .allocator = allocator,
         };
+    }
+
+    /// Scans storage for documents under this index's prefix whose type matches `index_on`,
+    /// extracts their indexed field values, and keeps those matching `query`.
+    /// Returns all matches, unsorted and unpaginated — callers apply sort/pagination.
+    fn collectMatches(self: *SearchIndex, storage: anytype, allocator: Allocator, query: []const u8) !std.ArrayList(MatchedDoc) {
+        var matches = try std.ArrayList(MatchedDoc).initCapacity(allocator, 0);
+        errdefer {
+            for (matches.items) |*m| m.deinit(allocator);
+            matches.deinit(allocator);
+        }
+
+        var it = storage.data.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (self.prefix) |prefix| {
+                if (!std.mem.startsWith(u8, key, prefix)) continue;
+            }
+
+            const type_ok = switch (self.index_on) {
+                .hash => entry.value_ptr.* == .hash,
+                .json => entry.value_ptr.* == .json,
+            };
+            if (!type_ok) continue;
+
+            const expires_at: ?i64 = switch (entry.value_ptr.*) {
+                .hash => |h| h.expires_at,
+                .json => |j| j.expires_at,
+                else => null,
+            };
+            if (expires_at) |e| {
+                if (std.time.milliTimestamp() >= e) continue;
+            }
+
+            var fields = try self.extractFields(allocator, entry.value_ptr);
+            if (!matchesQuery(&fields, query)) {
+                var f = fields;
+                var fit = f.iterator();
+                while (fit.next()) |fe| {
+                    allocator.free(fe.key_ptr.*);
+                    allocator.free(fe.value_ptr.*);
+                }
+                f.deinit();
+                continue;
+            }
+
+            try matches.append(allocator, MatchedDoc{
+                .id = try allocator.dupe(u8, key),
+                .fields = fields,
+            });
+        }
+
+        return matches;
+    }
+
+    /// Extracts this index's schema fields (by name, or JSONPath for JSON indexes) from a
+    /// stored value, keyed by their output name (alias if set, else the schema field name).
+    fn extractFields(self: *SearchIndex, allocator: Allocator, value_ptr: anytype) !std.StringHashMap([]const u8) {
+        var fields = std.StringHashMap([]const u8).init(allocator);
+        errdefer {
+            var it = fields.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            fields.deinit();
+        }
+
+        switch (self.index_on) {
+            .hash => {
+                if (value_ptr.* != .hash) return fields;
+                for (self.fields.items) |field| {
+                    const fv = value_ptr.hash.data.get(field.name) orelse continue;
+                    const out_name = field.alias orelse field.name;
+                    try putOwnedField(allocator, &fields, out_name, fv.data);
+                }
+            },
+            .json => {
+                if (value_ptr.* != .json) return fields;
+                for (self.fields.items) |field| {
+                    const node = resolveJsonPath(value_ptr.json.root, field.name) orelse continue;
+                    const value_copy = (try jsonNodeToString(allocator, node)) orelse continue;
+                    defer allocator.free(value_copy);
+                    const out_name = field.alias orelse field.name;
+                    try putOwnedField(allocator, &fields, out_name, value_copy);
+                }
+            },
+        }
+
+        return fields;
+    }
+
+    /// Looks up the schema FieldType for an output field name (name or alias). Defaults to
+    /// .text when unknown (e.g. sorting by a field not declared in the schema).
+    fn fieldTypeFor(self: *SearchIndex, name: []const u8) FieldType {
+        for (self.fields.items) |field| {
+            const out_name = field.alias orelse field.name;
+            if (std.mem.eql(u8, out_name, name)) return field.field_type;
+        }
+        return .text;
     }
 
     /// Performs aggregation pipeline on search results (stub implementation)
@@ -961,32 +1315,108 @@ pub const SearchIndex = struct {
         limit_offset: usize,
         limit_count: usize,
     ) !AggregateResult {
-        // TODO: Real implementation will use all parameters for:
-        // 1. search() with query to get base documents
-        // 2. LOAD clause to extract load_fields
-        // 3. GROUP BY groupby_fields
-        // 4. Apply reduce_ops (COUNT/SUM/AVG/MIN/MAX)
-        // 5. SORT BY sortby_fields with sortby_orders
-        // 6. Apply LIMIT limit_offset/limit_count
+        var matches = try self.collectMatches(storage, allocator, query);
+        defer {
+            for (matches.items) |*m| m.deinit(allocator);
+            matches.deinit(allocator);
+        }
 
-        _ = self;
-        _ = storage;
-        _ = query;
-        _ = load_fields;
-        _ = groupby_fields;
-        _ = reduce_ops;
-        _ = sortby_fields;
-        _ = sortby_orders;
-        _ = limit_offset;
-        _ = limit_count;
+        var rows = try std.ArrayList(AggregateRow).initCapacity(allocator, 0);
+        errdefer {
+            for (rows.items) |*r| r.deinit();
+            rows.deinit(allocator);
+        }
 
-        // Stub: For now, return empty results
+        if (groupby_fields) |gb_fields_raw| {
+            var groups = std.StringHashMap(std.ArrayList(*MatchedDoc)).init(allocator);
+            defer {
+                var git = groups.iterator();
+                while (git.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    entry.value_ptr.deinit(allocator);
+                }
+                groups.deinit();
+            }
+            var group_order = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+            defer group_order.deinit(allocator);
 
-        const rows = try allocator.alloc(AggregateRow, 0);
+            for (matches.items) |*m| {
+                const key = try buildGroupKey(gb_fields_raw, m, allocator);
+                defer allocator.free(key);
+
+                const gop = try groups.getOrPut(key);
+                if (!gop.found_existing) {
+                    gop.key_ptr.* = try allocator.dupe(u8, key);
+                    gop.value_ptr.* = try std.ArrayList(*MatchedDoc).initCapacity(allocator, 0);
+                    try group_order.append(allocator, gop.key_ptr.*);
+                }
+                try gop.value_ptr.append(allocator, m);
+            }
+
+            for (group_order.items) |gkey| {
+                const members = groups.get(gkey).?;
+                var row = AggregateRow.init(allocator);
+                errdefer row.deinit();
+
+                if (members.items.len > 0) {
+                    for (gb_fields_raw) |raw_field| {
+                        const fname = stripFieldPrefix(raw_field);
+                        if (members.items[0].fields.get(fname)) |val| {
+                            try row.setField(fname, val);
+                        }
+                    }
+                }
+
+                for (reduce_ops) |rop| {
+                    try applyReduce(allocator, &row, rop, members.items);
+                }
+
+                try rows.append(allocator, row);
+            }
+        } else {
+            for (matches.items) |*m| {
+                var row = AggregateRow.init(allocator);
+                errdefer row.deinit();
+
+                if (load_fields) |lf| {
+                    for (lf) |raw_field| {
+                        const fname = stripFieldPrefix(raw_field);
+                        if (m.fields.get(fname)) |val| {
+                            try row.setField(fname, val);
+                        }
+                    }
+                } else {
+                    var fit = m.fields.iterator();
+                    while (fit.next()) |entry| {
+                        try row.setField(entry.key_ptr.*, entry.value_ptr.*);
+                    }
+                }
+
+                try rows.append(allocator, row);
+            }
+        }
+
+        if (sortby_fields) |sf_fields| {
+            const orders = sortby_orders orelse &[_]bool{};
+            std.mem.sort(AggregateRow, rows.items, AggSortCtx{ .fields = sf_fields, .orders = orders }, aggSortLessThan);
+        }
+
+        const total = rows.items.len;
+        const start = @min(limit_offset, total);
+        const end = @min(limit_offset + limit_count, total);
+
+        for (rows.items[0..start]) |*r| r.deinit();
+        for (rows.items[end..total]) |*r| r.deinit();
+
+        const result_rows = try allocator.alloc(AggregateRow, end - start);
+        for (rows.items[start..end], 0..) |r, idx| {
+            result_rows[idx] = r;
+        }
+        rows.deinit(allocator);
 
         return AggregateResult{
-            .total_count = 0,
-            .rows = rows,
+            .total_count = total,
+            .rows = result_rows,
             .allocator = allocator,
         };
     }
@@ -1087,13 +1517,7 @@ pub const Document = struct {
     ///
     /// Returns error if allocation fails or HashMap put fails.
     pub fn setField(self: *Document, name: []const u8, value: []const u8) !void {
-        const name_copy = try self.allocator.dupe(u8, name);
-        errdefer self.allocator.free(name_copy);
-
-        const value_copy = try self.allocator.dupe(u8, value);
-        errdefer self.allocator.free(value_copy);
-
-        try self.fields.put(name_copy, value_copy);
+        try putOwnedField(self.allocator, &self.fields, name, value);
     }
 };
 
@@ -1168,13 +1592,7 @@ pub const AggregateRow = struct {
     ///
     /// Returns error if allocation fails or HashMap put fails.
     pub fn setField(self: *AggregateRow, name: []const u8, value: []const u8) !void {
-        const name_copy = try self.allocator.dupe(u8, name);
-        errdefer self.allocator.free(name_copy);
-
-        const value_copy = try self.allocator.dupe(u8, value);
-        errdefer self.allocator.free(value_copy);
-
-        try self.fields.put(name_copy, value_copy);
+        try putOwnedField(self.allocator, &self.fields, name, value);
     }
 };
 

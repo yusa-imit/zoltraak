@@ -1028,6 +1028,202 @@ test "FT.SEARCH: basic search empty results" {
     try std.testing.expect(std.mem.indexOf(u8, result2, ":0") != null);
 }
 
+test "FT.SEARCH: matches indexed HASH documents by text term" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE books ON HASH PREFIX 1 book: SCHEMA title TEXT author TEXT\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    const hset1_cmd = "HSET book:1 title \"dune messiah\" author herbert\r\n";
+    const parsed_hset1 = try parseCommand(allocator, hset1_cmd);
+    defer parsed_hset1.deinit(allocator);
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const result_hset1 = try processCommand(arena2.allocator(), parsed_hset1.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result_hset1);
+
+    const hset2_cmd = "HSET book:2 title \"foundation\" author asimov\r\n";
+    const parsed_hset2 = try parseCommand(allocator, hset2_cmd);
+    defer parsed_hset2.deinit(allocator);
+    var arena3 = std.heap.ArenaAllocator.init(allocator);
+    defer arena3.deinit();
+    const result_hset2 = try processCommand(arena3.allocator(), parsed_hset2.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result_hset2);
+
+    // Only book:1 matches "dune"
+    const search_cmd = "FT.SEARCH books dune\r\n";
+    const parsed_search = try parseCommand(allocator, search_cmd);
+    defer parsed_search.deinit(allocator);
+    var arena4 = std.heap.ArenaAllocator.init(allocator);
+    defer arena4.deinit();
+    const result = try processCommand(arena4.allocator(), parsed_search.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n:1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "book:1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "herbert") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "book:2") == null);
+
+    // "*" matches both documents
+    const search_all_cmd = "FT.SEARCH books *\r\n";
+    const parsed_search_all = try parseCommand(allocator, search_all_cmd);
+    defer parsed_search_all.deinit(allocator);
+    var arena5 = std.heap.ArenaAllocator.init(allocator);
+    defer arena5.deinit();
+    const result_all = try processCommand(arena5.allocator(), parsed_search_all.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result_all);
+
+    try std.testing.expect(std.mem.startsWith(u8, result_all, "*5\r\n:2\r\n"));
+}
+
+test "FT.SEARCH: NUMERIC range filter matches only documents within bounds" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE products ON HASH PREFIX 1 prod: SCHEMA name TEXT price NUMERIC\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    inline for (.{ .{ "prod:1", "cheap", "5" }, .{ "prod:2", "mid", "15" }, .{ "prod:3", "pricey", "50" } }) |item| {
+        const hset_cmd = "HSET " ++ item[0] ++ " name " ++ item[1] ++ " price " ++ item[2] ++ "\r\n";
+        const parsed_hset = try parseCommand(allocator, hset_cmd);
+        defer parsed_hset.deinit(allocator);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const result_hset = try processCommand(arena.allocator(), parsed_hset.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+        defer allocator.free(result_hset);
+    }
+
+    // Range [10 20] should match only prod:2
+    const search_cmd = "FT.SEARCH products @price:[10 20]\r\n";
+    const parsed_search = try parseCommand(allocator, search_cmd);
+    defer parsed_search.deinit(allocator);
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const result = try processCommand(arena2.allocator(), parsed_search.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n:1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "prod:2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "prod:1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "prod:3") == null);
+}
+
+test "FT.AGGREGATE: GROUPBY with REDUCE COUNT and SUM over real HASH documents" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const create_cmd = "FT.CREATE sales ON HASH PREFIX 1 sale: SCHEMA category TAG price NUMERIC\r\n";
+    const parsed_create = try parseCommand(allocator, create_cmd);
+    defer parsed_create.deinit(allocator);
+    var arena1 = std.heap.ArenaAllocator.init(allocator);
+    defer arena1.deinit();
+    const result1 = try processCommand(arena1.allocator(), parsed_create.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result1);
+
+    inline for (.{ .{ "sale:1", "books", "10" }, .{ "sale:2", "books", "20" }, .{ "sale:3", "toys", "5" } }) |item| {
+        const hset_cmd = "HSET " ++ item[0] ++ " category " ++ item[1] ++ " price " ++ item[2] ++ "\r\n";
+        const parsed_hset = try parseCommand(allocator, hset_cmd);
+        defer parsed_hset.deinit(allocator);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const result_hset = try processCommand(arena.allocator(), parsed_hset.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+        defer allocator.free(result_hset);
+    }
+
+    const agg_cmd = "FT.AGGREGATE sales * GROUPBY 1 @category REDUCE COUNT 0 AS cnt REDUCE SUM 1 @price AS total\r\n";
+    const parsed_agg = try parseCommand(allocator, agg_cmd);
+    defer parsed_agg.deinit(allocator);
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const result = try processCommand(arena2.allocator(), parsed_agg.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(result);
+
+    // Two groups: books (cnt=2, total=30) and toys (cnt=1, total=5)
+    try std.testing.expect(std.mem.startsWith(u8, result, "*3\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "books") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "toys") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "cnt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "total") != null);
+}
+
+test "Document.setField: overwriting an existing field frees the old value without leaking" {
+    const Document = @import("../src/storage/search.zig").Document;
+    const allocator = std.testing.allocator;
+
+    var doc = try Document.init(allocator, "doc:1");
+    defer doc.deinit(allocator);
+
+    // Setting the same field name twice must not leak the first value or the
+    // re-duplicated name — std.testing.allocator asserts this on doc.deinit above.
+    try doc.setField("total", "10");
+    try doc.setField("total", "30");
+
+    try std.testing.expectEqual(@as(usize, 1), doc.fields.count());
+    try std.testing.expectEqualStrings("30", doc.fields.get("total").?);
+}
+
 test "FT.SEARCH: error on nonexistent index" {
     const allocator = std.testing.allocator;
 
