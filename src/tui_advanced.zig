@@ -1025,6 +1025,68 @@ pub fn renderMemoryByTypeMosaic(
     plot.render(frame.buffer, area);
 }
 
+/// Per-command call count within a command category, e.g. one entry per
+/// command reported by COMMAND STATS / INFO commandstats grouped under its
+/// owning category (string/list/hash/set/zset/generic/...).
+pub const CommandCallCount = struct {
+    command: []const u8 = "",
+    calls: u64 = 0,
+};
+
+/// A command category and its per-command call counts, e.g. "string" with
+/// SET/GET/INCR call counts. Used as input to renderCommandStatsIcicle.
+pub const CommandCategoryStats = struct {
+    category: []const u8 = "",
+    commands: []const CommandCallCount = &.{},
+};
+
+/// Render IcicleChart widget for a two-level command-statistics breakdown
+/// using sailor v2.91.0. The root band spans the full width; the second
+/// row divides it into category bands proportional to each category's
+/// total call count; the third row divides each category band into
+/// per-command bands proportional to that command's call count — a
+/// rectangular drill-down complement to the ring-based renderSunburstChart
+/// and the area-based renderMemoryByTypeMosaic, better suited to a
+/// depth-first "which commands dominate this category" reading.
+pub fn renderCommandStatsIcicle(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    categories: []const CommandCategoryStats,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const cat_n = @min(categories.len, tui.widgets.IcicleChart.MAX_CHILDREN_PER_NODE);
+
+    var cmd_nodes_buf: [tui.widgets.IcicleChart.MAX_CHILDREN_PER_NODE][tui.widgets.IcicleChart.MAX_CHILDREN_PER_NODE]tui.widgets.IcicleNode = undefined;
+    var cat_nodes: [tui.widgets.IcicleChart.MAX_CHILDREN_PER_NODE]tui.widgets.IcicleNode = undefined;
+
+    var root_total: f32 = 0;
+    for (0..cat_n) |i| {
+        const cat = categories[i];
+        const cmd_n = @min(cat.commands.len, tui.widgets.IcicleChart.MAX_CHILDREN_PER_NODE);
+
+        var cat_total: f32 = 0;
+        for (0..cmd_n) |j| {
+            const calls_f: f32 = @floatFromInt(cat.commands[j].calls);
+            cmd_nodes_buf[i][j] = .{ .label = cat.commands[j].command, .value = calls_f };
+            cat_total += calls_f;
+        }
+
+        cat_nodes[i] = .{ .label = cat.category, .value = cat_total, .children = cmd_nodes_buf[i][0..cmd_n] };
+        root_total += cat_total;
+    }
+
+    const root = tui.widgets.IcicleNode{ .label = "ALL", .value = root_total, .children = cat_nodes[0..cat_n] };
+
+    const chart = tui.widgets.IcicleChart.init()
+        .withRoot(root)
+        .withShowLabels(true)
+        .withShowValues(false)
+        .withFocused(&.{});
+
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,

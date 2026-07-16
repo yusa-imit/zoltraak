@@ -1929,6 +1929,26 @@ pub fn build(b: *std.Build) void {
     const run_iter419_tests = b.addRunArtifact(iter419_tests);
     test_step.dependOn(&run_iter419_tests.step);
 
+    // Iteration 420: sailor v2.91.0 + IcicleChart TUI widget
+    const iter420_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter420.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter420_tests.linkSystemLibrary("luajit-5.1");
+    iter420_tests.linkLibC();
+    iter420_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter420_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter420_tests = b.addRunArtifact(iter420_tests);
+    test_step.dependOn(&run_iter420_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
