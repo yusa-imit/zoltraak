@@ -1087,6 +1087,38 @@ pub fn renderCommandStatsIcicle(
     chart.render(frame.buffer, area);
 }
 
+/// A single boolean server setting (e.g. a CONFIG GET yes/no value) to be
+/// displayed as a toggle switch, e.g. `appendonly`, `stop-writes-on-bgsave-error`,
+/// `rdbcompression`. Used as input to renderServerFlagsPanel.
+pub const ServerBooleanFlag = struct {
+    name: []const u8 = "",
+    enabled: bool = false,
+};
+
+/// Render a panel of server boolean CONFIG settings as ToggleSwitch rows
+/// using sailor v2.92.0's ToggleSwitchGroup — a slider-style on/off complement
+/// to the checkbox-style widgets used elsewhere, better suited to settings
+/// that are inherently binary (on vs off) rather than multi-select. Each
+/// flag renders as `[◯    ] name` when disabled or `[    ◉] name` when
+/// enabled; the first flag is shown focused since this is a read-only status
+/// snapshot rather than an interactive form.
+pub fn renderServerFlagsPanel(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    flags: []const ServerBooleanFlag,
+    buf: []tui.widgets.ToggleSwitch,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const n = @min(flags.len, buf.len);
+    for (0..n) |i| {
+        buf[i] = tui.widgets.ToggleSwitch.init(flags[i].name).withChecked(flags[i].enabled);
+    }
+
+    const group = tui.widgets.ToggleSwitchGroup.init(buf[0..n]).withHelp(false);
+    group.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,

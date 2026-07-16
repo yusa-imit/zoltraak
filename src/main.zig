@@ -32,6 +32,7 @@ pub const transactions_commands = @import("commands/transactions.zig");
 pub const utility_commands = @import("commands/utility.zig");
 pub const json_value = @import("storage/json_value.zig");
 pub const json_commands = @import("commands/json.zig");
+pub const tui_advanced = @import("tui_advanced.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
