@@ -969,6 +969,62 @@ pub fn renderCommandPopularityBump(
     chart.render(frame.buffer, area);
 }
 
+/// Per-database memory usage broken down by value type (bytes), one entry
+/// per database. Used as the two-dimensional (database x type) input to
+/// renderMemoryByTypeMosaic.
+pub const DatabaseMemoryByType = struct {
+    db_index: u16 = 0,
+    string_bytes: f32 = 0,
+    list_bytes: f32 = 0,
+    hash_bytes: f32 = 0,
+    set_bytes: f32 = 0,
+    zset_bytes: f32 = 0,
+};
+
+/// Render MosaicPlot widget for two-dimensional memory-usage breakdown using
+/// sailor v2.90.0. Column widths are proportional to each database's total
+/// memory footprint; segment heights within a column are proportional to
+/// that database's per-value-type memory share (STRING/LIST/HASH/SET/ZSET) —
+/// letting an operator see both which database dominates memory usage and
+/// which data type dominates within it in a single view, complementing the
+/// ring-based renderSunburstChart (key counts) with an area-based encoding
+/// of memory bytes.
+pub fn renderMemoryByTypeMosaic(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    databases: []const DatabaseMemoryByType,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    var segments_buf: [tui.widgets.MosaicPlot.MAX_COLUMNS][5]tui.widgets.MosaicSegment = undefined;
+    var columns_buf: [tui.widgets.MosaicPlot.MAX_COLUMNS]tui.widgets.MosaicColumn = undefined;
+    const n = @min(databases.len, tui.widgets.MosaicPlot.MAX_COLUMNS);
+
+    var label_buf: [tui.widgets.MosaicPlot.MAX_COLUMNS][16]u8 = undefined;
+    for (0..n) |i| {
+        const db = databases[i];
+        segments_buf[i] = [_]tui.widgets.MosaicSegment{
+            .{ .label = "STR", .value = db.string_bytes, .style = tui.Style{ .fg = tui.Color.green } },
+            .{ .label = "LIST", .value = db.list_bytes, .style = tui.Style{ .fg = tui.Color.cyan } },
+            .{ .label = "HASH", .value = db.hash_bytes, .style = tui.Style{ .fg = tui.Color.yellow } },
+            .{ .label = "SET", .value = db.set_bytes, .style = tui.Style{ .fg = tui.Color.magenta } },
+            .{ .label = "ZSET", .value = db.zset_bytes, .style = tui.Style{ .fg = tui.Color.blue } },
+        };
+
+        const label = std.fmt.bufPrint(&label_buf[i], "db{d}", .{db.db_index}) catch "db?";
+        columns_buf[i] = .{ .label = label, .segments = segments_buf[i][0..] };
+    }
+
+    const plot = tui.widgets.MosaicPlot.init()
+        .withColumns(columns_buf[0..n])
+        .withShowColumnLabels(true)
+        .withShowSegmentLabels(true)
+        .withFocusedColumn(0)
+        .withFocusedSegment(0);
+
+    plot.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
