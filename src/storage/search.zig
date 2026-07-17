@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const zuda = @import("zuda");
 
 /// Field type for search index schema
 pub const FieldType = enum {
@@ -1421,21 +1422,26 @@ pub const SearchIndex = struct {
         };
     }
 
-    /// Performs spell checking on query terms (stub implementation)
+    /// Performs spell checking on query terms.
     ///
-    /// Returns empty suggestions for all terms. Real implementation will:
-    /// 1. Parse query into terms
-    /// 2. For each term, calculate Levenshtein distance to indexed terms
-    /// 3. Filter suggestions by distance threshold
-    /// 4. Apply include/exclude dictionaries
-    /// 5. Calculate scores based on document frequency
-    /// 6. Sort suggestions by score descending
+    /// Builds a term vocabulary by tokenizing the TEXT fields of every document
+    /// indexed under this index (scoped by prefix/type, like `search()`), tracking
+    /// how many distinct documents each lowercased term appears in. Named
+    /// dictionaries (FT.DICTADD) referenced via `include_dicts` are folded into the
+    /// candidate pool; those referenced via `exclude_dicts` are removed from it.
+    ///
+    /// For each whitespace-separated query term: if it exists in the vocabulary
+    /// as-is it is considered correctly spelled and omitted from the result
+    /// (matching Redis, which only reports terms needing correction). Otherwise,
+    /// every vocabulary term within Damerau-Levenshtein `distance` is offered as a
+    /// suggestion, scored as (documents containing the suggestion / total
+    /// documents) and sorted by score descending.
     ///
     /// Arguments:
     ///   storage: pointer to Storage for accessing data
     ///   allocator: allocator for results
     ///   query: query string to spell check
-    ///   distance: maximum Levenshtein distance (1-4)
+    ///   distance: maximum Damerau-Levenshtein distance (1-4)
     ///   include_dicts: list of dictionaries to include
     ///   exclude_dicts: list of dictionaries to exclude
     ///
@@ -1450,37 +1456,200 @@ pub const SearchIndex = struct {
         include_dicts: []const []const u8,
         exclude_dicts: []const []const u8,
     ) !SpellCheckResult {
-        _ = self;
-        _ = storage;
-        _ = distance;
-        _ = include_dicts;
-        _ = exclude_dicts;
-        _ = query;
+        var vocab = std.StringHashMap(usize).init(allocator);
+        defer {
+            var vit = vocab.iterator();
+            while (vit.next()) |entry| allocator.free(entry.key_ptr.*);
+            vocab.deinit();
+        }
+        var total_docs: usize = 0;
 
-        // Stub: Parse query into terms (simple whitespace split)
+        var it = storage.data.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (self.prefix) |prefix| {
+                if (!std.mem.startsWith(u8, key, prefix)) continue;
+            }
+
+            const type_ok = switch (self.index_on) {
+                .hash => entry.value_ptr.* == .hash,
+                .json => entry.value_ptr.* == .json,
+            };
+            if (!type_ok) continue;
+
+            const expires_at: ?i64 = switch (entry.value_ptr.*) {
+                .hash => |h| h.expires_at,
+                .json => |j| j.expires_at,
+                else => null,
+            };
+            if (expires_at) |e| {
+                if (std.time.milliTimestamp() >= e) continue;
+            }
+
+            var fields = try self.extractFields(allocator, entry.value_ptr);
+            defer {
+                var fit = fields.iterator();
+                while (fit.next()) |fe| {
+                    allocator.free(fe.key_ptr.*);
+                    allocator.free(fe.value_ptr.*);
+                }
+                fields.deinit();
+            }
+
+            total_docs += 1;
+            try self.tallyDocumentWords(allocator, &fields, &vocab);
+        }
+
+        try applyDictTerms(storage, allocator, &vocab, include_dicts, exclude_dicts);
+
         var terms = try std.ArrayList(SpellCheckTermResult).initCapacity(allocator, 0);
         errdefer {
-            for (terms.items) |*term| {
-                term.deinit();
-            }
+            for (terms.items) |*term| term.deinit();
             terms.deinit(allocator);
         }
 
-        // TODO: Real implementation will:
-        // 1. Parse query into terms
-        // 2. For each term, calculate Levenshtein distance to indexed terms
-        // 3. Filter suggestions by distance threshold
-        // 4. Apply include/exclude dictionaries
-        // 5. Calculate scores based on document frequency
-        // 6. Sort suggestions by score descending
+        const trimmed = std.mem.trim(u8, query, " \t\r\n");
+        var term_iter = std.mem.splitScalar(u8, trimmed, ' ');
+        while (term_iter.next()) |raw_term| {
+            if (raw_term.len == 0) continue;
 
-        const terms_slice = try terms.toOwnedSlice(allocator);
+            const lower_term = try std.ascii.allocLowerString(allocator, raw_term);
+            defer allocator.free(lower_term);
+
+            // Correctly spelled (present verbatim in the candidate pool): Redis omits it.
+            if (vocab.contains(lower_term)) continue;
+
+            var suggestions = try std.ArrayList(SpellCheckSuggestion).initCapacity(allocator, 0);
+            errdefer {
+                for (suggestions.items) |s| allocator.free(s.term);
+                suggestions.deinit(allocator);
+            }
+
+            var vit = vocab.iterator();
+            while (vit.next()) |ve| {
+                const d = try zuda.algorithms.string.damerauLevenshteinDistance(allocator, lower_term, ve.key_ptr.*);
+                if (d <= distance) {
+                    const score: f64 = if (total_docs > 0)
+                        @as(f64, @floatFromInt(ve.value_ptr.*)) / @as(f64, @floatFromInt(total_docs))
+                    else
+                        0.0;
+                    try suggestions.append(allocator, .{
+                        .term = try allocator.dupe(u8, ve.key_ptr.*),
+                        .score = score,
+                    });
+                }
+            }
+
+            std.mem.sort(SpellCheckSuggestion, suggestions.items, {}, spellCheckSuggestionLessThan);
+
+            try terms.append(allocator, .{
+                .original_term = try allocator.dupe(u8, raw_term),
+                .suggestions = try suggestions.toOwnedSlice(allocator),
+                .allocator = allocator,
+            });
+        }
+
         return SpellCheckResult{
-            .terms = terms_slice,
+            .terms = try terms.toOwnedSlice(allocator),
             .allocator = allocator,
         };
     }
+
+    /// Tokenizes the TEXT-typed fields of a single document into lowercased words and
+    /// increments each distinct word's document-frequency count in `vocab` at most once
+    /// per document.
+    fn tallyDocumentWords(
+        self: *SearchIndex,
+        allocator: Allocator,
+        fields: *const std.StringHashMap([]const u8),
+        vocab: *std.StringHashMap(usize),
+    ) !void {
+        var doc_words = std.StringHashMap(void).init(allocator);
+        defer {
+            var dwit = doc_words.iterator();
+            while (dwit.next()) |dwe| allocator.free(dwe.key_ptr.*);
+            doc_words.deinit();
+        }
+
+        var fit = fields.iterator();
+        while (fit.next()) |fe| {
+            if (self.fieldTypeFor(fe.key_ptr.*) != .text) continue;
+
+            const text = fe.value_ptr.*;
+            var wi: usize = 0;
+            while (wi < text.len) {
+                if (!std.ascii.isAlphanumeric(text[wi])) {
+                    wi += 1;
+                    continue;
+                }
+                const start = wi;
+                while (wi < text.len and std.ascii.isAlphanumeric(text[wi])) wi += 1;
+
+                const lower = try std.ascii.allocLowerString(allocator, text[start..wi]);
+                if (doc_words.contains(lower)) {
+                    allocator.free(lower);
+                    continue;
+                }
+                try doc_words.put(lower, {});
+
+                const gop = try vocab.getOrPut(lower);
+                if (gop.found_existing) {
+                    gop.value_ptr.* += 1;
+                } else {
+                    gop.key_ptr.* = try allocator.dupe(u8, lower);
+                    gop.value_ptr.* = 1;
+                }
+            }
+        }
+    }
+
+    /// Folds FT.DICTADD dictionaries into the spellcheck candidate pool: `include_dicts`
+    /// terms are added (without displacing an existing corpus frequency), `exclude_dicts`
+    /// terms are removed from consideration entirely.
+    fn applyDictTerms(
+        storage: anytype,
+        allocator: Allocator,
+        vocab: *std.StringHashMap(usize),
+        include_dicts: []const []const u8,
+        exclude_dicts: []const []const u8,
+    ) !void {
+        for (exclude_dicts) |dict_name| {
+            const dict_terms = try storage.search.dumpDictionary(allocator, dict_name);
+            defer {
+                for (dict_terms) |t| allocator.free(t);
+                allocator.free(dict_terms);
+            }
+            for (dict_terms) |t| {
+                const lower = try std.ascii.allocLowerString(allocator, t);
+                defer allocator.free(lower);
+                if (vocab.fetchRemove(lower)) |kv| allocator.free(kv.key);
+            }
+        }
+
+        for (include_dicts) |dict_name| {
+            const dict_terms = try storage.search.dumpDictionary(allocator, dict_name);
+            defer {
+                for (dict_terms) |t| allocator.free(t);
+                allocator.free(dict_terms);
+            }
+            for (dict_terms) |t| {
+                const lower = try std.ascii.allocLowerString(allocator, t);
+                const gop = try vocab.getOrPut(lower);
+                if (gop.found_existing) {
+                    allocator.free(lower);
+                } else {
+                    gop.key_ptr.* = lower;
+                    gop.value_ptr.* = 1;
+                }
+            }
+        }
+    }
 };
+
+fn spellCheckSuggestionLessThan(_: void, a: SpellCheckSuggestion, b: SpellCheckSuggestion) bool {
+    if (a.score != b.score) return a.score > b.score;
+    return std.mem.lessThan(u8, a.term, b.term);
+}
 
 /// Document result from search
 pub const Document = struct {
@@ -2394,6 +2563,117 @@ test "SearchIndex: wildcard search returns empty results (stub)" {
 
     try std.testing.expectEqual(@as(usize, 0), result.total_count);
     try std.testing.expectEqual(@as(usize, 0), result.documents.len);
+}
+
+// ============================================================================
+// SearchIndex.spellCheck() — FT.SPELLCHECK real implementation
+// ============================================================================
+
+const spellcheck_test_memory = @import("memory.zig");
+
+test "SearchIndex: spellCheck omits correctly spelled terms" {
+    const allocator = std.testing.allocator;
+    var storage = try spellcheck_test_memory.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    _ = try storage.hset("doc:1", &[_][]const u8{"title"}, &[_][]const u8{"hello world"}, null);
+
+    var result = try index.spellCheck(storage, allocator, "hello", 1, &.{}, &.{});
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.terms.len);
+}
+
+test "SearchIndex: spellCheck suggests indexed terms within distance" {
+    const allocator = std.testing.allocator;
+    var storage = try spellcheck_test_memory.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    _ = try storage.hset("doc:1", &[_][]const u8{"title"}, &[_][]const u8{"hello world"}, null);
+
+    var result = try index.spellCheck(storage, allocator, "helo", 1, &.{}, &.{});
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.terms.len);
+    try std.testing.expectEqualStrings("helo", result.terms[0].original_term);
+    try std.testing.expectEqual(@as(usize, 1), result.terms[0].suggestions.len);
+    try std.testing.expectEqualStrings("hello", result.terms[0].suggestions[0].term);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result.terms[0].suggestions[0].score, 0.0001);
+}
+
+test "SearchIndex: spellCheck returns no suggestions outside distance threshold" {
+    const allocator = std.testing.allocator;
+    var storage = try spellcheck_test_memory.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    _ = try storage.hset("doc:1", &[_][]const u8{"title"}, &[_][]const u8{"hello world"}, null);
+
+    var result = try index.spellCheck(storage, allocator, "zzzzzzzz", 1, &.{}, &.{});
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.terms.len);
+    try std.testing.expectEqual(@as(usize, 0), result.terms[0].suggestions.len);
+}
+
+test "SearchIndex: spellCheck TERMS EXCLUDE removes a candidate suggestion" {
+    const allocator = std.testing.allocator;
+    var storage = try spellcheck_test_memory.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    _ = try storage.hset("doc:1", &[_][]const u8{"title"}, &[_][]const u8{"hello world"}, null);
+    _ = try storage.search.addTermsToDictionary("stop", &[_][]const u8{"hello"});
+
+    var result = try index.spellCheck(storage, allocator, "helo", 1, &.{}, &[_][]const u8{"stop"});
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.terms.len);
+    try std.testing.expectEqual(@as(usize, 0), result.terms[0].suggestions.len);
+}
+
+test "SearchIndex: spellCheck TERMS INCLUDE adds a dictionary candidate" {
+    const allocator = std.testing.allocator;
+    var storage = try spellcheck_test_memory.Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.search.createIndex("idx", .hash);
+    const index = storage.search.getIndex("idx").?;
+    var field = try FieldSchema.init(allocator, "title", .text);
+    defer field.deinit();
+    try index.addField(field);
+
+    // No indexed documents — the only candidate comes from the custom dictionary.
+    _ = try storage.search.addTermsToDictionary("custom", &[_][]const u8{"hello"});
+
+    var result = try index.spellCheck(storage, allocator, "helo", 1, &[_][]const u8{"custom"}, &.{});
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.terms.len);
+    try std.testing.expectEqual(@as(usize, 1), result.terms[0].suggestions.len);
+    try std.testing.expectEqualStrings("hello", result.terms[0].suggestions[0].term);
 }
 
 test "Document: init and deinit" {

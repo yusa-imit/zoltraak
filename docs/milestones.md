@@ -3,9 +3,9 @@
 ## Current Status
 
 - **Latest release**: v0.2.0
-- **Iterations complete**: 421 (500+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅ (FT.SEARCH/FT.AGGREGATE real query matching implemented in Iteration 418, replacing the prior empty-results stub), **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-415 complete ✅, 2/5 zuda migrations, sailor v2.92.0 migrated)
+- **Iterations complete**: 422 (500+ Redis commands, **Phase 3 ACL Enforcement 100% complete** ✅, **Phase 7 Multi-DB 100% complete** ✅, **Phase 8 Cluster 100% complete** ✅, **Phase 9 Sentinel 100% complete** ✅, **Phase 11 Redis Functions 100% complete** ✅, **Phase 12 JSON 100% complete** ✅, **Phase 13 Search Engine 100% complete** ✅ (FT.SEARCH/FT.AGGREGATE real query matching implemented in Iteration 418, replacing the prior empty-results stub; FT.SPELLCHECK real implementation in Iteration 422, replacing the prior empty-suggestions stub), **Phase 14 Time Series 100% complete** ✅, **Phase 15 Probabilistic 100% complete** ✅, **Phase 16 Vector Sets 100% complete** ✅, **Phase 17 Modules API 100% complete** ✅, **Phase 18 Advanced Features & Polish 100% complete** ✅, Redis compatibility fixes 293-415 complete ✅, 2/5 zuda migrations, sailor v2.92.1 migrated)
 - **Target**: v1.0 — 100% Redis compatibility (500+ commands)
-- **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-421 complete ✅
+- **Current phase**: Post-Phase-18 Redis compatibility enhancements — Iterations 293-422 complete ✅
 - **Next milestone**: Additional Redis compatibility fixes (no sailor migration pending)
 - **zuda migrations**: 2/5 complete (Glob ✅, Haversine ✅, HyperLogLog BLOCKED, Geohash BLOCKED, SortedSet DEFERRED)
 - **Known stubs**: Cluster (single-node, hash slot foundation in place)
@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v2.92.0 (latest migrated)
+- **Sailor library**: v2.92.1 (latest migrated)
 - **sailor.tui.widgets namespace (CRITICAL)**: `RadialBar`, `RadialArc`, `FunnelChart`, `FunnelStage`, `DotPlot`, `DotPlotItem`, `StreamGraph`, `StreamLayer`, `ViolinPlot`, `ViolinSeries`, `SunburstChart`, `SunburstNode`, `BoxPlot`, `BoxPlotSeries`, `CandlestickChart`, `Candle`, `BulletChart`, `Bullet`, `ParallelCoordinates`, `PCAxis`, `PCItem`, `ParetoChart`, `ParetoItem`, `SlopeChart`, `SlopeItem`, `RidgelinePlot`, `RidgelineSeries`, `BumpChart`, `BumpSeries`, `MosaicPlot`, `MosaicColumn`, `MosaicSegment`, `IcicleChart`, `IcicleNode` are inside `pub const widgets = struct { ... }` in sailor tui.zig. Access as `tui.widgets.RadialBar` etc. — NOT `tui.RadialBar`.
 
 ---
@@ -193,6 +193,7 @@
 | 191 | FT.EXPLAINCLI (CLI-formatted query plan with array output — stub implementation) | Done ✅ |
 | 192 | FT.PROFILE (query performance profiling with timing metrics — stub implementation) | Done ✅ |
 | 193 | FT.SPELLCHECK (spell checking with Levenshtein distance — stub returns empty suggestions) | Done ✅ |
+| 422 | FT.SPELLCHECK real implementation — Damerau-Levenshtein distance via `zuda.algorithms.string.damerauLevenshteinDistance`, per-document term-frequency vocabulary scoped by index prefix/type, TERMS INCLUDE/EXCLUDE dictionary folding, score = doc-frequency / total-docs | Done ✅ |
 | 194 | FT.CURSOR READ/DEL (cursor pagination for large result sets, auto-expiry) | Done ✅ |
 | 195 | FT.ALIASADD/ALIASDEL/ALIASUPDATE (index aliasing for zero-downtime rebuilds, atomic operations) | Done ✅ |
 | 196 | FT.DICTADD/DICTDEL/DICTDUMP (dictionary management for stop words and synonyms, global dictionaries) | Done ✅ |
@@ -338,9 +339,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v2.92.0 (build.zig.zon)
-- **Latest available**: v2.92.0 — no newer version pending
-- **Migration status**: All versions through v2.92.0 migrated.
+- **Current in zoltraak**: v2.92.1 (build.zig.zon)
+- **Latest available**: v2.92.1 — no newer version pending
+- **Migration status**: All versions through v2.92.1 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -384,6 +385,7 @@
 | v2.90.0 | MosaicPlot widget: Marimekko-style proportional chart with variable-width columns and variable-height stacked segments (two-dimensional area encoding) — backward compatible, zero breaking changes | Done (Iter 419) |
 | v2.91.0 | IcicleChart widget: axis-aligned hierarchical chart, stacked horizontal bands top-to-bottom by depth, cumulative-floor proportional split — backward compatible, zero breaking changes | Done (Iter 420) |
 | v2.92.0 | ToggleSwitch/ToggleSwitchGroup widget: boolean on/off slider-style form control (6-cell bracketed track, sliding knob), radio-like exclusive-toggle focus navigation — backward compatible, zero breaking changes | Done (Iter 421) |
+| v2.92.1 | FlowChart render order fix: edges (arrows/labels) were drawn before nodes, so node borders overwrote them — nodes now render first, edges on top. Patch release, no public API changes | Done (Iter 422) |
 
 ### zuda Library
 
