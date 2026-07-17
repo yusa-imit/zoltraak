@@ -1969,6 +1969,26 @@ pub fn build(b: *std.Build) void {
     const run_iter421_tests = b.addRunArtifact(iter421_tests);
     test_step.dependOn(&run_iter421_tests.step);
 
+    // Iteration 423: sailor v2.93.0 + CalendarHeatmap TUI widget
+    const iter423_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter423.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter423_tests.linkSystemLibrary("luajit-5.1");
+    iter423_tests.linkLibC();
+    iter423_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter423_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter423_tests = b.addRunArtifact(iter423_tests);
+    test_step.dependOn(&run_iter423_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

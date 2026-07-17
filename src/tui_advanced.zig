@@ -1119,6 +1119,45 @@ pub fn renderServerFlagsPanel(
     group.render(frame.buffer, area);
 }
 
+/// Daily command activity count for a single day, e.g. total commands
+/// processed or keys expired on that date. Used as input to
+/// renderKeyActivityHeatmap, one entry per day starting at a given
+/// start date (day 0 = start_date, day 1 = start_date + 1, ...).
+pub const DailyActivityCount = struct {
+    count: u64 = 0,
+};
+
+/// Render a CalendarHeatmap widget for daily command/expiry activity using
+/// sailor v2.93.0's CalendarHeatmap — a GitHub-style contribution grid
+/// mapping each day's activity count to a 5-level intensity glyph. Useful
+/// for visualizing INFO commandstats or expired-keys history over a rolling
+/// window (e.g. the last 90 days) at a glance. `start_date` anchors day 0 of
+/// `daily_counts`; `focused_day` optionally highlights a single day index
+/// (e.g. "today") within the grid.
+pub fn renderKeyActivityHeatmap(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    start_date: tui.widgets.Calendar.Date,
+    daily_counts: []const DailyActivityCount,
+    focused_day: ?usize,
+    values_buf: []f32,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const n = @min(daily_counts.len, values_buf.len, tui.widgets.CalendarHeatmap.MAX_ENTRIES);
+    for (0..n) |i| {
+        values_buf[i] = @floatFromInt(daily_counts[i].count);
+    }
+
+    const heatmap = tui.widgets.CalendarHeatmap.init(start_date)
+        .withValues(values_buf[0..n])
+        .withShowMonthLabels(true)
+        .withShowWeekdayLabels(true)
+        .withFocused(focused_day);
+
+    heatmap.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
