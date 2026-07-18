@@ -192,8 +192,6 @@ pub fn cmdFtList(storage: *Storage, arena: std.mem.Allocator, args: []const []co
 ///   +OK on success
 ///   Error if index doesn't exist
 pub fn cmdFtDropindex(storage: *Storage, arena: std.mem.Allocator, args: []const []const u8) !RespValue {
-    _ = arena;
-
     if (args.len < 1 or args.len > 2) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'FT.DROPINDEX' command" };
     }
@@ -210,19 +208,57 @@ pub fn cmdFtDropindex(storage: *Storage, arena: std.mem.Allocator, args: []const
     }
 
     storage.mutex.lock();
-    defer storage.mutex.unlock();
+
+    // Capture the index's prefix/type filter before dropping it — dropIndex()
+    // frees the SearchIndex (and its prefix string), so this must happen first.
+    var prefix_copy: ?[]const u8 = null;
+    var index_on: search_mod.IndexOn = .hash;
+    if (delete_docs) {
+        if (storage.search.getIndex(index_name)) |index| {
+            index_on = index.index_on;
+            if (index.prefix) |p| prefix_copy = try arena.dupe(u8, p);
+        }
+    }
 
     // Drop index
     storage.search.dropIndex(index_name) catch |err| {
+        storage.mutex.unlock();
         if (err == error.IndexNotFound) {
             return RespValue{ .error_string = "ERR Unknown index name" };
         }
         return err;
     };
 
-    // TODO: If DD flag set, also delete documents matching prefix
+    // Collect keys matching the index's prefix + type filter (same matching
+    // rule the index used while live, see SearchIndex.collectMatches) while
+    // still holding the lock, then release before calling storage.del() —
+    // storage.mutex is non-reentrant.
+    var keys_to_delete: std.ArrayList([]const u8) = .{};
+    defer keys_to_delete.deinit(arena);
+
     if (delete_docs) {
-        // Stub for now - would iterate storage.data and delete matching keys
+        var it = storage.data.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (prefix_copy) |prefix| {
+                if (!std.mem.startsWith(u8, key, prefix)) continue;
+            }
+            const type_ok = switch (index_on) {
+                .hash => entry.value_ptr.* == .hash,
+                .json => entry.value_ptr.* == .json,
+            };
+            if (!type_ok) continue;
+            keys_to_delete.append(arena, try arena.dupe(u8, key)) catch |err| {
+                storage.mutex.unlock();
+                return err;
+            };
+        }
+    }
+
+    storage.mutex.unlock();
+
+    if (keys_to_delete.items.len > 0) {
+        _ = storage.del(keys_to_delete.items);
     }
 
     return RespValue{ .simple_string = "OK" };

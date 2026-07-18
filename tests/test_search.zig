@@ -381,6 +381,119 @@ test "FT.DROPINDEX: nonexistent index" {
     try std.testing.expect(std.mem.indexOf(u8, result, "Unknown Index name") != null);
 }
 
+test "FT.DROPINDEX DD: deletes documents matching index prefix and type" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const commands = [_][]const u8{
+        "FT.CREATE ddidx ON HASH PREFIX 1 doc: SCHEMA title TEXT\r\n",
+        "HSET doc:1 title hello\r\n",
+        "HSET doc:2 title world\r\n",
+        // Not under the index's prefix — must survive DD.
+        "SET other:1 untouched\r\n",
+    };
+    for (commands) |cmd| {
+        const parsed = try parseCommand(allocator, cmd);
+        defer parsed.deinit(allocator);
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const result = try processCommand(arena.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+        defer allocator.free(result);
+    }
+
+    // Sanity check: keys exist before DROPINDEX DD.
+    try std.testing.expect(storage.data.contains("doc:1"));
+    try std.testing.expect(storage.data.contains("doc:2"));
+    try std.testing.expect(storage.data.contains("other:1"));
+
+    const drop_cmd = "FT.DROPINDEX ddidx DD\r\n";
+    const parsed_drop = try parseCommand(allocator, drop_cmd);
+    defer parsed_drop.deinit(allocator);
+
+    var arena_drop = std.heap.ArenaAllocator.init(allocator);
+    defer arena_drop.deinit();
+
+    const drop_result = try processCommand(arena_drop.allocator(), parsed_drop.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(drop_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, drop_result, "+OK") != null);
+
+    // Documents under the index's prefix must be gone...
+    try std.testing.expect(!storage.data.contains("doc:1"));
+    try std.testing.expect(!storage.data.contains("doc:2"));
+    // ...but keys outside the prefix must be untouched.
+    try std.testing.expect(storage.data.contains("other:1"));
+}
+
+test "FT.DROPINDEX without DD: leaves documents intact" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tx = TxState.init(allocator);
+    defer tx.deinit();
+
+    var repl = ReplicationState.init(allocator);
+    defer repl.deinit();
+
+    var script_store = ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var ps = PubSubState.init(allocator);
+    defer ps.deinit();
+
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const commands = [_][]const u8{
+        "FT.CREATE nodd ON HASH PREFIX 1 keep: SCHEMA title TEXT\r\n",
+        "HSET keep:1 title hello\r\n",
+    };
+    for (commands) |cmd| {
+        const parsed = try parseCommand(allocator, cmd);
+        defer parsed.deinit(allocator);
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+
+        const result = try processCommand(arena.allocator(), parsed.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+        defer allocator.free(result);
+    }
+
+    const drop_cmd = "FT.DROPINDEX nodd\r\n";
+    const parsed_drop = try parseCommand(allocator, drop_cmd);
+    defer parsed_drop.deinit(allocator);
+
+    var arena_drop = std.heap.ArenaAllocator.init(allocator);
+    defer arena_drop.deinit();
+
+    const drop_result = try processCommand(arena_drop.allocator(), parsed_drop.value.array, storage, &ps, &tx, &script_store, &repl, &client_registry, 1);
+    defer allocator.free(drop_result);
+
+    try std.testing.expect(std.mem.indexOf(u8, drop_result, "+OK") != null);
+    try std.testing.expect(storage.data.contains("keep:1"));
+}
+
 test "FT.INFO: basic index info" {
     const allocator = std.testing.allocator;
 
