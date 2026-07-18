@@ -61,6 +61,23 @@ pub const TDigestValue = struct {
         self.centroids.deinit(self.allocator);
     }
 
+    /// Deep clone this T-Digest, duplicating the centroids list.
+    pub fn clone(self: *const TDigestValue, allocator: std.mem.Allocator) !TDigestValue {
+        var centroids_copy = try std.ArrayList(Centroid).initCapacity(allocator, self.centroids.items.len);
+        errdefer centroids_copy.deinit(allocator);
+
+        centroids_copy.appendSliceAssumeCapacity(self.centroids.items);
+
+        return TDigestValue{
+            .compression = self.compression,
+            .centroids = centroids_copy,
+            .min = self.min,
+            .max = self.max,
+            .total_count = self.total_count,
+            .allocator = allocator,
+        };
+    }
+
     /// Add a single value to the T-Digest (simplified, no merging yet).
     ///
     /// In the full implementation (iteration 227), values would be merged with

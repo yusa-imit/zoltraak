@@ -131,6 +131,45 @@ pub const VectorSetValue = struct {
         self.vectors.deinit();
     }
 
+    /// Deep clone this vector set, duplicating every entry's id, embedding, and attributes.
+    pub fn clone(self: *const VectorSetValue, allocator: Allocator) !VectorSetValue {
+        var vectors_copy = std.StringHashMap(*VectorEntry).init(allocator);
+        errdefer {
+            var it = vectors_copy.valueIterator();
+            while (it.next()) |entry_ptr| {
+                entry_ptr.*.deinit();
+                allocator.destroy(entry_ptr.*);
+            }
+            vectors_copy.deinit();
+        }
+
+        var it = self.vectors.valueIterator();
+        while (it.next()) |entry_ptr| {
+            const src_entry = entry_ptr.*;
+
+            const new_entry = try allocator.create(VectorEntry);
+            errdefer allocator.destroy(new_entry);
+
+            new_entry.* = try VectorEntry.init(allocator, src_entry.id, src_entry.embedding);
+            errdefer new_entry.deinit();
+
+            var attr_it = src_entry.attributes.iterator();
+            while (attr_it.next()) |attr| {
+                try new_entry.setAttribute(attr.key_ptr.*, attr.value_ptr.*);
+            }
+
+            try vectors_copy.put(new_entry.id, new_entry);
+        }
+
+        return VectorSetValue{
+            .vectors = vectors_copy,
+            .dimensionality = self.dimensionality,
+            .metric = self.metric,
+            .quantization = self.quantization,
+            .allocator = allocator,
+        };
+    }
+
     /// Add a vector to the set
     pub fn add(self: *VectorSetValue, id: []const u8, embedding: []const f32) !bool {
         if (embedding.len != self.dimensionality) {

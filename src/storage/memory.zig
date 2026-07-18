@@ -6870,34 +6870,13 @@ pub const Storage = struct {
                     .allocator = alloc,
                 } };
             },
-            .timeseries => |ts| blk: {
-                // Time series deep copy not yet implemented
-                break :blk Value{ .timeseries = ts };
-            },
-            .bloom => |b| blk: {
-                // Bloom filter deep copy not yet implemented
-                break :blk Value{ .bloom = b };
-            },
-            .cuckoo => |c| blk: {
-                // Cuckoo filter deep copy not yet implemented
-                break :blk Value{ .cuckoo = c };
-            },
-            .count_min_sketch => |cms| blk: {
-                // Count-Min Sketch deep copy not yet implemented
-                break :blk Value{ .count_min_sketch = cms };
-            },
-            .top_k => |tk| blk: {
-                // Top-K deep copy not yet implemented
-                break :blk Value{ .top_k = tk };
-            },
-            .t_digest => |td| blk: {
-                // T-Digest deep copy not yet implemented
-                break :blk Value{ .t_digest = td };
-            },
-            .vector_set => |vs| blk: {
-                // Vector set deep copy not yet implemented
-                break :blk Value{ .vector_set = vs };
-            },
+            .timeseries => |ts| Value{ .timeseries = try ts.clone(alloc) },
+            .bloom => |b| Value{ .bloom = try b.clone(alloc) },
+            .cuckoo => |c| Value{ .cuckoo = try c.clone(alloc) },
+            .count_min_sketch => |cms| Value{ .count_min_sketch = try cms.clone(alloc) },
+            .top_k => |tk| Value{ .top_k = try tk.clone(alloc) },
+            .t_digest => |td| Value{ .t_digest = try td.clone(alloc) },
+            .vector_set => |vs| Value{ .vector_set = try vs.clone(alloc) },
         };
     }
 
@@ -13866,6 +13845,145 @@ test "storage - cross-database copy nonexistent key returns error" {
 
     const result = storage1.copyKeyToStorage("nonexistent", &storage2, "dest", false);
     try std.testing.expectError(error.NoSuchKey, result);
+}
+
+test "storage - copy bloom filter deep copies bits (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var bf = try BloomFilterValue.init(allocator, 0.01, 100, 2, false);
+    _ = try bf.add("hello");
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .bloom = bf });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    // Deleting source must not free memory that "dest" still references.
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    try std.testing.expectEqual(@as(usize, 1), dest_entry.bloom.filters.items.len);
+    try std.testing.expect(dest_entry.bloom.filters.items[0].bits.len > 0);
+}
+
+test "storage - copy cuckoo filter deep copies buckets (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var cf = try CuckooFilterValue.init(allocator, 100, 2, 20, 1);
+    _ = try cf.add("hello");
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .cuckoo = cf });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    try std.testing.expect(dest_entry.cuckoo.filters.items.len >= 1);
+    try std.testing.expect(dest_entry.cuckoo.contains("hello"));
+}
+
+test "storage - copy count-min sketch deep copies counters (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    _ = try cms.incrBy("hello", 1);
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .count_min_sketch = cms });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    try std.testing.expectEqual(@as(u64, 1), dest_entry.count_min_sketch.query("hello"));
+}
+
+test "storage - copy top-k deep copies hash table and heap (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tk = try TopKValue.init(allocator, 3, 8, 7, 0.9);
+    _ = try tk.add("hello");
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .top_k = tk });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    try std.testing.expectEqual(@as(u32, 3), dest_entry.top_k.k);
+}
+
+test "storage - copy t-digest deep copies centroids (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var td = try TDigestValue.init(allocator, 100);
+    try td.add(42.0);
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .t_digest = td });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    try std.testing.expectEqual(@as(u64, 1), dest_entry.t_digest.total_count);
+}
+
+test "storage - copy vector set deep copies entries (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var vs = try VectorSetValue.init(allocator, 3, .l2);
+    _ = try vs.add("v1", &[_]f32{ 1.0, 2.0, 3.0 });
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .vector_set = vs });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    const entry = dest_entry.vector_set.vectors.get("v1").?;
+    try std.testing.expectEqualSlices(f32, &[_]f32{ 1.0, 2.0, 3.0 }, entry.embedding);
+}
+
+test "storage - copy time series deep copies samples and labels (no shared memory)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ts = try TimeSeriesValue.init(allocator);
+    try ts.samples.append(allocator, .{ .timestamp = 1000, .value = 3.14 });
+    try ts.info.setLabel(allocator, "sensor", "temp");
+    const owned_key = try allocator.dupe(u8, "source");
+    try storage.data.put(owned_key, Value{ .timeseries = ts });
+
+    const success = try storage.copyKey("source", "dest", false);
+    try std.testing.expect(success);
+
+    _ = storage.del(&[_][]const u8{"source"});
+
+    const dest_entry = storage.data.getPtr("dest").?;
+    try std.testing.expectEqual(@as(usize, 1), dest_entry.timeseries.samples.items.len);
+    try std.testing.expectEqualStrings("temp", dest_entry.timeseries.info.labels.get("sensor").?);
 }
 
 test "storage - touch counts existing keys" {

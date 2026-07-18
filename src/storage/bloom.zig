@@ -221,6 +221,37 @@ pub const BloomFilterValue = struct {
         self.filters.deinit(self.allocator);
     }
 
+    /// Deep clone this Bloom filter, duplicating every sub-filter's bit array.
+    pub fn clone(self: *const BloomFilterValue, allocator: std.mem.Allocator) !BloomFilterValue {
+        var filters_copy = try std.ArrayList(SubFilter).initCapacity(allocator, self.filters.items.len);
+        errdefer {
+            for (filters_copy.items) |*filter| filter.deinit();
+            filters_copy.deinit(allocator);
+        }
+
+        for (self.filters.items) |filter| {
+            const bits_copy = try allocator.dupe(u8, filter.bits);
+            filters_copy.appendAssumeCapacity(.{
+                .bits = bits_copy,
+                .size_bits = filter.size_bits,
+                .item_count = filter.item_count,
+                .allocator = allocator,
+            });
+        }
+
+        return .{
+            .error_rate = self.error_rate,
+            .capacity = self.capacity,
+            .expansion = self.expansion,
+            .nonscaling = self.nonscaling,
+            .num_hashes = self.num_hashes,
+            .filters = filters_copy,
+            .total_items_added = self.total_items_added,
+            .allocator = allocator,
+            .expires_at = self.expires_at,
+        };
+    }
+
     /// Add an item to the Bloom filter
     /// Returns 1 if item was definitely new, 0 if it might have been in the set
     pub fn add(self: *BloomFilterValue, item: []const u8) !u8 {

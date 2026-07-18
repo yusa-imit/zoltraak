@@ -300,6 +300,52 @@ pub const CuckooFilterValue = struct {
         self.filters.deinit(self.allocator);
     }
 
+    /// Deep clone this Cuckoo filter, duplicating every sub-filter's buckets and fingerprints.
+    pub fn clone(self: *const CuckooFilterValue, allocator: std.mem.Allocator) !CuckooFilterValue {
+        var filters_copy = try std.ArrayList(SubFilter).initCapacity(allocator, self.filters.items.len);
+        errdefer {
+            for (filters_copy.items) |*filter| filter.deinit();
+            filters_copy.deinit(allocator);
+        }
+
+        for (self.filters.items) |filter| {
+            const buckets_copy = try allocator.alloc(Bucket, filter.buckets.len);
+            errdefer allocator.free(buckets_copy);
+
+            var initialized: usize = 0;
+            errdefer {
+                for (buckets_copy[0..initialized]) |*bucket| bucket.deinit();
+            }
+
+            for (filter.buckets, 0..) |bucket, i| {
+                const fingerprints_copy = try allocator.dupe(u8, bucket.fingerprints);
+                buckets_copy[i] = .{
+                    .fingerprints = fingerprints_copy,
+                    .count = bucket.count,
+                    .capacity = bucket.capacity,
+                    .allocator = allocator,
+                };
+                initialized += 1;
+            }
+
+            filters_copy.appendAssumeCapacity(.{
+                .buckets = buckets_copy,
+                .num_buckets = filter.num_buckets,
+                .allocator = allocator,
+            });
+        }
+
+        return .{
+            .capacity = self.capacity,
+            .bucketsize = self.bucketsize,
+            .max_iterations = self.max_iterations,
+            .expansion = self.expansion,
+            .filters = filters_copy,
+            .allocator = allocator,
+            .expires_at = self.expires_at,
+        };
+    }
+
     /// Check if item exists in the filter
     /// Returns true if item may exist (both candidate buckets checked)
     pub fn exists(self: *const CuckooFilterValue, item: []const u8) bool {

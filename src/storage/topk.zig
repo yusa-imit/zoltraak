@@ -207,6 +207,49 @@ pub const TopKValue = struct {
         self.allocator.free(self.hash_table);
     }
 
+    /// Deep clone this Top-K structure, duplicating the hash table and heap items.
+    pub fn clone(self: *const TopKValue, allocator: std.mem.Allocator) !TopKValue {
+        const hash_table_copy = try allocator.alloc([]HashCell, self.hash_table.len);
+        errdefer allocator.free(hash_table_copy);
+
+        var rows_initialized: usize = 0;
+        errdefer {
+            for (hash_table_copy[0..rows_initialized]) |row| allocator.free(row);
+        }
+
+        for (self.hash_table, 0..) |row, i| {
+            hash_table_copy[i] = try allocator.dupe(HashCell, row);
+            rows_initialized += 1;
+        }
+
+        var heap_copy = try std.ArrayList(HeapItem).initCapacity(allocator, self.heap.items.len);
+        errdefer {
+            for (heap_copy.items) |*item| item.deinit(allocator);
+            heap_copy.deinit(allocator);
+        }
+
+        for (self.heap.items) |item| {
+            const item_copy = try allocator.dupe(u8, item.item);
+            heap_copy.appendAssumeCapacity(.{
+                .item = item_copy,
+                .count = item.count,
+                .fingerprint = item.fingerprint,
+            });
+        }
+
+        return TopKValue{
+            .allocator = allocator,
+            .k = self.k,
+            .width = self.width,
+            .depth = self.depth,
+            .decay = self.decay,
+            .hash_table = hash_table_copy,
+            .heap = heap_copy,
+            .prng = self.prng,
+            .expires_at = self.expires_at,
+        };
+    }
+
     /// Add an item to the Top-K structure
     /// Returns the expelled item (if any) when heap is full and minimum is replaced
     /// Uses HeavyKeeper algorithm with exponential decay

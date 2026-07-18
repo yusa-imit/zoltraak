@@ -250,6 +250,10 @@ pub const CompactionRule = struct {
     pub fn deinit(self: *CompactionRule) void {
         self.allocator.free(self.dest_key);
     }
+
+    pub fn clone(self: *const CompactionRule, allocator: std.mem.Allocator) !CompactionRule {
+        return CompactionRule.init(allocator, self.dest_key, self.aggregation, self.bucket_duration_ms);
+    }
 };
 
 /// Time series metadata and configuration
@@ -297,6 +301,51 @@ pub const TimeSeriesInfo = struct {
         self.rules.deinit(allocator);
     }
 
+    /// Deep clone this time series metadata, duplicating labels and compaction rules.
+    pub fn clone(self: *const TimeSeriesInfo, allocator: std.mem.Allocator) !TimeSeriesInfo {
+        var labels_copy = std.StringHashMap([]const u8).init(allocator);
+        errdefer {
+            var it = labels_copy.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            labels_copy.deinit();
+        }
+
+        var it = self.labels.iterator();
+        while (it.next()) |entry| {
+            const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(key_copy);
+            const value_copy = try allocator.dupe(u8, entry.value_ptr.*);
+            errdefer allocator.free(value_copy);
+            try labels_copy.put(key_copy, value_copy);
+        }
+
+        var rules_copy = try std.ArrayList(CompactionRule).initCapacity(allocator, self.rules.items.len);
+        errdefer {
+            for (rules_copy.items) |*rule| rule.deinit();
+            rules_copy.deinit(allocator);
+        }
+
+        for (self.rules.items) |rule| {
+            rules_copy.appendAssumeCapacity(try rule.clone(allocator));
+        }
+
+        return TimeSeriesInfo{
+            .retention_ms = self.retention_ms,
+            .duplicate_policy = self.duplicate_policy,
+            .encoding = self.encoding,
+            .labels = labels_copy,
+            .chunk_size = self.chunk_size,
+            .total_samples = self.total_samples,
+            .memory_bytes = self.memory_bytes,
+            .first_timestamp = self.first_timestamp,
+            .last_timestamp = self.last_timestamp,
+            .rules = rules_copy,
+        };
+    }
+
     /// Add or update a label
     pub fn setLabel(self: *TimeSeriesInfo, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
         const owned_key = try allocator.dupe(u8, key);
@@ -335,6 +384,24 @@ pub const TimeSeriesValue = struct {
     pub fn deinit(self: *TimeSeriesValue) void {
         self.info.deinit(self.allocator);
         self.samples.deinit(self.allocator);
+    }
+
+    /// Deep clone this time series, duplicating metadata (labels, rules) and all samples.
+    pub fn clone(self: *const TimeSeriesValue, allocator: std.mem.Allocator) !TimeSeriesValue {
+        var info_copy = try self.info.clone(allocator);
+        errdefer info_copy.deinit(allocator);
+
+        var samples_copy = try std.ArrayList(DataPoint).initCapacity(allocator, self.samples.items.len);
+        errdefer samples_copy.deinit(allocator);
+
+        samples_copy.appendSliceAssumeCapacity(self.samples.items);
+
+        return TimeSeriesValue{
+            .info = info_copy,
+            .samples = samples_copy,
+            .expires_at = self.expires_at,
+            .allocator = allocator,
+        };
     }
 
     /// Add a data point with duplicate policy enforcement
