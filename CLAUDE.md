@@ -435,8 +435,8 @@ gh issue list --state open --label bug --limit 5
 
 ## Sailor Migration
 
-**Current in zoltraak**: v2.93.0 — All versions through v2.93.0 migrated. See `docs/milestones.md` for full version history.
-**Latest available**: v2.93.0 — no newer version pending
+**Current in zoltraak**: v2.94.0 — All versions through v2.94.0 migrated. See `docs/milestones.md` for full version history.
+**Latest available**: v2.94.0 — no newer version pending
 
 **마이그레이션 프로토콜**:
 1. 세션 시작 시 `docs/milestones.md`의 Sailor 섹션을 확인

@@ -1989,6 +1989,26 @@ pub fn build(b: *std.Build) void {
     const run_iter423_tests = b.addRunArtifact(iter423_tests);
     test_step.dependOn(&run_iter423_tests.step);
 
+    // Iteration 424: sailor v2.94.0 + DonutChart TUI widget
+    const iter424_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter424.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter424_tests.linkSystemLibrary("luajit-5.1");
+    iter424_tests.linkLibC();
+    iter424_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter424_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter424_tests = b.addRunArtifact(iter424_tests);
+    test_step.dependOn(&run_iter424_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

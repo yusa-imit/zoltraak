@@ -1158,6 +1158,48 @@ pub fn renderKeyActivityHeatmap(
     heatmap.render(frame.buffer, area);
 }
 
+/// A single Redis data-type's key count (e.g. from an OBJECT ENCODING scan or
+/// DBSIZE-by-type breakdown) to be displayed as one slice of a keyspace
+/// composition donut. Used as input to renderKeyTypeDonut.
+pub const KeyTypeCount = struct {
+    type_name: []const u8 = "",
+    count: u64 = 0,
+    style: tui.Style = .{},
+};
+
+/// Render a keyspace composition donut using sailor v2.94.0's DonutChart —
+/// a hollow-center variant of PieChart with an optional center_label, well
+/// suited to showing e.g. "how many keys are strings vs hashes vs sets"
+/// alongside a headline total in the hole. `center_label` is typically a
+/// formatted total key count (e.g. "1024 keys"); pass null to leave the
+/// center empty. Types with zero count are still included as zero-value
+/// slices (DonutChart itself no-ops the whole render only when the grand
+/// total across all slices is zero).
+pub fn renderKeyTypeDonut(
+    frame: *tui.Frame,
+    area: tui.Rect,
+    type_counts: []const KeyTypeCount,
+    center_label: ?[]const u8,
+    slices_buf: []tui.widgets.donut_chart.Slice,
+) void {
+    if (area.width == 0 or area.height == 0) return;
+
+    const n = @min(type_counts.len, slices_buf.len);
+    for (0..n) |i| {
+        slices_buf[i] = .{
+            .label = type_counts[i].type_name,
+            .value = type_counts[i].count,
+            .style = type_counts[i].style,
+        };
+    }
+
+    var chart = tui.widgets.DonutChart.init(slices_buf[0..n]).withHoleRatio(0.5);
+    if (center_label) |label| {
+        chart = chart.withCenterLabel(label);
+    }
+    chart.render(frame.buffer, area);
+}
+
 pub fn renderNotification(
     frame: *tui.Frame,
     area: tui.Rect,
