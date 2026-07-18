@@ -199,6 +199,62 @@ test "SENTINEL IS-MASTER-DOWN-BY-ADDR: returns error when sentinel disabled" {
     try std.testing.expect(std.mem.indexOf(u8, result, "sentinel mode disabled") != null);
 }
 
+test "SENTINEL IS-MASTER-DOWN-BY-ADDR: real runid vote elects a leader" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+    storage.sentinel.enabled = true;
+
+    try storage.sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    const args = [_][]const u8{ "SENTINEL", "IS-MASTER-DOWN-BY-ADDR", "127.0.0.1", "6379", "1", "sentinel-a-runid" };
+    const result = try sentinel_cmds.cmdSentinelIsMasterDownByAddr(allocator, &args, &storage, null, 0);
+    defer allocator.free(result);
+
+    // Should be array: *2\r\n:0\r\n$16\r\nsentinel-a-runid\r\n
+    try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n:0\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "sentinel-a-runid") != null);
+    try std.testing.expectEqual(@as(u64, 1), storage.sentinel.current_epoch);
+}
+
+test "SENTINEL IS-MASTER-DOWN-BY-ADDR: a second vote at a higher epoch re-elects the leader" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+    storage.sentinel.enabled = true;
+
+    try storage.sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    const args1 = [_][]const u8{ "SENTINEL", "IS-MASTER-DOWN-BY-ADDR", "127.0.0.1", "6379", "1", "sentinel-a-runid" };
+    const result1 = try sentinel_cmds.cmdSentinelIsMasterDownByAddr(allocator, &args1, &storage, null, 0);
+    allocator.free(result1);
+
+    const args2 = [_][]const u8{ "SENTINEL", "IS-MASTER-DOWN-BY-ADDR", "127.0.0.1", "6379", "2", "sentinel-b-runid" };
+    const result2 = try sentinel_cmds.cmdSentinelIsMasterDownByAddr(allocator, &args2, &storage, null, 0);
+    defer allocator.free(result2);
+
+    try std.testing.expect(std.mem.indexOf(u8, result2, "sentinel-b-runid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result2, "sentinel-a-runid") == null);
+}
+
+test "SENTINEL IS-MASTER-DOWN-BY-ADDR: invalid epoch returns error" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+    storage.sentinel.enabled = true;
+
+    try storage.sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    const args = [_][]const u8{ "SENTINEL", "IS-MASTER-DOWN-BY-ADDR", "127.0.0.1", "6379", "not-a-number", "sentinel-a-runid" };
+    const result = try sentinel_cmds.cmdSentinelIsMasterDownByAddr(allocator, &args, &storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+}
+
 test "SENTINEL IS-MASTER-DOWN-BY-ADDR: validates arity" {
     const allocator = std.testing.allocator;
 

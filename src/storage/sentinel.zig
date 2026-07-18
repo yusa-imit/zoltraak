@@ -40,10 +40,15 @@ pub const MasterInfo = struct {
     is_down: bool,
     /// Other Sentinels monitoring this master: sentinel_id → SentinelInfo
     sentinels: std.StringHashMap(SentinelInfo),
+    /// Run ID of the Sentinel elected as failover leader for this master (owned), or null if none elected yet
+    leader: ?[]const u8 = null,
+    /// Configuration epoch at which `leader` was elected (0 if never elected)
+    leader_epoch: u64 = 0,
 
     pub fn deinit(self: *MasterInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.ip);
+        if (self.leader) |leader| allocator.free(leader);
         // Free all SentinelInfo resources
         var it = self.sentinels.iterator();
         while (it.next()) |entry| {
@@ -226,23 +231,51 @@ pub const SentinelState = struct {
         return try list.toOwnedSlice(self.allocator);
     }
 
-    /// Check if a master at the given IP:port is down according to this Sentinel
+    /// Check if a master at the given IP:port is down according to this Sentinel,
+    /// optionally casting a failover-leader vote (Redis Sentinel's epoch-based
+    /// leader election, mirroring `sentinelVoteLeader()` in the reference implementation).
+    ///
+    /// `req_epoch`/`req_runid` come from `SENTINEL IS-MASTER-DOWN-BY-ADDR <ip> <port> <epoch> <runid>`.
+    /// Pass `req_runid = null` (or `"*"`) for a plain down-check with no vote cast.
+    ///
+    /// Voting rule: if `req_epoch` is newer than anything seen so far, this Sentinel's
+    /// `current_epoch` is raised to match, and — the first time a vote lands at that
+    /// epoch — the requesting Sentinel's runid is recorded as the master's leader.
+    /// Later votes at the *same* epoch never override an already-recorded leader,
+    /// which is what makes the election converge instead of flip-flopping.
+    ///
     /// Returns a tuple: (is_known: bool, is_down: bool, leader_runid: ?[]const u8)
-    /// leader_runid is null if not in failover, otherwise the Sentinel's ID leading the failover
+    /// leader_runid is null if no leader has been elected yet for this master.
     pub fn isMasterDownByAddr(
         self: *SentinelState,
         ip: []const u8,
         port: u16,
-    ) struct { is_known: bool, is_down: bool, leader_runid: ?[]const u8 } {
+        req_epoch: u64,
+        req_runid: ?[]const u8,
+    ) !struct { is_known: bool, is_down: bool, leader_runid: ?[]const u8 } {
         // Search for a master with matching IP and port
         var it = self.monitored_masters.valueIterator();
         while (it.next()) |master| {
             if (std.mem.eql(u8, master.ip, ip) and master.port == port) {
-                // Found the master
+                // Found the master — cast a vote if the caller supplied a real runid
+                if (req_runid) |runid| {
+                    if (!std.mem.eql(u8, runid, "*")) {
+                        if (req_epoch > self.current_epoch) {
+                            self.current_epoch = req_epoch;
+                        }
+                        if (master.leader_epoch < req_epoch and self.current_epoch <= req_epoch) {
+                            const runid_copy = try self.allocator.dupe(u8, runid);
+                            if (master.leader) |old| self.allocator.free(old);
+                            master.leader = runid_copy;
+                            master.leader_epoch = self.current_epoch;
+                        }
+                    }
+                }
+
                 return .{
                     .is_known = true,
                     .is_down = master.is_down,
-                    .leader_runid = null, // TODO: implement failover leader election
+                    .leader_runid = master.leader,
                 };
             }
         }
@@ -288,6 +321,11 @@ pub const SentinelState = struct {
 
                 // Clear is_down flag
                 master.is_down = false;
+
+                // Clear any elected failover leader for this master
+                if (master.leader) |leader| self.allocator.free(leader);
+                master.leader = null;
+                master.leader_epoch = 0;
 
                 count += 1;
             }
@@ -719,7 +757,7 @@ test "SentinelState.isMasterDownByAddr: returns is_known=false for unknown maste
     var sentinel = SentinelState.init(allocator);
     defer sentinel.deinit();
 
-    const result = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 0, null);
     try std.testing.expectEqual(false, result.is_known);
     try std.testing.expectEqual(false, result.is_down);
     try std.testing.expect(result.leader_runid == null);
@@ -732,7 +770,7 @@ test "SentinelState.isMasterDownByAddr: returns is_down=false for healthy master
 
     try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
 
-    const result = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 0, null);
     try std.testing.expectEqual(true, result.is_known);
     try std.testing.expectEqual(false, result.is_down);
     try std.testing.expect(result.leader_runid == null);
@@ -749,7 +787,7 @@ test "SentinelState.isMasterDownByAddr: returns is_down=true for down master" {
     const master = sentinel.getMaster("mymaster").?;
     master.is_down = true;
 
-    const result = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 0, null);
     try std.testing.expectEqual(true, result.is_known);
     try std.testing.expectEqual(true, result.is_down);
 }
@@ -763,16 +801,82 @@ test "SentinelState.isMasterDownByAddr: matches by IP and port" {
     try sentinel.monitorMaster("master2", "127.0.0.2", 6380, 2);
 
     // Check first master
-    const result1 = sentinel.isMasterDownByAddr("127.0.0.1", 6379);
+    const result1 = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 0, null);
     try std.testing.expectEqual(true, result1.is_known);
 
     // Check second master
-    const result2 = sentinel.isMasterDownByAddr("127.0.0.2", 6380);
+    const result2 = try sentinel.isMasterDownByAddr("127.0.0.2", 6380, 0, null);
     try std.testing.expectEqual(true, result2.is_known);
 
     // Wrong port
-    const result3 = sentinel.isMasterDownByAddr("127.0.0.1", 9999);
+    const result3 = try sentinel.isMasterDownByAddr("127.0.0.1", 9999, 0, null);
     try std.testing.expectEqual(false, result3.is_known);
+}
+
+test "SentinelState.isMasterDownByAddr: \"*\" runid performs a plain down-check with no vote" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 5, "*");
+    try std.testing.expectEqual(true, result.is_known);
+    try std.testing.expect(result.leader_runid == null);
+    // "*" must not advance the epoch or record a leader
+    try std.testing.expectEqual(@as(u64, 0), sentinel.current_epoch);
+}
+
+test "SentinelState.isMasterDownByAddr: first vote at an epoch elects that runid as leader" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 1, "sentinel-a");
+    try std.testing.expectEqual(true, result.is_known);
+    try std.testing.expect(result.leader_runid != null);
+    try std.testing.expectEqualStrings("sentinel-a", result.leader_runid.?);
+    try std.testing.expectEqual(@as(u64, 1), sentinel.current_epoch);
+}
+
+test "SentinelState.isMasterDownByAddr: a later vote at the same epoch does not override the leader" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    _ = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 3, "sentinel-a");
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 3, "sentinel-b");
+
+    try std.testing.expectEqualStrings("sentinel-a", result.leader_runid.?);
+}
+
+test "SentinelState.isMasterDownByAddr: a vote at a newer epoch re-elects the leader" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+
+    _ = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 1, "sentinel-a");
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 2, "sentinel-b");
+
+    try std.testing.expectEqualStrings("sentinel-b", result.leader_runid.?);
+    try std.testing.expectEqual(@as(u64, 2), sentinel.current_epoch);
+}
+
+test "SentinelState.isMasterDownByAddr: unknown master casts no vote" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const result = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 5, "sentinel-a");
+    try std.testing.expectEqual(false, result.is_known);
+    try std.testing.expect(result.leader_runid == null);
+    try std.testing.expectEqual(@as(u64, 0), sentinel.current_epoch);
 }
 
 // ============================================================================
@@ -972,6 +1076,24 @@ test "SentinelState.resetMaster: resets timestamps to current time" {
     try std.testing.expect(reset_master.last_ping_time <= after_reset + 10); // Small margin
     try std.testing.expect(reset_master.last_pong_time >= before_reset);
     try std.testing.expect(reset_master.last_pong_time <= after_reset + 10);
+}
+
+test "SentinelState.resetMaster: clears an elected failover leader" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    _ = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 1, "sentinel-a");
+
+    const master_before = sentinel.getMaster("mymaster").?;
+    try std.testing.expect(master_before.leader != null);
+
+    _ = try sentinel.resetMaster("mymaster");
+
+    const master_after = sentinel.getMaster("mymaster").?;
+    try std.testing.expect(master_after.leader == null);
+    try std.testing.expectEqual(@as(u64, 0), master_after.leader_epoch);
 }
 
 // ============================================================================

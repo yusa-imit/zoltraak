@@ -594,8 +594,8 @@ pub fn cmdSentinelIsMasterDownByAddr(
 
     const ip = args[2];
     const port_str = args[3];
-    // args[4] is current-epoch (not used in this implementation)
-    // args[5] is runid (not used in this implementation)
+    const epoch_str = args[4];
+    const runid = args[5];
 
     // Parse port
     const port = std.fmt.parseInt(u16, port_str, 10) catch {
@@ -604,8 +604,15 @@ pub fn cmdSentinelIsMasterDownByAddr(
         return try w.writeError("ERR Invalid port number");
     };
 
-    // Check if master is down
-    const result = storage.sentinel.isMasterDownByAddr(ip, port);
+    // Parse requesting Sentinel's current epoch (used for leader election voting)
+    const epoch = std.fmt.parseInt(u64, epoch_str, 10) catch {
+        var w = Writer.init(allocator);
+        defer w.deinit();
+        return try w.writeError("ERR Invalid epoch");
+    };
+
+    // Check if master is down, casting a leader-election vote for `runid` unless it's "*"
+    const result = try storage.sentinel.isMasterDownByAddr(ip, port, epoch, runid);
 
     // Build response: [is_down_integer, leader_runid or nil]
     // is_down_integer: 1 if master is known and down, 0 otherwise
@@ -614,8 +621,8 @@ pub fn cmdSentinelIsMasterDownByAddr(
     var response_array: [2]RespValue = undefined;
     response_array[0] = RespValue{ .integer = is_down_int };
 
-    if (result.leader_runid) |runid| {
-        response_array[1] = RespValue{ .bulk_string = try allocator.dupe(u8, runid) };
+    if (result.leader_runid) |leader_runid| {
+        response_array[1] = RespValue{ .bulk_string = try allocator.dupe(u8, leader_runid) };
     } else {
         response_array[1] = RespValue{ .null_bulk_string = {} };
     }
