@@ -1455,6 +1455,7 @@ pub const Storage = struct {
     /// Calls cleanupLfuTracking internally
     inline fn removeKeyCleanup(self: *Storage, key: []const u8) bool {
         self.cleanupLfuTracking(key);
+        self.lru_clock.remove(key);
         return self.data.remove(key);
     }
 
@@ -2334,6 +2335,7 @@ pub const Storage = struct {
         for (keys) |key| {
             if (self.data.fetchRemove(key)) |kv| {
                 self.cleanupLfuTracking(kv.key);
+                self.lru_clock.remove(kv.key);
                 self.removeKeyVersionLocked(kv.key);
                 self.allocator.free(kv.key);
                 var value = kv.value;
@@ -6885,7 +6887,8 @@ pub const Storage = struct {
         return try deepCopyValueWithAllocator(self.allocator, value);
     }
 
-    /// Touch one or more keys (update last access time - currently a stub).
+    /// Touch one or more keys, updating their last access time for LRU
+    /// eviction and OBJECT IDLETIME purposes without otherwise reading them.
     /// Returns count of existing non-expired keys touched.
     pub fn touch(self: *Storage, keys: []const []const u8) usize {
         self.mutex.lock();
@@ -6895,12 +6898,11 @@ pub const Storage = struct {
         var count: usize = 0;
 
         for (keys) |key| {
-            if (self.data.get(key)) |value| {
-                if (!value.isExpired(now)) {
-                    count += 1;
-                    // In a full implementation, we'd update an access timestamp here
-                }
-            }
+            const value = self.data.get(key) orelse continue;
+            if (value.isExpired(now)) continue;
+            count += 1;
+            self.lru_clock.tick();
+            self.lru_clock.touch(key) catch {};
         }
 
         return count;
@@ -13998,6 +14000,50 @@ test "storage - touch counts existing keys" {
     const count = storage.touch(&keys);
 
     try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "storage - touch actually updates LRU access time (not a no-op)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("stale", "a", null);
+    try storage.set("fresh", "b", null);
+
+    // Touch both once, ticking the clock forward between them so "stale"
+    // is recorded at an earlier clock value than "fresh".
+    _ = storage.touch(&[_][]const u8{"stale"});
+    storage.lru_clock.tick();
+    storage.lru_clock.tick();
+    _ = storage.touch(&[_][]const u8{"fresh"});
+
+    const stale_idle = storage.getObjectIdleTime("stale").?;
+    const fresh_idle = storage.getObjectIdleTime("fresh").?;
+
+    // A key touched earlier must show as more idle than one touched later.
+    try std.testing.expect(stale_idle > fresh_idle);
+    try std.testing.expectEqual(@as(u32, 0), fresh_idle);
+}
+
+test "storage - touch does not leak a dangling key pointer after DEL" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Key content assembled from a request-scoped buffer, distinct from any
+    // string literal, so a dangling-pointer bug wouldn't be masked by
+    // accidental read-only static memory reuse.
+    var key_buf: [8]u8 = undefined;
+    const key = try std.fmt.bufPrint(&key_buf, "touched", .{});
+
+    try storage.set(key, "v", null);
+    _ = storage.touch(&[_][]const u8{key});
+    try std.testing.expect(storage.getObjectIdleTime(key) != null);
+
+    // Deleting the key must clean up LRU tracking (freed via std.testing.allocator,
+    // which fails the test if the owned copy from touch() leaked).
+    _ = storage.del(&[_][]const u8{key});
+    try std.testing.expectEqual(@as(?u32, null), storage.getObjectIdleTime(key));
 }
 
 test "BITOP DIFF operation" {

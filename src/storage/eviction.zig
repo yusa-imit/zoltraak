@@ -49,6 +49,10 @@ pub const LRUClock = struct {
     }
 
     pub fn deinit(self: *LRUClock) void {
+        var it = self.last_access.keyIterator();
+        while (it.next()) |key_ptr| {
+            self.allocator.free(key_ptr.*);
+        }
         self.last_access.deinit();
     }
 
@@ -63,10 +67,16 @@ pub const LRUClock = struct {
         _ = self.clock.cmpxchgWeak(current, (current + 1) & (MAX_CLOCK - 1), .monotonic, .monotonic);
     }
 
-    /// Record access time for a key
+    /// Record access time for a key.
+    /// Stores an owned copy of `key` so callers may pass request-scoped
+    /// slices without risking a dangling pointer in `last_access`.
     pub fn touch(self: *LRUClock, key: []const u8) !void {
         const current_clock = self.getClock();
-        try self.last_access.put(key, current_clock);
+        const entry = try self.last_access.getOrPut(key);
+        if (!entry.found_existing) {
+            entry.key_ptr.* = try self.allocator.dupe(u8, key);
+        }
+        entry.value_ptr.* = current_clock;
     }
 
     /// Get idle time for a key (time since last access)
@@ -83,9 +93,11 @@ pub const LRUClock = struct {
         }
     }
 
-    /// Remove key from access tracking
+    /// Remove key from access tracking, freeing the owned key copy made by `touch`.
     pub fn remove(self: *LRUClock, key: []const u8) void {
-        _ = self.last_access.remove(key);
+        if (self.last_access.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+        }
     }
 };
 
@@ -268,6 +280,37 @@ test "eviction - remove key from tracking" {
     clock.remove("key1");
     try std.testing.expect(!clock.last_access.contains("key1"));
     try std.testing.expectEqual(null, clock.getIdleTime("key1"));
+}
+
+test "eviction - touch stores an owned key copy independent of caller's buffer" {
+    var clock = LRUClock.init(std.testing.allocator);
+    defer clock.deinit();
+
+    // Simulate a request-scoped buffer that gets freed/reused after touch() returns.
+    var key_buf = try std.testing.allocator.dupe(u8, "request-scoped-key");
+    try clock.touch(key_buf);
+    std.testing.allocator.free(key_buf);
+    key_buf = &.{};
+
+    // The clock must still resolve the key correctly from its own owned copy.
+    try std.testing.expect(clock.last_access.contains("request-scoped-key"));
+    try std.testing.expectEqual(@as(u32, 0), clock.getIdleTime("request-scoped-key").?);
+}
+
+test "eviction - touching the same key twice does not leak the first owned copy" {
+    var clock = LRUClock.init(std.testing.allocator);
+    defer clock.deinit();
+
+    // Repeated touches on the same key must reuse (not leak) the owned copy.
+    // std.testing.allocator fails the test on any leak.
+    try clock.touch("key1");
+    clock.tick();
+    try clock.touch("key1");
+    clock.tick();
+    try clock.touch("key1");
+
+    try std.testing.expectEqual(@as(usize, 1), clock.last_access.count());
+    try std.testing.expectEqual(@as(u32, 0), clock.getIdleTime("key1").?);
 }
 
 test "eviction - LFU counter basic operations" {
