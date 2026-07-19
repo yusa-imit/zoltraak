@@ -6,6 +6,7 @@ pub const BloomError = error{
     InvalidCapacity,
     CapacityExceeded,
     InvalidExpansion,
+    InvalidRdbData,
 };
 
 /// MurmurHash3 128-bit hash for binary-safe string hashing
@@ -249,6 +250,92 @@ pub const BloomFilterValue = struct {
             .total_items_added = self.total_items_added,
             .allocator = allocator,
             .expires_at = self.expires_at,
+        };
+    }
+
+    /// Serialize the full Bloom filter state (metadata + every sub-filter's bits
+    /// and item_count) for RDB persistence. Unlike `scanDump`, this is not
+    /// chunk-size-limited and preserves `total_items_added`/`item_count` exactly.
+    pub fn rdbSerialize(self: *const BloomFilterValue, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeInt(u64, @bitCast(self.error_rate), .little);
+        try w.writeInt(u64, self.capacity, .little);
+        try w.writeInt(u16, self.expansion, .little);
+        try w.writeByte(if (self.nonscaling) 1 else 0);
+        try w.writeByte(self.num_hashes);
+        try w.writeInt(u64, self.total_items_added, .little);
+        try w.writeInt(u64, @intCast(self.filters.items.len), .little);
+        for (self.filters.items) |filter| {
+            try w.writeInt(u64, filter.size_bits, .little);
+            try w.writeInt(u64, filter.item_count, .little);
+            try w.writeInt(u32, @intCast(filter.bits.len), .little);
+            try w.writeAll(filter.bits);
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a Bloom filter from `rdbSerialize` output.
+    pub fn rdbDeserialize(allocator: std.mem.Allocator, data: []const u8, expires_at: ?i64) !BloomFilterValue {
+        var pos: usize = 0;
+        const header_size = 8 + 8 + 2 + 1 + 1 + 8 + 8;
+        if (data.len < header_size) return BloomError.InvalidRdbData;
+
+        const error_rate: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+        pos += 8;
+        const capacity = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+        const expansion = std.mem.readInt(u16, data[pos..][0..2], .little);
+        pos += 2;
+        const nonscaling = data[pos] != 0;
+        pos += 1;
+        const num_hashes = data[pos];
+        pos += 1;
+        const total_items_added = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+        const num_filters = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
+        var filters = try std.ArrayList(SubFilter).initCapacity(allocator, num_filters);
+        errdefer {
+            for (filters.items) |*filter| filter.deinit();
+            filters.deinit(allocator);
+        }
+
+        for (0..num_filters) |_| {
+            if (pos + 8 + 8 + 4 > data.len) return BloomError.InvalidRdbData;
+            const size_bits = std.mem.readInt(u64, data[pos..][0..8], .little);
+            pos += 8;
+            const item_count = std.mem.readInt(u64, data[pos..][0..8], .little);
+            pos += 8;
+            const bits_len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + bits_len > data.len) return BloomError.InvalidRdbData;
+
+            const bits = try allocator.dupe(u8, data[pos .. pos + bits_len]);
+            pos += bits_len;
+
+            filters.appendAssumeCapacity(.{
+                .bits = bits,
+                .size_bits = size_bits,
+                .item_count = item_count,
+                .allocator = allocator,
+            });
+        }
+
+        return .{
+            .error_rate = error_rate,
+            .capacity = capacity,
+            .expansion = expansion,
+            .nonscaling = nonscaling,
+            .num_hashes = num_hashes,
+            .filters = filters,
+            .total_items_added = total_items_added,
+            .allocator = allocator,
+            .expires_at = expires_at,
         };
     }
 

@@ -92,6 +92,46 @@ pub const CountMinSketchValue = struct {
         return new_cms;
     }
 
+    /// Serialize the full counter matrix for RDB persistence.
+    pub fn rdbSerialize(self: *const CountMinSketchValue, allocator: Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeInt(u32, self.width, .little);
+        try w.writeInt(u32, self.depth, .little);
+        for (self.counters) |row| {
+            for (row) |counter| {
+                try w.writeInt(u64, counter, .little);
+            }
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a Count-Min Sketch from `rdbSerialize` output.
+    pub fn rdbDeserialize(allocator: Allocator, data: []const u8) !CountMinSketchValue {
+        if (data.len < 8) return error.InvalidRdbData;
+        const width = std.mem.readInt(u32, data[0..4], .little);
+        const depth = std.mem.readInt(u32, data[4..8], .little);
+
+        const expected_len = 8 + @as(usize, width) * @as(usize, depth) * 8;
+        if (data.len != expected_len) return error.InvalidRdbData;
+
+        var cms = try initByDim(allocator, width, depth);
+        errdefer cms.deinit();
+
+        var pos: usize = 8;
+        for (cms.counters) |row| {
+            for (row) |*counter| {
+                counter.* = std.mem.readInt(u64, data[pos..][0..8], .little);
+                pos += 8;
+            }
+        }
+
+        return cms;
+    }
+
     /// Increment counter for an item by a delta value.
     /// Returns the new estimated count after increment.
     /// Errors:

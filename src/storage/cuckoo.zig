@@ -8,6 +8,7 @@ pub const CuckooError = error{
     InvalidMaxIterations,
     InvalidExpansion,
     FilterFull,
+    InvalidRdbData,
 };
 
 /// MurmurHash3 hash function - reused from bloom filter
@@ -343,6 +344,103 @@ pub const CuckooFilterValue = struct {
             .filters = filters_copy,
             .allocator = allocator,
             .expires_at = self.expires_at,
+        };
+    }
+
+    /// Serialize the full Cuckoo filter state (metadata + every sub-filter's
+    /// buckets and fingerprint bytes) for RDB persistence.
+    pub fn rdbSerialize(self: *const CuckooFilterValue, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeInt(u64, self.capacity, .little);
+        try w.writeInt(u32, self.bucketsize, .little);
+        try w.writeInt(u16, self.max_iterations, .little);
+        try w.writeInt(u16, self.expansion, .little);
+        try w.writeInt(u64, @intCast(self.filters.items.len), .little);
+        for (self.filters.items) |filter| {
+            try w.writeInt(u64, filter.num_buckets, .little);
+            for (filter.buckets) |bucket| {
+                try w.writeInt(u32, bucket.capacity, .little);
+                try w.writeInt(u32, bucket.count, .little);
+                try w.writeAll(bucket.fingerprints);
+            }
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a Cuckoo filter from `rdbSerialize` output.
+    pub fn rdbDeserialize(allocator: std.mem.Allocator, data: []const u8, expires_at: ?i64) !CuckooFilterValue {
+        var pos: usize = 0;
+        const header_size = 8 + 4 + 2 + 2 + 8;
+        if (data.len < header_size) return CuckooError.InvalidRdbData;
+
+        const capacity = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+        const bucketsize = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        const max_iterations = std.mem.readInt(u16, data[pos..][0..2], .little);
+        pos += 2;
+        const expansion = std.mem.readInt(u16, data[pos..][0..2], .little);
+        pos += 2;
+        const num_filters = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
+        var filters = try std.ArrayList(SubFilter).initCapacity(allocator, num_filters);
+        errdefer {
+            for (filters.items) |*filter| filter.deinit();
+            filters.deinit(allocator);
+        }
+
+        for (0..num_filters) |_| {
+            if (pos + 8 > data.len) return CuckooError.InvalidRdbData;
+            const num_buckets = std.mem.readInt(u64, data[pos..][0..8], .little);
+            pos += 8;
+
+            const buckets = try allocator.alloc(Bucket, num_buckets);
+            errdefer allocator.free(buckets);
+            var initialized: usize = 0;
+            errdefer {
+                for (buckets[0..initialized]) |*bucket| bucket.deinit();
+            }
+
+            for (0..num_buckets) |i| {
+                if (pos + 4 + 4 > data.len) return CuckooError.InvalidRdbData;
+                const bcapacity = std.mem.readInt(u32, data[pos..][0..4], .little);
+                pos += 4;
+                const bcount = std.mem.readInt(u32, data[pos..][0..4], .little);
+                pos += 4;
+                if (pos + bcapacity > data.len) return CuckooError.InvalidRdbData;
+
+                const fingerprints = try allocator.dupe(u8, data[pos .. pos + bcapacity]);
+                pos += bcapacity;
+
+                buckets[i] = .{
+                    .fingerprints = fingerprints,
+                    .count = bcount,
+                    .capacity = bcapacity,
+                    .allocator = allocator,
+                };
+                initialized += 1;
+            }
+
+            filters.appendAssumeCapacity(.{
+                .buckets = buckets,
+                .num_buckets = num_buckets,
+                .allocator = allocator,
+            });
+        }
+
+        return .{
+            .capacity = capacity,
+            .bucketsize = bucketsize,
+            .max_iterations = max_iterations,
+            .expansion = expansion,
+            .filters = filters,
+            .allocator = allocator,
+            .expires_at = expires_at,
         };
     }
 

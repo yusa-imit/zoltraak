@@ -23,7 +23,6 @@ const RDB_DB_SELECTOR: u8 = 0xFE;
 /// - 0-63: Single byte with value (top 2 bits = 00)
 /// - 64-16383: Two bytes LE (top 2 bits = 01)
 /// - 16384+: Four bytes LE (top 2 bits = 10)
-
 /// RDB Persistence: save and load snapshots of Storage to/from disk.
 ///
 /// Binary format (little-endian):
@@ -190,25 +189,30 @@ pub const Persistence = struct {
                         // Time series not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
-                    .bloom => {
-                        // Bloom filter not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .bloom => |b| {
+                        const bytes = try b.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .cuckoo => {
-                        // Cuckoo filter not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .cuckoo => |c| {
+                        const bytes = try c.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .count_min_sketch => {
-                        // Count-Min Sketch not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .count_min_sketch => |cms| {
+                        const bytes = try cms.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .top_k => {
-                        // Top-K not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .top_k => |tk| {
+                        const bytes = try tk.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .t_digest => {
-                        // T-Digest not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .t_digest => |td| {
+                        const bytes = try td.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
                     .vector_set => {
                         // Vector set not yet implemented in persistence
@@ -432,6 +436,81 @@ pub const Persistence = struct {
 
                     try storage.data.put(owned_key, json_val);
                 },
+                0xFC => { // Bloom filter
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var bf = try memory.BloomFilterValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer bf.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .bloom = bf });
+                },
+                0xFB => { // Cuckoo filter
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var cf = try memory.CuckooFilterValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer cf.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .cuckoo = cf });
+                },
+                0xFA => { // Count-Min Sketch
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var cms = try memory.CountMinSketchValue.rdbDeserialize(storage.allocator, raw);
+                    errdefer cms.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .count_min_sketch = cms });
+                },
+                0xF9 => { // Top-K
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var tk = try memory.TopKValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer tk.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .top_k = tk });
+                },
+                0xF8 => { // T-Digest
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var td = try memory.TDigestValue.rdbDeserialize(storage.allocator, raw);
+                    errdefer td.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .t_digest = td });
+                },
                 else => return error.InvalidRdbFile,
             }
 
@@ -541,7 +620,9 @@ pub const Persistence = struct {
     /// Skip over a value payload without allocating
     fn skipValue(data: []const u8, pos: *usize, type_byte: u8) !void {
         switch (type_byte) {
-            RDB_TYPE_STRING => {
+            RDB_TYPE_STRING, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8 => {
+                // String and all probabilistic types (bloom/cuckoo/CMS/Top-K/T-Digest)
+                // are written as a single length-prefixed blob.
                 if (pos.* + 4 > data.len) return error.InvalidRdbFile;
                 const len = std.mem.readInt(u32, data[pos.*..][0..4], .little);
                 pos.* += 4 + len;
@@ -720,25 +801,30 @@ pub const Persistence = struct {
                         // Time series not yet implemented in persistence
                         try w.writeInt(u32, 0, .little);
                     },
-                    .bloom => {
-                        // Bloom filter not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .bloom => |b| {
+                        const bytes = try b.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .cuckoo => {
-                        // Cuckoo filter not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .cuckoo => |c| {
+                        const bytes = try c.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .count_min_sketch => {
-                        // Count-Min Sketch not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .count_min_sketch => |cms| {
+                        const bytes = try cms.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .top_k => {
-                        // Top-K not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .top_k => |tk| {
+                        const bytes = try tk.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
-                    .t_digest => {
-                        // T-Digest not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .t_digest => |td| {
+                        const bytes = try td.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
                     .vector_set => {
                         // Vector set not yet implemented in persistence
@@ -888,6 +974,81 @@ pub const Persistence = struct {
                         var members_arr = [_][]const u8{member};
                         _ = try storage.zadd(key, &scores_arr, &members_arr, 0, expires_at);
                     }
+                },
+                0xFC => { // Bloom filter
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var bf = try memory.BloomFilterValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer bf.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .bloom = bf });
+                },
+                0xFB => { // Cuckoo filter
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var cf = try memory.CuckooFilterValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer cf.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .cuckoo = cf });
+                },
+                0xFA => { // Count-Min Sketch
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var cms = try memory.CountMinSketchValue.rdbDeserialize(storage.allocator, raw);
+                    errdefer cms.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .count_min_sketch = cms });
+                },
+                0xF9 => { // Top-K
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var tk = try memory.TopKValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer tk.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .top_k = tk });
+                },
+                0xF8 => { // T-Digest
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var td = try memory.TDigestValue.rdbDeserialize(storage.allocator, raw);
+                    errdefer td.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .t_digest = td });
                 },
                 else => return error.InvalidRdbFile,
             }
@@ -1054,6 +1215,188 @@ test "persistence - save and load sorted set" {
     try std.testing.expectEqual(@as(usize, 3), storage2.zcard("myzset").?);
     try std.testing.expect(storage2.zscore("myzset", "two") != null);
     try std.testing.expectEqual(@as(f64, 2.0), storage2.zscore("myzset", "two").?);
+
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+}
+
+test "persistence - save and load bloom filter" {
+    const allocator = std.testing.allocator;
+
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var bf = try memory.BloomFilterValue.init(allocator, 0.01, 100, 2, false);
+    _ = try bf.add("hello");
+    _ = try bf.add("world");
+    const key_copy = try allocator.dupe(u8, "myfilter");
+    try storage.data.put(key_copy, Value{ .bloom = bf });
+
+    const tmp_path = "/tmp/zoltraak_test_rdb_bloom.rdb";
+    try Persistence.saveSingleDb(storage, tmp_path, allocator);
+
+    const storage2 = try Storage.init(allocator);
+    defer storage2.deinit();
+
+    const count = try Persistence.loadSingleDb(storage2, tmp_path, allocator);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    const loaded = storage2.data.get("myfilter").?;
+    try std.testing.expect(loaded.bloom.exists("hello"));
+    try std.testing.expect(loaded.bloom.exists("world"));
+    try std.testing.expect(!loaded.bloom.exists("nope"));
+    try std.testing.expectEqual(@as(u64, 2), loaded.bloom.total_items_added);
+
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+}
+
+test "persistence - save and load cuckoo filter" {
+    const allocator = std.testing.allocator;
+
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var cf = try memory.CuckooFilterValue.init(allocator, 100, 4, 500, 2);
+    try cf.add("hello");
+    const key_copy = try allocator.dupe(u8, "mycuckoo");
+    try storage.data.put(key_copy, Value{ .cuckoo = cf });
+
+    const tmp_path = "/tmp/zoltraak_test_rdb_cuckoo.rdb";
+    try Persistence.saveSingleDb(storage, tmp_path, allocator);
+
+    const storage2 = try Storage.init(allocator);
+    defer storage2.deinit();
+
+    const count = try Persistence.loadSingleDb(storage2, tmp_path, allocator);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    const loaded = storage2.data.get("mycuckoo").?;
+    try std.testing.expect(loaded.cuckoo.exists("hello"));
+    try std.testing.expect(!loaded.cuckoo.exists("nope"));
+
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+}
+
+test "persistence - save and load count-min sketch" {
+    const allocator = std.testing.allocator;
+
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var cms = try memory.CountMinSketchValue.initByDim(allocator, 100, 5);
+    _ = try cms.incrBy("apple", 7);
+    const key_copy = try allocator.dupe(u8, "mycms");
+    try storage.data.put(key_copy, Value{ .count_min_sketch = cms });
+
+    const tmp_path = "/tmp/zoltraak_test_rdb_cms.rdb";
+    try Persistence.saveSingleDb(storage, tmp_path, allocator);
+
+    const storage2 = try Storage.init(allocator);
+    defer storage2.deinit();
+
+    const count = try Persistence.loadSingleDb(storage2, tmp_path, allocator);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    const loaded = storage2.data.get("mycms").?;
+    try std.testing.expectEqual(@as(u64, 7), loaded.count_min_sketch.query("apple"));
+    try std.testing.expectEqual(@as(u32, 100), loaded.count_min_sketch.width);
+    try std.testing.expectEqual(@as(u32, 5), loaded.count_min_sketch.depth);
+
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+}
+
+test "persistence - save and load top-k" {
+    const allocator = std.testing.allocator;
+
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var tk = try memory.TopKValue.init(allocator, 3, 8, 7, 0.9);
+    _ = try tk.add("apple");
+    _ = try tk.add("apple");
+    _ = try tk.add("banana");
+    const key_copy = try allocator.dupe(u8, "mytopk");
+    try storage.data.put(key_copy, Value{ .top_k = tk });
+
+    const tmp_path = "/tmp/zoltraak_test_rdb_topk.rdb";
+    try Persistence.saveSingleDb(storage, tmp_path, allocator);
+
+    const storage2 = try Storage.init(allocator);
+    defer storage2.deinit();
+
+    const count = try Persistence.loadSingleDb(storage2, tmp_path, allocator);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    const loaded = storage2.data.get("mytopk").?;
+    try std.testing.expectEqual(@as(usize, 2), loaded.top_k.heap.items.len);
+    try std.testing.expectEqual(@as(u32, 3), loaded.top_k.k);
+
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+}
+
+test "persistence - save and load t-digest" {
+    const allocator = std.testing.allocator;
+
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var td = try memory.TDigestValue.init(allocator, 100);
+    try td.add(1.0);
+    try td.add(2.0);
+    try td.add(3.0);
+    const key_copy = try allocator.dupe(u8, "mytdigest");
+    try storage.data.put(key_copy, Value{ .t_digest = td });
+
+    const tmp_path = "/tmp/zoltraak_test_rdb_tdigest.rdb";
+    try Persistence.saveSingleDb(storage, tmp_path, allocator);
+
+    const storage2 = try Storage.init(allocator);
+    defer storage2.deinit();
+
+    const count = try Persistence.loadSingleDb(storage2, tmp_path, allocator);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    const loaded = storage2.data.get("mytdigest").?;
+    try std.testing.expectEqual(@as(usize, 3), loaded.t_digest.centroids.items.len);
+    try std.testing.expectEqual(@as(u64, 3), loaded.t_digest.total_count);
+    try std.testing.expectEqual(@as(f64, 1.0), loaded.t_digest.min);
+    try std.testing.expectEqual(@as(f64, 3.0), loaded.t_digest.max);
+
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+}
+
+test "persistence - probabilistic type alongside other keys doesn't poison whole-file load" {
+    // Regression test: before this fix, load()'s switch had no case for
+    // probabilistic type bytes and fell through to `error.InvalidRdbFile`,
+    // which meant a single bloom/cuckoo/CMS/Top-K/T-Digest key anywhere in the
+    // RDB file caused the ENTIRE database load to fail, not just that key.
+    const allocator = std.testing.allocator;
+
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("plain_key", "plain_value", null);
+
+    var bf = try memory.BloomFilterValue.init(allocator, 0.01, 10, 2, false);
+    _ = try bf.add("x");
+    const bloom_key = try allocator.dupe(u8, "bf_key");
+    try storage.data.put(bloom_key, Value{ .bloom = bf });
+
+    var td = try memory.TDigestValue.init(allocator, 100);
+    try td.add(42.0);
+    const tdigest_key = try allocator.dupe(u8, "td_key");
+    try storage.data.put(tdigest_key, Value{ .t_digest = td });
+
+    const tmp_path = "/tmp/zoltraak_test_rdb_mixed_probabilistic.rdb";
+    try Persistence.saveSingleDb(storage, tmp_path, allocator);
+
+    const storage2 = try Storage.init(allocator);
+    defer storage2.deinit();
+
+    const count = try Persistence.loadSingleDb(storage2, tmp_path, allocator);
+    try std.testing.expectEqual(@as(usize, 3), count);
+    try std.testing.expectEqualStrings("plain_value", storage2.get("plain_key").?);
+    try std.testing.expect(storage2.data.get("bf_key").?.bloom.exists("x"));
+    try std.testing.expectEqual(@as(usize, 1), storage2.data.get("td_key").?.t_digest.centroids.items.len);
 
     std.fs.cwd().deleteFile(tmp_path) catch {};
 }

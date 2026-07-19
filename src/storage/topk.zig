@@ -250,6 +250,112 @@ pub const TopKValue = struct {
         };
     }
 
+    /// Serialize metadata, the hash table, and the heap (with owned item bytes)
+    /// for RDB persistence. The PRNG is not serialized — it only feeds eviction
+    /// randomness, not correctness, so the reload reseeds deterministically from 0
+    /// (matching `init`'s default seed) rather than round-tripping generator state.
+    pub fn rdbSerialize(self: *const TopKValue, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeInt(u32, self.k, .little);
+        try w.writeInt(u32, self.width, .little);
+        try w.writeInt(u32, self.depth, .little);
+        try w.writeInt(u64, @bitCast(self.decay), .little);
+
+        for (self.hash_table) |row| {
+            for (row) |cell| {
+                try w.writeByte(cell.fingerprint);
+                try w.writeInt(u64, cell.counter, .little);
+            }
+        }
+
+        try w.writeInt(u64, @intCast(self.heap.items.len), .little);
+        for (self.heap.items) |item| {
+            try w.writeInt(u32, @intCast(item.item.len), .little);
+            try w.writeAll(item.item);
+            try w.writeInt(u64, item.count, .little);
+            try w.writeByte(item.fingerprint);
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a Top-K structure from `rdbSerialize` output.
+    pub fn rdbDeserialize(allocator: std.mem.Allocator, data: []const u8, expires_at: ?i64) !TopKValue {
+        var pos: usize = 0;
+        const header_size = 4 + 4 + 4 + 8;
+        if (data.len < header_size) return TopKError.InvalidK;
+
+        const k = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        const width = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        const depth = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        const decay: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+        pos += 8;
+
+        const hash_table = try allocator.alloc([]HashCell, depth);
+        errdefer allocator.free(hash_table);
+        var rows_initialized: usize = 0;
+        errdefer {
+            for (hash_table[0..rows_initialized]) |row| allocator.free(row);
+        }
+
+        for (0..depth) |i| {
+            if (pos + @as(usize, width) * 9 > data.len) return TopKError.InvalidWidth;
+            const row = try allocator.alloc(HashCell, width);
+            for (row) |*cell| {
+                cell.fingerprint = data[pos];
+                pos += 1;
+                cell.counter = std.mem.readInt(u64, data[pos..][0..8], .little);
+                pos += 8;
+            }
+            hash_table[i] = row;
+            rows_initialized += 1;
+        }
+
+        if (pos + 8 > data.len) return TopKError.InvalidK;
+        const heap_len = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
+        var heap = try std.ArrayList(HeapItem).initCapacity(allocator, heap_len);
+        errdefer {
+            for (heap.items) |*item| item.deinit(allocator);
+            heap.deinit(allocator);
+        }
+
+        for (0..heap_len) |_| {
+            if (pos + 4 > data.len) return TopKError.InvalidK;
+            const item_len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + item_len + 8 + 1 > data.len) return TopKError.InvalidK;
+
+            const item_bytes = try allocator.dupe(u8, data[pos .. pos + item_len]);
+            pos += item_len;
+            const item_count = std.mem.readInt(u64, data[pos..][0..8], .little);
+            pos += 8;
+            const fp = data[pos];
+            pos += 1;
+
+            heap.appendAssumeCapacity(.{ .item = item_bytes, .count = item_count, .fingerprint = fp });
+        }
+
+        return TopKValue{
+            .allocator = allocator,
+            .k = k,
+            .width = width,
+            .depth = depth,
+            .decay = decay,
+            .hash_table = hash_table,
+            .heap = heap,
+            .prng = std.Random.DefaultPrng.init(0),
+            .expires_at = expires_at,
+        };
+    }
+
     /// Add an item to the Top-K structure
     /// Returns the expelled item (if any) when heap is full and minimum is replaced
     /// Uses HeavyKeeper algorithm with exponential decay

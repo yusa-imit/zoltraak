@@ -7,7 +7,6 @@
 /// - RESET: Clear centroids, preserve compression
 ///
 /// Full T-Digest algorithm (merging, compression) deferred to iteration 227.
-
 const std = @import("std");
 
 pub const TDigestError = error{
@@ -74,6 +73,65 @@ pub const TDigestValue = struct {
             .min = self.min,
             .max = self.max,
             .total_count = self.total_count,
+            .allocator = allocator,
+        };
+    }
+
+    /// Serialize compression/min/max/total_count plus every centroid for RDB persistence.
+    pub fn rdbSerialize(self: *const TDigestValue, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeInt(u32, self.compression, .little);
+        try w.writeInt(u64, @bitCast(self.min), .little);
+        try w.writeInt(u64, @bitCast(self.max), .little);
+        try w.writeInt(u64, self.total_count, .little);
+        try w.writeInt(u64, @intCast(self.centroids.items.len), .little);
+        for (self.centroids.items) |centroid| {
+            try w.writeInt(u64, @bitCast(centroid.mean), .little);
+            try w.writeInt(u64, centroid.count, .little);
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a T-Digest from `rdbSerialize` output.
+    pub fn rdbDeserialize(allocator: std.mem.Allocator, data: []const u8) !TDigestValue {
+        var pos: usize = 0;
+        const header_size = 4 + 8 + 8 + 8 + 8;
+        if (data.len < header_size) return TDigestError.InvalidValue;
+
+        const compression = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        const min: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+        pos += 8;
+        const max: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+        pos += 8;
+        const total_count = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+        const num_centroids = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
+        if (data.len - pos != num_centroids * 16) return TDigestError.InvalidValue;
+
+        var centroids = try std.ArrayList(Centroid).initCapacity(allocator, num_centroids);
+        errdefer centroids.deinit(allocator);
+
+        for (0..num_centroids) |_| {
+            const mean: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+            pos += 8;
+            const count = std.mem.readInt(u64, data[pos..][0..8], .little);
+            pos += 8;
+            centroids.appendAssumeCapacity(.{ .mean = mean, .count = count });
+        }
+
+        return TDigestValue{
+            .compression = compression,
+            .centroids = centroids,
+            .min = min,
+            .max = max,
+            .total_count = total_count,
             .allocator = allocator,
         };
     }
@@ -875,7 +933,7 @@ test "TDigestValue.merge without compression override uses dest compression" {
     defer source1.deinit();
     try source1.add(10.0);
 
-    const sources = [_]*TDigestValue{ &source1 };
+    const sources = [_]*TDigestValue{&source1};
     try dest.merge(&sources, null);
 
     // Dest compression should remain unchanged
@@ -892,7 +950,7 @@ test "TDigestValue.merge single source" {
     defer source.deinit();
     try source.add(42.0);
 
-    const sources = [_]*TDigestValue{ &source };
+    const sources = [_]*TDigestValue{&source};
     try dest.merge(&sources, null);
 
     try std.testing.expectEqual(1, dest.total_count);
@@ -969,7 +1027,7 @@ test "TDigestValue.merge into non-empty dest with existing data" {
     defer source.deinit();
     try source.add(300.0);
 
-    const sources = [_]*TDigestValue{ &source };
+    const sources = [_]*TDigestValue{&source};
     try dest.merge(&sources, null);
 
     // Should combine existing dest data with source data
@@ -1544,13 +1602,13 @@ test "TDigestValue.trimmedMean trim extremes" {
     var td = try TDigestValue.init(allocator, 100);
     defer td.deinit();
 
-    try td.add(1.0);   // Will be trimmed (low outlier)
+    try td.add(1.0); // Will be trimmed (low outlier)
     try td.add(10.0);
     try td.add(20.0);
     try td.add(30.0);
     try td.add(40.0);
     try td.add(50.0);
-    try td.add(99.0);  // Will be trimmed (high outlier)
+    try td.add(99.0); // Will be trimmed (high outlier)
 
     // Trim bottom 10% and top 10%
     const mean = try td.trimmedMean(0.1, 0.9);
