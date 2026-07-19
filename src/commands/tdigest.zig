@@ -67,8 +67,10 @@ pub fn cmdTdigestCreate(allocator: std.mem.Allocator, storage: *Storage, args: [
         };
     }
 
-    // Create T-Digest value
-    var td = TDigestValue.init(allocator, compression) catch |err| {
+    // Create T-Digest value. Uses storage.allocator (not the per-request
+    // allocator) because the value and its key must outlive this request —
+    // the per-request arena is reset/reused after the response is sent.
+    var td = TDigestValue.init(storage.allocator, compression) catch |err| {
         return switch (err) {
             error.InvalidCompression => protocol.RespValue{ .error_string = "ERR compression must be greater than 0" },
             error.InvalidValue => protocol.RespValue{ .error_string = "ERR invalid value" }, // Never returned by init, but required for exhaustive switch
@@ -80,8 +82,8 @@ pub fn cmdTdigestCreate(allocator: std.mem.Allocator, storage: *Storage, args: [
     errdefer td.deinit(); // CRITICAL: Cleanup on error
 
     // Store in hash map
-    const key_copy = try allocator.dupe(u8, key);
-    errdefer allocator.free(key_copy);
+    const key_copy = try storage.allocator.dupe(u8, key);
+    errdefer storage.allocator.free(key_copy);
 
     try storage.data.put(key_copy, Value{ .t_digest = td });
 
@@ -268,26 +270,28 @@ pub fn cmdTdigestMerge(allocator: std.mem.Allocator, storage: *Storage, args: []
         sources[i] = &source_value_ptr.t_digest;
     }
 
-    // Create or get destination sketch
+    // Create or get destination sketch. Uses storage.allocator (not the
+    // per-request allocator) because the value and its key must outlive
+    // this request.
     var dest_td: TDigestValue = undefined;
     var need_to_store = false;
 
     if (dest_exists and override_flag) {
         // Create new dest BEFORE removing old one (atomicity)
-        const new_td = try TDigestValue.init(allocator, compression_override orelse 100);
+        const new_td = try TDigestValue.init(storage.allocator, compression_override orelse 100);
         errdefer new_td.deinit();
 
         // Now safe to remove old dest
         const old_kv = storage.data.fetchRemove(destkey).?;
-        allocator.free(old_kv.key);
+        storage.allocator.free(old_kv.key);
         var old_val = old_kv.value;
-        old_val.deinit(allocator);
+        old_val.deinit(storage.allocator);
 
         dest_td = new_td;
         need_to_store = true;
     } else if (!dest_exists) {
         // Create new dest
-        dest_td = try TDigestValue.init(allocator, compression_override orelse 100);
+        dest_td = try TDigestValue.init(storage.allocator, compression_override orelse 100);
         errdefer dest_td.deinit();
         need_to_store = true;
     }
@@ -297,8 +301,8 @@ pub fn cmdTdigestMerge(allocator: std.mem.Allocator, storage: *Storage, args: []
 
     // Store destination if needed
     if (need_to_store) {
-        const key_copy = try allocator.dupe(u8, destkey);
-        errdefer allocator.free(key_copy);
+        const key_copy = try storage.allocator.dupe(u8, destkey);
+        errdefer storage.allocator.free(key_copy);
 
         try storage.data.put(key_copy, Value{ .t_digest = dest_td });
     }
@@ -466,8 +470,6 @@ pub fn cmdTdigestCdf(allocator: std.mem.Allocator, storage: *Storage, args: []pr
 /// TDIGEST.MIN key
 /// Get minimum value in sketch
 pub fn cmdTdigestMin(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
-    _ = allocator;
-
     if (args.len != 2) {
         return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.MIN' command" };
     }
@@ -494,11 +496,12 @@ pub fn cmdTdigestMin(allocator: std.mem.Allocator, storage: *Storage, args: []pr
         return protocol.RespValue{ .error_string = "ERR sketch is empty" };
     }
 
-    // Format min value as bulk string
+    // Format min value as bulk string. Response buffers come from the
+    // per-request arena (freed after the response is sent), not
+    // storage.allocator — this used to leak into the long-lived allocator.
     var buf: [32]u8 = undefined;
     const formatted = try std.fmt.bufPrint(&buf, "{d}", .{td.min});
-    const allocator_for_resp = storage.allocator;
-    const owned = try allocator_for_resp.dupe(u8, formatted);
+    const owned = try allocator.dupe(u8, formatted);
 
     return protocol.RespValue{ .bulk_string = owned };
 }
@@ -506,8 +509,6 @@ pub fn cmdTdigestMin(allocator: std.mem.Allocator, storage: *Storage, args: []pr
 /// TDIGEST.MAX key
 /// Get maximum value in sketch
 pub fn cmdTdigestMax(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
-    _ = allocator;
-
     if (args.len != 2) {
         return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TDIGEST.MAX' command" };
     }
@@ -534,11 +535,12 @@ pub fn cmdTdigestMax(allocator: std.mem.Allocator, storage: *Storage, args: []pr
         return protocol.RespValue{ .error_string = "ERR sketch is empty" };
     }
 
-    // Format max value as bulk string
+    // Format max value as bulk string. Response buffers come from the
+    // per-request arena (freed after the response is sent), not
+    // storage.allocator — this used to leak into the long-lived allocator.
     var buf: [32]u8 = undefined;
     const formatted = try std.fmt.bufPrint(&buf, "{d}", .{td.max});
-    const allocator_for_resp = storage.allocator;
-    const owned = try allocator_for_resp.dupe(u8, formatted);
+    const owned = try allocator.dupe(u8, formatted);
 
     return protocol.RespValue{ .bulk_string = owned };
 }

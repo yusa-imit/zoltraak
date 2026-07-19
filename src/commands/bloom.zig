@@ -10,6 +10,8 @@ const BloomFilterValue = bloom_mod.BloomFilterValue;
 /// BF.RESERVE key error_rate capacity [EXPANSION expansion] [NONSCALING]
 /// Creates a Bloom filter with specified parameters
 pub fn cmdBfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    _ = allocator;
+
     if (args.len < 3) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.reserve' command" };
     }
@@ -88,8 +90,10 @@ pub fn cmdBfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return RespValue{ .error_string = "ERR key already exists" };
     }
 
-    // Create bloom filter
-    var bf = BloomFilterValue.init(allocator, error_rate, capacity, expansion, nonscaling) catch |err| {
+    // Create bloom filter. Uses storage.allocator (not the per-request
+    // allocator) because the filter and its key must outlive this request —
+    // the per-request arena is reset/reused after the response is sent.
+    var bf = BloomFilterValue.init(storage.allocator, error_rate, capacity, expansion, nonscaling) catch |err| {
         return switch (err) {
             bloom_mod.BloomError.InvalidErrorRate => RespValue{ .error_string = "ERR error rate must be between 0 and 1" },
             bloom_mod.BloomError.InvalidCapacity => RespValue{ .error_string = "ERR capacity must be greater than 0" },
@@ -98,16 +102,16 @@ pub fn cmdBfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []con
     };
 
     // Insert into storage
-    const owned_key = allocator.dupe(u8, key) catch {
+    const owned_key = storage.allocator.dupe(u8, key) catch {
         bf.deinit();
         return RespValue{ .error_string = "ERR out of memory" };
     };
-    errdefer allocator.free(owned_key);
+    errdefer storage.allocator.free(owned_key);
 
     const value = storage_mod.Value{ .bloom = bf };
     storage.data.put(owned_key, value) catch {
         bf.deinit();
-        allocator.free(owned_key);
+        storage.allocator.free(owned_key);
         return RespValue{ .error_string = "ERR out of memory" };
     };
 
@@ -117,6 +121,8 @@ pub fn cmdBfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []con
 /// BF.ADD key item
 /// Add an item to the Bloom filter, creating it with defaults if it doesn't exist
 pub fn cmdBfAdd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    _ = allocator;
+
     if (args.len != 2) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.add' command" };
     }
@@ -147,15 +153,17 @@ pub fn cmdBfAdd(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     } else {
         // Create with defaults: error_rate=0.01, capacity=100, expansion=2, nonscaling=false
-        var bf = BloomFilterValue.init(allocator, 0.01, 100, 2, false) catch {
+        // Uses storage.allocator (not the per-request allocator) because the
+        // filter and its key must outlive this request.
+        var bf = BloomFilterValue.init(storage.allocator, 0.01, 100, 2, false) catch {
             return RespValue{ .error_string = "ERR failed to create bloom filter" };
         };
 
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             bf.deinit();
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         const result = try bf.add(item);
 
@@ -251,18 +259,20 @@ pub fn cmdBfMadd(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         }
     } else {
         // Create with defaults: error_rate=0.01, capacity=100, expansion=2, nonscaling=false
-        var bf = BloomFilterValue.init(allocator, 0.01, 100, 2, false) catch {
+        // Uses storage.allocator (not the per-request allocator) because the
+        // filter and its key must outlive this request.
+        var bf = BloomFilterValue.init(storage.allocator, 0.01, 100, 2, false) catch {
             allocator.free(results);
             return RespValue{ .error_string = "ERR failed to create bloom filter" };
         };
         errdefer bf.deinit();
 
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             bf.deinit();
             allocator.free(results);
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         // Add each item and collect results
         for (args[1..], 0..) |arg, i| {
@@ -270,7 +280,7 @@ pub fn cmdBfMadd(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 .bulk_string => |s| s,
                 else => {
                     bf.deinit();
-                    allocator.free(owned_key);
+                    storage.allocator.free(owned_key);
                     allocator.free(results);
                     return RespValue{ .error_string = "ERR invalid item" };
                 },
@@ -498,19 +508,21 @@ pub fn cmdBfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []cons
             return RespValue{ .error_string = "ERR not found" };
         }
 
-        // Create filter with specified parameters
-        var bf = BloomFilterValue.init(allocator, error_rate, capacity, expansion, nonscaling) catch {
+        // Create filter with specified parameters. Uses storage.allocator
+        // (not the per-request allocator) because the filter and its key
+        // must outlive this request.
+        var bf = BloomFilterValue.init(storage.allocator, error_rate, capacity, expansion, nonscaling) catch {
             allocator.free(results);
             return RespValue{ .error_string = "ERR failed to create bloom filter" };
         };
         errdefer bf.deinit();
 
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             bf.deinit();
             allocator.free(results);
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         // Add each item and collect results
         for (args[items_idx..], 0..) |arg, idx| {
@@ -518,7 +530,7 @@ pub fn cmdBfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                 .bulk_string => |s| s,
                 else => {
                     bf.deinit();
-                    allocator.free(owned_key);
+                    storage.allocator.free(owned_key);
                     allocator.free(results);
                     return RespValue{ .error_string = "ERR invalid item" };
                 },
@@ -729,6 +741,8 @@ pub fn cmdBfScandump(allocator: std.mem.Allocator, storage: *Storage, args: []co
 /// BF.LOADCHUNK key iterator data
 /// Incrementally restore Bloom filter from chunks
 pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+    _ = allocator;
+
     if (args.len != 3) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'bf.loadchunk' command" };
     }
@@ -766,6 +780,10 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
     var context: *BloomFilterValue.LoadContext = undefined;
     var is_new = false;
 
+    // The new filter (if created) and the bits `loadChunk` allocates on the
+    // final chunk both get attached to long-lived storage state, so every
+    // allocation below uses storage.allocator rather than the per-request
+    // allocator, which is reset/reused after the response is sent.
     if (storage.data.getPtr(key)) |entry| {
         // Get existing filter
         bf = switch (entry.*) {
@@ -774,33 +792,33 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         };
 
         // Create context for existing filter
-        const ctx = try allocator.create(BloomFilterValue.LoadContext);
-        errdefer allocator.destroy(ctx);
-        const buf = try std.ArrayList(u8).initCapacity(allocator, 8192);
+        const ctx = try storage.allocator.create(BloomFilterValue.LoadContext);
+        errdefer storage.allocator.destroy(ctx);
+        const buf = try std.ArrayList(u8).initCapacity(storage.allocator, 8192);
         ctx.* = .{
-            .allocator = allocator,
+            .allocator = storage.allocator,
             .buffer = buf,
             .expected_iterator = iterator,
         };
         context = ctx;
     } else {
         // Create new filter
-        var new_bf = try BloomFilterValue.init(allocator, 0.01, 10, 2, false);
+        var new_bf = try BloomFilterValue.init(storage.allocator, 0.01, 10, 2, false);
         errdefer new_bf.deinit();
 
         // Store in storage
-        const key_copy = try allocator.dupe(u8, key);
-        errdefer allocator.free(key_copy);
+        const key_copy = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(key_copy);
 
         try storage.data.put(key_copy, .{ .bloom = new_bf });
         bf = &storage.data.getPtr(key_copy).?.bloom;
 
         // Create context
-        const ctx = try allocator.create(BloomFilterValue.LoadContext);
-        errdefer allocator.destroy(ctx);
-        const buf = try std.ArrayList(u8).initCapacity(allocator, 8192);
+        const ctx = try storage.allocator.create(BloomFilterValue.LoadContext);
+        errdefer storage.allocator.destroy(ctx);
+        const buf = try std.ArrayList(u8).initCapacity(storage.allocator, 8192);
         ctx.* = .{
-            .allocator = allocator,
+            .allocator = storage.allocator,
             .buffer = buf,
             .expected_iterator = 0,
         };
@@ -813,16 +831,16 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
 
     defer {
         context.deinit();
-        allocator.destroy(context);
+        storage.allocator.destroy(context);
     }
 
     // Load chunk
-    const complete = bf.loadChunk(allocator, context, iterator, data) catch |err| {
+    const complete = bf.loadChunk(storage.allocator, context, iterator, data) catch |err| {
         if (is_new) {
             // Clean up newly created filter on error
             const key_in_map = storage.data.getKey(key).?;
             _ = storage.data.remove(key);
-            allocator.free(key_in_map);
+            storage.allocator.free(key_in_map);
             bf.deinit();
         }
         return switch (err) {

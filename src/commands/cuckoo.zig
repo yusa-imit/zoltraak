@@ -114,8 +114,10 @@ pub fn cmdCfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []con
         return RespValue{ .error_string = "ERR key already exists" };
     }
 
-    // Create Cuckoo filter
-    var cf = CuckooFilterValue.init(allocator, capacity, bucketsize, max_iterations, expansion) catch |err| {
+    // Create Cuckoo filter. Uses storage.allocator (not the per-request
+    // allocator) because the filter and its key must outlive this request —
+    // the per-request arena is reset/reused after the response is sent.
+    var cf = CuckooFilterValue.init(storage.allocator, capacity, bucketsize, max_iterations, expansion) catch |err| {
         return switch (err) {
             cuckoo_mod.CuckooError.InvalidCapacity => RespValue{ .error_string = "ERR capacity must be greater than 0" },
             cuckoo_mod.CuckooError.InvalidBucketSize => RespValue{ .error_string = "ERR bucketsize must be between 1 and 255" },
@@ -125,11 +127,11 @@ pub fn cmdCfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []con
     };
 
     // Insert into storage
-    const owned_key = allocator.dupe(u8, key) catch {
+    const owned_key = storage.allocator.dupe(u8, key) catch {
         cf.deinit();
         return RespValue{ .error_string = "ERR out of memory" };
     };
-    errdefer allocator.free(owned_key);
+    errdefer storage.allocator.free(owned_key);
 
     const value = storage_mod.Value{ .cuckoo = cf };
     storage.data.put(owned_key, value) catch {
@@ -143,7 +145,7 @@ pub fn cmdCfReserve(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
 /// CF.ADD key item
 /// Add an item to the Cuckoo filter, creating it with defaults if it doesn't exist
-pub fn cmdCfAdd(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+pub fn cmdCfAdd(_: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
     if (args.len != 2) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.add' command" };
     }
@@ -179,7 +181,9 @@ pub fn cmdCfAdd(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     } else {
         // Create with defaults: capacity=1000, bucketsize=2, maxiterations=20, expansion=1
-        var cf = CuckooFilterValue.init(allocator, 1000, 2, 20, 1) catch {
+        // Uses storage.allocator (not the per-request allocator) because the
+        // filter and its key must outlive this request.
+        var cf = CuckooFilterValue.init(storage.allocator, 1000, 2, 20, 1) catch {
             return RespValue{ .error_string = "ERR failed to create cuckoo filter" };
         };
 
@@ -193,16 +197,16 @@ pub fn cmdCfAdd(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         };
 
         // Insert into storage
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             cf.deinit();
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         const value = storage_mod.Value{ .cuckoo = cf };
         storage.data.put(owned_key, value) catch {
             cf.deinit();
-            allocator.free(owned_key);
+            storage.allocator.free(owned_key);
             return RespValue{ .error_string = "ERR out of memory" };
         };
 
@@ -213,7 +217,7 @@ pub fn cmdCfAdd(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 /// CF.ADDNX key item
 /// Add an item to the Cuckoo filter only if it doesn't already exist
 /// Returns 1 if added, 0 if already exists
-pub fn cmdCfAddnx(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+pub fn cmdCfAddnx(_: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
     if (args.len != 2) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.addnx' command" };
     }
@@ -249,7 +253,9 @@ pub fn cmdCfAddnx(allocator: std.mem.Allocator, storage: *Storage, args: []const
         }
     } else {
         // Create with defaults: capacity=1000, bucketsize=2, maxiterations=20, expansion=1
-        var cf = CuckooFilterValue.init(allocator, 1000, 2, 20, 1) catch {
+        // Uses storage.allocator (not the per-request allocator) because the
+        // filter and its key must outlive this request.
+        var cf = CuckooFilterValue.init(storage.allocator, 1000, 2, 20, 1) catch {
             return RespValue{ .error_string = "ERR failed to create cuckoo filter" };
         };
 
@@ -263,16 +269,16 @@ pub fn cmdCfAddnx(allocator: std.mem.Allocator, storage: *Storage, args: []const
         };
 
         // Insert into storage
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             cf.deinit();
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         const value = storage_mod.Value{ .cuckoo = cf };
         storage.data.put(owned_key, value) catch {
             cf.deinit();
-            allocator.free(owned_key);
+            storage.allocator.free(owned_key);
             return RespValue{ .error_string = "ERR out of memory" };
         };
 
@@ -644,19 +650,21 @@ pub fn cmdCfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []cons
             return RespValue{ .error_string = "ERR not found" };
         }
 
-        // Create filter with specified parameters
-        var cf = CuckooFilterValue.init(allocator, capacity_override orelse 1000, 2, 20, 1) catch {
+        // Create filter with specified parameters. Uses storage.allocator
+        // (not the per-request allocator) because the filter and its key
+        // must outlive this request.
+        var cf = CuckooFilterValue.init(storage.allocator, capacity_override orelse 1000, 2, 20, 1) catch {
             allocator.free(results);
             return RespValue{ .error_string = "ERR failed to create cuckoo filter" };
         };
         errdefer cf.deinit();
 
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             cf.deinit();
             allocator.free(results);
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         // Add each item and collect results
         for (args[items_idx..], 0..) |arg, idx| {
@@ -664,7 +672,7 @@ pub fn cmdCfInsert(allocator: std.mem.Allocator, storage: *Storage, args: []cons
                 .bulk_string => |s| s,
                 else => {
                     cf.deinit();
-                    allocator.free(owned_key);
+                    storage.allocator.free(owned_key);
                     allocator.free(results);
                     return RespValue{ .error_string = "ERR invalid item" };
                 },
@@ -800,19 +808,21 @@ pub fn cmdCfInsertnx(allocator: std.mem.Allocator, storage: *Storage, args: []co
             return RespValue{ .error_string = "ERR not found" };
         }
 
-        // Create filter with specified parameters
-        var cf = CuckooFilterValue.init(allocator, capacity_override orelse 1000, 2, 20, 1) catch {
+        // Create filter with specified parameters. Uses storage.allocator
+        // (not the per-request allocator) because the filter and its key
+        // must outlive this request.
+        var cf = CuckooFilterValue.init(storage.allocator, capacity_override orelse 1000, 2, 20, 1) catch {
             allocator.free(results);
             return RespValue{ .error_string = "ERR failed to create cuckoo filter" };
         };
         errdefer cf.deinit();
 
-        const owned_key = allocator.dupe(u8, key) catch {
+        const owned_key = storage.allocator.dupe(u8, key) catch {
             cf.deinit();
             allocator.free(results);
             return RespValue{ .error_string = "ERR out of memory" };
         };
-        errdefer allocator.free(owned_key);
+        errdefer storage.allocator.free(owned_key);
 
         // Add each item and collect results
         for (args[items_idx..], 0..) |arg, idx| {
@@ -820,7 +830,7 @@ pub fn cmdCfInsertnx(allocator: std.mem.Allocator, storage: *Storage, args: []co
                 .bulk_string => |s| s,
                 else => {
                     cf.deinit();
-                    allocator.free(owned_key);
+                    storage.allocator.free(owned_key);
                     allocator.free(results);
                     return RespValue{ .error_string = "ERR invalid item" };
                 },
@@ -1862,7 +1872,7 @@ pub fn cmdCfScandump(allocator: std.mem.Allocator, storage: *Storage, args: []co
 
 /// CF.LOADCHUNK key iterator data
 /// Incrementally restore Cuckoo filter from chunks
-pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
+pub fn cmdCfLoadchunk(_: std.mem.Allocator, storage: *Storage, args: []const RespValue) !RespValue {
     if (args.len != 3) {
         return RespValue{ .error_string = "ERR wrong number of arguments for 'cf.loadchunk' command" };
     }
@@ -1896,6 +1906,11 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
     var context: *CuckooFilterValue.LoadContext = undefined;
     var is_new = false;
 
+    // LoadContext (and any filter/key created here) must outlive this single
+    // request — CF.LOADCHUNK is called across a sequence of separate requests
+    // with sequential iterators, so everything below is allocated from
+    // storage.allocator rather than the per-request allocator, which is
+    // reset/reused as soon as this request's response is sent.
     if (storage.data.getPtr(key)) |entry| {
         // Get existing filter
         cf = switch (entry.*) {
@@ -1907,23 +1922,25 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         if (storage.cuckoo_load_contexts.getPtr(key)) |ctx_ptr| {
             context = ctx_ptr.*;
         } else {
-            const new_ctx = try allocator.create(CuckooFilterValue.LoadContext);
-            errdefer allocator.destroy(new_ctx);
+            const new_ctx = try storage.allocator.create(CuckooFilterValue.LoadContext);
+            errdefer storage.allocator.destroy(new_ctx);
             new_ctx.* = .{
-                .allocator = allocator,
-                .buffer = try std.ArrayList(u8).initCapacity(allocator, 8192),
+                .allocator = storage.allocator,
+                .buffer = try std.ArrayList(u8).initCapacity(storage.allocator, 8192),
                 .expected_iterator = 0,
             };
-            try storage.cuckoo_load_contexts.put(key, new_ctx);
+            const ctx_key = try storage.allocator.dupe(u8, key);
+            errdefer storage.allocator.free(ctx_key);
+            try storage.cuckoo_load_contexts.put(ctx_key, new_ctx);
             context = new_ctx;
         }
     } else {
         // Create placeholder filter (will be populated by loadChunk)
-        var new_cf = try CuckooFilterValue.init(allocator, 1, 2, 10, 1);
+        var new_cf = try CuckooFilterValue.init(storage.allocator, 1, 2, 10, 1);
         errdefer new_cf.deinit();
 
-        const key_copy = try allocator.dupe(u8, key);
-        errdefer allocator.free(key_copy);
+        const key_copy = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(key_copy);
 
         try storage.data.put(key_copy, .{ .cuckoo = new_cf });
         is_new = true;
@@ -1935,26 +1952,29 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         };
 
         // Create load context
-        const new_ctx = try allocator.create(CuckooFilterValue.LoadContext);
-        errdefer allocator.destroy(new_ctx);
+        const new_ctx = try storage.allocator.create(CuckooFilterValue.LoadContext);
+        errdefer storage.allocator.destroy(new_ctx);
         new_ctx.* = .{
-            .allocator = allocator,
-            .buffer = try std.ArrayList(u8).initCapacity(allocator, 8192),
+            .allocator = storage.allocator,
+            .buffer = try std.ArrayList(u8).initCapacity(storage.allocator, 8192),
             .expected_iterator = 0,
         };
-        try storage.cuckoo_load_contexts.put(key_copy, new_ctx);
+        const ctx_key = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(ctx_key);
+        try storage.cuckoo_load_contexts.put(ctx_key, new_ctx);
         context = new_ctx;
     }
 
     // Load chunk
-    const complete = cf.loadChunk(allocator, context, iterator, data) catch |err| {
+    const complete = cf.loadChunk(storage.allocator, context, iterator, data) catch |err| {
         // On error, clean up if this was a new filter
         if (is_new) {
             _ = storage.data.remove(key);
         }
         if (storage.cuckoo_load_contexts.fetchRemove(key)) |kv| {
+            storage.allocator.free(kv.key);
             kv.value.deinit();
-            allocator.destroy(kv.value);
+            storage.allocator.destroy(kv.value);
         }
         return switch (err) {
             error.InvalidIterator => RespValue{ .error_string = "ERR invalid iterator" },
@@ -1966,8 +1986,9 @@ pub fn cmdCfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
     // If loading is complete, clean up context
     if (complete) {
         if (storage.cuckoo_load_contexts.fetchRemove(key)) |kv| {
+            storage.allocator.free(kv.key);
             kv.value.deinit();
-            allocator.destroy(kv.value);
+            storage.allocator.destroy(kv.value);
         }
     }
 

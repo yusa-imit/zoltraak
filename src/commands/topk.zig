@@ -9,6 +9,8 @@ const RespProtocol = @import("client.zig").RespProtocol;
 /// Create an empty Top-K with specified parameters
 /// Default values: width=8, depth=7, decay=0.9
 pub fn cmdTopkReserve(allocator: std.mem.Allocator, storage: *Storage, args: []protocol.RespValue) !protocol.RespValue {
+    _ = allocator;
+
     if (args.len < 3 or args.len > 6) {
         return protocol.RespValue{ .error_string = "ERR wrong number of arguments for 'TOPK.RESERVE' command" };
     }
@@ -71,8 +73,10 @@ pub fn cmdTopkReserve(allocator: std.mem.Allocator, storage: *Storage, args: []p
         return protocol.RespValue{ .error_string = "ERR decay must be between 0 and 1" };
     }
 
-    // Create Top-K value
-    var topk = TopKValue.init(allocator, k, width, depth, decay) catch |err| {
+    // Create Top-K value. Uses storage.allocator (not the per-request
+    // allocator) because the value and its key must outlive this request —
+    // the per-request arena is reset/reused after the response is sent.
+    var topk = TopKValue.init(storage.allocator, k, width, depth, decay) catch |err| {
         return switch (err) {
             error.InvalidK => protocol.RespValue{ .error_string = "ERR topk must be greater than 0" },
             error.InvalidWidth => protocol.RespValue{ .error_string = "ERR width must be greater than 0" },
@@ -89,8 +93,8 @@ pub fn cmdTopkReserve(allocator: std.mem.Allocator, storage: *Storage, args: []p
     }
 
     // Duplicate key for HashMap ownership
-    const key_copy = try allocator.dupe(u8, key);
-    errdefer allocator.free(key_copy);
+    const key_copy = try storage.allocator.dupe(u8, key);
+    errdefer storage.allocator.free(key_copy);
     try storage.data.put(key_copy, Value{ .top_k = topk });
 
     return protocol.RespValue{ .simple_string = "OK" };
@@ -275,14 +279,16 @@ pub fn cmdTopkIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []pr
         else => return protocol.RespValue{ .error_string = "ERR invalid key" },
     };
 
-    // Get or create Top-K value
+    // Get or create Top-K value. Auto-create uses storage.allocator (not the
+    // per-request allocator) because the value and its key must outlive this
+    // request.
     const entry = storage.data.getEntry(key) orelse blk: {
         // Auto-create with defaults (k=10, width=8, depth=7, decay=0.9)
-        const topk_init = TopKValue.init(allocator, 10, 8, 7, 0.9) catch {
+        const topk_init = TopKValue.init(storage.allocator, 10, 8, 7, 0.9) catch {
             return protocol.RespValue{ .error_string = "ERR failed to create Top-K" };
         };
-        const key_copy = try allocator.dupe(u8, key);
-        errdefer allocator.free(key_copy);
+        const key_copy = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(key_copy);
         try storage.data.put(key_copy, Value{ .top_k = topk_init });
         break :blk storage.data.getEntry(key).?;
     };
