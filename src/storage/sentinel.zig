@@ -20,6 +20,23 @@ pub const SentinelInfo = struct {
     }
 };
 
+/// Information about a replica of a monitored master
+pub const ReplicaInfo = struct {
+    /// Replica's unique ID (also used as the HashMap key)
+    id: []const u8,
+    /// IP address of the replica
+    ip: []const u8,
+    /// Port of the replica
+    port: u16,
+    /// Last time this replica's registration was refreshed (Unix timestamp ms)
+    last_seen_time: i64,
+
+    pub fn deinit(self: *ReplicaInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.ip);
+    }
+};
+
 /// Information about a monitored master instance
 pub const MasterInfo = struct {
     /// Master name (unique identifier)
@@ -40,6 +57,8 @@ pub const MasterInfo = struct {
     is_down: bool,
     /// Other Sentinels monitoring this master: sentinel_id → SentinelInfo
     sentinels: std.StringHashMap(SentinelInfo),
+    /// Replicas tracked for this master: replica_id → ReplicaInfo
+    replicas: std.StringHashMap(ReplicaInfo),
     /// Run ID of the Sentinel elected as failover leader for this master (owned), or null if none elected yet
     leader: ?[]const u8 = null,
     /// Configuration epoch at which `leader` was elected (0 if never elected)
@@ -56,6 +75,13 @@ pub const MasterInfo = struct {
             sentinel.deinit(allocator);
         }
         self.sentinels.deinit();
+        // Free all ReplicaInfo resources
+        var rit = self.replicas.iterator();
+        while (rit.next()) |entry| {
+            var replica = entry.value_ptr;
+            replica.deinit(allocator);
+        }
+        self.replicas.deinit();
     }
 };
 
@@ -143,6 +169,7 @@ pub const SentinelState = struct {
             .last_pong_time = now,
             .is_down = false,
             .sentinels = std.StringHashMap(SentinelInfo).init(self.allocator),
+            .replicas = std.StringHashMap(ReplicaInfo).init(self.allocator),
         };
 
         try self.monitored_masters.put(name_copy, master);
@@ -226,6 +253,67 @@ pub const SentinelState = struct {
         var it = master.sentinels.valueIterator();
         while (it.next()) |sentinel| {
             try list.append(self.allocator, sentinel.*);
+        }
+
+        return try list.toOwnedSlice(self.allocator);
+    }
+
+    /// Register or update a replica tracked for a master
+    /// Used when a replica of a monitored master is discovered (e.g. via INFO replication)
+    pub fn registerReplica(
+        self: *SentinelState,
+        master_name: []const u8,
+        replica_id: []const u8,
+        ip: []const u8,
+        port: u16,
+    ) !void {
+        const master = self.monitored_masters.getPtr(master_name) orelse return error.MasterNotFound;
+
+        // Check if replica already exists
+        if (master.replicas.getPtr(replica_id)) |existing| {
+            // Update existing replica
+            existing.last_seen_time = std.time.milliTimestamp();
+            existing.port = port;
+            return;
+        }
+
+        // Add new replica
+        const id_copy = try self.allocator.dupe(u8, replica_id);
+        errdefer self.allocator.free(id_copy);
+        const ip_copy = try self.allocator.dupe(u8, ip);
+        errdefer self.allocator.free(ip_copy);
+
+        const replica = ReplicaInfo{
+            .id = id_copy,
+            .ip = ip_copy,
+            .port = port,
+            .last_seen_time = std.time.milliTimestamp(),
+        };
+
+        try master.replicas.put(id_copy, replica);
+    }
+
+    /// Remove a tracked replica from a master (e.g. it disconnected)
+    /// Returns error.MasterNotFound or error.ReplicaNotFound if either doesn't exist
+    pub fn removeReplica(self: *SentinelState, master_name: []const u8, replica_id: []const u8) !void {
+        const master = self.monitored_masters.getPtr(master_name) orelse return error.MasterNotFound;
+        const kv = master.replicas.fetchRemove(replica_id) orelse return error.ReplicaNotFound;
+        var replica = kv.value;
+        replica.deinit(self.allocator);
+    }
+
+    /// Get all replicas tracked for a specific master
+    /// Returns null if master doesn't exist
+    /// Caller is responsible for freeing the returned slice
+    pub fn getReplicas(self: *SentinelState, master_name: []const u8) !?[]const ReplicaInfo {
+        const master = self.monitored_masters.getPtr(master_name) orelse return null;
+
+        var list = try std.ArrayList(ReplicaInfo).initCapacity(self.allocator, master.replicas.count());
+        errdefer list.deinit(self.allocator);
+
+        var it = master.replicas.valueIterator();
+        while (it.next()) |replica| {
+            try list.append(self.allocator, replica.*);
         }
 
         return try list.toOwnedSlice(self.allocator);
@@ -334,14 +422,58 @@ pub const SentinelState = struct {
         return count;
     }
 
-    /// Force failover for a specific master
-    /// This is a stub implementation - actual failover logic will be implemented in future iterations
+    /// Force failover for a specific master.
+    ///
+    /// Picks the tracked replica (see `registerReplica`) with the
+    /// lexicographically smallest id, for deterministic selection, and
+    /// promotes it: the master's address is updated to the replica's
+    /// address, the promoted replica is removed from the replica set (it is
+    /// now the master), any remaining replicas are dropped (they replicated
+    /// from the old master and must be rediscovered against the new one),
+    /// the elected leader is cleared, and the configuration epoch is bumped
+    /// so a subsequent leader election starts fresh.
+    ///
+    /// If no replica is tracked for the master, this is a no-op that still
+    /// succeeds — there is nothing to promote.
     pub fn forceFailover(self: *SentinelState, master_name: []const u8) !void {
-        // Verify master exists
-        _ = self.monitored_masters.getPtr(master_name) orelse return error.MasterNotFound;
+        const master = self.monitored_masters.getPtr(master_name) orelse return error.MasterNotFound;
 
-        // TODO: Implement actual failover logic in future iterations
-        // For now, this is a stub that just validates the master exists
+        if (master.replicas.count() == 0) return;
+
+        // Pick the replica with the lexicographically smallest id
+        var best_id: ?[]const u8 = null;
+        var it = master.replicas.keyIterator();
+        while (it.next()) |key| {
+            if (best_id == null or std.mem.lessThan(u8, key.*, best_id.?)) {
+                best_id = key.*;
+            }
+        }
+
+        const chosen_kv = master.replicas.fetchRemove(best_id.?).?;
+        const chosen = chosen_kv.value;
+
+        // Promote: swap the master's address for the chosen replica's, and
+        // discard the replica's id (it was only used as the map key)
+        self.allocator.free(master.ip);
+        master.ip = chosen.ip;
+        master.port = chosen.port;
+        self.allocator.free(chosen.id);
+
+        // Remaining replicas replicated from the old master; drop them, they
+        // must be rediscovered against the newly promoted master
+        var remaining_it = master.replicas.iterator();
+        while (remaining_it.next()) |entry| {
+            var replica = entry.value_ptr;
+            replica.deinit(self.allocator);
+        }
+        master.replicas.clearAndFree();
+
+        // Clear failover state so a subsequent election starts fresh at a new epoch
+        if (master.leader) |leader| self.allocator.free(leader);
+        master.leader = null;
+        master.leader_epoch = 0;
+        master.is_down = false;
+        self.current_epoch += 1;
     }
 
     /// Check if quorum can be reached for a master
@@ -617,6 +749,7 @@ test "SentinelState.deinit: frees all resources" {
         .last_pong_time = 0,
         .is_down = false,
         .sentinels = std.StringHashMap(SentinelInfo).init(allocator),
+        .replicas = std.StringHashMap(ReplicaInfo).init(allocator),
     };
     try sentinel.monitored_masters.put(name, master);
 
@@ -1139,6 +1272,134 @@ test "SentinelState.forceFailover: can be called multiple times" {
 
     // Master should still exist
     try std.testing.expect(sentinel.getMaster("mymaster") != null);
+}
+
+test "SentinelState.forceFailover: promotes the tracked replica to master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerReplica("mymaster", "replica1", "127.0.0.2", 6380);
+
+    try sentinel.forceFailover("mymaster");
+
+    const master = sentinel.getMaster("mymaster").?;
+    try std.testing.expectEqualStrings("127.0.0.2", master.ip);
+    try std.testing.expectEqual(@as(u16, 6380), master.port);
+
+    // Promoted replica is removed from the replica set (it is now the master)
+    const replicas = (try sentinel.getReplicas("mymaster")).?;
+    defer allocator.free(replicas);
+    try std.testing.expectEqual(@as(usize, 0), replicas.len);
+}
+
+test "SentinelState.forceFailover: picks the lexicographically smallest replica id deterministically" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerReplica("mymaster", "replicaB", "127.0.0.3", 6381);
+    try sentinel.registerReplica("mymaster", "replicaA", "127.0.0.2", 6380);
+
+    try sentinel.forceFailover("mymaster");
+
+    const master = sentinel.getMaster("mymaster").?;
+    // "replicaA" < "replicaB" lexicographically
+    try std.testing.expectEqualStrings("127.0.0.2", master.ip);
+    try std.testing.expectEqual(@as(u16, 6380), master.port);
+
+    // The non-promoted replica is dropped too (must be rediscovered against the new master)
+    const replicas = (try sentinel.getReplicas("mymaster")).?;
+    defer allocator.free(replicas);
+    try std.testing.expectEqual(@as(usize, 0), replicas.len);
+}
+
+test "SentinelState.forceFailover: bumps epoch and clears leader/is_down after promotion" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerReplica("mymaster", "replica1", "127.0.0.2", 6380);
+
+    const master_before = sentinel.getMaster("mymaster").?;
+    master_before.is_down = true;
+    _ = try sentinel.isMasterDownByAddr("127.0.0.1", 6379, 5, "some-runid");
+    try std.testing.expect(master_before.leader != null);
+
+    const epoch_before = sentinel.current_epoch;
+    try sentinel.forceFailover("mymaster");
+
+    const master_after = sentinel.getMaster("mymaster").?;
+    try std.testing.expect(master_after.leader == null);
+    try std.testing.expectEqual(@as(u64, 0), master_after.leader_epoch);
+    try std.testing.expect(!master_after.is_down);
+    try std.testing.expectEqual(epoch_before + 1, sentinel.current_epoch);
+}
+
+test "SentinelState.registerReplica: adds and updates replicas" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerReplica("mymaster", "replica1", "127.0.0.2", 6380);
+
+    var replicas = (try sentinel.getReplicas("mymaster")).?;
+    try std.testing.expectEqual(@as(usize, 1), replicas.len);
+    allocator.free(replicas);
+
+    // Re-registering the same id updates in place rather than duplicating
+    try sentinel.registerReplica("mymaster", "replica1", "127.0.0.2", 6390);
+    replicas = (try sentinel.getReplicas("mymaster")).?;
+    defer allocator.free(replicas);
+    try std.testing.expectEqual(@as(usize, 1), replicas.len);
+    try std.testing.expectEqual(@as(u16, 6390), replicas[0].port);
+}
+
+test "SentinelState.registerReplica: returns error for unknown master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const result = sentinel.registerReplica("nonexistent", "replica1", "127.0.0.2", 6380);
+    try std.testing.expectError(error.MasterNotFound, result);
+}
+
+test "SentinelState.removeReplica: removes a tracked replica" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    try sentinel.registerReplica("mymaster", "replica1", "127.0.0.2", 6380);
+
+    try sentinel.removeReplica("mymaster", "replica1");
+
+    const replicas = (try sentinel.getReplicas("mymaster")).?;
+    defer allocator.free(replicas);
+    try std.testing.expectEqual(@as(usize, 0), replicas.len);
+}
+
+test "SentinelState.removeReplica: returns error for unknown replica" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    try sentinel.monitorMaster("mymaster", "127.0.0.1", 6379, 2);
+    const result = sentinel.removeReplica("mymaster", "nonexistent");
+    try std.testing.expectError(error.ReplicaNotFound, result);
+}
+
+test "SentinelState.getReplicas: returns null for unknown master" {
+    const allocator = std.testing.allocator;
+    var sentinel = SentinelState.init(allocator);
+    defer sentinel.deinit();
+
+    const result = try sentinel.getReplicas("nonexistent");
+    try std.testing.expect(result == null);
 }
 
 // ============================================================================

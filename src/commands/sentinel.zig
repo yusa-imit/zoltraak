@@ -373,8 +373,7 @@ pub fn cmdSentinelMaster(
 }
 
 /// Handle SENTINEL REPLICAS command
-/// Returns array of all replicas for a specific master
-/// NOTE: Replica tracking not yet implemented, returns empty array
+/// Returns array of all replicas tracked for a specific master
 pub fn cmdSentinelReplicas(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -398,19 +397,74 @@ pub fn cmdSentinelReplicas(
 
     const name = args[2];
 
-    // Verify master exists
-    _ = storage.sentinel.getMaster(name) orelse {
+    // Get replicas tracked for this master
+    const replicas_opt = try storage.sentinel.getReplicas(name);
+    if (replicas_opt == null) {
         var w = Writer.init(allocator);
         defer w.deinit();
         return try w.writeError("ERR No such master with that name");
-    };
+    }
 
-    // TODO: Implement replica tracking in future iterations
-    // For now, return empty array (no replicas tracked)
+    const replicas = replicas_opt.?;
+    defer allocator.free(replicas);
+
+    // Build array of replica info arrays
+    var replica_arrays = try std.ArrayList(RespValue).initCapacity(allocator, replicas.len);
+    defer {
+        for (replica_arrays.items) |item| {
+            deinitRespValue(allocator, item);
+        }
+        replica_arrays.deinit(allocator);
+    }
+
+    for (replicas) |replica| {
+        // Build array of key-value pairs for this replica
+        var fields = try std.ArrayList(RespValue).initCapacity(allocator, 10);
+        errdefer {
+            for (fields.items) |item| {
+                deinitRespValue(allocator, item);
+            }
+            fields.deinit(allocator);
+        }
+
+        // name (Redis uses "ip:port" as the replica's display name)
+        const display_name = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ replica.ip, replica.port });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "name") });
+        try fields.append(allocator, RespValue{ .bulk_string = display_name });
+
+        // ip
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "ip") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, replica.ip) });
+
+        // port
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "port") });
+        const port_str = try std.fmt.allocPrint(allocator, "{d}", .{replica.port});
+        try fields.append(allocator, RespValue{ .bulk_string = port_str });
+
+        // runid
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "runid") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, replica.id) });
+
+        // flags
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "flags") });
+        try fields.append(allocator, RespValue{ .bulk_string = try allocator.dupe(u8, "slave") });
+
+        const fields_array = try fields.toOwnedSlice(allocator);
+        try replica_arrays.append(allocator, RespValue{ .array = fields_array });
+    }
+
     var w = Writer.init(allocator);
     defer w.deinit();
-    const empty_array: []const RespValue = &[_]RespValue{};
-    return try w.writeArray(empty_array);
+
+    const replica_arrays_slice = try replica_arrays.toOwnedSlice(allocator);
+    defer {
+        for (replica_arrays_slice) |item| {
+            deinitRespValue(allocator, item);
+        }
+        allocator.free(replica_arrays_slice);
+    }
+
+    return try w.writeArray(replica_arrays_slice);
 }
 
 /// Handle SENTINEL GET-MASTER-ADDR-BY-NAME command
