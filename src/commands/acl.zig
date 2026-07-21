@@ -501,25 +501,21 @@ fn stringToCategory(name: []const u8) ?CommandCategory {
     return null;
 }
 
-/// ACL SETUSER - Create or modify user
-pub fn cmdACLSetuser(
+/// Errors that can occur while parsing and applying a user's ACL rule tokens.
+const ApplyUserRuleError = PermissionChangeError || error{AclNotInitialized};
+
+/// Classify raw rule tokens (as used by both ACL SETUSER and ACL file lines) into
+/// on/off, password, key-pattern, and command/category permission buckets, parse
+/// them, and store the resulting user in `storage.acl`.
+///
+/// Ownership: on success, all parsed permission/key-pattern allocations are handed
+/// off to the ACL store. On failure, nothing is left allocated.
+fn applyUserRuleTokens(
     allocator: Allocator,
     storage: *Storage,
-    array: []const RespValue,
-) ![]const u8 {
-    var w = Writer.init(allocator);
-    defer w.deinit();
-
-    if (array.len < 2) {
-        return w.writeError("ERR wrong number of arguments for 'acl|setuser' command");
-    }
-
-    const username = switch (array[1]) {
-        .bulk_string => |s| s,
-        else => return w.writeError("ERR invalid username"),
-    };
-
-    // Parse all rules (starting from array[2])
+    username: []const u8,
+    rule_tokens: []const []const u8,
+) ApplyUserRuleError!void {
     var enabled = true;
     var password: ?[]const u8 = null;
     var permission_rules = std.ArrayList([]const u8){};
@@ -527,12 +523,7 @@ pub fn cmdACLSetuser(
     var key_pattern_rules = std.ArrayList([]const u8){};
     defer key_pattern_rules.deinit(allocator);
 
-    for (array[2..]) |arg| {
-        const rule = switch (arg) {
-            .bulk_string => |s| s,
-            else => return w.writeError("ERR invalid rule format"),
-        };
-
+    for (rule_tokens) |rule| {
         if (std.mem.eql(u8, rule, "on")) {
             enabled = true;
         } else if (std.mem.eql(u8, rule, "off")) {
@@ -554,13 +545,7 @@ pub fn cmdACLSetuser(
     }
 
     // Parse permission rules
-    var perm_result = parsePermissionRules(allocator, permission_rules.items) catch |err| {
-        return w.writeError(switch (err) {
-            PermissionChangeError.InvalidCategory => "ERR invalid category",
-            PermissionChangeError.InvalidRule => "ERR invalid rule",
-            else => "ERR invalid permissions",
-        });
-    };
+    var perm_result = try parsePermissionRules(allocator, permission_rules.items);
     // errdefer (not defer): ownership transfers to ACL store on success.
     // Only free if createOrUpdateUser fails.
     errdefer {
@@ -601,8 +586,8 @@ pub fn cmdACLSetuser(
     }
 
     // Store user in ACL store with all parsed permissions
-    if (storage.acl) |acl_store| {
-        try acl_store.createOrUpdateUser(
+    const acl_store = storage.acl orelse return ApplyUserRuleError.AclNotInitialized;
+    try acl_store.createOrUpdateUser(
         username,
         enabled,
         password,
@@ -615,10 +600,93 @@ pub fn cmdACLSetuser(
         key_result.allowed_key_patterns,
         key_result.read_only_key_patterns,
         key_result.write_only_key_patterns,
-        );
-    } else {
-        return w.writeError("ERR ACL not initialized");
+    );
+}
+
+/// Parse rule tokens exactly like `applyUserRuleTokens`, but discard the result
+/// instead of storing it. Used by ACL LOAD to validate every line in the ACL
+/// file before mutating any in-memory ACL state.
+fn validateRuleTokens(allocator: Allocator, rule_tokens: []const []const u8) PermissionChangeError!void {
+    var permission_rules = std.ArrayList([]const u8){};
+    defer permission_rules.deinit(allocator);
+    var key_pattern_rules = std.ArrayList([]const u8){};
+    defer key_pattern_rules.deinit(allocator);
+
+    for (rule_tokens) |rule| {
+        if (std.mem.eql(u8, rule, "on") or std.mem.eql(u8, rule, "off")) {
+            continue;
+        } else if (std.mem.startsWith(u8, rule, ">") or std.mem.startsWith(u8, rule, "<") or std.mem.eql(u8, rule, "nopass")) {
+            continue;
+        } else if (std.mem.startsWith(u8, rule, "~") or std.mem.startsWith(u8, rule, "%R~") or std.mem.startsWith(u8, rule, "%W~") or std.mem.eql(u8, rule, "allkeys") or std.mem.eql(u8, rule, "resetkeys")) {
+            try key_pattern_rules.append(allocator, rule);
+        } else {
+            try permission_rules.append(allocator, rule);
+        }
     }
+
+    var perm_result = try parsePermissionRules(allocator, permission_rules.items);
+    {
+        var iter = perm_result.allowed_commands.keyIterator();
+        while (iter.next()) |key| allocator.free(key.*);
+        perm_result.allowed_commands.deinit();
+
+        iter = perm_result.denied_commands.keyIterator();
+        while (iter.next()) |key| allocator.free(key.*);
+        perm_result.denied_commands.deinit();
+
+        perm_result.allowed_categories.deinit();
+        perm_result.denied_categories.deinit();
+    }
+
+    var key_result = try parseKeyPatternRules(allocator, key_pattern_rules.items);
+    {
+        for (key_result.allowed_key_patterns.items) |pattern| allocator.free(pattern);
+        key_result.allowed_key_patterns.deinit(allocator);
+
+        for (key_result.read_only_key_patterns.items) |pattern| allocator.free(pattern);
+        key_result.read_only_key_patterns.deinit(allocator);
+
+        for (key_result.write_only_key_patterns.items) |pattern| allocator.free(pattern);
+        key_result.write_only_key_patterns.deinit(allocator);
+    }
+}
+
+/// ACL SETUSER - Create or modify user
+pub fn cmdACLSetuser(
+    allocator: Allocator,
+    storage: *Storage,
+    array: []const RespValue,
+) ![]const u8 {
+    var w = Writer.init(allocator);
+    defer w.deinit();
+
+    if (array.len < 2) {
+        return w.writeError("ERR wrong number of arguments for 'acl|setuser' command");
+    }
+
+    const username = switch (array[1]) {
+        .bulk_string => |s| s,
+        else => return w.writeError("ERR invalid username"),
+    };
+
+    var rule_tokens = std.ArrayList([]const u8){};
+    defer rule_tokens.deinit(allocator);
+    for (array[2..]) |arg| {
+        const rule = switch (arg) {
+            .bulk_string => |s| s,
+            else => return w.writeError("ERR invalid rule format"),
+        };
+        try rule_tokens.append(allocator, rule);
+    }
+
+    applyUserRuleTokens(allocator, storage, username, rule_tokens.items) catch |err| {
+        return w.writeError(switch (err) {
+            PermissionChangeError.InvalidCategory => "ERR invalid category",
+            PermissionChangeError.InvalidRule => "ERR invalid rule",
+            ApplyUserRuleError.AclNotInitialized => "ERR ACL not initialized",
+            else => "ERR invalid permissions",
+        });
+    };
 
     return w.writeSimpleString("OK");
 }
@@ -981,25 +1049,138 @@ pub fn cmdACLLog(
     return buf.toOwnedSlice(allocator);
 }
 
-/// ACL SAVE — Persist current ACL rules to the ACL file
-/// Returns +OK (stub: no file write in single-node mode)
+const NO_ACL_FILE_ERROR = "ERR This Redis instance is not configured to use an ACL file. You may want to specify users via the ACL SETUSER command and then issue a CONFIG REWRITE (assuming you have a Redis configuration file set) in order to store users in the Redis configuration.";
+
+/// ACL SAVE — Persist current ACL rules to the file named by the `aclfile` config parameter.
+/// Errors if `aclfile` is unset, matching Redis's requirement that ACL persistence be
+/// backed by a real file rather than the inline `--user` config directives.
 pub fn cmdACLSave(
     allocator: Allocator,
+    storage: *Storage,
     _: []const RespValue,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
+
+    const maybe_path = try storage.config.getAsString("aclfile");
+    defer if (maybe_path) |p| allocator.free(p);
+    const aclfile_path = maybe_path orelse "";
+    if (aclfile_path.len == 0) {
+        return w.writeError(NO_ACL_FILE_ERROR);
+    }
+
+    const acl_store = storage.acl orelse return w.writeError("ERR ACL not initialized");
+
+    const usernames = try acl_store.listUsernames(allocator);
+    defer {
+        for (usernames) |name| allocator.free(name);
+        allocator.free(usernames);
+    }
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
+
+    for (usernames) |username| {
+        const user = acl_store.getUser(username) orelse continue;
+        const line = try user.formatAclLine(allocator);
+        defer allocator.free(line);
+        try buf.appendSlice(allocator, line);
+        try buf.appendSlice(allocator, "\n");
+    }
+
+    std.fs.cwd().writeFile(.{ .sub_path = aclfile_path, .data = buf.items }) catch {
+        return w.writeError("ERR Failed to write ACL file");
+    };
+
     return w.writeOK();
 }
 
-/// ACL LOAD — Reload ACL rules from the ACL file
-/// Returns +OK (stub: ACL file not configured in single-node mode)
+/// ACL LOAD — Discard the current in-memory ACL configuration and reload it from the
+/// file named by the `aclfile` config parameter. The whole file is validated before
+/// anything is applied: a malformed line aborts the load with no state change.
 pub fn cmdACLLoad(
     allocator: Allocator,
+    storage: *Storage,
     _: []const RespValue,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
+
+    const maybe_path = try storage.config.getAsString("aclfile");
+    defer if (maybe_path) |p| allocator.free(p);
+    const aclfile_path = maybe_path orelse "";
+    if (aclfile_path.len == 0) {
+        return w.writeError(NO_ACL_FILE_ERROR);
+    }
+
+    const contents = std.fs.cwd().readFileAlloc(allocator, aclfile_path, 16 * 1024 * 1024) catch |err| {
+        return w.writeError(switch (err) {
+            error.FileNotFound => "ERR I/O error while reading the ACL file: No such file or directory",
+            else => "ERR I/O error while reading the ACL file",
+        });
+    };
+    defer allocator.free(contents);
+
+    const ParsedUser = struct {
+        username: []const u8,
+        tokens: std.ArrayList([]const u8),
+    };
+    var parsed = std.ArrayList(ParsedUser){};
+    defer {
+        for (parsed.items) |*entry| entry.tokens.deinit(allocator);
+        parsed.deinit(allocator);
+    }
+
+    var line_iter = std.mem.tokenizeAny(u8, contents, "\n");
+    while (line_iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        var tok_iter = std.mem.tokenizeAny(u8, line, " \t");
+        const first = tok_iter.next() orelse continue;
+        if (!std.mem.eql(u8, first, "user")) {
+            return w.writeError("ERR Invalid ACL file format: expected line to start with 'user'");
+        }
+        const username = tok_iter.next() orelse {
+            return w.writeError("ERR Invalid ACL file format: missing username");
+        };
+
+        var tokens = std.ArrayList([]const u8){};
+        errdefer tokens.deinit(allocator);
+        while (tok_iter.next()) |tok| try tokens.append(allocator, tok);
+
+        validateRuleTokens(allocator, tokens.items) catch |err| {
+            tokens.deinit(allocator);
+            return w.writeError(switch (err) {
+                PermissionChangeError.InvalidCategory => "ERR invalid category in ACL file",
+                PermissionChangeError.InvalidRule => "ERR invalid rule in ACL file",
+                else => "ERR invalid ACL file content",
+            });
+        };
+
+        try parsed.append(allocator, .{ .username = username, .tokens = tokens });
+    }
+
+    const acl_store = storage.acl orelse return w.writeError("ERR ACL not initialized");
+
+    // Every line validated above — now clear existing users and apply the file atomically.
+    const existing = try acl_store.listUsernames(allocator);
+    defer {
+        for (existing) |name| allocator.free(name);
+        allocator.free(existing);
+    }
+    for (existing) |name| {
+        if (std.mem.eql(u8, name, "default")) continue;
+        _ = acl_store.deleteUser(name) catch {};
+    }
+    try acl_store.resetDefaultUser();
+
+    for (parsed.items) |entry| {
+        applyUserRuleTokens(allocator, storage, entry.username, entry.tokens.items) catch {
+            return w.writeError("ERR Failed to apply ACL rules from file");
+        };
+    }
+
     return w.writeOK();
 }
 
@@ -1490,32 +1671,147 @@ test "ACL LOG count limits returned entries" {
     try std.testing.expect(std.mem.startsWith(u8, result, "*2\r\n"));
 }
 
-test "ACL SAVE returns OK" {
+test "ACL SAVE errors when aclfile is not configured" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
         RespValue{ .bulk_string = "SAVE" },
     };
 
-    const result = try cmdACLSave(allocator, &args);
+    const result = try cmdACLSave(allocator, &storage, &args);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "ACL file") != null);
 }
 
-test "ACL LOAD returns OK" {
+test "ACL LOAD errors when aclfile is not configured" {
     const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
 
     const args = [_]RespValue{
         RespValue{ .bulk_string = "ACL" },
         RespValue{ .bulk_string = "LOAD" },
     };
 
-    const result = try cmdACLLoad(allocator, &args);
+    const result = try cmdACLLoad(allocator, &storage, &args);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.eql(u8, result, "+OK\r\n"));
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "ACL file") != null);
+}
+
+test "ACL SAVE writes users to aclfile, ACL LOAD round-trips them back" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+    const aclfile_path = try std.fs.path.join(allocator, &.{ path, "users.acl" });
+    defer allocator.free(aclfile_path);
+
+    try storage.config.set("aclfile", aclfile_path);
+
+    // Create a non-default user with a password, restricted key pattern, and one
+    // explicitly allowed command.
+    const setuser_args = [_]RespValue{
+        RespValue{ .bulk_string = "SETUSER" },
+        RespValue{ .bulk_string = "alice" },
+        RespValue{ .bulk_string = "on" },
+        RespValue{ .bulk_string = ">secret123" },
+        RespValue{ .bulk_string = "~cache:*" },
+        RespValue{ .bulk_string = "+GET" },
+    };
+    const setuser_result = try cmdACLSetuser(allocator, &storage, &setuser_args);
+    defer allocator.free(setuser_result);
+    try std.testing.expect(std.mem.eql(u8, setuser_result, "+OK\r\n"));
+
+    const save_args = [_]RespValue{RespValue{ .bulk_string = "SAVE" }};
+    const save_result = try cmdACLSave(allocator, &storage, &save_args);
+    defer allocator.free(save_result);
+    try std.testing.expect(std.mem.eql(u8, save_result, "+OK\r\n"));
+
+    // The file on disk should contain both the default user and alice.
+    const contents = try tmp_dir.dir.readFileAlloc(allocator, "users.acl", 1024 * 1024);
+    defer allocator.free(contents);
+    try std.testing.expect(std.mem.indexOf(u8, contents, "user default on nopass allkeys +@all") != null);
+    try std.testing.expect(std.mem.indexOf(u8, contents, "user alice on >secret123 ~cache:* -@all +GET") != null);
+
+    // Mutate alice further so LOAD has something real to revert.
+    const setuser_args2 = [_]RespValue{
+        RespValue{ .bulk_string = "SETUSER" },
+        RespValue{ .bulk_string = "alice" },
+        RespValue{ .bulk_string = "off" },
+    };
+    const setuser_result2 = try cmdACLSetuser(allocator, &storage, &setuser_args2);
+    defer allocator.free(setuser_result2);
+
+    // Add a throwaway user that only exists in memory, not in the file.
+    const setuser_args3 = [_]RespValue{
+        RespValue{ .bulk_string = "SETUSER" },
+        RespValue{ .bulk_string = "bob" },
+        RespValue{ .bulk_string = "on" },
+    };
+    const setuser_result3 = try cmdACLSetuser(allocator, &storage, &setuser_args3);
+    defer allocator.free(setuser_result3);
+
+    const load_args = [_]RespValue{RespValue{ .bulk_string = "LOAD" }};
+    const load_result = try cmdACLLoad(allocator, &storage, &load_args);
+    defer allocator.free(load_result);
+    try std.testing.expect(std.mem.eql(u8, load_result, "+OK\r\n"));
+
+    const acl_store = storage.acl.?;
+    const alice = acl_store.getUser("alice").?;
+    try std.testing.expect(alice.enabled); // restored from file (was turned off before LOAD)
+    try std.testing.expectEqualStrings("secret123", alice.password.?);
+    try std.testing.expect(!alice.all_keys_allowed);
+    try std.testing.expectEqual(@as(usize, 1), alice.allowed_key_patterns.items.len);
+    try std.testing.expectEqualStrings("cache:*", alice.allowed_key_patterns.items[0]);
+    try std.testing.expect(alice.allowed_commands.contains("GET"));
+
+    // bob was never persisted to the file, so LOAD should have dropped it.
+    try std.testing.expect(acl_store.getUser("bob") == null);
+}
+
+test "ACL LOAD rejects a malformed ACL file without mutating existing state" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+    const aclfile_path = try std.fs.path.join(allocator, &.{ path, "bad.acl" });
+    defer allocator.free(aclfile_path);
+
+    try storage.config.set("aclfile", aclfile_path);
+    try tmp_dir.dir.writeFile(.{ .sub_path = "bad.acl", .data = "user broken +@not-a-real-category\n" });
+
+    // Seed an in-memory user that should survive the rejected load.
+    const setuser_args = [_]RespValue{
+        RespValue{ .bulk_string = "SETUSER" },
+        RespValue{ .bulk_string = "carol" },
+        RespValue{ .bulk_string = "on" },
+    };
+    const setuser_result = try cmdACLSetuser(allocator, &storage, &setuser_args);
+    defer allocator.free(setuser_result);
+
+    const load_args = [_]RespValue{RespValue{ .bulk_string = "LOAD" }};
+    const load_result = try cmdACLLoad(allocator, &storage, &load_args);
+    defer allocator.free(load_result);
+
+    try std.testing.expect(std.mem.startsWith(u8, load_result, "-ERR"));
+    // State must be untouched: carol should still exist, and no "broken" user created.
+    try std.testing.expect(storage.acl.?.getUser("carol") != null);
+    try std.testing.expect(storage.acl.?.getUser("broken") == null);
 }
 
 test "ACL CAT lists categories" {

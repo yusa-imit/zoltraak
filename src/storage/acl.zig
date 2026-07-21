@@ -232,6 +232,46 @@ pub const User = struct {
         return self.all_commands_allowed;
     }
 
+    /// Serialize this user to a single ACL-file line: "user <name> <rules...>".
+    /// Round-trips with the rule tokens accepted by ACL SETUSER / ACL LOAD.
+    pub fn formatAclLine(self: *const User, allocator: Allocator) ![]const u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.print("user {s} {s}", .{ self.username, if (self.enabled) "on" else "off" });
+
+        if (self.password) |pwd| {
+            try w.print(" >{s}", .{pwd});
+        } else {
+            try w.writeAll(" nopass");
+        }
+
+        if (self.all_keys_allowed) {
+            try w.writeAll(" allkeys");
+        } else {
+            for (self.allowed_key_patterns.items) |pattern| try w.print(" ~{s}", .{pattern});
+            for (self.read_only_key_patterns.items) |pattern| try w.print(" %R~{s}", .{pattern});
+            for (self.write_only_key_patterns.items) |pattern| try w.print(" %W~{s}", .{pattern});
+        }
+
+        try w.writeAll(if (self.all_commands_allowed) " +@all" else " -@all");
+
+        var allowed_cat_iter = self.allowed_categories.keyIterator();
+        while (allowed_cat_iter.next()) |cat| try w.print(" +@{s}", .{@tagName(cat.*)});
+
+        var denied_cat_iter = self.denied_categories.keyIterator();
+        while (denied_cat_iter.next()) |cat| try w.print(" -@{s}", .{@tagName(cat.*)});
+
+        var allowed_cmd_iter = self.allowed_commands.keyIterator();
+        while (allowed_cmd_iter.next()) |cmd| try w.print(" +{s}", .{cmd.*});
+
+        var denied_cmd_iter = self.denied_commands.keyIterator();
+        while (denied_cmd_iter.next()) |cmd| try w.print(" -{s}", .{cmd.*});
+
+        return buf.toOwnedSlice(allocator);
+    }
+
     /// Check if a user has permission to access a key with the given access mode.
     ///
     /// Arguments:
@@ -622,6 +662,20 @@ pub const ACLStore = struct {
         if (password.len > 0) {
             user.password = try self.allocator.dupe(u8, password);
         }
+    }
+
+    /// Reset the default user back to its out-of-the-box state (nopass, all commands,
+    /// all keys allowed). Used by ACL LOAD to start from a clean slate before applying
+    /// the rules found in the ACL file.
+    pub fn resetDefaultUser(self: *ACLStore) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.users.fetchRemove("default")) |kv| {
+            var old_user = kv.value;
+            old_user.deinit(self.allocator);
+        }
+        try self.createDefaultUser();
     }
 
     /// Delete user
@@ -1497,5 +1551,49 @@ test "ACLStore: createOrUpdateUser updates existing user" {
     try std.testing.expect(user.?.allowed_commands.contains("SET"));
     try std.testing.expect(user.?.allowed_commands.contains("DEL"));
     try std.testing.expect(!user.?.allowed_commands.contains("GET")); // Old permission removed
+}
+
+test "User: formatAclLine renders nopass + allkeys + allcommands default user" {
+    const allocator = std.testing.allocator;
+
+    var store = try ACLStore.init(allocator);
+    defer store.deinit();
+
+    const user = store.getUser("default").?;
+    const line = try user.formatAclLine(allocator);
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings("user default on nopass allkeys +@all", line);
+}
+
+test "User: formatAclLine renders password, key patterns, and explicit commands" {
+    const allocator = std.testing.allocator;
+
+    var allowed_cmds = std.StringHashMap(void).init(allocator);
+    try allowed_cmds.put(try allocator.dupe(u8, "GET"), {});
+
+    var allowed_keys = std.ArrayList([]const u8){};
+    try allowed_keys.append(allocator, try allocator.dupe(u8, "user:*"));
+
+    var user = User{
+        .username = try allocator.dupe(u8, "alice"),
+        .password = try allocator.dupe(u8, "secret123"),
+        .enabled = true,
+        .all_commands_allowed = false,
+        .allowed_commands = allowed_cmds,
+        .denied_commands = std.StringHashMap(void).init(allocator),
+        .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
+        .all_keys_allowed = false,
+        .allowed_key_patterns = allowed_keys,
+        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8){},
+    };
+    defer user.deinit(allocator);
+
+    const line = try user.formatAclLine(allocator);
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings("user alice on >secret123 ~user:* -@all +GET", line);
     try std.testing.expectEqual(@as(usize, 1), user.?.allowed_key_patterns.items.len);
 }

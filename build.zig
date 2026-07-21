@@ -2009,6 +2009,26 @@ pub fn build(b: *std.Build) void {
     const run_iter424_tests = b.addRunArtifact(iter424_tests);
     test_step.dependOn(&run_iter424_tests.step);
 
+    // Iteration 431: ACL SAVE / ACL LOAD real aclfile-backed persistence
+    const iter431_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter431.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter431_tests.linkSystemLibrary("luajit-5.1");
+    iter431_tests.linkLibC();
+    iter431_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter431_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter431_tests = b.addRunArtifact(iter431_tests);
+    test_step.dependOn(&run_iter431_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

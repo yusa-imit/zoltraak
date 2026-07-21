@@ -3060,9 +3060,9 @@ pub fn executeCommand(
             } else if (std.mem.eql(u8, subcmd_upper, "LOG")) {
                 break :blk try acl_cmds.cmdACLLog(allocator, array[1..], storage);
             } else if (std.mem.eql(u8, subcmd_upper, "SAVE")) {
-                break :blk try acl_cmds.cmdACLSave(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLSave(allocator, storage, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "LOAD")) {
-                break :blk try acl_cmds.cmdACLLoad(allocator, array[1..]);
+                break :blk try acl_cmds.cmdACLLoad(allocator, storage, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "HELP")) {
                 break :blk try acl_cmds.cmdACLHelp(allocator, array[1..]);
             } else if (std.mem.eql(u8, subcmd_upper, "GENPASS")) {
