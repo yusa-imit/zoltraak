@@ -1,6 +1,6 @@
 .{
     .name = .zoltraak,
-    .version = "0.2.0",
+    .version = "0.2.8",
     .fingerprint = 0x788dcc25d0c221a9,
     .minimum_zig_version = "0.15.0",
     .dependencies = .{
