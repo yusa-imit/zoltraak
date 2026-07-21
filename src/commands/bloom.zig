@@ -771,19 +771,21 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
-    // For first chunk (iterator=0 on first call), create placeholder filter
-    // For subsequent chunks, get existing filter
-    // Note: We need to track load context per key - using a simple approach here
-
     // Get or create filter
     var bf: *BloomFilterValue = undefined;
     var context: *BloomFilterValue.LoadContext = undefined;
     var is_new = false;
 
-    // The new filter (if created) and the bits `loadChunk` allocates on the
-    // final chunk both get attached to long-lived storage state, so every
-    // allocation below uses storage.allocator rather than the per-request
-    // allocator, which is reset/reused after the response is sent.
+    // BF.LOADCHUNK is called across a sequence of separate requests with
+    // sequential iterators, so the LoadContext must outlive a single request
+    // and accumulate the buffer across calls. It is tracked per-key in
+    // storage.bloom_load_contexts (mirroring CF.LOADCHUNK) rather than being
+    // recreated and destroyed on every call, which previously discarded all
+    // but the final chunk. The new filter (if created) and the bits
+    // `loadChunk` allocates on the final chunk both get attached to
+    // long-lived storage state, so every allocation below uses
+    // storage.allocator rather than the per-request allocator, which is
+    // reset/reused after the response is sent.
     if (storage.data.getPtr(key)) |entry| {
         // Get existing filter
         bf = switch (entry.*) {
@@ -791,16 +793,22 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
             else => return RespValue{ .error_string = "WRONGTYPE Operation against a key holding the wrong kind of value" },
         };
 
-        // Create context for existing filter
-        const ctx = try storage.allocator.create(BloomFilterValue.LoadContext);
-        errdefer storage.allocator.destroy(ctx);
-        const buf = try std.ArrayList(u8).initCapacity(storage.allocator, 8192);
-        ctx.* = .{
-            .allocator = storage.allocator,
-            .buffer = buf,
-            .expected_iterator = iterator,
-        };
-        context = ctx;
+        // Get or create load context for existing filter
+        if (storage.bloom_load_contexts.getPtr(key)) |ctx_ptr| {
+            context = ctx_ptr.*;
+        } else {
+            const new_ctx = try storage.allocator.create(BloomFilterValue.LoadContext);
+            errdefer storage.allocator.destroy(new_ctx);
+            new_ctx.* = .{
+                .allocator = storage.allocator,
+                .buffer = try std.ArrayList(u8).initCapacity(storage.allocator, 8192),
+                .expected_iterator = 0,
+            };
+            const ctx_key = try storage.allocator.dupe(u8, key);
+            errdefer storage.allocator.free(ctx_key);
+            try storage.bloom_load_contexts.put(ctx_key, new_ctx);
+            context = new_ctx;
+        }
     } else {
         // Create new filter
         var new_bf = try BloomFilterValue.init(storage.allocator, 0.01, 10, 2, false);
@@ -812,36 +820,35 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
 
         try storage.data.put(key_copy, .{ .bloom = new_bf });
         bf = &storage.data.getPtr(key_copy).?.bloom;
+        is_new = true;
 
-        // Create context
-        const ctx = try storage.allocator.create(BloomFilterValue.LoadContext);
-        errdefer storage.allocator.destroy(ctx);
-        const buf = try std.ArrayList(u8).initCapacity(storage.allocator, 8192);
-        ctx.* = .{
+        // Create load context
+        const new_ctx = try storage.allocator.create(BloomFilterValue.LoadContext);
+        errdefer storage.allocator.destroy(new_ctx);
+        new_ctx.* = .{
             .allocator = storage.allocator,
-            .buffer = buf,
+            .buffer = try std.ArrayList(u8).initCapacity(storage.allocator, 8192),
             .expected_iterator = 0,
         };
-
-        // TODO: Store context in a map keyed by key for multi-chunk loads
-        // For now, simplified implementation assumes sequential single-key loads
-        context = ctx;
-        is_new = true;
-    }
-
-    defer {
-        context.deinit();
-        storage.allocator.destroy(context);
+        const ctx_key = try storage.allocator.dupe(u8, key);
+        errdefer storage.allocator.free(ctx_key);
+        try storage.bloom_load_contexts.put(ctx_key, new_ctx);
+        context = new_ctx;
     }
 
     // Load chunk
     const complete = bf.loadChunk(storage.allocator, context, iterator, data) catch |err| {
+        // Clean up newly created filter on error
         if (is_new) {
-            // Clean up newly created filter on error
             const key_in_map = storage.data.getKey(key).?;
             _ = storage.data.remove(key);
             storage.allocator.free(key_in_map);
             bf.deinit();
+        }
+        if (storage.bloom_load_contexts.fetchRemove(key)) |kv| {
+            storage.allocator.free(kv.key);
+            kv.value.deinit();
+            storage.allocator.destroy(kv.value);
         }
         return switch (err) {
             error.InvalidIterator => RespValue{ .error_string = "ERR invalid iterator sequence" },
@@ -850,9 +857,14 @@ pub fn cmdBfLoadchunk(allocator: std.mem.Allocator, storage: *Storage, args: []c
         };
     };
 
+    // If loading is complete, clean up the context
     if (complete) {
-        return RespValue{ .simple_string = "OK" };
-    } else {
-        return RespValue{ .simple_string = "OK" };
+        if (storage.bloom_load_contexts.fetchRemove(key)) |kv| {
+            storage.allocator.free(kv.key);
+            kv.value.deinit();
+            storage.allocator.destroy(kv.value);
+        }
     }
+
+    return RespValue{ .simple_string = "OK" };
 }

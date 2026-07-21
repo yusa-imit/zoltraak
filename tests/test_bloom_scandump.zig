@@ -226,6 +226,86 @@ test "BF.SCANDUMP/LOADCHUNK round-trip preserves items" {
     try std.testing.expectEqual(@as(i64, 0), not_exists_parsed.integer);
 }
 
+test "BF.SCANDUMP/LOADCHUNK multi-chunk round-trip preserves items" {
+    const allocator = std.testing.allocator;
+
+    var storage = try Storage.init(allocator, "/tmp/zoltraak_test_multichunk.rdb");
+    defer storage.deinit();
+
+    var server = try Server.init(allocator, storage, "127.0.0.1", 0);
+    defer server.deinit();
+
+    // A large capacity produces a bit array well over the 8192-byte
+    // BF.SCANDUMP/BF.LOADCHUNK chunk size, forcing a multi-chunk transfer —
+    // this is the path that previously discarded all but the final chunk
+    // because BF.LOADCHUNK recreated (and destroyed) its LoadContext on
+    // every single call instead of accumulating across the whole sequence.
+    const reserve_cmd = "*4\r\n$10\r\nBF.RESERVE\r\n$6\r\nbigflt\r\n$4\r\n0.01\r\n$6\r\n100000\r\n";
+    const reserve_resp = try server.handleCommand(reserve_cmd);
+    defer allocator.free(reserve_resp);
+
+    const items = [_][]const u8{ "apple", "banana", "cherry", "date", "elderberry", "fig", "grape" };
+    for (items) |item| {
+        var add_cmd_buf: [256]u8 = undefined;
+        const add_cmd = try std.fmt.bufPrint(&add_cmd_buf, "*3\r\n$6\r\nBF.ADD\r\n$6\r\nbigflt\r\n${d}\r\n{s}\r\n", .{ item.len, item });
+        const add_resp = try server.handleCommand(add_cmd);
+        defer allocator.free(add_resp);
+    }
+
+    // Drive BF.SCANDUMP to collect every chunk, then feed each one through
+    // BF.LOADCHUNK in order, mirroring how a real client performs a backup.
+    var scan_iter: i64 = 0;
+    var chunk_count: usize = 0;
+    while (true) {
+        var scandump_cmd_buf: [128]u8 = undefined;
+        var iter_str_buf: [24]u8 = undefined;
+        const iter_str = try std.fmt.bufPrint(&iter_str_buf, "{d}", .{scan_iter});
+        const scandump_cmd = try std.fmt.bufPrint(&scandump_cmd_buf, "*3\r\n$11\r\nBF.SCANDUMP\r\n$6\r\nbigflt\r\n${d}\r\n{s}\r\n", .{ iter_str.len, iter_str });
+        const scandump_resp = try server.handleCommand(scandump_cmd);
+        defer allocator.free(scandump_resp);
+
+        const parsed = try parseResp(allocator, scandump_resp);
+        defer deinitRespValue(allocator, parsed);
+
+        const next_iter = parsed.array[0].integer;
+        const data_chunk = parsed.array[1].bulk_string;
+        chunk_count += 1;
+
+        var loadchunk_cmd_buf: [16384]u8 = undefined;
+        const iter_arg = try std.fmt.bufPrint(&iter_str_buf, "{d}", .{scan_iter});
+        const loadchunk_header = try std.fmt.bufPrint(&loadchunk_cmd_buf, "*4\r\n$12\r\nBF.LOADCHUNK\r\n$7\r\nbigflt2\r\n${d}\r\n{s}\r\n${d}\r\n", .{ iter_arg.len, iter_arg, data_chunk.len });
+
+        var full_cmd = std.ArrayList(u8).init(allocator);
+        defer full_cmd.deinit(allocator);
+        try full_cmd.appendSlice(allocator, loadchunk_header);
+        try full_cmd.appendSlice(allocator, data_chunk);
+        try full_cmd.appendSlice(allocator, "\r\n");
+
+        const loadchunk_resp = try server.handleCommand(full_cmd.items);
+        defer allocator.free(loadchunk_resp);
+        try std.testing.expect(std.mem.indexOf(u8, loadchunk_resp, "+OK") != null);
+
+        scan_iter = next_iter;
+        if (scan_iter == 0) break;
+    }
+
+    // The filter must actually have been split across multiple chunks for
+    // this test to exercise the bug — otherwise it degenerates into the
+    // existing single-chunk round-trip test.
+    try std.testing.expect(chunk_count >= 2);
+
+    // Every original item must survive the restore.
+    for (items) |item| {
+        var exists_cmd_buf: [256]u8 = undefined;
+        const exists_cmd = try std.fmt.bufPrint(&exists_cmd_buf, "*3\r\n$9\r\nBF.EXISTS\r\n$7\r\nbigflt2\r\n${d}\r\n{s}\r\n", .{ item.len, item });
+        const exists_resp = try server.handleCommand(exists_cmd);
+        defer allocator.free(exists_resp);
+
+        const exists_parsed = try parseResp(allocator, exists_resp);
+        try std.testing.expectEqual(@as(i64, 1), exists_parsed.integer);
+    }
+}
+
 test "BF.LOADCHUNK arity validation" {
     const allocator = std.testing.allocator;
 

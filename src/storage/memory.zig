@@ -802,6 +802,7 @@ pub const Storage = struct {
     functions: FunctionStore, // Redis Functions library storage
     search: SearchStore, // Search index storage
     cuckoo_load_contexts: std.StringHashMap(*cuckoo_mod.CuckooFilterValue.LoadContext), // Load contexts for CF.LOADCHUNK
+    bloom_load_contexts: std.StringHashMap(*bloom_mod.BloomFilterValue.LoadContext), // Load contexts for BF.LOADCHUNK
     mutex: std.Thread.Mutex,
     last_save_time: i64, // Unix timestamp in seconds of last successful RDB save
     blocking_queue: BlockingQueue, // Clients blocked on XREAD/XREADGROUP BLOCK
@@ -938,6 +939,7 @@ pub const Storage = struct {
             .functions = function_store,
             .search = search_store,
             .cuckoo_load_contexts = std.StringHashMap(*cuckoo_mod.CuckooFilterValue.LoadContext).init(allocator),
+            .bloom_load_contexts = std.StringHashMap(*bloom_mod.BloomFilterValue.LoadContext).init(allocator),
             .mutex = std.Thread.Mutex{},
             .last_save_time = 0, // Will be updated on first save
             .blocking_queue = BlockingQueue.init(allocator),
@@ -1318,6 +1320,15 @@ pub const Storage = struct {
             self.allocator.destroy(entry.value_ptr.*);
         }
         self.cuckoo_load_contexts.deinit();
+
+        // Free bloom load contexts
+        var bloom_ctx_it = self.bloom_load_contexts.iterator();
+        while (bloom_ctx_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.bloom_load_contexts.deinit();
 
         // Free all keys and values
         var it = self.data.iterator();
