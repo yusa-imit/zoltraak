@@ -2029,6 +2029,26 @@ pub fn build(b: *std.Build) void {
     const run_iter431_tests = b.addRunArtifact(iter431_tests);
     test_step.dependOn(&run_iter431_tests.step);
 
+    // Iteration 432: RDB persistence — stream serialization + type-byte collision fix
+    const iter432_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter432.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter432_tests.linkSystemLibrary("luajit-5.1");
+    iter432_tests.linkLibC();
+    iter432_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter432_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter432_tests = b.addRunArtifact(iter432_tests);
+    test_step.dependOn(&run_iter432_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -16,6 +16,9 @@ const RDB_TYPE_LIST: u8 = 1;
 const RDB_TYPE_SET: u8 = 2;
 const RDB_TYPE_HASH: u8 = 3;
 const RDB_TYPE_SORTED_SET: u8 = 4;
+const RDB_TYPE_STREAM: u8 = 5;
+const RDB_TYPE_HYPERLOGLOG: u8 = 6;
+const RDB_TYPE_JSON: u8 = 0x0F;
 const RDB_TYPE_EOF: u8 = 0xFF;
 const RDB_DB_SELECTOR: u8 = 0xFE;
 
@@ -95,9 +98,9 @@ pub const Persistence = struct {
                     .set => RDB_TYPE_SET,
                     .hash => RDB_TYPE_HASH,
                     .sorted_set => RDB_TYPE_SORTED_SET,
-                    .stream => 0xFF, // Placeholder - streams not yet serialized
-                    .hyperloglog => 0xFE, // HyperLogLog type
-                    .json => 0x0F, // JSON type
+                    .stream => RDB_TYPE_STREAM,
+                    .hyperloglog => RDB_TYPE_HYPERLOGLOG,
+                    .json => RDB_TYPE_JSON,
                     .timeseries => 0xFD, // Time Series type
                     .bloom => 0xFC, // Bloom Filter type
                     .cuckoo => 0xFB, // Cuckoo Filter type
@@ -172,9 +175,8 @@ pub const Persistence = struct {
                             try writeBlob(w, scored.member);
                         }
                     },
-                    .stream => {
-                        // Streams not yet fully implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .stream => |s| {
+                        try writeStreamValue(w, &s);
                     },
                     .hyperloglog => |hll| {
                         try writeBlob(w, &hll.registers);
@@ -392,7 +394,19 @@ pub const Persistence = struct {
                         _ = try storage.zadd(key, &scores_arr, &members_arr, 0, expires_at);
                     }
                 },
-                0xFE => { // HyperLogLog
+                RDB_TYPE_STREAM => {
+                    var stream_value = try readStreamValue(payload, &pos, storage.allocator, expires_at);
+                    errdefer stream_value.deinit(storage.allocator);
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .stream = stream_value });
+                },
+                RDB_TYPE_HYPERLOGLOG => {
                     const registers_data = try readBlob(payload, &pos, allocator);
                     defer allocator.free(registers_data);
 
@@ -411,7 +425,7 @@ pub const Persistence = struct {
 
                     try storage.data.put(key_copy, Value{ .hyperloglog = hll });
                 },
-                0x0F => { // JSON
+                RDB_TYPE_JSON => { // JSON
                     const json_str = try readBlob(payload, &pos, allocator);
                     defer allocator.free(json_str);
 
@@ -617,16 +631,146 @@ pub const Persistence = struct {
         return blob;
     }
 
+    /// Write a stream's entries (ids + flat field/value pairs) plus the bookkeeping
+    /// fields needed to restore XLEN/XINFO-visible state. Consumer groups (PEL,
+    /// last-delivered-id, etc.) are not yet persisted and are dropped across a
+    /// save/load cycle.
+    fn writeStreamValue(w: anytype, stream: *const Value.StreamValue) !void {
+        try w.writeInt(u64, stream.entries_added, .little);
+        try w.writeInt(i64, stream.max_deleted_entry_id.ms, .little);
+        try w.writeInt(u64, stream.max_deleted_entry_id.seq, .little);
+        if (stream.last_id) |lid| {
+            try w.writeByte(1);
+            try w.writeInt(i64, lid.ms, .little);
+            try w.writeInt(u64, lid.seq, .little);
+        } else {
+            try w.writeByte(0);
+        }
+        try w.writeInt(u32, @intCast(stream.entries.items.len), .little);
+        for (stream.entries.items) |stream_entry| {
+            try w.writeInt(i64, stream_entry.id.ms, .little);
+            try w.writeInt(u64, stream_entry.id.seq, .little);
+            try w.writeInt(u32, @intCast(stream_entry.fields.items.len), .little);
+            for (stream_entry.fields.items) |field| {
+                try writeBlob(w, field);
+            }
+        }
+    }
+
+    /// Read a stream payload written by `writeStreamValue`, allocating entries with
+    /// `allocator` (the destination storage's allocator, so `StreamValue.deinit`
+    /// can free them normally).
+    fn readStreamValue(data: []const u8, pos: *usize, allocator: std.mem.Allocator, expires_at: ?i64) !Value.StreamValue {
+        if (pos.* + 24 > data.len) return error.InvalidRdbFile;
+        const entries_added = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+        pos.* += 8;
+        const del_ms = std.mem.readInt(i64, data[pos.* ..][0..8], .little);
+        pos.* += 8;
+        const del_seq = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+        pos.* += 8;
+
+        if (pos.* >= data.len) return error.InvalidRdbFile;
+        const has_last_id = data[pos.*];
+        pos.* += 1;
+        var last_id: ?Value.StreamId = null;
+        if (has_last_id == 1) {
+            if (pos.* + 16 > data.len) return error.InvalidRdbFile;
+            const lms = std.mem.readInt(i64, data[pos.* ..][0..8], .little);
+            pos.* += 8;
+            const lseq = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+            pos.* += 8;
+            last_id = .{ .ms = lms, .seq = lseq };
+        }
+
+        if (pos.* + 4 > data.len) return error.InvalidRdbFile;
+        const entry_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+        pos.* += 4;
+
+        var entries = std.ArrayList(Value.StreamEntry){};
+        errdefer {
+            for (entries.items) |*e| e.deinit(allocator);
+            entries.deinit(allocator);
+        }
+
+        var ei: u32 = 0;
+        while (ei < entry_count) : (ei += 1) {
+            if (pos.* + 16 > data.len) return error.InvalidRdbFile;
+            const ems = std.mem.readInt(i64, data[pos.* ..][0..8], .little);
+            pos.* += 8;
+            const eseq = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+            pos.* += 8;
+
+            if (pos.* + 4 > data.len) return error.InvalidRdbFile;
+            const field_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+            pos.* += 4;
+
+            var fields = std.ArrayList([]const u8){};
+            errdefer {
+                for (fields.items) |f| allocator.free(f);
+                fields.deinit(allocator);
+            }
+            var fi: u32 = 0;
+            while (fi < field_count) : (fi += 1) {
+                const field = try readBlob(data, pos, allocator);
+                try fields.append(allocator, field);
+            }
+            try entries.append(allocator, .{ .id = .{ .ms = ems, .seq = eseq }, .fields = fields });
+        }
+
+        return .{
+            .entries = entries,
+            .last_id = last_id,
+            .expires_at = expires_at,
+            .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(allocator),
+            .entries_added = entries_added,
+            .max_deleted_entry_id = .{ .ms = del_ms, .seq = del_seq },
+        };
+    }
+
+    /// Skip over a stream payload written by `writeStreamValue` without allocating
+    /// (used on the expired-key fast path).
+    fn skipStreamValue(data: []const u8, pos: *usize) !void {
+        if (pos.* + 24 > data.len) return error.InvalidRdbFile;
+        pos.* += 24; // entries_added(8) + max_deleted_entry_id(8+8)
+
+        if (pos.* >= data.len) return error.InvalidRdbFile;
+        const has_last_id = data[pos.*];
+        pos.* += 1;
+        if (has_last_id == 1) {
+            if (pos.* + 16 > data.len) return error.InvalidRdbFile;
+            pos.* += 16;
+        }
+
+        if (pos.* + 4 > data.len) return error.InvalidRdbFile;
+        const entry_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+        pos.* += 4;
+
+        for (0..entry_count) |_| {
+            if (pos.* + 16 > data.len) return error.InvalidRdbFile;
+            pos.* += 16; // id.ms(8) + id.seq(8)
+
+            if (pos.* + 4 > data.len) return error.InvalidRdbFile;
+            const field_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+            pos.* += 4;
+            for (0..field_count) |_| {
+                if (pos.* + 4 > data.len) return error.InvalidRdbFile;
+                const flen = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+                pos.* += 4 + flen;
+            }
+        }
+    }
+
     /// Skip over a value payload without allocating
     fn skipValue(data: []const u8, pos: *usize, type_byte: u8) !void {
         switch (type_byte) {
-            RDB_TYPE_STRING, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8 => {
-                // String and all probabilistic types (bloom/cuckoo/CMS/Top-K/T-Digest)
-                // are written as a single length-prefixed blob.
+            RDB_TYPE_STRING, RDB_TYPE_HYPERLOGLOG, RDB_TYPE_JSON, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8, 0xF7 => {
+                // String, HyperLogLog, JSON, and all probabilistic/timeseries/vector
+                // types are written as a single length-prefixed blob.
                 if (pos.* + 4 > data.len) return error.InvalidRdbFile;
                 const len = std.mem.readInt(u32, data[pos.*..][0..4], .little);
                 pos.* += 4 + len;
             },
+            RDB_TYPE_STREAM => try skipStreamValue(data, pos),
             RDB_TYPE_LIST, RDB_TYPE_SET => {
                 if (pos.* + 4 > data.len) return error.InvalidRdbFile;
                 const count = std.mem.readInt(u32, data[pos.*..][0..4], .little);
@@ -715,9 +859,9 @@ pub const Persistence = struct {
                     .set => RDB_TYPE_SET,
                     .hash => RDB_TYPE_HASH,
                     .sorted_set => RDB_TYPE_SORTED_SET,
-                    .stream => 0xFF, // Streams not yet serialized
-                    .hyperloglog => 0xFE, // HyperLogLog
-                    .json => 0x0F, // JSON type
+                    .stream => RDB_TYPE_STREAM,
+                    .hyperloglog => RDB_TYPE_HYPERLOGLOG,
+                    .json => RDB_TYPE_JSON,
                     .timeseries => 0xFD, // Time Series type
                     .bloom => 0xFC, // Bloom Filter type
                     .cuckoo => 0xFB, // Cuckoo Filter type
@@ -784,9 +928,8 @@ pub const Persistence = struct {
                             try writeBlob(w, scored.member);
                         }
                     },
-                    .stream => {
-                        // Streams not yet implemented - write empty marker
-                        try w.writeInt(u32, 0, .little);
+                    .stream => |s| {
+                        try writeStreamValue(w, &s);
                     },
                     .hyperloglog => |hll| {
                         try writeBlob(w, &hll.registers);
@@ -974,6 +1117,59 @@ pub const Persistence = struct {
                         var members_arr = [_][]const u8{member};
                         _ = try storage.zadd(key, &scores_arr, &members_arr, 0, expires_at);
                     }
+                },
+                RDB_TYPE_STREAM => {
+                    var stream_value = try readStreamValue(payload, &pos, storage.allocator, expires_at);
+                    errdefer stream_value.deinit(storage.allocator);
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .stream = stream_value });
+                },
+                RDB_TYPE_HYPERLOGLOG => {
+                    const registers_data = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(registers_data);
+
+                    if (registers_data.len != 16384) return error.InvalidRdbFile;
+
+                    var hll = Value.HyperLogLogValue.init();
+                    hll.expires_at = expires_at;
+                    @memcpy(&hll.registers, registers_data);
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .hyperloglog = hll });
+                },
+                RDB_TYPE_JSON => {
+                    const json_str = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(json_str);
+
+                    const json_node_mod = @import("json_value.zig");
+                    const json_root = try json_node_mod.JsonNode.parse(storage.allocator, json_str);
+
+                    const json_val = Value{
+                        .json = .{
+                            .root = json_root,
+                            .expires_at = expires_at,
+                            .allocator = storage.allocator,
+                        },
+                    };
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const owned_key = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(owned_key);
+
+                    try storage.data.put(owned_key, json_val);
                 },
                 0xFC => { // Bloom filter
                     const raw = try readBlob(payload, &pos, allocator);
