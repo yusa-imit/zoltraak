@@ -347,9 +347,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v2.94.2 (build.zig.zon)
-- **Latest available**: v2.94.2 — no newer version pending
-- **Migration status**: All versions through v2.94.2 migrated.
+- **Current in zoltraak**: v2.94.3 (build.zig.zon)
+- **Latest available**: v2.94.3 — no newer version pending
+- **Migration status**: All versions through v2.94.3 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -398,6 +398,7 @@
 | v2.94.0 | DonutChart widget: hollow-center variant of PieChart with adjustable hole_ratio and optional center_label; ErrorBarChart/ErrorBarItem — backward compatible, zero breaking changes | Done (Iter 424) |
 | v2.94.1 | Bug fixes: `@panic`-on-OOM in `LineBuilder.span/raw/text`, `unreachable`-on-overflow in `CountdownTimer` formatters, hardcoded-length `unreachable` + global mutable buffers in `Validator.minLength/maxLength` — patch release, no breaking changes | Done (Iter 428) |
 | v2.94.2 | Bug fixes: removed global mutable ring buffer from `Validator.combine()` (use-after-free risk), fixed `queryTerminalCapability()` fd=42 misrouting on Unix, guarded extreme f32/u64 values from panicking in chart widgets and `ParticleSystem`, flaky async_loop test fixed — patch release, no breaking changes | Done (Iter 433) |
+| v2.94.3 | Bug fixes: u16 addition overflow guards (saturating arithmetic) in `ToastManager.render()`, `Block.inner()`, `Block.render()`, `ContextMenu.fittingArea()`; Autocomplete widget migrated to Zig 0.15 unmanaged ArrayList API — patch release, no breaking changes | Done (Iter 434) |
 
 ### zuda Library
 
