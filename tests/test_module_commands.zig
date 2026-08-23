@@ -1,8 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
-const Storage = @import("../src/storage/memory.zig").Storage;
-const modules_mod = @import("../src/storage/modules.zig");
-const parser_mod = @import("../src/protocol/parser.zig");
+const zoltraak = @import("zoltraak");
+const Storage = zoltraak.storage.Storage;
+const modules_mod = zoltraak.modules;
+const parser_mod = zoltraak.protocol;
 const RespValue = parser_mod.RespValue;
 
 /// Integration tests for module command registration

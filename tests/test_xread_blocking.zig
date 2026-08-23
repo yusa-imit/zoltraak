@@ -1,10 +1,11 @@
 // Integration tests for XREAD/XREADGROUP BLOCK functionality
 const std = @import("std");
 const testing = std.testing;
-const protocol = @import("../src/protocol/parser.zig");
-const storage_mod = @import("../src/storage/memory.zig");
-const streams_adv = @import("../src/commands/streams_advanced.zig");
-const streams = @import("../src/commands/streams.zig");
+const zoltraak = @import("zoltraak");
+const protocol = zoltraak.protocol;
+const storage_mod = zoltraak.storage;
+const streams_adv = zoltraak.streams_advanced_commands;
+const streams = zoltraak.streams_commands;
 
 const RespValue = protocol.RespValue;
 const Storage = storage_mod.Storage;

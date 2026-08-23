@@ -1,12 +1,13 @@
 const std = @import("std");
-const Storage = @import("../src/storage/memory.zig").Storage;
-const parseCommand = @import("../src/protocol/parser.zig").parseCommand;
-const processCommand = @import("../src/commands/strings.zig").processCommand;
-const TxState = @import("../src/commands/strings.zig").TxState;
-const ReplicationState = @import("../src/commands/strings.zig").ReplicationState;
-const ScriptStore = @import("../src/commands/strings.zig").ScriptStore;
-const PubSubState = @import("../src/storage/pubsub.zig").PubSubState;
-const ClientRegistry = @import("../src/commands/client.zig").ClientRegistry;
+const zoltraak = @import("zoltraak");
+const Storage = zoltraak.storage.Storage;
+const parseCommand = zoltraak.protocol.parseCommand;
+const processCommand = zoltraak.commands.processCommand;
+const TxState = zoltraak.commands.TxState;
+const ReplicationState = zoltraak.commands.ReplicationState;
+const ScriptStore = zoltraak.commands.ScriptStore;
+const PubSubState = zoltraak.pubsub.PubSubState;
+const ClientRegistry = zoltraak.ClientRegistry;
 
 test "FT.CREATE: basic index creation" {
     const allocator = std.testing.allocator;

@@ -5,6 +5,7 @@ const server_mod = @import("server.zig");
 // Re-export modules for testing
 pub const protocol = @import("protocol/parser.zig");
 pub const writer = @import("protocol/writer.zig");
+pub const server = server_mod;
 pub const storage = @import("storage/memory.zig");
 pub const commands = @import("commands/strings.zig");
 pub const sorted_sets = @import("commands/sorted_sets.zig");
@@ -33,6 +34,9 @@ pub const utility_commands = @import("commands/utility.zig");
 pub const json_value = @import("storage/json_value.zig");
 pub const json_commands = @import("commands/json.zig");
 pub const tui_advanced = @import("tui_advanced.zig");
+pub const bloom_commands = @import("commands/bloom.zig");
+pub const timeseries_storage = @import("storage/timeseries.zig");
+pub const cluster_commands = @import("commands/cluster.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
@@ -170,13 +174,13 @@ pub fn main() !void {
     const config = parsed.config;
 
     // Initialize server
-    const server = try Server.init(allocator, config);
-    defer server.deinit();
+    var server_instance = try Server.init(allocator, config);
+    defer server_instance.deinit();
 
     // Load RDB snapshot if it exists (skip when starting as a replica — RDB comes from primary)
     if (config.replicaof_host == null) {
         const Persistence = persistence.Persistence;
-        const loaded = Persistence.load(server.databases, "dump.rdb", allocator) catch |err| blk: {
+        const loaded = Persistence.load(server_instance.databases, "dump.rdb", allocator) catch |err| blk: {
             std.debug.print("Warning: could not load dump.rdb: {any}\n", .{err});
             break :blk 0;
         };
@@ -186,7 +190,7 @@ pub fn main() !void {
 
         // Replay AOF if it exists (applied on top of RDB)
         const Aof = aof.Aof;
-        const replayed = Aof.replay(&server.databases[0], "appendonly.aof", allocator) catch |err| blk: {
+        const replayed = Aof.replay(&server_instance.databases[0], "appendonly.aof", allocator) catch |err| blk: {
             std.debug.print("Warning: could not replay appendonly.aof: {any}\n", .{err});
             break :blk 0;
         };
@@ -196,7 +200,7 @@ pub fn main() !void {
 
         // Open AOF for appending (creates file if not present)
         const Aof2 = aof.Aof;
-        server.aof = Aof2.open("appendonly.aof") catch |err| blk: {
+        server_instance.aof = Aof2.open("appendonly.aof") catch |err| blk: {
             std.debug.print("Warning: could not open appendonly.aof for writing: {any}\n", .{err});
             break :blk null;
         };
@@ -216,7 +220,7 @@ pub fn main() !void {
             }
         }
     };
-    sigint_handler.srv = server;
+    sigint_handler.srv = server_instance;
 
     // Register signal handler (POSIX systems)
     const act = std.posix.Sigaction{
@@ -228,7 +232,7 @@ pub fn main() !void {
     _ = std.posix.sigaction(std.posix.SIG.TERM, &act, null);
 
     // Start server (blocks until shutdown)
-    try server.start();
+    try server_instance.start();
 }
 
 // Minimal test to ensure modules compile

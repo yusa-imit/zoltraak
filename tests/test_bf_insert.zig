@@ -1,7 +1,8 @@
 const std = @import("std");
-const protocol = @import("../src/protocol/parser.zig");
-const storage_mod = @import("../src/storage/memory.zig");
-const bloom_cmd = @import("../src/commands/bloom.zig");
+const zoltraak = @import("zoltraak");
+const protocol = zoltraak.protocol;
+const storage_mod = zoltraak.storage;
+const bloom_cmd = zoltraak.bloom_commands;
 
 const RespValue = protocol.RespValue;
 const Storage = storage_mod.Storage;

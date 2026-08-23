@@ -215,8 +215,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_xread_blocking.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    xread_blocking_tests.linkSystemLibrary("luajit-5.1");
+    xread_blocking_tests.linkLibC();
+    xread_blocking_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    xread_blocking_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
 
     const run_xread_blocking_tests = b.addRunArtifact(xread_blocking_tests);
     integration_test_step.dependOn(&run_xread_blocking_tests.step);
@@ -2295,8 +2302,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_functions.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    functions_tests.linkSystemLibrary("luajit-5.1");
+    functions_tests.linkLibC();
+    functions_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    functions_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_functions_tests = b.addRunArtifact(functions_tests);
     integration_test_step.dependOn(&run_functions_tests.step);
 
@@ -2383,8 +2397,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_search.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    search_tests.linkSystemLibrary("luajit-5.1");
+    search_tests.linkLibC();
+    search_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    search_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_search_tests = b.addRunArtifact(search_tests);
     integration_test_step.dependOn(&run_search_tests.step);
 
@@ -2597,8 +2618,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_bf_insert.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    bf_insert_tests.linkSystemLibrary("luajit-5.1");
+    bf_insert_tests.linkLibC();
+    bf_insert_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    bf_insert_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_bf_insert_tests = b.addRunArtifact(bf_insert_tests);
     integration_test_step.dependOn(&run_bf_insert_tests.step);
 
@@ -2721,8 +2749,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_module_commands.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    module_commands_tests.linkSystemLibrary("luajit-5.1");
+    module_commands_tests.linkLibC();
+    module_commands_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    module_commands_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_module_commands_tests = b.addRunArtifact(module_commands_tests);
     integration_test_step.dependOn(&run_module_commands_tests.step);
 
@@ -2796,8 +2831,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_ts_incrby.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    ts_incrby_tests.linkSystemLibrary("luajit-5.1");
+    ts_incrby_tests.linkLibC();
+    ts_incrby_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    ts_incrby_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_ts_incrby_tests = b.addRunArtifact(ts_incrby_tests);
     integration_test_step.dependOn(&run_ts_incrby_tests.step);
 
@@ -2882,8 +2924,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_vectors.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    vector_tests.linkSystemLibrary("luajit-5.1");
+    vector_tests.linkLibC();
+    vector_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    vector_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_vector_tests = b.addRunArtifact(vector_tests);
     integration_test_step.dependOn(&run_vector_tests.step);
 
@@ -2942,8 +2991,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/test_deprecated_aliases.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+            },
         }),
     });
+    deprecated_aliases_tests.linkSystemLibrary("luajit-5.1");
+    deprecated_aliases_tests.linkLibC();
+    deprecated_aliases_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    deprecated_aliases_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
     const run_deprecated_aliases_tests = b.addRunArtifact(deprecated_aliases_tests);
     integration_test_step.dependOn(&run_deprecated_aliases_tests.step);
 

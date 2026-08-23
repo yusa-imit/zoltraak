@@ -1,7 +1,8 @@
 const std = @import("std");
-const protocol = @import("../src/protocol/parser.zig");
-const writer_mod = @import("../src/protocol/writer.zig");
-const server_mod = @import("../src/server.zig");
+const zoltraak = @import("zoltraak");
+const protocol = zoltraak.protocol;
+const writer_mod = zoltraak.writer;
+const server_mod = zoltraak.server;
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;

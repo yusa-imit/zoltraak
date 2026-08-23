@@ -1,10 +1,11 @@
 const std = @import("std");
-const Storage = @import("../src/storage/memory.zig").Storage;
-const RespValue = @import("../src/protocol/parser.zig").RespValue;
-const executeCommand = @import("../src/commands/strings.zig").executeCommand;
-const cluster_cmds = @import("../src/commands/cluster.zig");
-const repl_cmds = @import("../src/commands/replication.zig");
-const lists = @import("../src/commands/lists.zig");
+const zoltraak = @import("zoltraak");
+const Storage = zoltraak.storage.Storage;
+const RespValue = zoltraak.protocol.RespValue;
+const executeCommand = zoltraak.commands.executeCommand;
+const cluster_cmds = zoltraak.cluster_commands;
+const repl_cmds = zoltraak.replication_commands;
+const lists = zoltraak.lists_commands;
 
 test "CLUSTER SLAVES alias for CLUSTER REPLICAS" {
     var storage = try Storage.init(std.testing.allocator, .{});

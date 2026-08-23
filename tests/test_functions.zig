@@ -1,6 +1,7 @@
 const std = @import("std");
-const Server = @import("../src/server.zig").Server;
-const parser = @import("../src/protocol/parser.zig");
+const zoltraak = @import("zoltraak");
+const Server = zoltraak.server.Server;
+const parser = zoltraak.protocol;
 
 fn sendCommand(stream: std.net.Stream, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var msg = std.ArrayList(u8).init(allocator);

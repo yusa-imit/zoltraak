@@ -1,9 +1,10 @@
 const std = @import("std");
 const testing = std.testing;
-const Storage = @import("../src/storage/memory.zig").Storage;
-const Config = @import("../src/storage/memory.zig").Config;
-const parser = @import("../src/protocol/parser.zig");
-const handleCommand = @import("../src/commands/strings.zig").handleCommand;
+const zoltraak = @import("zoltraak");
+const Storage = zoltraak.storage.Storage;
+const Config = zoltraak.storage.Config;
+const parser = zoltraak.protocol;
+const handleCommand = zoltraak.commands.handleCommand;
 const RespValue = parser.RespValue;
 
 // ============================================================================
@@ -12,7 +13,7 @@ const RespValue = parser.RespValue;
 
 test "TS.INCRBY storage layer - empty series" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Increment empty series at timestamp 1000 by 5.0
@@ -26,7 +27,7 @@ test "TS.INCRBY storage layer - empty series" {
 
 test "TS.INCRBY storage layer - existing series" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Add initial sample
@@ -42,7 +43,7 @@ test "TS.INCRBY storage layer - existing series" {
 
 test "TS.INCRBY storage layer - negative delta" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Add initial sample
@@ -56,7 +57,7 @@ test "TS.INCRBY storage layer - negative delta" {
 
 test "TS.INCRBY storage layer - multiple samples" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Add samples at different timestamps
@@ -75,7 +76,7 @@ test "TS.INCRBY storage layer - multiple samples" {
 
 test "TS.INCRBY storage layer - creates new sample if timestamp missing" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Add samples
@@ -94,7 +95,7 @@ test "TS.INCRBY storage layer - creates new sample if timestamp missing" {
 
 test "TS.INCRBY storage layer - respects retention policy" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     ts.info.retention_ms = 1000; // 1 second retention
@@ -115,7 +116,7 @@ test "TS.INCRBY storage layer - respects retention policy" {
 
 test "TS.DECRBY storage layer - empty series" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Decrement empty series
@@ -128,7 +129,7 @@ test "TS.DECRBY storage layer - empty series" {
 
 test "TS.DECRBY storage layer - existing series" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Add initial sample
@@ -143,7 +144,7 @@ test "TS.DECRBY storage layer - existing series" {
 
 test "TS.DECRBY storage layer - negative delta (becomes addition)" {
     const allocator = testing.allocator;
-    var ts = try @import("../src/storage/timeseries.zig").TimeSeriesValue.init(allocator);
+    var ts = try zoltraak.timeseries_storage.TimeSeriesValue.init(allocator);
     defer ts.deinit();
 
     // Add initial sample
