@@ -1840,19 +1840,39 @@ pub const ClusterState = struct {
     };
 
     /// Get statistics for a specific slot
-    /// Returns SlotStats with key count (real) and other metrics (stub = 0)
+    /// Returns SlotStats with key count and memory usage computed from the
+    /// live keyspace; cpu-usec/network-bytes remain stubs (no per-command
+    /// instrumentation exists yet to attribute CPU/network cost to a slot).
     ///
     /// Arguments:
     ///   - data: The storage HashMap containing all keys
     ///   - slot: The slot number (0-16383)
+    ///   - estimateFn: fn(key: []const u8, value: *const Value) usize — computes
+    ///     the memory footprint of one key/value pair. Passed in (rather than
+    ///     imported) so this storage-layer module stays decoupled from the
+    ///     concrete `Value` type defined in memory.zig.
     ///
     /// Returns SlotStats structure with metrics
-    pub fn getSlotStats(self: *const ClusterState, data: anytype, slot: u16) SlotStats {
+    pub fn getSlotStats(self: *const ClusterState, data: anytype, slot: u16, estimateFn: anytype) SlotStats {
+        _ = self;
+        var key_count: usize = 0;
+        var memory_bytes: u64 = 0;
+
+        if (slot < CLUSTER_SLOTS) {
+            var it = data.iterator();
+            while (it.next()) |entry| {
+                if (keySlot(entry.key_ptr.*) == slot) {
+                    key_count += 1;
+                    memory_bytes += @intCast(estimateFn(entry.key_ptr.*, entry.value_ptr));
+                }
+            }
+        }
+
         return SlotStats{
             .slot = slot,
-            .key_count = self.countKeysInSlot(data, slot),
+            .key_count = key_count,
             .cpu_usec = 0, // Stub: real CPU tracking not implemented
-            .memory_bytes = 0, // Stub: real memory tracking not implemented
+            .memory_bytes = memory_bytes,
             .network_bytes_in = 0, // Stub: real network tracking not implemented
             .network_bytes_out = 0, // Stub: real network tracking not implemented
         };
@@ -1874,6 +1894,7 @@ pub const ClusterState = struct {
         data: anytype,
         start_slot: u16,
         end_slot: u16,
+        estimateFn: anytype,
     ) ![]SlotStats {
         if (start_slot > end_slot or end_slot >= CLUSTER_SLOTS) {
             return error.InvalidSlotRange;
@@ -1886,7 +1907,7 @@ pub const ClusterState = struct {
         // Collect stats for each slot in range (already sorted by slot number)
         for (start_slot..end_slot + 1, 0..) |slot_idx, i| {
             const slot = @as(u16, @intCast(slot_idx));
-            stats[i] = self.getSlotStats(data, slot);
+            stats[i] = self.getSlotStats(data, slot, estimateFn);
         }
 
         return stats;
@@ -1910,6 +1931,7 @@ pub const ClusterState = struct {
         metric: []const u8,
         ascending: bool,
         limit: usize,
+        estimateFn: anytype,
     ) ![]SlotStats {
         // Collect stats for all slots assigned to myself
         var stats_list = try std.ArrayList(SlotStats).initCapacity(allocator, 0);
@@ -1920,7 +1942,7 @@ pub const ClusterState = struct {
             for (myself.slots.items) |slot_range| {
                 for (slot_range.start..slot_range.end + 1) |slot_idx| {
                     const slot = @as(u16, @intCast(slot_idx));
-                    const stats = self.getSlotStats(data, slot);
+                    const stats = self.getSlotStats(data, slot, estimateFn);
                     try stats_list.append(allocator, stats);
                 }
             }

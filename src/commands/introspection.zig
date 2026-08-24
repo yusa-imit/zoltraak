@@ -1,5 +1,6 @@
 const std = @import("std");
-const Storage = @import("../storage/memory.zig").Storage;
+const memory_mod = @import("../storage/memory.zig");
+const Storage = memory_mod.Storage;
 const Writer = @import("../protocol/writer.zig").Writer;
 const LatencyMonitor = @import("../storage/latency.zig").LatencyMonitor;
 const EventType = @import("../storage/latency.zig").EventType;
@@ -184,55 +185,7 @@ pub fn cmdMemoryUsage(
         return std.fmt.allocPrint(allocator, "$-1\r\n", .{});
     };
 
-    // Improved estimate with overhead
-    const key_overhead: usize = 48; // HashMap entry overhead
-    const ttl_overhead: usize = 8; // Optional i64
-    const estimated_size: i64 = blk: {
-        const data_size: usize = switch (value) {
-            .string => |s| s.data.len + 24, // String struct + data
-            .list => |l| l.data.items.len * (@sizeOf([]const u8) + 32) + 64, // ArrayList + items
-            .set => |s| s.count() * 64 + 128, // StringHashMap or intset entries
-            .hash => |h| h.data.count() * 128 + 128, // FieldValue entries
-            .sorted_set => |zs| zs.members.count() * 160 + 256, // Member + score + indices
-            .stream => |s| s.entries.items.len * 256 + 512, // Entry struct + metadata
-            .hyperloglog => 12304, // 16384 registers
-            .json => |j| blk2: { _ = j; break :blk2 512; }, // JSON tree * 6 bits
-            .timeseries => |ts| ts.samples.items.len * 16 + 512, // DataPoint + metadata
-            .bloom => |bf| blk2: {
-                var total: usize = 256; // Bloom struct overhead
-                for (bf.filters.items) |filter| {
-                    total += filter.bits.len;
-                }
-                break :blk2 total;
-            },
-            .cuckoo => |cf| blk2: {
-                var total: usize = 256; // Cuckoo struct overhead
-                for (cf.filters.items) |filter| {
-                    for (filter.buckets) |bucket| {
-                        total += bucket.fingerprints.len;
-                    }
-                }
-                break :blk2 total;
-            },
-            .count_min_sketch => |cms| blk2: {
-                const total: usize = 256 + (cms.depth * cms.width * @sizeOf(u64)); // struct overhead + counters
-                break :blk2 total;
-            },
-            .top_k => |tk| blk2: {
-                const total: usize = 256 + (tk.depth * tk.width * (@sizeOf(u8) + @sizeOf(u64))) + (tk.k * 64); // struct + hash table + heap
-                break :blk2 total;
-            },
-            .t_digest => |td| blk2: {
-                const total: usize = 256 + (td.centroids.items.len * (@sizeOf(f64) + @sizeOf(u64))); // struct + centroids
-                break :blk2 total;
-            },
-            .vector_set => |vs| blk2: {
-                const total: usize = 256 + (vs.vectors.count() * vs.dimensionality * @sizeOf(f32)); // struct + vectors
-                break :blk2 total;
-            },
-        };
-        break :blk @intCast(key.len + key_overhead + ttl_overhead + data_size);
-    };
+    const estimated_size = memory_mod.estimateValueMemory(key, &value);
 
     return std.fmt.allocPrint(allocator, ":{d}\r\n", .{estimated_size});
 }

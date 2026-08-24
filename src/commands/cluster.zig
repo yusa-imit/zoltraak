@@ -3,6 +3,7 @@ const Writer = @import("../protocol/writer.zig").Writer;
 const Storage = @import("../storage/memory.zig").Storage;
 const RespValue = @import("../protocol/parser.zig").RespValue;
 const cluster_mod = @import("../storage/cluster.zig");
+const memory_mod = @import("../storage/memory.zig");
 const ClusterError = cluster_mod.ClusterError;
 const ClusterState = cluster_mod.ClusterState;
 const client_mod = @import("./client.zig");
@@ -1649,7 +1650,7 @@ pub fn cmdClusterSlotStats(
             return w.writeError(err_msg);
         }
 
-        stats = try storage.cluster.getSlotStatsRange(allocator, &storage.data, start_slot, end_slot);
+        stats = try storage.cluster.getSlotStatsRange(allocator, &storage.data, start_slot, end_slot, memory_mod.estimateValueMemory);
     } else if (std.mem.eql(u8, subcommand_upper, "ORDERBY")) {
         // CLUSTER SLOT-STATS ORDERBY <metric> [LIMIT <count>] [ASC | DESC]
         if (args.len < 4) {
@@ -1701,7 +1702,7 @@ pub fn cmdClusterSlotStats(
             }
         }
 
-        stats = try storage.cluster.getSlotStatsSorted(allocator, &storage.data, metric_upper, ascending, limit);
+        stats = try storage.cluster.getSlotStatsSorted(allocator, &storage.data, metric_upper, ascending, limit, memory_mod.estimateValueMemory);
     } else {
         return w.writeError("ERR Unknown subcommand or wrong number of arguments");
     }

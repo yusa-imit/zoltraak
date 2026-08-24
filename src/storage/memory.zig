@@ -593,6 +593,46 @@ pub const Value = union(ValueType) {
     }
 };
 
+/// Estimate memory usage in bytes for a stored key/value pair, including
+/// key and entry overhead. Shared by MEMORY USAGE and CLUSTER SLOT-STATS
+/// (memory-bytes metric) so both report consistent numbers.
+pub fn estimateValueMemory(key: []const u8, value: *const Value) usize {
+    const key_overhead: usize = 48; // HashMap entry overhead
+    const ttl_overhead: usize = 8; // Optional i64
+    const data_size: usize = switch (value.*) {
+        .string => |s| s.data.len + 24, // String struct + data
+        .list => |l| l.data.items.len * (@sizeOf([]const u8) + 32) + 64, // ArrayList + items
+        .set => |s| s.count() * 64 + 128, // StringHashMap or intset entries
+        .hash => |h| h.data.count() * 128 + 128, // FieldValue entries
+        .sorted_set => |zs| zs.members.count() * 160 + 256, // Member + score + indices
+        .stream => |s| s.entries.items.len * 256 + 512, // Entry struct + metadata
+        .hyperloglog => 12304, // 16384 registers
+        .json => 512, // JSON tree * 6 bits
+        .timeseries => |ts| ts.samples.items.len * 16 + 512, // DataPoint + metadata
+        .bloom => |bf| blk: {
+            var total: usize = 256; // Bloom struct overhead
+            for (bf.filters.items) |filter| {
+                total += filter.bits.len;
+            }
+            break :blk total;
+        },
+        .cuckoo => |cf| blk: {
+            var total: usize = 256; // Cuckoo struct overhead
+            for (cf.filters.items) |filter| {
+                for (filter.buckets) |bucket| {
+                    total += bucket.fingerprints.len;
+                }
+            }
+            break :blk total;
+        },
+        .count_min_sketch => |cms| 256 + (cms.depth * cms.width * @sizeOf(u64)), // struct + counters
+        .top_k => |tk| 256 + (tk.depth * tk.width * (@sizeOf(u8) + @sizeOf(u64))) + (tk.k * 64), // struct + hash table + heap
+        .t_digest => |td| 256 + (td.centroids.items.len * (@sizeOf(f64) + @sizeOf(u64))), // struct + centroids
+        .vector_set => |vs| 256 + (vs.vectors.count() * vs.dimensionality * @sizeOf(f32)), // struct + vectors
+    };
+    return key.len + key_overhead + ttl_overhead + data_size;
+}
+
 // ── Lexicographical range helpers for sorted sets ─────────────────────────
 
 /// Lexicographical range boundary type
