@@ -1559,8 +1559,10 @@ pub fn cmdSort(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         else => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
     }
 
-    // If BY nosort, skip sorting
-    const skip_sort = if (by_pattern) |pat| std.mem.eql(u8, pat, "nosort") else false;
+    // Redis skips sorting for any BY pattern lacking a '*' wildcard (not just the
+    // literal string "nosort") — without a wildcard there's no per-element lookup
+    // key to derive, so SORT falls back to returning elements in native order.
+    const skip_sort = if (by_pattern) |pat| std.mem.indexOf(u8, pat, "*") == null else false;
 
     if (!skip_sort) {
         // Build sort weights
@@ -2394,6 +2396,69 @@ test "SORT LIMIT count 0 returns empty array" {
     defer allocator.free(response);
 
     try std.testing.expectEqualStrings("*0\r\n", response);
+}
+
+test "SORT BY nosort preserves original insertion order" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("mylist", &[_][]const u8{ "3", "1", "4", "1", "5" }, null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "BY" },
+        .{ .bulk_string = "nosort" },
+    };
+    const response = try cmdSort(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Original list order preserved: 3, 1, 4, 1, 5 — not numerically sorted
+    try std.testing.expectEqualStrings("*5\r\n$1\r\n3\r\n$1\r\n1\r\n$1\r\n4\r\n$1\r\n1\r\n$1\r\n5\r\n", response);
+}
+
+test "SORT BY pattern without wildcard skips sort (not just literal nosort)" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("mylist", &[_][]const u8{ "3", "1", "4", "1", "5" }, null);
+
+    // Redis skips sorting for ANY BY pattern lacking a '*' wildcard, not just "nosort"
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "BY" },
+        .{ .bulk_string = "irrelevant_constant" },
+    };
+    const response = try cmdSort(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    try std.testing.expectEqualStrings("*5\r\n$1\r\n3\r\n$1\r\n1\r\n$1\r\n4\r\n$1\r\n1\r\n$1\r\n5\r\n", response);
+}
+
+test "SORT BY pattern with wildcard still sorts via external keys" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator);
+    defer storage.deinit();
+
+    _ = try storage.rpush("mylist", &[_][]const u8{ "a", "b", "c" }, null);
+    _ = try storage.set("weight_a", "3", null);
+    _ = try storage.set("weight_b", "1", null);
+    _ = try storage.set("weight_c", "2", null);
+
+    const args = [_]RespValue{
+        .{ .bulk_string = "SORT" },
+        .{ .bulk_string = "mylist" },
+        .{ .bulk_string = "BY" },
+        .{ .bulk_string = "weight_*" },
+    };
+    const response = try cmdSort(allocator, &storage, &args);
+    defer allocator.free(response);
+
+    // Sorted by external weights: b(1), c(2), a(3)
+    try std.testing.expectEqualStrings("*3\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\na\r\n", response);
 }
 
 test "HSCAN NOVALUES - basic with populated hash" {
