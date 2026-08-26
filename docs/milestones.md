@@ -13,7 +13,7 @@
 - **Blocking commands**: All blocking commands have true polling-based semantics (BLPOP, BRPOP, BLMOVE, BLMPOP, BZPOPMIN, BZPOPMAX, BZMPOP, XREAD BLOCK, XREADGROUP BLOCK)
 - **Hash enhancements (Phase 1.1)**: HMSET, HGETDEL, HGETEX, HSETEX, HRANDFIELD, HEXPIRE*, HPERSIST, HTTL/HPTTL, HEXPIRETIME/HPEXPIRETIME, HSCAN NOVALUES (all 10 implemented)
 - **WAIT command**: Full per-client replication offset tracking (Iteration 102)
-- **Sailor library**: v2.94.4 (latest migrated)
+- **Sailor library**: v2.95.0 (latest migrated)
 - **sailor.tui.widgets namespace (CRITICAL)**: `RadialBar`, `RadialArc`, `FunnelChart`, `FunnelStage`, `DotPlot`, `DotPlotItem`, `StreamGraph`, `StreamLayer`, `ViolinPlot`, `ViolinSeries`, `SunburstChart`, `SunburstNode`, `BoxPlot`, `BoxPlotSeries`, `CandlestickChart`, `Candle`, `BulletChart`, `Bullet`, `ParallelCoordinates`, `PCAxis`, `PCItem`, `ParetoChart`, `ParetoItem`, `SlopeChart`, `SlopeItem`, `RidgelinePlot`, `RidgelineSeries`, `BumpChart`, `BumpSeries`, `MosaicPlot`, `MosaicColumn`, `MosaicSegment`, `IcicleChart`, `IcicleNode`, `ToggleSwitch`, `ToggleSwitchGroup`, `CalendarHeatmap`, `Calendar`, `ErrorBarChart`, `ErrorBarItem`, `DonutChart` are inside `pub const widgets = struct { ... }` in sailor tui.zig. Access as `tui.widgets.RadialBar` etc. — NOT `tui.RadialBar`. **Note**: `DonutChart`'s `Slice` type is NOT nested under `DonutChart` — it lives at `tui.widgets.donut_chart.Slice` (sibling type in `donut_chart.zig`, re-exported only via the `donut_chart` submodule, not directly under `widgets`).
 
 ---
@@ -347,9 +347,9 @@
 
 ### Sailor Library
 
-- **Current in zoltraak**: v2.94.3 (build.zig.zon)
-- **Latest available**: v2.94.3 — no newer version pending
-- **Migration status**: All versions through v2.94.3 migrated.
+- **Current in zoltraak**: v2.95.0 (build.zig.zon)
+- **Latest available**: v2.95.0 — no newer version pending
+- **Migration status**: All versions through v2.95.0 migrated.
 
 | Version | Features | Status |
 |---------|----------|--------|
@@ -400,6 +400,7 @@
 | v2.94.2 | Bug fixes: removed global mutable ring buffer from `Validator.combine()` (use-after-free risk), fixed `queryTerminalCapability()` fd=42 misrouting on Unix, guarded extreme f32/u64 values from panicking in chart widgets and `ParticleSystem`, flaky async_loop test fixed — patch release, no breaking changes | Done (Iter 433) |
 | v2.94.3 | Bug fixes: u16 addition overflow guards (saturating arithmetic) in `ToastManager.render()`, `Block.inner()`, `Block.render()`, `ContextMenu.fittingArea()`; Autocomplete widget migrated to Zig 0.15 unmanaged ArrayList API — patch release, no breaking changes | Done (Iter 434) |
 | v2.94.4 | Bug fixes: guarded `@intFromFloat` conversions against NaN-induced panics across 7 widgets (`Gauge`, `SplitPane`, `ProgressRing`, `ReactiveGauge`, `RangeSlider`, `BulletChart`, `ParetoChart`) — each falls back to a safe floor/ceiling instead of panicking during render; zoltraak uses `BulletChart` in `src/tui_advanced.zig` — patch release, no breaking changes | Done (Iter 435) |
+| v2.95.0 | New `AreaChart`/`AreaSeries` widget (filled area chart, up to 8 series, optional stacking, NaN/Infinity-safe auto-scale) exported via `sailor.tui.widgets` and top-level `sailor`; also bundles Levenshtein-based "Did you mean?" suggestions for unknown `arg.zig` flags — zoltraak does not yet use AreaChart, no breaking changes | Done (Iter 438) |
 
 ### zuda Library
 
