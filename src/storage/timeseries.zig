@@ -404,6 +404,196 @@ pub const TimeSeriesValue = struct {
         };
     }
 
+    /// Serialize metadata (retention, duplicate policy, encoding, labels,
+    /// compaction rules) and every sample for RDB persistence. Follows the
+    /// same self-contained binary format as bloom/cuckoo/CMS/top-k/t-digest;
+    /// the caller (persistence.zig) wraps the result in a length-prefixed blob.
+    pub fn rdbSerialize(self: *const TimeSeriesValue, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeByte(@intFromEnum(self.info.duplicate_policy));
+        try w.writeByte(@intFromEnum(self.info.encoding));
+        try w.writeInt(i64, self.info.retention_ms, .little);
+        try w.writeInt(u32, self.info.chunk_size, .little);
+        try w.writeInt(u64, self.info.total_samples, .little);
+        try w.writeInt(u64, self.info.memory_bytes, .little);
+
+        if (self.info.first_timestamp) |ts| {
+            try w.writeByte(1);
+            try w.writeInt(i64, ts, .little);
+        } else {
+            try w.writeByte(0);
+        }
+        if (self.info.last_timestamp) |ts| {
+            try w.writeByte(1);
+            try w.writeInt(i64, ts, .little);
+        } else {
+            try w.writeByte(0);
+        }
+
+        try w.writeInt(u32, @intCast(self.info.labels.count()), .little);
+        var lit = self.info.labels.iterator();
+        while (lit.next()) |entry| {
+            try w.writeInt(u32, @intCast(entry.key_ptr.*.len), .little);
+            try w.writeAll(entry.key_ptr.*);
+            try w.writeInt(u32, @intCast(entry.value_ptr.*.len), .little);
+            try w.writeAll(entry.value_ptr.*);
+        }
+
+        try w.writeInt(u32, @intCast(self.info.rules.items.len), .little);
+        for (self.info.rules.items) |rule| {
+            try w.writeInt(u32, @intCast(rule.dest_key.len), .little);
+            try w.writeAll(rule.dest_key);
+            try w.writeByte(@intFromEnum(rule.aggregation));
+            try w.writeInt(i64, rule.bucket_duration_ms, .little);
+        }
+
+        try w.writeInt(u64, @intCast(self.samples.items.len), .little);
+        for (self.samples.items) |sample| {
+            try w.writeInt(i64, sample.timestamp, .little);
+            try w.writeInt(u64, @bitCast(sample.value), .little);
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a time series (metadata + samples) from `rdbSerialize` output.
+    /// `expires_at` comes from the RDB record header, mirroring bloom/cuckoo/top-k.
+    pub fn rdbDeserialize(allocator: std.mem.Allocator, data: []const u8, expires_at: ?i64) !TimeSeriesValue {
+        var pos: usize = 0;
+        const header_size = 1 + 1 + 8 + 4 + 8 + 8 + 1 + 1;
+        if (data.len < header_size) return error.InvalidRdbFile;
+
+        const duplicate_policy = std.meta.intToEnum(DuplicatePolicy, data[pos]) catch return error.InvalidRdbFile;
+        pos += 1;
+        const encoding = std.meta.intToEnum(Encoding, data[pos]) catch return error.InvalidRdbFile;
+        pos += 1;
+        const retention_ms = std.mem.readInt(i64, data[pos..][0..8], .little);
+        pos += 8;
+        const chunk_size = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        const total_samples = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+        const memory_bytes = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
+        var first_timestamp: ?i64 = null;
+        if (data[pos] == 1) {
+            pos += 1;
+            if (pos + 8 > data.len) return error.InvalidRdbFile;
+            first_timestamp = std.mem.readInt(i64, data[pos..][0..8], .little);
+            pos += 8;
+        } else {
+            pos += 1;
+        }
+
+        var last_timestamp: ?i64 = null;
+        if (pos >= data.len) return error.InvalidRdbFile;
+        if (data[pos] == 1) {
+            pos += 1;
+            if (pos + 8 > data.len) return error.InvalidRdbFile;
+            last_timestamp = std.mem.readInt(i64, data[pos..][0..8], .little);
+            pos += 8;
+        } else {
+            pos += 1;
+        }
+
+        var labels = std.StringHashMap([]const u8).init(allocator);
+        errdefer {
+            var it = labels.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            labels.deinit();
+        }
+
+        if (pos + 4 > data.len) return error.InvalidRdbFile;
+        const label_count = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        for (0..label_count) |_| {
+            if (pos + 4 > data.len) return error.InvalidRdbFile;
+            const klen = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + klen > data.len) return error.InvalidRdbFile;
+            const key_copy = try allocator.dupe(u8, data[pos..][0..klen]);
+            errdefer allocator.free(key_copy);
+            pos += klen;
+
+            if (pos + 4 > data.len) return error.InvalidRdbFile;
+            const vlen = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + vlen > data.len) return error.InvalidRdbFile;
+            const value_copy = try allocator.dupe(u8, data[pos..][0..vlen]);
+            pos += vlen;
+
+            try labels.put(key_copy, value_copy);
+        }
+
+        var rules = try std.ArrayList(CompactionRule).initCapacity(allocator, 0);
+        errdefer {
+            for (rules.items) |*rule| rule.deinit();
+            rules.deinit(allocator);
+        }
+
+        if (pos + 4 > data.len) return error.InvalidRdbFile;
+        const rule_count = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        for (0..rule_count) |_| {
+            if (pos + 4 > data.len) return error.InvalidRdbFile;
+            const dlen = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + dlen > data.len) return error.InvalidRdbFile;
+            const dest_key = data[pos..][0..dlen];
+            pos += dlen;
+
+            if (pos + 1 > data.len) return error.InvalidRdbFile;
+            const aggregation = std.meta.intToEnum(AggregationType, data[pos]) catch return error.InvalidRdbFile;
+            pos += 1;
+
+            if (pos + 8 > data.len) return error.InvalidRdbFile;
+            const bucket_duration_ms = std.mem.readInt(i64, data[pos..][0..8], .little);
+            pos += 8;
+
+            try rules.append(allocator, try CompactionRule.init(allocator, dest_key, aggregation, bucket_duration_ms));
+        }
+
+        if (pos + 8 > data.len) return error.InvalidRdbFile;
+        const sample_count = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
+        var samples = try std.ArrayList(DataPoint).initCapacity(allocator, sample_count);
+        errdefer samples.deinit(allocator);
+        for (0..sample_count) |_| {
+            if (pos + 16 > data.len) return error.InvalidRdbFile;
+            const timestamp = std.mem.readInt(i64, data[pos..][0..8], .little);
+            pos += 8;
+            const value: f64 = @bitCast(std.mem.readInt(u64, data[pos..][0..8], .little));
+            pos += 8;
+            samples.appendAssumeCapacity(DataPoint.init(timestamp, value));
+        }
+
+        return TimeSeriesValue{
+            .info = TimeSeriesInfo{
+                .retention_ms = retention_ms,
+                .duplicate_policy = duplicate_policy,
+                .encoding = encoding,
+                .labels = labels,
+                .chunk_size = chunk_size,
+                .total_samples = total_samples,
+                .memory_bytes = memory_bytes,
+                .first_timestamp = first_timestamp,
+                .last_timestamp = last_timestamp,
+                .rules = rules,
+            },
+            .samples = samples,
+            .expires_at = expires_at,
+            .allocator = allocator,
+        };
+    }
+
     /// Add a data point with duplicate policy enforcement
     ///
     /// Arguments:

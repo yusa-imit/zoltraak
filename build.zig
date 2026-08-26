@@ -2056,6 +2056,26 @@ pub fn build(b: *std.Build) void {
     const run_iter432_tests = b.addRunArtifact(iter432_tests);
     test_step.dependOn(&run_iter432_tests.step);
 
+    // Iteration 437: RDB persistence — Time Series + Vector Set real serialization
+    const iter437_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter437.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter437_tests.linkSystemLibrary("luajit-5.1");
+    iter437_tests.linkLibC();
+    iter437_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+    iter437_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+
+    const run_iter437_tests = b.addRunArtifact(iter437_tests);
+    test_step.dependOn(&run_iter437_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

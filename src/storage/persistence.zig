@@ -187,9 +187,10 @@ pub const Persistence = struct {
                         defer j.allocator.free(json_str);
                         try writeBlob(w, json_str);
                     },
-                    .timeseries => {
-                        // Time series not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .timeseries => |ts| {
+                        const bytes = try ts.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
                     .bloom => |b| {
                         const bytes = try b.rdbSerialize(allocator);
@@ -216,9 +217,10 @@ pub const Persistence = struct {
                         defer allocator.free(bytes);
                         try writeBlob(w, bytes);
                     },
-                    .vector_set => {
-                        // Vector set not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .vector_set => |vs| {
+                        const bytes = try vs.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
                 }
             }
@@ -524,6 +526,36 @@ pub const Persistence = struct {
                     errdefer storage.allocator.free(key_copy);
 
                     try storage.data.put(key_copy, Value{ .t_digest = td });
+                },
+                0xFD => { // Time Series
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var ts = try memory.TimeSeriesValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer ts.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .timeseries = ts });
+                },
+                0xF7 => { // Vector Set
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var vs = try memory.VectorSetValue.rdbDeserialize(storage.allocator, raw);
+                    errdefer vs.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .vector_set = vs });
                 },
                 else => return error.InvalidRdbFile,
             }
@@ -940,9 +972,10 @@ pub const Persistence = struct {
                         defer j.allocator.free(json_str);
                         try writeBlob(w, json_str);
                     },
-                    .timeseries => {
-                        // Time series not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .timeseries => |ts| {
+                        const bytes = try ts.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
                     .bloom => |b| {
                         const bytes = try b.rdbSerialize(allocator);
@@ -969,9 +1002,10 @@ pub const Persistence = struct {
                         defer allocator.free(bytes);
                         try writeBlob(w, bytes);
                     },
-                    .vector_set => {
-                        // Vector set not yet implemented in persistence
-                        try w.writeInt(u32, 0, .little);
+                    .vector_set => |vs| {
+                        const bytes = try vs.rdbSerialize(allocator);
+                        defer allocator.free(bytes);
+                        try writeBlob(w, bytes);
                     },
                 }
             }
@@ -1245,6 +1279,36 @@ pub const Persistence = struct {
                     errdefer storage.allocator.free(key_copy);
 
                     try storage.data.put(key_copy, Value{ .t_digest = td });
+                },
+                0xFD => { // Time Series
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var ts = try memory.TimeSeriesValue.rdbDeserialize(storage.allocator, raw, expires_at);
+                    errdefer ts.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .timeseries = ts });
+                },
+                0xF7 => { // Vector Set
+                    const raw = try readBlob(payload, &pos, allocator);
+                    defer allocator.free(raw);
+
+                    var vs = try memory.VectorSetValue.rdbDeserialize(storage.allocator, raw);
+                    errdefer vs.deinit();
+
+                    storage.mutex.lock();
+                    defer storage.mutex.unlock();
+
+                    const key_copy = try storage.allocator.dupe(u8, key);
+                    errdefer storage.allocator.free(key_copy);
+
+                    try storage.data.put(key_copy, Value{ .vector_set = vs });
                 },
                 else => return error.InvalidRdbFile,
             }

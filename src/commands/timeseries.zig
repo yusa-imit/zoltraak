@@ -59,7 +59,7 @@ pub fn cmdTsCreate(
     _ = arena; // Not needed for this command
 
     if (args.len < 2) {
-        return "ERR wrong number of arguments for 'TS.CREATE' command\r\n";
+        return storage.allocator.dupe(u8, "ERR wrong number of arguments for 'TS.CREATE' command\r\n");
     }
 
     const key = args[1];
@@ -78,29 +78,29 @@ pub fn cmdTsCreate(
 
         if (std.ascii.eqlIgnoreCase(option, "RETENTION")) {
             i += 1;
-            if (i >= args.len) return "ERR RETENTION requires a value\r\n";
+            if (i >= args.len) return storage.allocator.dupe(u8, "ERR RETENTION requires a value\r\n");
             retention_ms = std.fmt.parseInt(i64, args[i], 10) catch {
-                return "ERR invalid RETENTION value\r\n";
+                return storage.allocator.dupe(u8, "ERR invalid RETENTION value\r\n");
             };
-            if (retention_ms < 0) return "ERR RETENTION must be non-negative\r\n";
+            if (retention_ms < 0) return storage.allocator.dupe(u8, "ERR RETENTION must be non-negative\r\n");
         } else if (std.ascii.eqlIgnoreCase(option, "ENCODING")) {
             i += 1;
-            if (i >= args.len) return "ERR ENCODING requires a value\r\n";
+            if (i >= args.len) return storage.allocator.dupe(u8, "ERR ENCODING requires a value\r\n");
             encoding = Encoding.fromString(args[i]) orelse {
-                return "ERR invalid ENCODING value (must be COMPRESSED or UNCOMPRESSED)\r\n";
+                return storage.allocator.dupe(u8, "ERR invalid ENCODING value (must be COMPRESSED or UNCOMPRESSED)\r\n");
             };
         } else if (std.ascii.eqlIgnoreCase(option, "CHUNK_SIZE")) {
             i += 1;
-            if (i >= args.len) return "ERR CHUNK_SIZE requires a value\r\n";
+            if (i >= args.len) return storage.allocator.dupe(u8, "ERR CHUNK_SIZE requires a value\r\n");
             chunk_size = std.fmt.parseInt(u32, args[i], 10) catch {
-                return "ERR invalid CHUNK_SIZE value\r\n";
+                return storage.allocator.dupe(u8, "ERR invalid CHUNK_SIZE value\r\n");
             };
-            if (chunk_size == 0) return "ERR CHUNK_SIZE must be positive\r\n";
+            if (chunk_size == 0) return storage.allocator.dupe(u8, "ERR CHUNK_SIZE must be positive\r\n");
         } else if (std.ascii.eqlIgnoreCase(option, "DUPLICATE_POLICY")) {
             i += 1;
-            if (i >= args.len) return "ERR DUPLICATE_POLICY requires a value\r\n";
+            if (i >= args.len) return storage.allocator.dupe(u8, "ERR DUPLICATE_POLICY requires a value\r\n");
             duplicate_policy = DuplicatePolicy.fromString(args[i]) orelse {
-                return "ERR invalid DUPLICATE_POLICY value\r\n";
+                return storage.allocator.dupe(u8, "ERR invalid DUPLICATE_POLICY value\r\n");
             };
         } else if (std.ascii.eqlIgnoreCase(option, "LABELS")) {
             i += 1;
@@ -119,20 +119,20 @@ pub fn cmdTsCreate(
 
                 const label_key = args[i];
                 i += 1;
-                if (i >= args.len) return "ERR LABELS requires key-value pairs\r\n";
+                if (i >= args.len) return storage.allocator.dupe(u8, "ERR LABELS requires key-value pairs\r\n");
                 const label_value = args[i];
                 try labels.append(storage.allocator, .{ .key = label_key, .value = label_value });
                 i += 1;
             }
             i -= 1; // Adjust for outer loop increment
         } else {
-            return "ERR unknown option for TS.CREATE\r\n";
+            return storage.allocator.dupe(u8, "ERR unknown option for TS.CREATE\r\n");
         }
     }
 
     // Check if key already exists
     if (storage.get(key)) |_| {
-        return "ERR key already exists\r\n";
+        return storage.allocator.dupe(u8, "ERR key already exists\r\n");
     }
 
     // Create time series value
@@ -154,7 +154,7 @@ pub fn cmdTsCreate(
     errdefer storage.allocator.free(key_owned);
     try storage.data.put(key_owned, Value{ .timeseries = ts });
 
-    return "+OK\r\n";
+    return storage.allocator.dupe(u8, "+OK\r\n");
 }
 
 /// TS.INFO key

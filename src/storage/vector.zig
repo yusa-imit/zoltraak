@@ -170,6 +170,120 @@ pub const VectorSetValue = struct {
         };
     }
 
+    /// Serialize dimensionality/metric/quantization plus every vector entry
+    /// (id, embedding, attributes) for RDB persistence. Follows the same
+    /// self-contained binary format as bloom/cuckoo/CMS/top-k/t-digest; the
+    /// caller (persistence.zig) wraps the result in a length-prefixed blob.
+    pub fn rdbSerialize(self: *const VectorSetValue, allocator: Allocator) ![]u8 {
+        var buf = std.ArrayList(u8){};
+        errdefer buf.deinit(allocator);
+        const w = buf.writer(allocator);
+
+        try w.writeInt(u64, @intCast(self.dimensionality), .little);
+        try w.writeByte(@intFromEnum(self.metric));
+        try w.writeByte(@intFromEnum(self.quantization));
+
+        try w.writeInt(u32, @intCast(self.vectors.count()), .little);
+        var it = self.vectors.valueIterator();
+        while (it.next()) |entry_ptr| {
+            const entry = entry_ptr.*;
+
+            try w.writeInt(u32, @intCast(entry.id.len), .little);
+            try w.writeAll(entry.id);
+
+            try w.writeInt(u32, @intCast(entry.embedding.len), .little);
+            for (entry.embedding) |f| {
+                try w.writeInt(u32, @bitCast(f), .little);
+            }
+
+            try w.writeInt(u32, @intCast(entry.attributes.count()), .little);
+            var attr_it = entry.attributes.iterator();
+            while (attr_it.next()) |attr| {
+                try w.writeInt(u32, @intCast(attr.key_ptr.*.len), .little);
+                try w.writeAll(attr.key_ptr.*);
+                try w.writeInt(u32, @intCast(attr.value_ptr.*.len), .little);
+                try w.writeAll(attr.value_ptr.*);
+            }
+        }
+
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Reconstruct a vector set (metadata + entries + attributes) from
+    /// `rdbSerialize` output. Vector sets don't carry key-level expiration
+    /// (see `Value.getExpiration`), so unlike bloom/cuckoo/top-k there is no
+    /// `expires_at` parameter.
+    pub fn rdbDeserialize(allocator: Allocator, data: []const u8) !VectorSetValue {
+        var pos: usize = 0;
+        const header_size = 8 + 1 + 1 + 4;
+        if (data.len < header_size) return error.InvalidRdbFile;
+
+        const dim = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+        const metric = std.meta.intToEnum(DistanceMetric, data[pos]) catch return error.InvalidRdbFile;
+        pos += 1;
+        const quantization = std.meta.intToEnum(QuantizationType, data[pos]) catch return error.InvalidRdbFile;
+        pos += 1;
+        const vector_count = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+
+        if (dim == 0) return error.InvalidRdbFile;
+
+        var set = try VectorSetValue.init(allocator, dim, metric);
+        errdefer set.deinit();
+        set.quantization = quantization;
+
+        for (0..vector_count) |_| {
+            if (pos + 4 > data.len) return error.InvalidRdbFile;
+            const id_len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + id_len > data.len) return error.InvalidRdbFile;
+            const id = data[pos..][0..id_len];
+            pos += id_len;
+
+            if (pos + 4 > data.len) return error.InvalidRdbFile;
+            const embedding_len = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            if (pos + @as(usize, embedding_len) * 4 > data.len) return error.InvalidRdbFile;
+            const embedding = try allocator.alloc(f32, embedding_len);
+            defer allocator.free(embedding);
+            for (embedding) |*f| {
+                f.* = @bitCast(std.mem.readInt(u32, data[pos..][0..4], .little));
+                pos += 4;
+            }
+
+            const entry = try allocator.create(VectorEntry);
+            errdefer allocator.destroy(entry);
+            entry.* = try VectorEntry.init(allocator, id, embedding);
+            errdefer entry.deinit();
+
+            if (pos + 4 > data.len) return error.InvalidRdbFile;
+            const attr_count = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+            for (0..attr_count) |_| {
+                if (pos + 4 > data.len) return error.InvalidRdbFile;
+                const klen = std.mem.readInt(u32, data[pos..][0..4], .little);
+                pos += 4;
+                if (pos + klen > data.len) return error.InvalidRdbFile;
+                const key = data[pos..][0..klen];
+                pos += klen;
+
+                if (pos + 4 > data.len) return error.InvalidRdbFile;
+                const vlen = std.mem.readInt(u32, data[pos..][0..4], .little);
+                pos += 4;
+                if (pos + vlen > data.len) return error.InvalidRdbFile;
+                const value = data[pos..][0..vlen];
+                pos += vlen;
+
+                try entry.setAttribute(key, value);
+            }
+
+            try set.vectors.put(entry.id, entry);
+        }
+
+        return set;
+    }
+
     /// Add a vector to the set
     pub fn add(self: *VectorSetValue, id: []const u8, embedding: []const f32) !bool {
         if (embedding.len != self.dimensionality) {
