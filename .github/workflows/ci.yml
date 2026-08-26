@@ -18,6 +18,9 @@ jobs:
         with:
           version: 0.15.0
 
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
+
       - name: Build
         run: zig build
 
@@ -35,6 +38,9 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.0
+
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
 
       - name: Build binary
         run: zig build

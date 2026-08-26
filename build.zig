@@ -37,8 +37,12 @@ pub fn build(b: *std.Build) void {
     // Link LuaJIT for Lua scripting support
     exe.linkSystemLibrary("luajit-5.1");
     exe.linkLibC();
-    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        exe.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     // Executable: zoltraak-cli (REPL client)
     const cli = b.addExecutable(.{
@@ -80,8 +84,12 @@ pub fn build(b: *std.Build) void {
     // Link LuaJIT for Lua scripting tests
     unit_tests.linkSystemLibrary("luajit-5.1");
     unit_tests.linkLibC();
-    unit_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    unit_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        unit_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        unit_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        unit_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
@@ -222,8 +230,12 @@ pub fn build(b: *std.Build) void {
     });
     xread_blocking_tests.linkSystemLibrary("luajit-5.1");
     xread_blocking_tests.linkLibC();
-    xread_blocking_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    xread_blocking_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        xread_blocking_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        xread_blocking_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        xread_blocking_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_xread_blocking_tests = b.addRunArtifact(xread_blocking_tests);
     integration_test_step.dependOn(&run_xread_blocking_tests.step);
@@ -362,8 +374,12 @@ pub fn build(b: *std.Build) void {
     });
     client_tracking_table_tests.linkSystemLibrary("luajit-5.1");
     client_tracking_table_tests.linkLibC();
-    client_tracking_table_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    client_tracking_table_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        client_tracking_table_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        client_tracking_table_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        client_tracking_table_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_client_tracking_table_tests = b.addRunArtifact(client_tracking_table_tests);
     test_step.dependOn(&run_client_tracking_table_tests.step);
@@ -381,8 +397,12 @@ pub fn build(b: *std.Build) void {
     });
     hyperloglog_basic_tests.linkSystemLibrary("luajit-5.1");
     hyperloglog_basic_tests.linkLibC();
-    hyperloglog_basic_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    hyperloglog_basic_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        hyperloglog_basic_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        hyperloglog_basic_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        hyperloglog_basic_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_hyperloglog_basic_tests = b.addRunArtifact(hyperloglog_basic_tests);
     test_step.dependOn(&run_hyperloglog_basic_tests.step);
@@ -400,8 +420,12 @@ pub fn build(b: *std.Build) void {
     });
     config_alias_tests.linkSystemLibrary("luajit-5.1");
     config_alias_tests.linkLibC();
-    config_alias_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    config_alias_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        config_alias_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        config_alias_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        config_alias_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_config_alias_tests = b.addRunArtifact(config_alias_tests);
     test_step.dependOn(&run_config_alias_tests.step);
@@ -419,8 +443,12 @@ pub fn build(b: *std.Build) void {
     });
     stream_count_zero_tests.linkSystemLibrary("luajit-5.1");
     stream_count_zero_tests.linkLibC();
-    stream_count_zero_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    stream_count_zero_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        stream_count_zero_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        stream_count_zero_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        stream_count_zero_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_stream_count_zero_tests = b.addRunArtifact(stream_count_zero_tests);
     test_step.dependOn(&run_stream_count_zero_tests.step);
@@ -438,8 +466,12 @@ pub fn build(b: *std.Build) void {
     });
     xrange_content_tests.linkSystemLibrary("luajit-5.1");
     xrange_content_tests.linkLibC();
-    xrange_content_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    xrange_content_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        xrange_content_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        xrange_content_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        xrange_content_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_xrange_content_tests = b.addRunArtifact(xrange_content_tests);
     test_step.dependOn(&run_xrange_content_tests.step);
@@ -457,8 +489,12 @@ pub fn build(b: *std.Build) void {
     });
     scan_cursor_tests.linkSystemLibrary("luajit-5.1");
     scan_cursor_tests.linkLibC();
-    scan_cursor_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    scan_cursor_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        scan_cursor_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        scan_cursor_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        scan_cursor_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_scan_cursor_tests = b.addRunArtifact(scan_cursor_tests);
     test_step.dependOn(&run_scan_cursor_tests.step);
@@ -476,8 +512,12 @@ pub fn build(b: *std.Build) void {
     });
     iter338_tests.linkSystemLibrary("luajit-5.1");
     iter338_tests.linkLibC();
-    iter338_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter338_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter338_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter338_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter338_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter338_tests = b.addRunArtifact(iter338_tests);
     test_step.dependOn(&run_iter338_tests.step);
@@ -495,8 +535,12 @@ pub fn build(b: *std.Build) void {
     });
     iter339_tests.linkSystemLibrary("luajit-5.1");
     iter339_tests.linkLibC();
-    iter339_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter339_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter339_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter339_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter339_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter339_tests = b.addRunArtifact(iter339_tests);
     test_step.dependOn(&run_iter339_tests.step);
@@ -514,8 +558,12 @@ pub fn build(b: *std.Build) void {
     });
     iter340_tests.linkSystemLibrary("luajit-5.1");
     iter340_tests.linkLibC();
-    iter340_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter340_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter340_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter340_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter340_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter340_tests = b.addRunArtifact(iter340_tests);
     test_step.dependOn(&run_iter340_tests.step);
@@ -533,8 +581,12 @@ pub fn build(b: *std.Build) void {
     });
     iter341_tests.linkSystemLibrary("luajit-5.1");
     iter341_tests.linkLibC();
-    iter341_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter341_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter341_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter341_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter341_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter341_tests = b.addRunArtifact(iter341_tests);
     test_step.dependOn(&run_iter341_tests.step);
@@ -552,8 +604,12 @@ pub fn build(b: *std.Build) void {
     });
     iter342_tests.linkSystemLibrary("luajit-5.1");
     iter342_tests.linkLibC();
-    iter342_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter342_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter342_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter342_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter342_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter342_tests = b.addRunArtifact(iter342_tests);
     test_step.dependOn(&run_iter342_tests.step);
@@ -571,8 +627,12 @@ pub fn build(b: *std.Build) void {
     });
     iter343_tests.linkSystemLibrary("luajit-5.1");
     iter343_tests.linkLibC();
-    iter343_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter343_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter343_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter343_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter343_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter343_tests = b.addRunArtifact(iter343_tests);
     test_step.dependOn(&run_iter343_tests.step);
@@ -590,8 +650,12 @@ pub fn build(b: *std.Build) void {
     });
     iter344_tests.linkSystemLibrary("luajit-5.1");
     iter344_tests.linkLibC();
-    iter344_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter344_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter344_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter344_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter344_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter344_tests = b.addRunArtifact(iter344_tests);
     test_step.dependOn(&run_iter344_tests.step);
@@ -609,8 +673,12 @@ pub fn build(b: *std.Build) void {
     });
     iter345_tests.linkSystemLibrary("luajit-5.1");
     iter345_tests.linkLibC();
-    iter345_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter345_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter345_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter345_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter345_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter345_tests = b.addRunArtifact(iter345_tests);
     test_step.dependOn(&run_iter345_tests.step);
@@ -628,8 +696,12 @@ pub fn build(b: *std.Build) void {
     });
     iter346_tests.linkSystemLibrary("luajit-5.1");
     iter346_tests.linkLibC();
-    iter346_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter346_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter346_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter346_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter346_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter346_tests = b.addRunArtifact(iter346_tests);
     test_step.dependOn(&run_iter346_tests.step);
@@ -646,8 +718,12 @@ pub fn build(b: *std.Build) void {
     });
     iter347_tests.linkSystemLibrary("luajit-5.1");
     iter347_tests.linkLibC();
-    iter347_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter347_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter347_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter347_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter347_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter347_tests = b.addRunArtifact(iter347_tests);
     test_step.dependOn(&run_iter347_tests.step);
@@ -664,8 +740,12 @@ pub fn build(b: *std.Build) void {
     });
     iter348_tests.linkSystemLibrary("luajit-5.1");
     iter348_tests.linkLibC();
-    iter348_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter348_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter348_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter348_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter348_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter348_tests = b.addRunArtifact(iter348_tests);
     test_step.dependOn(&run_iter348_tests.step);
@@ -682,8 +762,12 @@ pub fn build(b: *std.Build) void {
     });
     iter349_tests.linkSystemLibrary("luajit-5.1");
     iter349_tests.linkLibC();
-    iter349_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter349_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter349_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter349_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter349_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter349_tests = b.addRunArtifact(iter349_tests);
     test_step.dependOn(&run_iter349_tests.step);
@@ -700,8 +784,12 @@ pub fn build(b: *std.Build) void {
     });
     iter350_tests.linkSystemLibrary("luajit-5.1");
     iter350_tests.linkLibC();
-    iter350_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter350_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter350_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter350_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter350_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter350_tests = b.addRunArtifact(iter350_tests);
     test_step.dependOn(&run_iter350_tests.step);
@@ -718,8 +806,12 @@ pub fn build(b: *std.Build) void {
     });
     iter351_tests.linkSystemLibrary("luajit-5.1");
     iter351_tests.linkLibC();
-    iter351_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter351_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter351_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter351_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter351_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter351_tests = b.addRunArtifact(iter351_tests);
     test_step.dependOn(&run_iter351_tests.step);
@@ -736,8 +828,12 @@ pub fn build(b: *std.Build) void {
     });
     iter352_tests.linkSystemLibrary("luajit-5.1");
     iter352_tests.linkLibC();
-    iter352_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter352_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter352_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter352_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter352_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter352_tests = b.addRunArtifact(iter352_tests);
     test_step.dependOn(&run_iter352_tests.step);
@@ -755,8 +851,12 @@ pub fn build(b: *std.Build) void {
     });
     iter353_tests.linkSystemLibrary("luajit-5.1");
     iter353_tests.linkLibC();
-    iter353_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter353_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter353_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter353_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter353_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter353_tests = b.addRunArtifact(iter353_tests);
     test_step.dependOn(&run_iter353_tests.step);
@@ -774,8 +874,12 @@ pub fn build(b: *std.Build) void {
     });
     iter354_tests.linkSystemLibrary("luajit-5.1");
     iter354_tests.linkLibC();
-    iter354_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter354_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter354_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter354_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter354_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter354_tests = b.addRunArtifact(iter354_tests);
     test_step.dependOn(&run_iter354_tests.step);
@@ -793,8 +897,12 @@ pub fn build(b: *std.Build) void {
     });
     iter355_tests.linkSystemLibrary("luajit-5.1");
     iter355_tests.linkLibC();
-    iter355_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter355_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter355_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter355_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter355_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter355_tests = b.addRunArtifact(iter355_tests);
     test_step.dependOn(&run_iter355_tests.step);
@@ -812,8 +920,12 @@ pub fn build(b: *std.Build) void {
     });
     iter356_tests.linkSystemLibrary("luajit-5.1");
     iter356_tests.linkLibC();
-    iter356_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter356_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter356_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter356_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter356_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter356_tests = b.addRunArtifact(iter356_tests);
     test_step.dependOn(&run_iter356_tests.step);
@@ -831,8 +943,12 @@ pub fn build(b: *std.Build) void {
     });
     iter358_tests.linkSystemLibrary("luajit-5.1");
     iter358_tests.linkLibC();
-    iter358_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter358_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter358_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter358_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter358_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter358_tests = b.addRunArtifact(iter358_tests);
     test_step.dependOn(&run_iter358_tests.step);
@@ -850,8 +966,12 @@ pub fn build(b: *std.Build) void {
     });
     iter359_tests.linkSystemLibrary("luajit-5.1");
     iter359_tests.linkLibC();
-    iter359_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter359_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter359_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter359_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter359_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter359_tests = b.addRunArtifact(iter359_tests);
     test_step.dependOn(&run_iter359_tests.step);
@@ -868,8 +988,12 @@ pub fn build(b: *std.Build) void {
     });
     iter361_tests.linkSystemLibrary("luajit-5.1");
     iter361_tests.linkLibC();
-    iter361_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter361_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter361_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter361_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter361_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter361_tests = b.addRunArtifact(iter361_tests);
     test_step.dependOn(&run_iter361_tests.step);
@@ -886,8 +1010,12 @@ pub fn build(b: *std.Build) void {
     });
     iter362_tests.linkSystemLibrary("luajit-5.1");
     iter362_tests.linkLibC();
-    iter362_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter362_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter362_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter362_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter362_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter362_tests = b.addRunArtifact(iter362_tests);
     test_step.dependOn(&run_iter362_tests.step);
@@ -904,8 +1032,12 @@ pub fn build(b: *std.Build) void {
     });
     iter363_tests.linkSystemLibrary("luajit-5.1");
     iter363_tests.linkLibC();
-    iter363_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter363_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter363_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter363_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter363_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter363_tests = b.addRunArtifact(iter363_tests);
     test_step.dependOn(&run_iter363_tests.step);
@@ -922,8 +1054,12 @@ pub fn build(b: *std.Build) void {
     });
     iter364_tests.linkSystemLibrary("luajit-5.1");
     iter364_tests.linkLibC();
-    iter364_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter364_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter364_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter364_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter364_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter364_tests = b.addRunArtifact(iter364_tests);
     test_step.dependOn(&run_iter364_tests.step);
@@ -941,8 +1077,12 @@ pub fn build(b: *std.Build) void {
     });
     iter366_tests.linkSystemLibrary("luajit-5.1");
     iter366_tests.linkLibC();
-    iter366_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter366_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter366_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter366_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter366_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter366_tests = b.addRunArtifact(iter366_tests);
     test_step.dependOn(&run_iter366_tests.step);
@@ -960,8 +1100,12 @@ pub fn build(b: *std.Build) void {
     });
     iter367_tests.linkSystemLibrary("luajit-5.1");
     iter367_tests.linkLibC();
-    iter367_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter367_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter367_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter367_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter367_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter367_tests = b.addRunArtifact(iter367_tests);
     test_step.dependOn(&run_iter367_tests.step);
@@ -979,8 +1123,12 @@ pub fn build(b: *std.Build) void {
     });
     iter368_tests.linkSystemLibrary("luajit-5.1");
     iter368_tests.linkLibC();
-    iter368_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter368_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter368_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter368_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter368_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter368_tests = b.addRunArtifact(iter368_tests);
     test_step.dependOn(&run_iter368_tests.step);
@@ -998,8 +1146,12 @@ pub fn build(b: *std.Build) void {
     });
     iter369_tests.linkSystemLibrary("luajit-5.1");
     iter369_tests.linkLibC();
-    iter369_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter369_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter369_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter369_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter369_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter369_tests = b.addRunArtifact(iter369_tests);
     test_step.dependOn(&run_iter369_tests.step);
@@ -1017,8 +1169,12 @@ pub fn build(b: *std.Build) void {
     });
     iter370_tests.linkSystemLibrary("luajit-5.1");
     iter370_tests.linkLibC();
-    iter370_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter370_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter370_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter370_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter370_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter370_tests = b.addRunArtifact(iter370_tests);
     test_step.dependOn(&run_iter370_tests.step);
@@ -1036,8 +1192,12 @@ pub fn build(b: *std.Build) void {
     });
     iter371_tests.linkSystemLibrary("luajit-5.1");
     iter371_tests.linkLibC();
-    iter371_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter371_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter371_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter371_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter371_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter371_tests = b.addRunArtifact(iter371_tests);
     test_step.dependOn(&run_iter371_tests.step);
@@ -1055,8 +1215,12 @@ pub fn build(b: *std.Build) void {
     });
     iter372_tests.linkSystemLibrary("luajit-5.1");
     iter372_tests.linkLibC();
-    iter372_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter372_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter372_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter372_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter372_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter372_tests = b.addRunArtifact(iter372_tests);
     test_step.dependOn(&run_iter372_tests.step);
@@ -1074,8 +1238,12 @@ pub fn build(b: *std.Build) void {
     });
     iter373_tests.linkSystemLibrary("luajit-5.1");
     iter373_tests.linkLibC();
-    iter373_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter373_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter373_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter373_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter373_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter373_tests = b.addRunArtifact(iter373_tests);
     test_step.dependOn(&run_iter373_tests.step);
@@ -1093,8 +1261,12 @@ pub fn build(b: *std.Build) void {
     });
     iter374_tests.linkSystemLibrary("luajit-5.1");
     iter374_tests.linkLibC();
-    iter374_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter374_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter374_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter374_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter374_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter374_tests = b.addRunArtifact(iter374_tests);
     test_step.dependOn(&run_iter374_tests.step);
@@ -1112,8 +1284,12 @@ pub fn build(b: *std.Build) void {
     });
     iter375_tests.linkSystemLibrary("luajit-5.1");
     iter375_tests.linkLibC();
-    iter375_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter375_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter375_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter375_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter375_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter375_tests = b.addRunArtifact(iter375_tests);
     test_step.dependOn(&run_iter375_tests.step);
@@ -1131,8 +1307,12 @@ pub fn build(b: *std.Build) void {
     });
     iter376_tests.linkSystemLibrary("luajit-5.1");
     iter376_tests.linkLibC();
-    iter376_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter376_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter376_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter376_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter376_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter376_tests = b.addRunArtifact(iter376_tests);
     test_step.dependOn(&run_iter376_tests.step);
@@ -1149,8 +1329,12 @@ pub fn build(b: *std.Build) void {
     });
     iter377_tests.linkSystemLibrary("luajit-5.1");
     iter377_tests.linkLibC();
-    iter377_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter377_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter377_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter377_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter377_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter377_tests = b.addRunArtifact(iter377_tests);
     test_step.dependOn(&run_iter377_tests.step);
@@ -1168,8 +1352,12 @@ pub fn build(b: *std.Build) void {
     });
     iter378_tests.linkSystemLibrary("luajit-5.1");
     iter378_tests.linkLibC();
-    iter378_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter378_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter378_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter378_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter378_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter378_tests = b.addRunArtifact(iter378_tests);
     test_step.dependOn(&run_iter378_tests.step);
@@ -1187,8 +1375,12 @@ pub fn build(b: *std.Build) void {
     });
     iter379_tests.linkSystemLibrary("luajit-5.1");
     iter379_tests.linkLibC();
-    iter379_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter379_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter379_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter379_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter379_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter379_tests = b.addRunArtifact(iter379_tests);
     test_step.dependOn(&run_iter379_tests.step);
@@ -1205,8 +1397,12 @@ pub fn build(b: *std.Build) void {
     });
     iter380_tests.linkSystemLibrary("luajit-5.1");
     iter380_tests.linkLibC();
-    iter380_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter380_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter380_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter380_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter380_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter380_tests = b.addRunArtifact(iter380_tests);
     test_step.dependOn(&run_iter380_tests.step);
@@ -1224,8 +1420,12 @@ pub fn build(b: *std.Build) void {
     });
     iter381_tests.linkSystemLibrary("luajit-5.1");
     iter381_tests.linkLibC();
-    iter381_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter381_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter381_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter381_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter381_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter381_tests = b.addRunArtifact(iter381_tests);
     test_step.dependOn(&run_iter381_tests.step);
@@ -1243,8 +1443,12 @@ pub fn build(b: *std.Build) void {
     });
     iter382_tests.linkSystemLibrary("luajit-5.1");
     iter382_tests.linkLibC();
-    iter382_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter382_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter382_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter382_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter382_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter382_tests = b.addRunArtifact(iter382_tests);
     test_step.dependOn(&run_iter382_tests.step);
@@ -1261,8 +1465,12 @@ pub fn build(b: *std.Build) void {
     });
     iter383_tests.linkSystemLibrary("luajit-5.1");
     iter383_tests.linkLibC();
-    iter383_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter383_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter383_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter383_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter383_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter383_tests = b.addRunArtifact(iter383_tests);
     test_step.dependOn(&run_iter383_tests.step);
@@ -1280,8 +1488,12 @@ pub fn build(b: *std.Build) void {
     });
     iter384_tests.linkSystemLibrary("luajit-5.1");
     iter384_tests.linkLibC();
-    iter384_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter384_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter384_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter384_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter384_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter384_tests = b.addRunArtifact(iter384_tests);
     test_step.dependOn(&run_iter384_tests.step);
@@ -1299,8 +1511,12 @@ pub fn build(b: *std.Build) void {
     });
     iter385_tests.linkSystemLibrary("luajit-5.1");
     iter385_tests.linkLibC();
-    iter385_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter385_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter385_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter385_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter385_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter385_tests = b.addRunArtifact(iter385_tests);
     test_step.dependOn(&run_iter385_tests.step);
@@ -1317,8 +1533,12 @@ pub fn build(b: *std.Build) void {
     });
     iter386_tests.linkSystemLibrary("luajit-5.1");
     iter386_tests.linkLibC();
-    iter386_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter386_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter386_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter386_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter386_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter386_tests = b.addRunArtifact(iter386_tests);
     test_step.dependOn(&run_iter386_tests.step);
@@ -1336,8 +1556,12 @@ pub fn build(b: *std.Build) void {
     });
     iter387_tests.linkSystemLibrary("luajit-5.1");
     iter387_tests.linkLibC();
-    iter387_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter387_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter387_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter387_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter387_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter387_tests = b.addRunArtifact(iter387_tests);
     test_step.dependOn(&run_iter387_tests.step);
@@ -1355,8 +1579,12 @@ pub fn build(b: *std.Build) void {
     });
     iter388_tests.linkSystemLibrary("luajit-5.1");
     iter388_tests.linkLibC();
-    iter388_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter388_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter388_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter388_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter388_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter388_tests = b.addRunArtifact(iter388_tests);
     test_step.dependOn(&run_iter388_tests.step);
@@ -1373,8 +1601,12 @@ pub fn build(b: *std.Build) void {
     });
     iter389_tests.linkSystemLibrary("luajit-5.1");
     iter389_tests.linkLibC();
-    iter389_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter389_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter389_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter389_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter389_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter389_tests = b.addRunArtifact(iter389_tests);
     test_step.dependOn(&run_iter389_tests.step);
@@ -1391,8 +1623,12 @@ pub fn build(b: *std.Build) void {
     });
     iter390_tests.linkSystemLibrary("luajit-5.1");
     iter390_tests.linkLibC();
-    iter390_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter390_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter390_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter390_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter390_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter390_tests = b.addRunArtifact(iter390_tests);
     test_step.dependOn(&run_iter390_tests.step);
@@ -1409,8 +1645,12 @@ pub fn build(b: *std.Build) void {
     });
     iter391_tests.linkSystemLibrary("luajit-5.1");
     iter391_tests.linkLibC();
-    iter391_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter391_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter391_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter391_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter391_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter391_tests = b.addRunArtifact(iter391_tests);
     test_step.dependOn(&run_iter391_tests.step);
@@ -1427,8 +1667,12 @@ pub fn build(b: *std.Build) void {
     });
     iter392_tests.linkSystemLibrary("luajit-5.1");
     iter392_tests.linkLibC();
-    iter392_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter392_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter392_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter392_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter392_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter392_tests = b.addRunArtifact(iter392_tests);
     test_step.dependOn(&run_iter392_tests.step);
@@ -1445,8 +1689,12 @@ pub fn build(b: *std.Build) void {
     });
     iter393_tests.linkSystemLibrary("luajit-5.1");
     iter393_tests.linkLibC();
-    iter393_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter393_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter393_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter393_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter393_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter393_tests = b.addRunArtifact(iter393_tests);
     test_step.dependOn(&run_iter393_tests.step);
@@ -1464,8 +1712,12 @@ pub fn build(b: *std.Build) void {
     });
     iter394_tests.linkSystemLibrary("luajit-5.1");
     iter394_tests.linkLibC();
-    iter394_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter394_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter394_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter394_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter394_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter394_tests = b.addRunArtifact(iter394_tests);
     test_step.dependOn(&run_iter394_tests.step);
@@ -1483,8 +1735,12 @@ pub fn build(b: *std.Build) void {
     });
     iter395_tests.linkSystemLibrary("luajit-5.1");
     iter395_tests.linkLibC();
-    iter395_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter395_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter395_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter395_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter395_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter395_tests = b.addRunArtifact(iter395_tests);
     test_step.dependOn(&run_iter395_tests.step);
@@ -1502,8 +1758,12 @@ pub fn build(b: *std.Build) void {
     });
     iter396_tests.linkSystemLibrary("luajit-5.1");
     iter396_tests.linkLibC();
-    iter396_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter396_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter396_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter396_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter396_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter396_tests = b.addRunArtifact(iter396_tests);
     test_step.dependOn(&run_iter396_tests.step);
@@ -1521,8 +1781,12 @@ pub fn build(b: *std.Build) void {
     });
     iter397_tests.linkSystemLibrary("luajit-5.1");
     iter397_tests.linkLibC();
-    iter397_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter397_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter397_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter397_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter397_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter397_tests = b.addRunArtifact(iter397_tests);
     test_step.dependOn(&run_iter397_tests.step);
@@ -1540,8 +1804,12 @@ pub fn build(b: *std.Build) void {
     });
     iter398_tests.linkSystemLibrary("luajit-5.1");
     iter398_tests.linkLibC();
-    iter398_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter398_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter398_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter398_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter398_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter398_tests = b.addRunArtifact(iter398_tests);
     test_step.dependOn(&run_iter398_tests.step);
@@ -1559,8 +1827,12 @@ pub fn build(b: *std.Build) void {
     });
     iter399_tests.linkSystemLibrary("luajit-5.1");
     iter399_tests.linkLibC();
-    iter399_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter399_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter399_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter399_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter399_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter399_tests = b.addRunArtifact(iter399_tests);
     test_step.dependOn(&run_iter399_tests.step);
@@ -1578,8 +1850,12 @@ pub fn build(b: *std.Build) void {
     });
     iter400_tests.linkSystemLibrary("luajit-5.1");
     iter400_tests.linkLibC();
-    iter400_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter400_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter400_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter400_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter400_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter400_tests = b.addRunArtifact(iter400_tests);
     test_step.dependOn(&run_iter400_tests.step);
@@ -1598,8 +1874,12 @@ pub fn build(b: *std.Build) void {
     });
     iter401_tests.linkSystemLibrary("luajit-5.1");
     iter401_tests.linkLibC();
-    iter401_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter401_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter401_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter401_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter401_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter401_tests = b.addRunArtifact(iter401_tests);
     test_step.dependOn(&run_iter401_tests.step);
@@ -1618,8 +1898,12 @@ pub fn build(b: *std.Build) void {
     });
     iter402_tests.linkSystemLibrary("luajit-5.1");
     iter402_tests.linkLibC();
-    iter402_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter402_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter402_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter402_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter402_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter402_tests = b.addRunArtifact(iter402_tests);
     test_step.dependOn(&run_iter402_tests.step);
@@ -1638,8 +1922,12 @@ pub fn build(b: *std.Build) void {
     });
     iter403_tests.linkSystemLibrary("luajit-5.1");
     iter403_tests.linkLibC();
-    iter403_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter403_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter403_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter403_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter403_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter403_tests = b.addRunArtifact(iter403_tests);
     test_step.dependOn(&run_iter403_tests.step);
@@ -1658,8 +1946,12 @@ pub fn build(b: *std.Build) void {
     });
     iter404_tests.linkSystemLibrary("luajit-5.1");
     iter404_tests.linkLibC();
-    iter404_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter404_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter404_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter404_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter404_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter404_tests = b.addRunArtifact(iter404_tests);
     test_step.dependOn(&run_iter404_tests.step);
@@ -1678,8 +1970,12 @@ pub fn build(b: *std.Build) void {
     });
     iter405_tests.linkSystemLibrary("luajit-5.1");
     iter405_tests.linkLibC();
-    iter405_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter405_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter405_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter405_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter405_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter405_tests = b.addRunArtifact(iter405_tests);
     test_step.dependOn(&run_iter405_tests.step);
@@ -1698,8 +1994,12 @@ pub fn build(b: *std.Build) void {
     });
     iter406_tests.linkSystemLibrary("luajit-5.1");
     iter406_tests.linkLibC();
-    iter406_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter406_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter406_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter406_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter406_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter406_tests = b.addRunArtifact(iter406_tests);
     test_step.dependOn(&run_iter406_tests.step);
@@ -1718,8 +2018,12 @@ pub fn build(b: *std.Build) void {
     });
     iter407_tests.linkSystemLibrary("luajit-5.1");
     iter407_tests.linkLibC();
-    iter407_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter407_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter407_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter407_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter407_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter407_tests = b.addRunArtifact(iter407_tests);
     test_step.dependOn(&run_iter407_tests.step);
@@ -1738,8 +2042,12 @@ pub fn build(b: *std.Build) void {
     });
     iter408_tests.linkSystemLibrary("luajit-5.1");
     iter408_tests.linkLibC();
-    iter408_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter408_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter408_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter408_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter408_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter408_tests = b.addRunArtifact(iter408_tests);
     test_step.dependOn(&run_iter408_tests.step);
@@ -1758,8 +2066,12 @@ pub fn build(b: *std.Build) void {
     });
     iter409_tests.linkSystemLibrary("luajit-5.1");
     iter409_tests.linkLibC();
-    iter409_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter409_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter409_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter409_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter409_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter409_tests = b.addRunArtifact(iter409_tests);
     test_step.dependOn(&run_iter409_tests.step);
@@ -1777,8 +2089,12 @@ pub fn build(b: *std.Build) void {
     });
     iter410_tests.linkSystemLibrary("luajit-5.1");
     iter410_tests.linkLibC();
-    iter410_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter410_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter410_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter410_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter410_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter410_tests = b.addRunArtifact(iter410_tests);
     test_step.dependOn(&run_iter410_tests.step);
@@ -1796,8 +2112,12 @@ pub fn build(b: *std.Build) void {
     });
     iter411_tests.linkSystemLibrary("luajit-5.1");
     iter411_tests.linkLibC();
-    iter411_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter411_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter411_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter411_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter411_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter411_tests = b.addRunArtifact(iter411_tests);
     test_step.dependOn(&run_iter411_tests.step);
@@ -1815,8 +2135,12 @@ pub fn build(b: *std.Build) void {
     });
     iter412_tests.linkSystemLibrary("luajit-5.1");
     iter412_tests.linkLibC();
-    iter412_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter412_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter412_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter412_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter412_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter412_tests = b.addRunArtifact(iter412_tests);
     test_step.dependOn(&run_iter412_tests.step);
@@ -1834,8 +2158,12 @@ pub fn build(b: *std.Build) void {
     });
     iter413_tests.linkSystemLibrary("luajit-5.1");
     iter413_tests.linkLibC();
-    iter413_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter413_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter413_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter413_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter413_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter413_tests = b.addRunArtifact(iter413_tests);
     test_step.dependOn(&run_iter413_tests.step);
@@ -1853,8 +2181,12 @@ pub fn build(b: *std.Build) void {
     });
     iter414_tests.linkSystemLibrary("luajit-5.1");
     iter414_tests.linkLibC();
-    iter414_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter414_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter414_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter414_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter414_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter414_tests = b.addRunArtifact(iter414_tests);
     test_step.dependOn(&run_iter414_tests.step);
@@ -1872,8 +2204,12 @@ pub fn build(b: *std.Build) void {
     });
     iter415_tests.linkSystemLibrary("luajit-5.1");
     iter415_tests.linkLibC();
-    iter415_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter415_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter415_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter415_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter415_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter415_tests = b.addRunArtifact(iter415_tests);
     test_step.dependOn(&run_iter415_tests.step);
@@ -1891,8 +2227,12 @@ pub fn build(b: *std.Build) void {
     });
     iter416_tests.linkSystemLibrary("luajit-5.1");
     iter416_tests.linkLibC();
-    iter416_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter416_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter416_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter416_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter416_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter416_tests = b.addRunArtifact(iter416_tests);
     test_step.dependOn(&run_iter416_tests.step);
@@ -1910,8 +2250,12 @@ pub fn build(b: *std.Build) void {
     });
     iter417_tests.linkSystemLibrary("luajit-5.1");
     iter417_tests.linkLibC();
-    iter417_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter417_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter417_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter417_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter417_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter417_tests = b.addRunArtifact(iter417_tests);
     test_step.dependOn(&run_iter417_tests.step);
@@ -1930,8 +2274,12 @@ pub fn build(b: *std.Build) void {
     });
     iter419_tests.linkSystemLibrary("luajit-5.1");
     iter419_tests.linkLibC();
-    iter419_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter419_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter419_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter419_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter419_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter419_tests = b.addRunArtifact(iter419_tests);
     test_step.dependOn(&run_iter419_tests.step);
@@ -1950,8 +2298,12 @@ pub fn build(b: *std.Build) void {
     });
     iter420_tests.linkSystemLibrary("luajit-5.1");
     iter420_tests.linkLibC();
-    iter420_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter420_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter420_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter420_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter420_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter420_tests = b.addRunArtifact(iter420_tests);
     test_step.dependOn(&run_iter420_tests.step);
@@ -1970,8 +2322,12 @@ pub fn build(b: *std.Build) void {
     });
     iter421_tests.linkSystemLibrary("luajit-5.1");
     iter421_tests.linkLibC();
-    iter421_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter421_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter421_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter421_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter421_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter421_tests = b.addRunArtifact(iter421_tests);
     test_step.dependOn(&run_iter421_tests.step);
@@ -1990,8 +2346,12 @@ pub fn build(b: *std.Build) void {
     });
     iter423_tests.linkSystemLibrary("luajit-5.1");
     iter423_tests.linkLibC();
-    iter423_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter423_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter423_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter423_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter423_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter423_tests = b.addRunArtifact(iter423_tests);
     test_step.dependOn(&run_iter423_tests.step);
@@ -2010,8 +2370,12 @@ pub fn build(b: *std.Build) void {
     });
     iter424_tests.linkSystemLibrary("luajit-5.1");
     iter424_tests.linkLibC();
-    iter424_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter424_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter424_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter424_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter424_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter424_tests = b.addRunArtifact(iter424_tests);
     test_step.dependOn(&run_iter424_tests.step);
@@ -2030,8 +2394,12 @@ pub fn build(b: *std.Build) void {
     });
     iter431_tests.linkSystemLibrary("luajit-5.1");
     iter431_tests.linkLibC();
-    iter431_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter431_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter431_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter431_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter431_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter431_tests = b.addRunArtifact(iter431_tests);
     test_step.dependOn(&run_iter431_tests.step);
@@ -2050,8 +2418,12 @@ pub fn build(b: *std.Build) void {
     });
     iter432_tests.linkSystemLibrary("luajit-5.1");
     iter432_tests.linkLibC();
-    iter432_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter432_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter432_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter432_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter432_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter432_tests = b.addRunArtifact(iter432_tests);
     test_step.dependOn(&run_iter432_tests.step);
@@ -2070,8 +2442,12 @@ pub fn build(b: *std.Build) void {
     });
     iter437_tests.linkSystemLibrary("luajit-5.1");
     iter437_tests.linkLibC();
-    iter437_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    iter437_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        iter437_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter437_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter437_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
 
     const run_iter437_tests = b.addRunArtifact(iter437_tests);
     test_step.dependOn(&run_iter437_tests.step);
@@ -2329,8 +2705,12 @@ pub fn build(b: *std.Build) void {
     });
     functions_tests.linkSystemLibrary("luajit-5.1");
     functions_tests.linkLibC();
-    functions_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    functions_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        functions_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        functions_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        functions_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_functions_tests = b.addRunArtifact(functions_tests);
     integration_test_step.dependOn(&run_functions_tests.step);
 
@@ -2424,8 +2804,12 @@ pub fn build(b: *std.Build) void {
     });
     search_tests.linkSystemLibrary("luajit-5.1");
     search_tests.linkLibC();
-    search_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    search_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        search_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        search_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        search_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_search_tests = b.addRunArtifact(search_tests);
     integration_test_step.dependOn(&run_search_tests.step);
 
@@ -2645,8 +3029,12 @@ pub fn build(b: *std.Build) void {
     });
     bf_insert_tests.linkSystemLibrary("luajit-5.1");
     bf_insert_tests.linkLibC();
-    bf_insert_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    bf_insert_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        bf_insert_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        bf_insert_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        bf_insert_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_bf_insert_tests = b.addRunArtifact(bf_insert_tests);
     integration_test_step.dependOn(&run_bf_insert_tests.step);
 
@@ -2776,8 +3164,12 @@ pub fn build(b: *std.Build) void {
     });
     module_commands_tests.linkSystemLibrary("luajit-5.1");
     module_commands_tests.linkLibC();
-    module_commands_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    module_commands_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        module_commands_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        module_commands_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        module_commands_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_module_commands_tests = b.addRunArtifact(module_commands_tests);
     integration_test_step.dependOn(&run_module_commands_tests.step);
 
@@ -2858,8 +3250,12 @@ pub fn build(b: *std.Build) void {
     });
     ts_incrby_tests.linkSystemLibrary("luajit-5.1");
     ts_incrby_tests.linkLibC();
-    ts_incrby_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    ts_incrby_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        ts_incrby_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        ts_incrby_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        ts_incrby_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_ts_incrby_tests = b.addRunArtifact(ts_incrby_tests);
     integration_test_step.dependOn(&run_ts_incrby_tests.step);
 
@@ -2951,8 +3347,12 @@ pub fn build(b: *std.Build) void {
     });
     vector_tests.linkSystemLibrary("luajit-5.1");
     vector_tests.linkLibC();
-    vector_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    vector_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        vector_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        vector_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        vector_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_vector_tests = b.addRunArtifact(vector_tests);
     integration_test_step.dependOn(&run_vector_tests.step);
 
@@ -3018,8 +3418,12 @@ pub fn build(b: *std.Build) void {
     });
     deprecated_aliases_tests.linkSystemLibrary("luajit-5.1");
     deprecated_aliases_tests.linkLibC();
-    deprecated_aliases_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
-    deprecated_aliases_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    if (target.result.os.tag == .macos) {
+        deprecated_aliases_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        deprecated_aliases_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        deprecated_aliases_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
     const run_deprecated_aliases_tests = b.addRunArtifact(deprecated_aliases_tests);
     integration_test_step.dependOn(&run_deprecated_aliases_tests.step);
 
