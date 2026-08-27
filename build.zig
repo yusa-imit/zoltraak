@@ -28,6 +28,19 @@ pub fn build(b: *std.Build) void {
     zoltraak_mod.addImport("sailor", sailor_mod);
     zoltraak_mod.addImport("zuda", zuda_mod);
 
+    // Force async unwind tables on Linux: LuaJIT's lua_error() performs a
+    // longjmp/unwind that must cross our Zig-compiled C callback frames
+    // (redis.call, redis.setresp, etc.). Without unwind tables for those
+    // frames, the unwind can't find its way back to the enclosing lua_pcall,
+    // and LuaJIT falls back to its default panic ("PANIC: unprotected error
+    // in call to Lua API") even though a pcall boundary genuinely exists.
+    // Observed as two CI-only (never reproduced on macOS) failures:
+    // EVAL_RO write-block and redis.setresp(invalid version) — both raise a
+    // Lua error directly from a Zig callback.
+    if (target.result.os.tag == .linux) {
+        zoltraak_mod.unwind_tables = .async;
+    }
+
     // Executable: zoltraak (server)
     const exe = b.addExecutable(.{
         .name = "zoltraak",
@@ -80,6 +93,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     unit_tests.root_module.addImport("sailor", sailor_mod);
+    if (target.result.os.tag == .linux) {
+        unit_tests.root_module.unwind_tables = .async;
+    }
 
     // Link LuaJIT for Lua scripting tests
     unit_tests.linkSystemLibrary("luajit-5.1");
