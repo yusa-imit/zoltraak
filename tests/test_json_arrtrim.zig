@@ -6,7 +6,7 @@ const parseResp = @import("../src/protocol/parser.zig").parseResp;
 test "JSON.ARRTRIM - basic trim with positive indices" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16379) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20045) catch unreachable;
     defer server.deinit();
 
     // SET key with array
@@ -33,7 +33,7 @@ test "JSON.ARRTRIM - basic trim with positive indices" {
 test "JSON.ARRTRIM - negative indices" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16380) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20046) catch unreachable;
     defer server.deinit();
 
     // SET key $ [1,2,3,4,5]
@@ -59,7 +59,7 @@ test "JSON.ARRTRIM - negative indices" {
 test "JSON.ARRTRIM - reverse range creates empty array" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16381) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20047) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$11\r\n[1,2,3,4,5]\r\n";
@@ -84,7 +84,7 @@ test "JSON.ARRTRIM - reverse range creates empty array" {
 test "JSON.ARRTRIM - out of bounds start creates empty array" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16382) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20048) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$7\r\n[1,2,3]\r\n";
@@ -102,7 +102,7 @@ test "JSON.ARRTRIM - out of bounds start creates empty array" {
 test "JSON.ARRTRIM - out of bounds stop clamps to end" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16383) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20049) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$11\r\n[1,2,3,4,5]\r\n";
@@ -127,7 +127,7 @@ test "JSON.ARRTRIM - out of bounds stop clamps to end" {
 test "JSON.ARRTRIM - single element array" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16384) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20050) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$3\r\n[1]\r\n";
@@ -145,7 +145,7 @@ test "JSON.ARRTRIM - single element array" {
 test "JSON.ARRTRIM - wildcard paths with multiple arrays" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16385) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20051) catch unreachable;
     defer server.deinit();
 
     // SET key $ {"a":[1,2,3,4],"b":[5,6,7,8,9]}
@@ -168,7 +168,7 @@ test "JSON.ARRTRIM - wildcard paths with multiple arrays" {
 test "JSON.ARRTRIM - non-array returns null" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16386) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20052) catch unreachable;
     defer server.deinit();
 
     // SET key $ {"arr":[1,2,3],"num":42}
@@ -188,7 +188,7 @@ test "JSON.ARRTRIM - non-array returns null" {
 test "JSON.ARRTRIM - key does not exist error" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16387) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20053) catch unreachable;
     defer server.deinit();
 
     const trim_cmd = "*5\r\n$13\r\nJSON.ARRTRIM\r\n$9\r\nnoexist\r\n$1\r\n$\r\n$1\r\n0\r\n$1\r\n1\r\n";
@@ -201,7 +201,7 @@ test "JSON.ARRTRIM - key does not exist error" {
 test "JSON.ARRTRIM - wrong type error" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16388) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20054) catch unreachable;
     defer server.deinit();
 
     // SET key as string
@@ -219,7 +219,7 @@ test "JSON.ARRTRIM - wrong type error" {
 test "JSON.ARRTRIM - wrong number of arguments" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16389) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20055) catch unreachable;
     defer server.deinit();
 
     // Too few args
@@ -233,7 +233,7 @@ test "JSON.ARRTRIM - wrong number of arguments" {
 test "JSON.ARRTRIM - invalid index format" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16390) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20056) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$7\r\n[1,2,3]\r\n";
@@ -251,7 +251,7 @@ test "JSON.ARRTRIM - invalid index format" {
 test "JSON.ARRTRIM - both indices negative and clamped" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16391) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20057) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$7\r\n[1,2,3]\r\n";
@@ -270,7 +270,7 @@ test "JSON.ARRTRIM - both indices negative and clamped" {
 test "JSON.ARRTRIM - empty array returns 0" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16392) catch unreachable;
+    var server = Server.init(allocator, "127.0.0.1", 20058) catch unreachable;
     defer server.deinit();
 
     const set_cmd = "*4\r\n$8\r\nJSON.SET\r\n$3\r\nkey\r\n$1\r\n$\r\n$2\r\n[]\r\n";

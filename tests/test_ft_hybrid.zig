@@ -11,7 +11,7 @@ test "FT.HYBRID: basic syntax validation - missing arguments" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20001);
     defer server.deinit();
 
     // Too few arguments
@@ -26,7 +26,7 @@ test "FT.HYBRID: validates SEARCH keyword" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20002);
     defer server.deinit();
 
     // Create index first
@@ -45,7 +45,7 @@ test "FT.HYBRID: requires VSIM clause" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20003);
     defer server.deinit();
 
     // Create index
@@ -64,7 +64,7 @@ test "FT.HYBRID: validates vector field starts with @" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20004);
     defer server.deinit();
 
     // Create index
@@ -83,7 +83,7 @@ test "FT.HYBRID: validates vector parameter starts with $" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20005);
     defer server.deinit();
 
     // Create index
@@ -102,7 +102,7 @@ test "FT.HYBRID: requires PARAMS clause" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20006);
     defer server.deinit();
 
     // Create index
@@ -121,7 +121,7 @@ test "FT.HYBRID: validates PARAMS nargs is integer" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20007);
     defer server.deinit();
 
     // Create index
@@ -140,7 +140,7 @@ test "FT.HYBRID: validates PARAMS nargs is even" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20008);
     defer server.deinit();
 
     // Create index
@@ -159,7 +159,7 @@ test "FT.HYBRID: validates KNN syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20009);
     defer server.deinit();
 
     // Create index
@@ -178,7 +178,7 @@ test "FT.HYBRID: validates RANGE syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20010);
     defer server.deinit();
 
     // Create index
@@ -197,7 +197,7 @@ test "FT.HYBRID: successful stub execution returns empty results" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20011);
     defer server.deinit();
 
     // Create index
@@ -219,7 +219,7 @@ test "FT.HYBRID: nonexistent index error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20012);
     defer server.deinit();
 
     // No index created
@@ -234,7 +234,7 @@ test "FT.HYBRID: works with index alias" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20013);
     defer server.deinit();
 
     // Create index and alias
@@ -259,7 +259,7 @@ test "FT.HYBRID: complex query with multiple options" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, "127.0.0.1", 20014);
     defer server.deinit();
 
     // Create index

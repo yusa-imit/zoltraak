@@ -6,7 +6,7 @@ const Writer = @import("../src/protocol/writer.zig").Writer;
 test "FT.SYNUPDATE and FT.SYNDUMP basic flow" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20015, .{});
     defer server.deinit();
 
     // Create index
@@ -92,7 +92,7 @@ test "FT.SYNUPDATE and FT.SYNDUMP basic flow" {
 test "FT.SYNUPDATE replaces existing group" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20016, .{});
     defer server.deinit();
 
     // Create index
@@ -162,7 +162,7 @@ test "FT.SYNUPDATE replaces existing group" {
 test "FT.SYNUPDATE with SKIPINITIALSCAN flag" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20017, .{});
     defer server.deinit();
 
     // Create index
@@ -212,7 +212,7 @@ test "FT.SYNUPDATE with SKIPINITIALSCAN flag" {
 test "FT.SYNDUMP on nonexistent index" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20018, .{});
     defer server.deinit();
 
     const input = "*2\r\n$10\r\nFT.SYNDUMP\r\n$12\r\nnonexistent1\r\n";
@@ -230,7 +230,7 @@ test "FT.SYNDUMP on nonexistent index" {
 test "FT.SYNUPDATE on nonexistent index" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20019, .{});
     defer server.deinit();
 
     const input = "*5\r\n$11\r\nFT.SYNUPDATE\r\n$12\r\nnonexistent2\r\n$1\r\n1\r\n$4\r\nterm\r\n$5\r\nother\r\n";
@@ -248,7 +248,7 @@ test "FT.SYNUPDATE on nonexistent index" {
 test "FT.SYNUPDATE with invalid group id" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20020, .{});
     defer server.deinit();
 
     // Create index
@@ -283,7 +283,7 @@ test "FT.SYNUPDATE with invalid group id" {
 test "FT.SYNDUMP on empty index" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20021, .{});
     defer server.deinit();
 
     // Create index
@@ -318,7 +318,7 @@ test "FT.SYNDUMP on empty index" {
 test "FT.SYNUPDATE arity errors" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20022, .{});
     defer server.deinit();
 
     // Too few arguments
@@ -353,7 +353,7 @@ test "FT.SYNUPDATE arity errors" {
 test "FT.SYNDUMP arity error" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20023, .{});
     defer server.deinit();
 
     const input = "*1\r\n$10\r\nFT.SYNDUMP\r\n";
@@ -371,7 +371,7 @@ test "FT.SYNDUMP arity error" {
 test "FT.SYNUPDATE with alias" {
     const allocator = std.testing.allocator;
 
-    var server = try Server.init(allocator, "127.0.0.1", 6379, .{});
+    var server = try Server.init(allocator, "127.0.0.1", 20024, .{});
     defer server.deinit();
 
     // Create index

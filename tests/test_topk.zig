@@ -6,7 +6,7 @@ const test_allocator = std.testing.allocator;
 
 fn startTestServer(allocator: std.mem.Allocator) !*Server {
     const server = try allocator.create(Server);
-    server.* = try Server.init(allocator, "127.0.0.1", 16385);
+    server.* = try Server.init(allocator, "127.0.0.1", 20060);
     const thread = try std.Thread.spawn(.{}, Server.start, .{server});
     thread.detach();
     std.time.sleep(100 * std.time.ns_per_ms);

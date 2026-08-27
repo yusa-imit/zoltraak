@@ -25,7 +25,7 @@ fn readResponse(stream: std.net.Stream, allocator: std.mem.Allocator) ![]const u
 test "FUNCTION DELETE deletes library" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16379, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20025, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -63,7 +63,7 @@ test "FUNCTION DELETE deletes library" {
 test "FUNCTION DELETE nonexistent library returns error" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16380, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20026, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -87,7 +87,7 @@ test "FUNCTION DELETE nonexistent library returns error" {
 test "FUNCTION LIST returns all libraries" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16381, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20027, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -128,7 +128,7 @@ test "FUNCTION LIST returns all libraries" {
 test "FUNCTION LIST LIBRARYNAME filters by name" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16382, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20028, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -167,7 +167,7 @@ test "FUNCTION LIST LIBRARYNAME filters by name" {
 test "FUNCTION LIST WITHCODE includes code" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16383, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20029, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -199,7 +199,7 @@ test "FUNCTION LIST WITHCODE includes code" {
 test "FUNCTION LIST without WITHCODE excludes code" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16384, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20030, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -233,7 +233,7 @@ test "FUNCTION LIST without WITHCODE excludes code" {
 test "FUNCTION DELETE wrong argument count" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16385, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20031, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -257,7 +257,7 @@ test "FUNCTION DELETE wrong argument count" {
 test "FUNCTION LIST empty when no libraries" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16386, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20032, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -281,7 +281,7 @@ test "FUNCTION LIST empty when no libraries" {
 test "FCALL_RO executes read-only function successfully" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16387, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20033, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -318,7 +318,7 @@ test "FCALL_RO executes read-only function successfully" {
 test "FCALL_RO rejects write commands" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16388, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20034, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -351,7 +351,7 @@ test "FCALL_RO rejects write commands" {
 test "FCALL_RO wrong argument count" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16389, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20035, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -376,7 +376,7 @@ test "FCALL_RO wrong argument count" {
 test "FCALL_RO nonexistent function" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16390, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20036, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -400,7 +400,7 @@ test "FCALL_RO nonexistent function" {
 test "FUNCTION STATS when no function running" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16391, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20037, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -428,7 +428,7 @@ test "FUNCTION STATS when no function running" {
 test "FUNCTION STATS with wrong argument count" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16392, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20038, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -452,7 +452,7 @@ test "FUNCTION STATS with wrong argument count" {
 test "FUNCTION KILL when no function running" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16393, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20039, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -476,7 +476,7 @@ test "FUNCTION KILL when no function running" {
 test "FUNCTION KILL with wrong argument count" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16394, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20040, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -500,7 +500,7 @@ test "FUNCTION KILL with wrong argument count" {
 test "FUNCTION HELP returns help text" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16395, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20041, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -534,7 +534,7 @@ test "FUNCTION HELP returns help text" {
 test "FUNCTION HELP with wrong argument count" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16396, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20042, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -558,7 +558,7 @@ test "FUNCTION HELP with wrong argument count" {
 test "FUNCTION FLUSH with ASYNC mode" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16397, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20043, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
@@ -594,7 +594,7 @@ test "FUNCTION FLUSH with ASYNC mode" {
 test "FUNCTION FLUSH with invalid mode" {
     const allocator = std.testing.allocator;
 
-    var server = Server.init(allocator, "127.0.0.1", 16398, null, null, null);
+    var server = Server.init(allocator, "127.0.0.1", 20044, null, null, null);
     defer server.deinit();
 
     const server_thread = try std.Thread.spawn(.{}, Server.start, .{&server});
