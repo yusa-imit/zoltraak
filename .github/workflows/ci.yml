@@ -10,6 +10,7 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -25,12 +26,13 @@ jobs:
         run: zig build
 
       - name: Run tests
-        run: zig build test
+        run: zig build test --summary all -j1
 
   shell-integration-tests:
     name: Shell Integration Tests
     runs-on: ubuntu-latest
     needs: build-and-test
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
