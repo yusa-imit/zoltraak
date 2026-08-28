@@ -41,46 +41,58 @@ pub const RedisContext = struct {
     read_only: bool = false, // If true, only allow read-only commands (for FCALL_RO/EVAL_RO)
 };
 
-/// C callback for redis.call()
-/// Executes Redis command and propagates errors as Lua errors
+/// Push a Lua table {err = msg} onto the stack and return 1 (one return value).
+/// Used instead of calling lua.lua_error() directly from a Zig-compiled callconv(.c)
+/// frame: on Linux, LuaJIT's stack unwinder can fail to find the protecting lua_pcall
+/// across Zig frames and abort via its default panic handler ("PANIC: unprotected
+/// error in call to Lua API") instead of unwinding normally. Raw C callbacks below
+/// always report failure as a returned {err=...} table; a thin Lua-level wrapper
+/// (see registerRedisApi) re-raises it via Lua's own error() builtin, which throws
+/// safely from Lua bytecode rather than from a Zig frame. See
+/// docs mem ci_linux_luajit_unprotected_error for the full investigation.
+fn pushErrTable(L: *lua.lua_State, msg: [:0]const u8) c_int {
+    lua.lua_createtable(L, 0, 1);
+    lua.lua_pushstring(L, msg.ptr);
+    lua.lua_setfield(L, -2, "err");
+    return 1;
+}
+
+/// C callback for redis.call() — raw implementation.
+/// Never throws directly; failures are reported as {err="..."} tables and re-raised
+/// by the Lua wrapper installed in registerRedisApi (see pushErrTable doc comment).
 export fn redis_call_impl(L: *lua.lua_State) callconv(.c) c_int {
-    return redis_call_or_pcall(L, true) catch |err| {
-        const err_msg = switch (err) {
-            error.OutOfMemory => "Out of memory",
-            else => "Internal error in redis.call",
+    return redis_call_or_pcall(L) catch |err| {
+        const err_msg: [:0]const u8 = switch (err) {
+            error.OutOfMemory => "ERR Out of memory",
+            else => "ERR Internal error in redis.call",
         };
-        lua.lua_pushstring(L, err_msg);
-        _ = lua.lua_error(L);
-        return 0; // unreachable, but needed for type
+        return pushErrTable(L, err_msg);
     };
 }
 
 /// C callback for redis.pcall()
 /// Executes Redis command and catches errors as Lua tables {err = "..."}
 export fn redis_pcall_impl(L: *lua.lua_State) callconv(.c) c_int {
-    return redis_call_or_pcall(L, false) catch |err| {
-        const err_msg = switch (err) {
-            error.OutOfMemory => "Out of memory",
-            else => "Internal error in redis.pcall",
+    return redis_call_or_pcall(L) catch |err| {
+        const err_msg: [:0]const u8 = switch (err) {
+            error.OutOfMemory => "ERR Out of memory",
+            else => "ERR Internal error in redis.pcall",
         };
-        lua.lua_pushstring(L, err_msg);
-        _ = lua.lua_error(L);
-        return 0; // unreachable
+        return pushErrTable(L, err_msg);
     };
 }
 
-/// Shared implementation for redis.call() and redis.pcall()
-/// If propagate_errors=true, throws Lua error on Redis error (call behavior)
-/// If propagate_errors=false, returns {err = "..."} table (pcall behavior)
-fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
+/// Shared implementation for redis.call() and redis.pcall().
+/// Always returns {err = "..."} tables on failure — never calls lua.lua_error()
+/// directly (see pushErrTable doc comment). Callers (the Lua-level redis.call
+/// wrapper) re-raise as a real Lua error when propagation is desired.
+fn redis_call_or_pcall(L: *lua.lua_State) !c_int {
     // Get RedisContext from Lua registry
     lua.lua_pushstring(L, "REDIS_CONTEXT");
     lua.lua_gettable(L, lua.LUA_REGISTRYINDEX);
 
     if (lua.lua_type(L, -1) != lua.LUA_TLIGHTUSERDATA) {
-        lua.lua_pushstring(L, "ERR redis.call/pcall context not initialized");
-        _ = lua.lua_error(L);
-        return 0;
+        return pushErrTable(L, "ERR redis.call/pcall context not initialized");
     }
 
     const ctx_ptr = lua.lua_touserdata(L, -1);
@@ -90,19 +102,10 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
     // Get number of arguments
     const nargs = lua.lua_gettop(L);
     if (nargs == 0) {
-        if (propagate_errors) {
-            lua.lua_pushstring(L, "ERR redis.call requires at least one argument");
-            _ = lua.lua_error(L);
-        } else {
-            // pcall: return {err = "..."}
-            lua.lua_createtable(L, 0, 1);
-            lua.lua_pushstring(L, "ERR redis.call requires at least one argument");
-            lua.lua_setfield(L, -2, "err");
-        }
-        return 1;
+        return pushErrTable(L, "ERR redis.call requires at least one argument");
     }
 
-    // Check read-only mode BEFORE building args (no allocations yet, so lua_error is safe).
+    // Check read-only mode BEFORE building args.
     // Peek at Lua stack position 1 (the command name string) without allocating.
     if (ctx.read_only and nargs > 0) {
         const arg1_type = lua.lua_type(L, 1);
@@ -114,29 +117,11 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
                 const classifyCommand = @import("../commands/strings.zig").classifyCommand;
                 const cmd_type = classifyCommand(cmd_name);
                 if (cmd_type == .write) {
-                    // No heap allocations yet — safe to call lua_error (longjmp) or return table.
                     const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR Write commands are not allowed from scripts in read-only mode (command: {s})", .{cmd_name});
-                    if (propagate_errors) {
-                        const err_z = ctx.allocator.dupeZ(u8, err_msg) catch {
-                            ctx.allocator.free(err_msg);
-                            lua.lua_pushstring(L, "ERR out of memory");
-                            _ = lua.lua_error(L);
-                            return 0;
-                        };
-                        ctx.allocator.free(err_msg);
-                        lua.lua_pushstring(L, err_z.ptr);
-                        ctx.allocator.free(err_z);
-                        _ = lua.lua_error(L);
-                        return 0; // unreachable
-                    } else {
-                        defer ctx.allocator.free(err_msg);
-                        lua.lua_createtable(L, 0, 1);
-                        const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-                        defer ctx.allocator.free(err_z);
-                        lua.lua_pushstring(L, err_z.ptr);
-                        lua.lua_setfield(L, -2, "err");
-                        return 1;
-                    }
+                    defer ctx.allocator.free(err_msg);
+                    const err_z = try ctx.allocator.dupeZ(u8, err_msg);
+                    defer ctx.allocator.free(err_z);
+                    return pushErrTable(L, err_z);
                 }
             }
         }
@@ -170,17 +155,7 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
                 const str = try std.fmt.allocPrint(ctx.allocator, "{d}", .{num});
                 break :blk RespValue{ .bulk_string = str };
             },
-            else => {
-                if (propagate_errors) {
-                    lua.lua_pushstring(L, "ERR redis.call arguments must be strings or numbers");
-                    _ = lua.lua_error(L);
-                } else {
-                    lua.lua_createtable(L, 0, 1);
-                    lua.lua_pushstring(L, "ERR redis.call arguments must be strings or numbers");
-                    lua.lua_setfield(L, -2, "err");
-                }
-                return 1;
-            },
+            else => return pushErrTable(L, "ERR redis.call arguments must be strings or numbers"),
         };
         try args.append(ctx.allocator, resp_val);
     }
@@ -222,22 +197,9 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
     ) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "ERR {s}", .{@errorName(err)});
         defer ctx.allocator.free(err_msg);
-
-        if (propagate_errors) {
-            const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-            defer ctx.allocator.free(err_z);
-            lua.lua_pushstring(L, err_z.ptr);
-            _ = lua.lua_error(L);
-            return 0;
-        } else {
-            // pcall: return {err = "..."}
-            lua.lua_createtable(L, 0, 1);
-            const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-            defer ctx.allocator.free(err_z);
-            lua.lua_pushstring(L, err_z.ptr);
-            lua.lua_setfield(L, -2, "err");
-            return 1;
-        }
+        const err_z = try ctx.allocator.dupeZ(u8, err_msg);
+        defer ctx.allocator.free(err_z);
+        return pushErrTable(L, err_z);
     };
     defer ctx.allocator.free(result);
 
@@ -245,43 +207,17 @@ fn redis_call_or_pcall(L: *lua.lua_State, propagate_errors: bool) !c_int {
     var parser = protocol.Parser.init(ctx.allocator);
     defer parser.deinit();
     const parsed = try parser.parse(result);
-    // parsed must be freed via parser.freeValue(parsed) on ALL exit paths.
-    // We cannot use defer here for the propagate_errors=true path because
-    // lua_error() uses longjmp which bypasses Zig defer cleanup.
+    defer parser.freeValue(parsed);
 
     // Check if result is an error
     if (parsed == .error_string or parsed == .bulk_error) {
         const err_msg = if (parsed == .error_string) parsed.error_string else parsed.bulk_error;
-
-        if (propagate_errors) {
-            // Dupe err_msg before freeing parsed (err_msg points into parsed).
-            const err_z = ctx.allocator.dupeZ(u8, err_msg) catch {
-                parser.freeValue(parsed);
-                lua.lua_pushstring(L, "ERR out of memory");
-                _ = lua.lua_error(L);
-                return 0; // unreachable
-            };
-            // Free all allocations before lua_error (longjmp bypasses defer).
-            parser.freeValue(parsed);
-            lua.lua_pushstring(L, err_z.ptr);
-            ctx.allocator.free(err_z);
-            _ = lua.lua_error(L);
-            return 0; // unreachable
-        } else {
-            // pcall: no longjmp, defer is safe.
-            defer parser.freeValue(parsed);
-            lua.lua_createtable(L, 0, 1);
-            const err_z = try ctx.allocator.dupeZ(u8, err_msg);
-            defer ctx.allocator.free(err_z);
-            lua.lua_pushstring(L, err_z.ptr);
-            lua.lua_setfield(L, -2, "err");
-            return 1;
-        }
+        const err_z = try ctx.allocator.dupeZ(u8, err_msg);
+        defer ctx.allocator.free(err_z);
+        return pushErrTable(L, err_z);
     }
 
-    // Normal result: push to Lua stack then free parsed.
-    // pushRespValueToLua is a Zig function so defer runs on both normal and error return.
-    defer parser.freeValue(parsed);
+    // Normal result: push to Lua stack (parsed is freed by the defer above).
     try pushRespValueToLua(L, ctx.allocator, parsed);
     return 1;
 }
@@ -406,16 +342,12 @@ export fn redis_replicate_commands_impl(L: *lua.lua_State) callconv(.c) c_int {
 export fn redis_setresp_impl(L: *lua.lua_State) callconv(.c) c_int {
     const nargs = lua.lua_gettop(L);
     if (nargs < 1 or lua.lua_type(L, 1) != lua.LUA_TNUMBER) {
-        lua.lua_pushstring(L, "ERR redis.setresp requires a numeric argument (2 or 3)");
-        _ = lua.lua_error(L);
-        return 0;
+        return pushErrTable(L, "ERR redis.setresp requires a numeric argument (2 or 3)");
     }
     const version = lua.lua_tonumber(L, 1);
     const ver_int: i32 = @intFromFloat(version);
     if (ver_int != 2 and ver_int != 3) {
-        lua.lua_pushstring(L, "RESP version must be 2 or 3.");
-        _ = lua.lua_error(L);
-        return 0;
+        return pushErrTable(L, "ERR RESP version must be 2 or 3.");
     }
     // No return value (nil)
     return 0;
@@ -502,6 +434,32 @@ pub fn registerRedisApi(L: *lua.lua_State, ctx: *RedisContext) !void {
 
     // Set redis as global
     lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "redis");
+
+    // Wrap redis.call and redis.setresp so the {err=...} tables their raw C callbacks
+    // return on failure are re-raised as real Lua errors via Lua's own error() builtin —
+    // safe because it throws from Lua bytecode, not from a Zig frame (see pushErrTable
+    // doc comment above for why a direct lua.lua_error() call from Zig is unsafe here).
+    const wrapper_code =
+        \\local function checked(rawfn)
+        \\  return function(...)
+        \\    local ret = rawfn(...)
+        \\    if type(ret) == 'table' and ret.err then
+        \\      error(ret.err, 0)
+        \\    end
+        \\    return ret
+        \\  end
+        \\end
+        \\redis.call = checked(redis.call)
+        \\redis.setresp = checked(redis.setresp)
+    ;
+    if (lua.luaL_loadstring(L, wrapper_code.ptr) != lua.LUA_OK) {
+        lua.lua_pop(L, 1);
+        return error.LuaWrapperLoadFailed;
+    }
+    if (lua.lua_pcall(L, 0, 0, 0) != lua.LUA_OK) {
+        lua.lua_pop(L, 1);
+        return error.LuaWrapperExecFailed;
+    }
 }
 
 /// Register redis.register_function() for Functions API
