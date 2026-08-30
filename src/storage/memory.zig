@@ -6299,6 +6299,13 @@ pub const Storage = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        return self.dumpValueLocked(allocator, key);
+    }
+
+    /// Same as dumpValue but assumes the caller already holds self.mutex.
+    /// Used by callers (e.g. AOF rewrite) that iterate storage.data under their own lock
+    /// and would deadlock on the non-reentrant mutex if they called dumpValue() directly.
+    pub fn dumpValueLocked(self: *Storage, allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
         const entry = self.data.get(key) orelse return null;
         const now = getCurrentTimestamp();
         if (entry.isExpired(now)) return null;

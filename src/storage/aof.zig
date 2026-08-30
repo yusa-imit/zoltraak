@@ -270,42 +270,34 @@ pub const Aof = struct {
                         }
                     }
                 },
-                .stream => {
-                    // Streams not yet implemented in AOF - skip for now
-                },
-                .hyperloglog => {
-                },
-                .json => {
-                    // JSON values handled by JSON.SET command in AOF replay
-                    // The command will be replayed from AOF log
-                },
-                .timeseries => {
-                    // Time series values handled by TS.* commands in AOF replay
-                    // The commands will be replayed from AOF log
-                },
-                .bloom => {
-                    // Bloom filter values handled by BF.* commands in AOF replay
-                    // The commands will be replayed from AOF log
-                },
-                .cuckoo => {
-                    // Cuckoo filter values handled by CF.* commands in AOF replay
-                    // The commands will be replayed from AOF log
-                },
-                .count_min_sketch => {
-                    // Count-Min Sketch values handled by CMS.* commands in AOF replay
-                    // The commands will be replayed from AOF log
-                },
-                .top_k => {
-                    // Top-K values handled by TOPK.* commands in AOF replay
-                    // The commands will be replayed from AOF log
-                },
-                .t_digest => {
-                    // T-Digest values handled by TDIGEST.* commands in AOF replay
-                    // The commands will be replayed from AOF log
-                },
-                .vector_set => {
-                    // Vector set values handled by VADD/VSETATTR commands in AOF replay
-                    // The commands will be replayed from AOF log
+                .stream,
+                .hyperloglog,
+                .json,
+                .timeseries,
+                .bloom,
+                .cuckoo,
+                .count_min_sketch,
+                .top_k,
+                .t_digest,
+                .vector_set,
+                => {
+                    // These types have no compact command-based reconstruction (e.g. a
+                    // stream's entries or a HyperLogLog's registers can't be rebuilt from
+                    // a handful of write commands), so rewrite them via the same DUMP/RESTORE
+                    // binary format used by the DUMP/RESTORE/MIGRATE commands instead of
+                    // dropping them from the rewritten AOF (which used to silently lose this
+                    // data on every BGREWRITEAOF).
+                    const dump = (try storage.dumpValueLocked(allocator, key)) orelse continue;
+                    defer allocator.free(dump);
+
+                    const ttl_str = if (expires_at) |exp| blk: {
+                        const remaining = exp - now;
+                        if (remaining <= 0) continue;
+                        break :blk try std.fmt.allocPrint(allocator, "{d}", .{remaining});
+                    } else try allocator.dupe(u8, "0");
+                    defer allocator.free(ttl_str);
+
+                    try writeRespArgs(w, &[_][]const u8{ "RESTORE", key, ttl_str, dump, "REPLACE" });
                 },
             }
         }
@@ -439,6 +431,21 @@ fn executeStorageCommand(storage: *Storage, args: [][]u8, allocator: std.mem.All
         _ = try storage.zrem(args[1], members);
     } else if (std.mem.eql(u8, cmd, "FLUSHALL") or std.mem.eql(u8, cmd, "FLUSHDB")) {
         storage.flushAll();
+    } else if (std.mem.eql(u8, cmd, "RESTORE")) {
+        if (args.len < 4) return error.InvalidAofCommand;
+        const ttl_ms = std.fmt.parseInt(i64, args[2], 10) catch return error.InvalidAofCommand;
+        var replace = false;
+        var absttl = false;
+        for (args[4..]) |opt| {
+            if (std.ascii.eqlIgnoreCase(opt, "REPLACE")) {
+                replace = true;
+            } else if (std.ascii.eqlIgnoreCase(opt, "ABSTTL")) {
+                absttl = true;
+            }
+        }
+        storage.restoreValue(args[1], args[3], ttl_ms, replace, absttl) catch |err| {
+            if (err != error.KeyAlreadyExists) return err;
+        };
     }
     // PEXPIRE and read-only commands (GET, EXISTS, etc.) are safely ignored during replay
 }

@@ -2492,6 +2492,31 @@ pub fn build(b: *std.Build) void {
     const run_iter441_tests = b.addRunArtifact(iter441_tests);
     test_step.dependOn(&run_iter441_tests.step);
 
+    // Iteration 442: AOF rewrite (BGREWRITEAOF) data loss for stream/HyperLogLog/JSON/
+    // timeseries/bloom/cuckoo/count-min-sketch/top-k/t-digest/vector-set keys
+    const iter442_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter442.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter442_tests.linkSystemLibrary("luajit-5.1");
+    iter442_tests.linkLibC();
+    if (target.result.os.tag == .macos) {
+        iter442_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter442_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter442_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
+
+    const run_iter442_tests = b.addRunArtifact(iter442_tests);
+    test_step.dependOn(&run_iter442_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
