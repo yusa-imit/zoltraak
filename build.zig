@@ -2468,6 +2468,30 @@ pub fn build(b: *std.Build) void {
     const run_iter437_tests = b.addRunArtifact(iter437_tests);
     test_step.dependOn(&run_iter437_tests.step);
 
+    // Iteration 441: DUMP/RESTORE type-byte collision + missing serialization fix
+    const iter441_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter441.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter441_tests.linkSystemLibrary("luajit-5.1");
+    iter441_tests.linkLibC();
+    if (target.result.os.tag == .macos) {
+        iter441_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter441_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter441_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
+
+    const run_iter441_tests = b.addRunArtifact(iter441_tests);
+    test_step.dependOn(&run_iter441_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

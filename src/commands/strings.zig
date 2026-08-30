@@ -383,6 +383,21 @@ fn notifyKeyspaceEvent(
     ) catch {};
 }
 
+/// Recursively frees a TOPK.*/TDIGEST.* command result's owned bulk_string payloads
+/// (and any wrapping array). Safe because every bulk_string these commands return is
+/// heap-allocated (dupe'd or formatted), while their error_string/simple_string replies
+/// are always static literals that must not be passed to `allocator.free`.
+fn freeTopkTdigestResult(value: RespValue, allocator: std.mem.Allocator) void {
+    switch (value) {
+        .bulk_string => |s| allocator.free(s),
+        .array => |arr| {
+            for (arr) |item| freeTopkTdigestResult(item, allocator);
+            allocator.free(arr);
+        },
+        else => {},
+    }
+}
+
 /// Execute a RESP command and return the serialized response.
 /// Caller owns returned memory and must free it.
 /// If `aof` is non-null, write commands are appended to it after successful execution.
@@ -2764,12 +2779,22 @@ pub fn executeCommand(
             }
         }
 
-        // Count-Min Sketch (CMS.*) commands
-        else if (std.mem.startsWith(u8, cmd_upper, "CMS.")) {
-            // Extract command args (skip command name)
+        // Count-Min Sketch (CMS.*), Top-K (TOPK.*), and T-Digest (TDIGEST.*) commands
+        else if (std.mem.startsWith(u8, cmd_upper, "CMS.") or
+            std.mem.startsWith(u8, cmd_upper, "TOPK.") or
+            std.mem.startsWith(u8, cmd_upper, "TDIGEST."))
+        {
+            // Extract command args (skip command name) — CMS.* commands expect args
+            // without the command name at index 0.
             const args = try allocator.alloc(RespValue, array.len - 1);
             defer allocator.free(args);
             @memcpy(args, array[1..]);
+
+            // TOPK.*/TDIGEST.* commands expect the full array, with the command name
+            // still at index 0 (unlike CMS.*) — keep both slices in sync with `array`.
+            const full_args = try allocator.alloc(RespValue, array.len);
+            defer allocator.free(full_args);
+            @memcpy(full_args, array);
 
             if (std.mem.eql(u8, cmd_upper, "CMS.INITBYDIM")) {
                 const result = try cms_cmds.cmdCmsInitByDim(allocator, storage, args);
@@ -2783,11 +2808,19 @@ pub fn executeCommand(
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CMS.INCRBY")) {
                 const result = try cms_cmds.cmdCmsIncrBy(allocator, storage, args);
+                defer switch (result) {
+                    .array => |a| allocator.free(a),
+                    else => {},
+                };
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "CMS.QUERY")) {
                 const result = try cms_cmds.cmdCmsQuery(allocator, storage, args);
+                defer switch (result) {
+                    .array => |a| allocator.free(a),
+                    else => {},
+                };
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
@@ -2802,108 +2835,129 @@ pub fn executeCommand(
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.RESERVE")) {
-                const result = try topk_cmds.cmdTopkReserve(allocator, storage, args);
+                const result = try topk_cmds.cmdTopkReserve(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.ADD")) {
-                const result = try topk_cmds.cmdTopkAdd(allocator, storage, args);
+                const result = try topk_cmds.cmdTopkAdd(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.QUERY")) {
                 const protocol_version = getClientProtocol(client_registry, client_id);
-                const result = try topk_cmds.cmdTopkQuery(allocator, storage, args, protocol_version);
+                const result = try topk_cmds.cmdTopkQuery(allocator, storage, full_args, protocol_version);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.COUNT")) {
-                const result = try topk_cmds.cmdTopkCount(allocator, storage, args);
+                const result = try topk_cmds.cmdTopkCount(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.INCRBY")) {
-                const result = try topk_cmds.cmdTopkIncrby(allocator, storage, args);
+                const result = try topk_cmds.cmdTopkIncrby(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.LIST")) {
-                const result = try topk_cmds.cmdTopkList(allocator, storage, args);
+                const result = try topk_cmds.cmdTopkList(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TOPK.INFO")) {
-                const result = try topk_cmds.cmdTopkInfo(allocator, storage, args);
+                const result = try topk_cmds.cmdTopkInfo(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.CREATE")) {
-                const result = try tdigest_cmds.cmdTdigestCreate(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestCreate(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.ADD")) {
-                const result = try tdigest_cmds.cmdTdigestAdd(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestAdd(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.RESET")) {
-                const result = try tdigest_cmds.cmdTdigestReset(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestReset(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.MERGE")) {
-                const result = try tdigest_cmds.cmdTdigestMerge(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestMerge(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.QUANTILE")) {
-                const result = try tdigest_cmds.cmdTdigestQuantile(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestQuantile(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.CDF")) {
-                const result = try tdigest_cmds.cmdTdigestCdf(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestCdf(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.MIN")) {
-                const result = try tdigest_cmds.cmdTdigestMin(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestMin(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.MAX")) {
-                const result = try tdigest_cmds.cmdTdigestMax(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestMax(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.RANK")) {
-                const result = try tdigest_cmds.cmdTdigestRank(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestRank(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.REVRANK")) {
-                const result = try tdigest_cmds.cmdTdigestRevrank(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestRevrank(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.BYRANK")) {
-                const result = try tdigest_cmds.cmdTdigestByrank(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestByrank(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.BYREVRANK")) {
-                const result = try tdigest_cmds.cmdTdigestByrevrank(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestByrevrank(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.INFO")) {
-                const result = try tdigest_cmds.cmdTdigestInfo(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestInfo(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);
             } else if (std.mem.eql(u8, cmd_upper, "TDIGEST.TRIMMED_MEAN")) {
-                const result = try tdigest_cmds.cmdTdigestTrimmedMean(allocator, storage, args);
+                const result = try tdigest_cmds.cmdTdigestTrimmedMean(allocator, storage, full_args);
+                defer freeTopkTdigestResult(result, allocator);
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 break :blk try w.writeRespValue(result);

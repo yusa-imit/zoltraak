@@ -6309,23 +6309,27 @@ pub const Storage = struct {
 
         const w = buf.writer(allocator);
 
-        // Write type byte
+        // Write type byte.
+        // NOTE: this scheme is local to dumpValue/restoreValue (DUMP/RESTORE/MIGRATE) and
+        // intentionally distinct from persistence.zig's RDB_TYPE_* constants (separate format).
+        // Keep the two switches (here and in restoreValue) in sync — a mismatch silently
+        // misinterprets payload bytes as the wrong type instead of failing loudly.
         const type_byte: u8 = switch (entry) {
-            .string => 0x00, // RDB_TYPE_STRING
-            .list => 0x01, // RDB_TYPE_LIST
-            .set => 0x02, // RDB_TYPE_SET
-            .hash => 0x04, // RDB_TYPE_HASH
-            .sorted_set => 0x03, // RDB_TYPE_SORTED_SET
-            .stream => 0xFF, // Stream type
-            .hyperloglog => 0xFE, // HyperLogLog type
-            .json => 0x0F, // JSON type
-            .timeseries => 0xFD, // Time Series type
-            .bloom => 0xFC, // Bloom Filter type
-            .cuckoo => 0xFB, // Cuckoo Filter type
-            .count_min_sketch => 0xFA, // Count-Min Sketch type
-            .top_k => 0xF9, // Top-K type
-            .t_digest => 0xF8, // T-Digest type
-            .vector_set => 0xF7, // Vector Set type
+            .string => 0x00,
+            .list => 0x01,
+            .set => 0x02,
+            .sorted_set => 0x03,
+            .hash => 0x04,
+            .stream => 0x05,
+            .hyperloglog => 0x06,
+            .json => 0x07,
+            .timeseries => 0x08,
+            .bloom => 0x09,
+            .cuckoo => 0x0A,
+            .count_min_sketch => 0x0B,
+            .top_k => 0x0C,
+            .t_digest => 0x0D,
+            .vector_set => 0x0E,
         };
         try w.writeByte(type_byte);
 
@@ -6408,33 +6412,40 @@ pub const Storage = struct {
                 defer j.allocator.free(json_str);
                 try writeBlob(w, json_str);
             },
-            .timeseries => {
-                // Time series not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .timeseries => |ts| {
+                const bytes = try ts.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
-            .bloom => {
-                // Bloom filter not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .bloom => |b| {
+                const bytes = try b.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
-            .cuckoo => {
-                // Cuckoo filter not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .cuckoo => |c| {
+                const bytes = try c.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
-            .count_min_sketch => {
-                // Count-Min Sketch not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .count_min_sketch => |cms| {
+                const bytes = try cms.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
-            .top_k => {
-                // Top-K not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .top_k => |tk| {
+                const bytes = try tk.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
-            .t_digest => {
-                // T-Digest not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .t_digest => |td| {
+                const bytes = try td.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
-            .vector_set => {
-                // Vector set not yet implemented in dump
-                try w.writeInt(u32, 0, .little);
+            .vector_set => |vs| {
+                const bytes = try vs.rdbSerialize(allocator);
+                defer allocator.free(bytes);
+                try writeBlob(w, bytes);
             },
         }
 
@@ -6606,7 +6617,7 @@ pub const Storage = struct {
 
                 value = Value{ .sorted_set = .{ .members = members, .sorted_list = sorted_list, .expires_at = expires_at } };
             },
-            0xFE => { // Stream
+            0x05 => { // Stream
                 if (payload.len < pos + 4) return error.InvalidDumpPayload;
                 const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
                 pos += 4;
@@ -6661,7 +6672,7 @@ pub const Storage = struct {
                     .max_deleted_entry_id = .{ .ms = 0, .seq = 0 },
                 } };
             },
-            0xFD => { // HyperLogLog
+            0x06 => { // HyperLogLog
                 const registers_data = try readBlob(payload, &pos, self.allocator);
                 defer self.allocator.free(registers_data);
 
@@ -6672,6 +6683,59 @@ pub const Storage = struct {
                 @memcpy(&hll.registers, registers_data);
 
                 value = Value{ .hyperloglog = hll };
+            },
+            0x07 => { // JSON
+                const json_str = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(json_str);
+
+                const json_root = try json_value_mod.JsonNode.parse(self.allocator, json_str);
+                value = Value{ .json = .{
+                    .root = json_root,
+                    .expires_at = expires_at,
+                    .allocator = self.allocator,
+                } };
+            },
+            0x08 => { // Time Series
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .timeseries = try TimeSeriesValue.rdbDeserialize(self.allocator, raw, expires_at) };
+            },
+            0x09 => { // Bloom filter
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .bloom = try BloomFilterValue.rdbDeserialize(self.allocator, raw, expires_at) };
+            },
+            0x0A => { // Cuckoo filter
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .cuckoo = try CuckooFilterValue.rdbDeserialize(self.allocator, raw, expires_at) };
+            },
+            0x0B => { // Count-Min Sketch
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .count_min_sketch = try CountMinSketchValue.rdbDeserialize(self.allocator, raw) };
+            },
+            0x0C => { // Top-K
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .top_k = try TopKValue.rdbDeserialize(self.allocator, raw, expires_at) };
+            },
+            0x0D => { // T-Digest
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .t_digest = try TDigestValue.rdbDeserialize(self.allocator, raw) };
+            },
+            0x0E => { // Vector Set
+                const raw = try readBlob(payload, &pos, self.allocator);
+                defer self.allocator.free(raw);
+
+                value = Value{ .vector_set = try VectorSetValue.rdbDeserialize(self.allocator, raw) };
             },
             else => return error.UnknownDumpType,
         }
