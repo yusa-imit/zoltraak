@@ -4,11 +4,11 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ## Project Status
 
-**Current: v0.2.5 — Iterations 1-429 complete (500+ Redis commands)**
+**Current: v0.2.12 — Iterations 1-443 complete (500+ Redis commands)**
 **Target: v1.0 — 100% Redis compatibility (500+ commands)**
 **Roadmap: [docs/PRD.md](docs/PRD.md)**
 
-429 iterations complete (500+ command implementations). See `docs/milestones.md` for detailed breakdown, `docs/PRD.md` for full roadmap.
+443 iterations complete (500+ command implementations). See `docs/milestones.md` for detailed breakdown, `docs/PRD.md` for full roadmap.
 
 ### Known stubs (need real implementation for 1.0)
 

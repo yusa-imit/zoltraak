@@ -2517,6 +2517,33 @@ pub fn build(b: *std.Build) void {
     const run_iter442_tests = b.addRunArtifact(iter442_tests);
     test_step.dependOn(&run_iter442_tests.step);
 
+    // Iteration 443: Storage.deinit() leaked the duped key string for interrupted
+    // CF.LOADCHUNK sequences (cuckoo_load_contexts freed the LoadContext value but
+    // not the map key), unlike the sibling bloom_load_contexts cleanup which already
+    // frees both.
+    const iter443_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter443.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter443_tests.linkSystemLibrary("luajit-5.1");
+    iter443_tests.linkLibC();
+    if (target.result.os.tag == .macos) {
+        iter443_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter443_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter443_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
+
+    const run_iter443_tests = b.addRunArtifact(iter443_tests);
+    test_step.dependOn(&run_iter443_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{

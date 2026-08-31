@@ -1356,6 +1356,7 @@ pub const Storage = struct {
         // Free cuckoo load contexts
         var ctx_it = self.cuckoo_load_contexts.iterator();
         while (ctx_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.*.deinit();
             self.allocator.destroy(entry.value_ptr.*);
         }

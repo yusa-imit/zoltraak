@@ -37,6 +37,7 @@ pub const tui_advanced = @import("tui_advanced.zig");
 pub const bloom_commands = @import("commands/bloom.zig");
 pub const timeseries_storage = @import("storage/timeseries.zig");
 pub const cluster_commands = @import("commands/cluster.zig");
+pub const cuckoo_storage = @import("storage/cuckoo.zig");
 
 // Re-export common types
 pub const ClientRegistry = client.ClientRegistry;
