@@ -81,22 +81,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter414 - sailor v2.87.0 build verification" {
     // Verify sailor v2.87.0 compiles (SlopeChart widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter414 - SlopeChart widget available in sailor v2.87.0 tui.widgets" {
     const sailor = @import("sailor");
     const SlopeChart = sailor.tui.widgets.SlopeChart;
-    _ = SlopeChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(SlopeChart) == .@"struct");
 }
 
 test "iter414 - SlopeItem type available in sailor v2.87.0 tui.widgets" {
     const sailor = @import("sailor");
     const SlopeItem = sailor.tui.widgets.SlopeItem;
-    _ = SlopeItem;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(SlopeItem) == .@"struct");
 }
 
 test "iter414 - SlopeChart.MAX_ITEMS equals 16" {
@@ -147,12 +144,13 @@ test "iter414 - SlopeChart.withLeftLabel/withRightLabel set column headers" {
 // ─── tui_advanced DatabaseKeyCountChange + renderKeyspaceChangeSlope ─────────
 
 test "iter414 - DatabaseKeyCountChange struct accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderKeyspaceChangeSlope
-    // maps DatabaseKeyCountChange samples to sailor's SlopeItem type
-    // (left_value=before, right_value=after).
-    try testing.expect(true);
+    // renderKeyspaceChangeSlope maps DatabaseKeyCountChange samples to
+    // sailor's SlopeItem type (left_value=before, right_value=after).
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const d = tui_adv.DatabaseKeyCountChange{};
+    try testing.expectEqual(@as(u16, 0), d.db_index);
+    try testing.expectEqual(@as(f32, 0), d.before_count);
+    try testing.expectEqual(@as(f32, 0), d.after_count);
 }
 
 test "iter414 - SlopeItem left/right map from before/after counts as-is" {

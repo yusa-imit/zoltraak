@@ -74,24 +74,21 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter400 - sailor v2.78.0 build verification" {
     // Verify sailor v2.78.0 compiles (RadialBar widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter400 - RadialBar widget available in sailor v2.78.0 tui.widgets" {
     // RadialBar lives in sailor.tui.widgets namespace.
     const sailor = @import("sailor");
     const RadialBar = sailor.tui.widgets.RadialBar;
-    _ = RadialBar;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(RadialBar) == .@"struct");
 }
 
 test "iter400 - RadialArc type available in sailor v2.78.0 tui.widgets" {
     // RadialArc lives in sailor.tui.widgets namespace.
     const sailor = @import("sailor");
     const RadialArc = sailor.tui.widgets.RadialArc;
-    _ = RadialArc;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(RadialArc) == .@"struct");
 }
 
 test "iter400 - RadialBar.MAX_ARCS equals 8" {
@@ -130,11 +127,12 @@ test "iter400 - RadialBar.withShowValues sets flag" {
 // ─── tui_advanced ServerMetrics and renderRadialBar ──────────────────────────
 
 test "iter400 - ServerMetrics struct default values" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // Verify ServerMetrics struct is accessible via zoltraak module
-    // (tui_advanced is compiled as part of zoltraak)
-    try testing.expect(true);
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const m = tui_adv.ServerMetrics{};
+    try testing.expectEqual(@as(f32, 0), m.cpu_usage);
+    try testing.expectEqual(@as(f32, 0), m.memory_usage);
+    try testing.expectEqual(@as(f32, 0), m.network_usage);
+    try testing.expectEqual(@as(f32, 0), m.disk_usage);
 }
 
 test "iter400 - RadialArc value clamping: above 1.0" {

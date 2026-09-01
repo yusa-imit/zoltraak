@@ -76,23 +76,20 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter403 - sailor v2.80.0 build verification" {
     // Verify sailor v2.80.0 compiles (ViolinPlot widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter403 - ViolinPlot widget available in sailor v2.80.0 tui.widgets" {
     // ViolinPlot lives in sailor.tui.widgets namespace.
     const sailor = @import("sailor");
     const ViolinPlot = sailor.tui.widgets.ViolinPlot;
-    _ = ViolinPlot;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ViolinPlot) == .@"struct");
 }
 
 test "iter403 - ViolinSeries type available in sailor v2.80.0 tui.widgets" {
     const sailor = @import("sailor");
     const ViolinSeries = sailor.tui.widgets.ViolinSeries;
-    _ = ViolinSeries;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ViolinSeries) == .@"struct");
 }
 
 test "iter403 - ViolinPlot.MAX_SERIES equals 8" {
@@ -133,11 +130,11 @@ test "iter403 - ViolinPlot.withFocused sets focused index" {
 // ─── tui_advanced KeySizeDistribution and renderViolinPlot ───────────────────
 
 test "iter403 - KeySizeDistribution struct default values" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // Verify KeySizeDistribution struct is accessible via zoltraak module
-    // (tui_advanced is compiled as part of zoltraak)
-    try testing.expect(true);
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const d = tui_adv.KeySizeDistribution{};
+    try testing.expectEqual(@as(usize, 0), d.string_sizes.len);
+    try testing.expectEqual(@as(usize, 0), d.list_sizes.len);
+    try testing.expectEqual(@as(usize, 0), d.hash_sizes.len);
 }
 
 test "iter403 - ViolinSeries holds size samples as-is" {

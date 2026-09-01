@@ -83,24 +83,21 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter419 - sailor v2.90.0 build verification" {
     // Verify sailor v2.90.0 compiles (MosaicPlot widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter419 - MosaicPlot widget available in sailor v2.90.0 tui.widgets" {
     const sailor = @import("sailor");
     const MosaicPlot = sailor.tui.widgets.MosaicPlot;
-    _ = MosaicPlot;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(MosaicPlot) == .@"struct");
 }
 
 test "iter419 - MosaicColumn/MosaicSegment types available in sailor v2.90.0 tui.widgets" {
     const sailor = @import("sailor");
     const MosaicColumn = sailor.tui.widgets.MosaicColumn;
     const MosaicSegment = sailor.tui.widgets.MosaicSegment;
-    _ = MosaicColumn;
-    _ = MosaicSegment;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(MosaicColumn) == .@"struct");
+    try testing.expect(@typeInfo(MosaicSegment) == .@"struct");
 }
 
 test "iter419 - MosaicPlot.MAX_COLUMNS equals 16" {
@@ -182,12 +179,17 @@ test "iter419 - MosaicPlot.grandTotal sums proportional column totals" {
 // ─── tui_advanced DatabaseMemoryByType + renderMemoryByTypeMosaic ───────────
 
 test "iter419 - DatabaseMemoryByType struct accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
     // tui_advanced is compiled as part of zoltraak; renderMemoryByTypeMosaic
     // maps DatabaseMemoryByType samples to sailor's MosaicColumn/MosaicSegment
     // types (db_index -> column label, per-type bytes -> segment values).
-    try testing.expect(true);
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const d = tui_adv.DatabaseMemoryByType{};
+    try testing.expectEqual(@as(u16, 0), d.db_index);
+    try testing.expectEqual(@as(f32, 0), d.string_bytes);
+    try testing.expectEqual(@as(f32, 0), d.list_bytes);
+    try testing.expectEqual(@as(f32, 0), d.hash_bytes);
+    try testing.expectEqual(@as(f32, 0), d.set_bytes);
+    try testing.expectEqual(@as(f32, 0), d.zset_bytes);
 }
 
 test "iter419 - MosaicSegment label/value map from per-type bytes as-is" {

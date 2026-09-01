@@ -315,8 +315,8 @@ test "iter395 - GEOPOS RESP3 single member no-members query returns empty outer 
 }
 
 test "iter395 - sailor v2.73.0 build verification" {
-    // This test verifies that the project builds correctly with sailor v2.73.0.
     // Sailor v2.73.0 adds BubbleChart widget (library-level change, no API changes needed).
-    // The build.zig.zon update and successful compilation is the key validation.
-    try testing.expect(true);
+    const sailor = @import("sailor");
+    try testing.expect(@hasDecl(sailor, "tui"));
+    try testing.expect(@typeInfo(sailor.tui.widgets.BubbleChart) == .@"struct");
 }

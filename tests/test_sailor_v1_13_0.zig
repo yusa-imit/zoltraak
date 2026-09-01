@@ -16,71 +16,44 @@ test "sailor v1.13.0 module exists" {
 test "sailor v1.13.0 syntax highlighting" {
     const sailor = @import("sailor");
 
-    // Verify SyntaxHighlighter type exists
-    // This is a compile-time check - if the types don't exist, compilation fails
-    if (@hasDecl(sailor, "SyntaxHighlighter")) {
-        // Type exists, test passes
-        try testing.expect(true);
-    } else {
-        // Feature not available in this version
-        try testing.expect(false);
-    }
+    // As of sailor v2.x, syntax highlighting lives under tui.syntax.Lexer
+    // (moved out of the top-level namespace since v1.13.0).
+    try testing.expect(@hasDecl(sailor.tui, "syntax"));
+    try testing.expect(@hasDecl(sailor.tui.syntax, "Lexer"));
 }
 
 // Test 3: Code editor widget
 test "sailor v1.13.0 code editor widget" {
     const sailor = @import("sailor");
 
-    // Verify CodeEditor widget type exists
-    if (@hasDecl(sailor, "CodeEditor")) {
-        // Type exists, test passes
-        try testing.expect(true);
-    } else {
-        // Feature not available in this version
-        try testing.expect(false);
-    }
+    // As of sailor v2.x, the code editor widget is tui.widgets.Editor
+    // (moved out of the top-level namespace since v1.13.0).
+    try testing.expect(@hasDecl(sailor.tui.widgets, "Editor"));
 }
 
 // Test 4: Autocomplete widget
 test "sailor v1.13.0 autocomplete widget" {
     const sailor = @import("sailor");
 
-    // Verify Autocomplete widget type exists (CRITICAL for Redis CLI UX)
-    if (@hasDecl(sailor, "Autocomplete")) {
-        // Type exists, test passes
-        try testing.expect(true);
-    } else {
-        // Feature not available in this version
-        try testing.expect(false);
-    }
+    // As of sailor v2.x, Autocomplete lives under tui.widgets
+    // (CRITICAL for Redis CLI UX).
+    try testing.expect(@hasDecl(sailor.tui.widgets, "Autocomplete"));
 }
 
 // Test 5: Multi-cursor editing support
 test "sailor v1.13.0 multi-cursor editing" {
     const sailor = @import("sailor");
 
-    // Verify MultiCursor type exists
-    if (@hasDecl(sailor, "MultiCursor")) {
-        // Type exists, test passes
-        try testing.expect(true);
-    } else {
-        // Feature not available in this version
-        try testing.expect(false);
-    }
+    // As of sailor v2.x, MultiCursor lives under tui.widgets.
+    try testing.expect(@hasDecl(sailor.tui.widgets, "MultiCursor"));
 }
 
 // Test 6: Rich text input
 test "sailor v1.13.0 rich text input" {
     const sailor = @import("sailor");
 
-    // Verify RichTextInput type exists
-    if (@hasDecl(sailor, "RichTextInput")) {
-        // Type exists, test passes
-        try testing.expect(true);
-    } else {
-        // Feature not available in this version
-        try testing.expect(false);
-    }
+    // As of sailor v2.x, RichTextInput lives under tui.widgets.
+    try testing.expect(@hasDecl(sailor.tui.widgets, "RichTextInput"));
 }
 
 // Test 7: Syntax highlighting for Redis commands (integration test)

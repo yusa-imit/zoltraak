@@ -79,22 +79,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 
 test "iter423 - sailor v2.93.0 build verification" {
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter423 - CalendarHeatmap widget available in sailor v2.93.0 tui.widgets" {
     const sailor = @import("sailor");
     const CalendarHeatmap = sailor.tui.widgets.CalendarHeatmap;
-    _ = CalendarHeatmap;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(CalendarHeatmap) == .@"struct");
 }
 
 test "iter423 - Calendar widget available in sailor v2.93.0 tui.widgets" {
     const sailor = @import("sailor");
     const Calendar = sailor.tui.widgets.Calendar;
-    _ = Calendar;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(Calendar) == .@"struct");
 }
 
 test "iter423 - CalendarHeatmap.MAX_ENTRIES equals 371" {
@@ -134,12 +131,11 @@ test "iter423 - Calendar.setRange sets both start and end" {
 // ─── tui_advanced DailyActivityCount + renderKeyActivityHeatmap ─────────────
 
 test "iter423 - DailyActivityCount/renderKeyActivityHeatmap accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderKeyActivityHeatmap
-    // maps DailyActivityCount samples into sailor's CalendarHeatmap for a
-    // rolling command/expiry activity contribution grid.
-    try testing.expect(true);
+    // renderKeyActivityHeatmap maps DailyActivityCount samples into sailor's
+    // CalendarHeatmap for a rolling command/expiry activity contribution grid.
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const d = tui_adv.DailyActivityCount{};
+    try testing.expectEqual(@as(u64, 0), d.count);
 }
 
 test "iter423 - DailyActivityCount default count is zero" {
@@ -184,8 +180,8 @@ test "iter423 - renderKeyActivityHeatmap is a no-op on zero-size area" {
     const counts = [_]tui_adv.tui_advanced.DailyActivityCount{.{ .count = 3 }};
     var values_buf: [4]f32 = undefined;
     tui_adv.tui_advanced.renderKeyActivityHeatmap(&frame, area, start, &counts, null, &values_buf);
-    // No crash — buffer content is untouched since nothing was rendered.
-    try testing.expect(true);
+    // Zero-width area must be a genuine no-op: buffer stays at its blank default.
+    try testing.expectEqual(@as(u21, ' '), buf.getChar(0, 0));
 }
 
 test "iter423 - renderKeyActivityHeatmap truncates counts exceeding values buffer capacity" {

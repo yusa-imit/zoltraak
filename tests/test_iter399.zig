@@ -75,24 +75,21 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter399 - sailor v2.77.0 build verification" {
     // Verify sailor v2.77.0 compiles (DotPlot widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter399 - DotPlot widget available in sailor v2.77.0" {
     // DotPlot lives in sailor.tui.widgets (not top-level sailor.tui).
     const sailor = @import("sailor");
     const DotPlot = sailor.tui.widgets.DotPlot;
-    _ = DotPlot;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(DotPlot) == .@"struct");
 }
 
 test "iter399 - DotPlotItem type available in sailor v2.77.0" {
     // DotPlotItem lives in sailor.tui.widgets (not top-level sailor.tui).
     const sailor = @import("sailor");
     const DotPlotItem = sailor.tui.widgets.DotPlotItem;
-    _ = DotPlotItem;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(DotPlotItem) == .@"struct");
 }
 
 // ─── GEORADIUSBYMEMBER edge cases ─────────────────────────────────────────────

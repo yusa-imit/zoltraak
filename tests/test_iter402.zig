@@ -75,23 +75,20 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter402 - sailor v2.79.0 build verification" {
     // Verify sailor v2.79.0 compiles (StreamGraph widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter402 - StreamGraph widget available in sailor v2.79.0 tui.widgets" {
     // StreamGraph lives in sailor.tui.widgets namespace.
     const sailor = @import("sailor");
     const StreamGraph = sailor.tui.widgets.StreamGraph;
-    _ = StreamGraph;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(StreamGraph) == .@"struct");
 }
 
 test "iter402 - StreamLayer type available in sailor v2.79.0 tui.widgets" {
     const sailor = @import("sailor");
     const StreamLayer = sailor.tui.widgets.StreamLayer;
-    _ = StreamLayer;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(StreamLayer) == .@"struct");
 }
 
 test "iter402 - StreamGraph.MAX_LAYERS equals 8" {
@@ -132,11 +129,11 @@ test "iter402 - StreamGraph.withFocused sets focused index" {
 // ─── tui_advanced CommandThroughputHistory and renderStreamGraph ─────────────
 
 test "iter402 - CommandThroughputHistory struct default values" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // Verify CommandThroughputHistory struct is accessible via zoltraak module
-    // (tui_advanced is compiled as part of zoltraak)
-    try testing.expect(true);
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const h = tui_adv.CommandThroughputHistory{};
+    try testing.expectEqual(@as(usize, 0), h.get_samples.len);
+    try testing.expectEqual(@as(usize, 0), h.set_samples.len);
+    try testing.expectEqual(@as(usize, 0), h.del_samples.len);
 }
 
 test "iter402 - StreamLayer holds non-negative sample values as-is" {

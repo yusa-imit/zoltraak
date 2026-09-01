@@ -78,22 +78,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter406 - sailor v2.82.0 build verification" {
     // Verify sailor v2.82.0 compiles (BoxPlot widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter406 - BoxPlot widget available in sailor v2.82.0 tui.widgets" {
     const sailor = @import("sailor");
     const BoxPlot = sailor.tui.widgets.BoxPlot;
-    _ = BoxPlot;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(BoxPlot) == .@"struct");
 }
 
 test "iter406 - BoxPlotSeries type available in sailor v2.82.0 tui.widgets" {
     const sailor = @import("sailor");
     const BoxPlotSeries = sailor.tui.widgets.BoxPlotSeries;
-    _ = BoxPlotSeries;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(BoxPlotSeries) == .@"struct");
 }
 
 test "iter406 - BoxPlot.MAX_SERIES equals 8" {
@@ -148,12 +145,13 @@ test "iter406 - fiveNumberSummary computes correct quartiles" {
 // ─── tui_advanced KeySizeDistribution reuse and renderBoxPlot ────────────────
 
 test "iter406 - KeySizeDistribution struct default values (reused for BoxPlot)" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // Verify KeySizeDistribution struct is accessible via zoltraak module
-    // (tui_advanced is compiled as part of zoltraak; renderBoxPlot reuses
-    // the same struct as renderViolinPlot for a quartile-summary companion view)
-    try testing.expect(true);
+    // renderBoxPlot reuses the same struct as renderViolinPlot for a
+    // quartile-summary companion view.
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const d = tui_adv.KeySizeDistribution{};
+    try testing.expectEqual(@as(usize, 0), d.string_sizes.len);
+    try testing.expectEqual(@as(usize, 0), d.list_sizes.len);
+    try testing.expectEqual(@as(usize, 0), d.hash_sizes.len);
 }
 
 test "iter406 - BoxPlotSeries holds size samples as-is" {

@@ -79,22 +79,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter408 - sailor v2.83.0 build verification" {
     // Verify sailor v2.83.0 compiles (CandlestickChart widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter408 - CandlestickChart widget available in sailor v2.83.0 tui.widgets" {
     const sailor = @import("sailor");
     const CandlestickChart = sailor.tui.widgets.CandlestickChart;
-    _ = CandlestickChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(CandlestickChart) == .@"struct");
 }
 
 test "iter408 - Candle type available in sailor v2.83.0 tui.widgets" {
     const sailor = @import("sailor");
     const Candle = sailor.tui.widgets.Candle;
-    _ = Candle;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(Candle) == .@"struct");
 }
 
 test "iter408 - CandlestickChart.MAX_CANDLES equals 64" {
@@ -148,12 +145,15 @@ test "iter408 - CandlestickChart.withFocused sets focused index" {
 // ─── tui_advanced MemoryUsagePeriod + renderMemoryUsageCandles ───────────────
 
 test "iter408 - MemoryUsagePeriod struct default values" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // Verify MemoryUsagePeriod struct is accessible via zoltraak module
-    // (tui_advanced is compiled as part of zoltraak; renderMemoryUsageCandles
-    // maps MemoryUsagePeriod samples to sailor's OHLC Candle type).
-    try testing.expect(true);
+    // tui_advanced is compiled as part of zoltraak; renderMemoryUsageCandles
+    // maps MemoryUsagePeriod samples to sailor's OHLC Candle type.
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const p = tui_adv.MemoryUsagePeriod{};
+    try testing.expectEqualStrings("", p.label);
+    try testing.expectEqual(@as(f32, 0), p.open_bytes);
+    try testing.expectEqual(@as(f32, 0), p.high_bytes);
+    try testing.expectEqual(@as(f32, 0), p.low_bytes);
+    try testing.expectEqual(@as(f32, 0), p.close_bytes);
 }
 
 test "iter408 - Candle OHLC values map from period bytes as-is" {

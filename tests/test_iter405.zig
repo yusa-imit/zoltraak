@@ -77,22 +77,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter405 - sailor v2.81.0 build verification" {
     // Verify sailor v2.81.0 compiles (SunburstChart widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter405 - SunburstChart widget available in sailor v2.81.0 tui.widgets" {
     const sailor = @import("sailor");
     const SunburstChart = sailor.tui.widgets.SunburstChart;
-    _ = SunburstChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(SunburstChart) == .@"struct");
 }
 
 test "iter405 - SunburstNode type available in sailor v2.81.0 tui.widgets" {
     const sailor = @import("sailor");
     const SunburstNode = sailor.tui.widgets.SunburstNode;
-    _ = SunburstNode;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(SunburstNode) == .@"struct");
 }
 
 test "iter405 - SunburstChart.MAX_DEPTH equals 4" {
@@ -144,11 +141,14 @@ test "iter405 - SunburstChart.withFocused sets focused index" {
 // ─── tui_advanced DatabaseKeyTypeCounts and renderSunburstChart ──────────────
 
 test "iter405 - DatabaseKeyTypeCounts struct default values" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // Verify DatabaseKeyTypeCounts struct is accessible via zoltraak module
-    // (tui_advanced is compiled as part of zoltraak)
-    try testing.expect(true);
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const d = tui_adv.DatabaseKeyTypeCounts{};
+    try testing.expectEqual(@as(u16, 0), d.db_index);
+    try testing.expectEqual(@as(f32, 0), d.string_count);
+    try testing.expectEqual(@as(f32, 0), d.list_count);
+    try testing.expectEqual(@as(f32, 0), d.hash_count);
+    try testing.expectEqual(@as(f32, 0), d.set_count);
+    try testing.expectEqual(@as(f32, 0), d.zset_count);
 }
 
 test "iter405 - SunburstNode children hold per-type key counts as-is" {

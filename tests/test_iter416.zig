@@ -83,22 +83,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter416 - sailor v2.88.0 build verification" {
     // Verify sailor v2.88.0 compiles (RidgelinePlot widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter416 - RidgelinePlot widget available in sailor v2.88.0 tui.widgets" {
     const sailor = @import("sailor");
     const RidgelinePlot = sailor.tui.widgets.RidgelinePlot;
-    _ = RidgelinePlot;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(RidgelinePlot) == .@"struct");
 }
 
 test "iter416 - RidgelineSeries type available in sailor v2.88.0 tui.widgets" {
     const sailor = @import("sailor");
     const RidgelineSeries = sailor.tui.widgets.RidgelineSeries;
-    _ = RidgelineSeries;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(RidgelineSeries) == .@"struct");
 }
 
 test "iter416 - RidgelinePlot.MAX_SERIES equals 8" {
@@ -165,12 +162,12 @@ test "iter416 - RidgelinePlot.seriesCount caps at MAX_SERIES" {
 // ─── tui_advanced CommandLatencyHistogram + renderCommandLatencyRidgeline ────
 
 test "iter416 - CommandLatencyHistogram struct accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderCommandLatencyRidgeline
-    // maps CommandLatencyHistogram samples to sailor's RidgelineSeries type
-    // (command -> label, bucket_counts -> values).
-    try testing.expect(true);
+    // renderCommandLatencyRidgeline maps CommandLatencyHistogram samples to
+    // sailor's RidgelineSeries type (command -> label, bucket_counts -> values).
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const h = tui_adv.CommandLatencyHistogram{};
+    try testing.expectEqualStrings("", h.command);
+    try testing.expectEqual(@as(usize, 0), h.bucket_counts.len);
 }
 
 test "iter416 - RidgelineSeries label/values map from command/bucket_counts as-is" {

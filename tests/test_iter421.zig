@@ -80,22 +80,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 
 test "iter421 - sailor v2.92.0 build verification" {
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter421 - ToggleSwitch widget available in sailor v2.92.0 tui.widgets" {
     const sailor = @import("sailor");
     const ToggleSwitch = sailor.tui.widgets.ToggleSwitch;
-    _ = ToggleSwitch;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ToggleSwitch) == .@"struct");
 }
 
 test "iter421 - ToggleSwitchGroup available in sailor v2.92.0 tui.widgets" {
     const sailor = @import("sailor");
     const ToggleSwitchGroup = sailor.tui.widgets.ToggleSwitchGroup;
-    _ = ToggleSwitchGroup;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ToggleSwitchGroup) == .@"struct");
 }
 
 test "iter421 - ToggleSwitch.init defaults to unchecked" {
@@ -126,12 +123,12 @@ test "iter421 - ToggleSwitchGroup.init starts focus at index 0" {
 // ─── tui_advanced ServerBooleanFlag + renderServerFlagsPanel ────────────────
 
 test "iter421 - ServerBooleanFlag/renderServerFlagsPanel accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderServerFlagsPanel
-    // maps ServerBooleanFlag samples (name + enabled) to sailor's
-    // ToggleSwitch/ToggleSwitchGroup for a boolean-CONFIG status panel.
-    try testing.expect(true);
+    // renderServerFlagsPanel maps ServerBooleanFlag samples (name + enabled)
+    // to sailor's ToggleSwitch/ToggleSwitchGroup for a boolean-CONFIG status panel.
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const flag = tui_adv.ServerBooleanFlag{};
+    try testing.expectEqualStrings("", flag.name);
+    try testing.expectEqual(false, flag.enabled);
 }
 
 test "iter421 - ServerBooleanFlag default is name empty and disabled" {
@@ -177,8 +174,8 @@ test "iter421 - renderServerFlagsPanel is a no-op on zero-size area" {
     };
     var switch_buf: [4]sailor.tui.widgets.ToggleSwitch = undefined;
     tui_adv.tui_advanced.renderServerFlagsPanel(&frame, area, &flags, &switch_buf);
-    // No crash — buffer content is untouched since nothing was rendered.
-    try testing.expect(true);
+    // Zero-width area must be a genuine no-op: buffer stays at its blank default.
+    try testing.expectEqual(@as(u21, ' '), buf.getChar(0, 0));
 }
 
 test "iter421 - renderServerFlagsPanel truncates flags exceeding buffer capacity" {

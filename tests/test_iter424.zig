@@ -79,22 +79,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 
 test "iter424 - sailor v2.94.0 build verification" {
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter424 - DonutChart widget available in sailor v2.94.0 tui.widgets" {
     const sailor = @import("sailor");
     const DonutChart = sailor.tui.widgets.DonutChart;
-    _ = DonutChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(DonutChart) == .@"struct");
 }
 
 test "iter424 - ErrorBarChart widget available in sailor v2.94.0 tui.widgets" {
     const sailor = @import("sailor");
     const ErrorBarChart = sailor.tui.widgets.ErrorBarChart;
-    _ = ErrorBarChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ErrorBarChart) == .@"struct");
 }
 
 test "iter424 - DonutChart.init defaults to right legend and 0.5 hole ratio" {
@@ -133,12 +130,13 @@ test "iter424 - DonutChart.calcTotal sums slice values" {
 // ─── tui_advanced KeyTypeCount + renderKeyTypeDonut ─────────────────────────
 
 test "iter424 - KeyTypeCount/renderKeyTypeDonut accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderKeyTypeDonut maps
-    // KeyTypeCount samples into sailor's DonutChart for a keyspace
-    // composition breakdown with a headline total in the center hole.
-    try testing.expect(true);
+    // renderKeyTypeDonut maps KeyTypeCount samples into sailor's DonutChart
+    // for a keyspace composition breakdown with a headline total in the
+    // center hole.
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const k = tui_adv.KeyTypeCount{};
+    try testing.expectEqualStrings("", k.type_name);
+    try testing.expectEqual(@as(u64, 0), k.count);
 }
 
 test "iter424 - KeyTypeCount default count is zero" {
@@ -186,8 +184,8 @@ test "iter424 - renderKeyTypeDonut is a no-op on zero-size area" {
     };
     var slices_buf: [4]sailor.tui.widgets.donut_chart.Slice = undefined;
     tui_adv.tui_advanced.renderKeyTypeDonut(&frame, area, &counts, null, &slices_buf);
-    // No crash — buffer content is untouched since nothing was rendered.
-    try testing.expect(true);
+    // Zero-width area must be a genuine no-op: buffer stays at its blank default.
+    try testing.expectEqual(@as(u21, ' '), buf.getChar(0, 0));
 }
 
 test "iter424 - renderKeyTypeDonut truncates type counts exceeding slices buffer capacity" {

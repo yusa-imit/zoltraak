@@ -83,22 +83,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 
 test "iter420 - sailor v2.91.0 build verification" {
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter420 - IcicleChart widget available in sailor v2.91.0 tui.widgets" {
     const sailor = @import("sailor");
     const IcicleChart = sailor.tui.widgets.IcicleChart;
-    _ = IcicleChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(IcicleChart) == .@"struct");
 }
 
 test "iter420 - IcicleNode type available in sailor v2.91.0 tui.widgets" {
     const sailor = @import("sailor");
     const IcicleNode = sailor.tui.widgets.IcicleNode;
-    _ = IcicleNode;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(IcicleNode) == .@"struct");
 }
 
 test "iter420 - IcicleChart.MAX_DEPTH equals 6" {
@@ -147,12 +144,16 @@ test "iter420 - IcicleChart.nodeCount is zero when root is null" {
 // ─── tui_advanced CommandCategoryStats + renderCommandStatsIcicle ───────────
 
 test "iter420 - CommandCallCount/CommandCategoryStats structs accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderCommandStatsIcicle
-    // maps CommandCategoryStats/CommandCallCount samples to sailor's
-    // IcicleNode tree (category -> total calls, command -> per-command calls).
-    try testing.expect(true);
+    // renderCommandStatsIcicle maps CommandCategoryStats/CommandCallCount
+    // samples to sailor's IcicleNode tree (category -> total calls,
+    // command -> per-command calls).
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const call = tui_adv.CommandCallCount{};
+    try testing.expectEqualStrings("", call.command);
+    try testing.expectEqual(@as(u64, 0), call.calls);
+    const stats = tui_adv.CommandCategoryStats{};
+    try testing.expectEqualStrings("", stats.category);
+    try testing.expectEqual(@as(usize, 0), stats.commands.len);
 }
 
 test "iter420 - IcicleNode label/value map from per-command calls as-is" {

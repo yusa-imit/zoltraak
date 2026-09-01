@@ -82,22 +82,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter412 - sailor v2.84.0 build verification" {
     // Verify sailor v2.84.0 compiles (BulletChart widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter412 - BulletChart widget available in sailor v2.84.0 tui.widgets" {
     const sailor = @import("sailor");
     const BulletChart = sailor.tui.widgets.BulletChart;
-    _ = BulletChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(BulletChart) == .@"struct");
 }
 
 test "iter412 - Bullet type available in sailor v2.84.0 tui.widgets" {
     const sailor = @import("sailor");
     const Bullet = sailor.tui.widgets.Bullet;
-    _ = Bullet;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(Bullet) == .@"struct");
 }
 
 test "iter412 - BulletChart.MAX_BULLETS equals 32" {
@@ -158,11 +155,13 @@ test "iter412 - BulletChart.withMaxValue sets scaling denominator" {
 // ─── tui_advanced MemoryBudget + renderMemoryBudgetBullet ────────────────────
 
 test "iter412 - MemoryBudget struct accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderMemoryBudgetBullet
-    // maps MemoryBudget samples to sailor's Bullet type (value=used, target=limit).
-    try testing.expect(true);
+    // renderMemoryBudgetBullet maps MemoryBudget samples to sailor's Bullet
+    // type (value=used, target=limit).
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const b = tui_adv.MemoryBudget{};
+    try testing.expectEqualStrings("MEM", b.label);
+    try testing.expectEqual(@as(f32, 0), b.used_bytes);
+    try testing.expectEqual(@as(f32, 0), b.limit_bytes);
 }
 
 test "iter412 - Bullet value/target map from budget bytes as-is" {

@@ -84,29 +84,25 @@ test "iter413 - sailor v2.86.0 build verification" {
     // Verify sailor v2.86.0 compiles (ParallelCoordinates + ParetoChart widgets
     // added across v2.85.0/v2.86.0 — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter413 - ParallelCoordinates widget available in sailor tui.widgets" {
     const sailor = @import("sailor");
     const ParallelCoordinates = sailor.tui.widgets.ParallelCoordinates;
-    _ = ParallelCoordinates;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ParallelCoordinates) == .@"struct");
 }
 
 test "iter413 - PCAxis type available in sailor tui.widgets" {
     const sailor = @import("sailor");
     const PCAxis = sailor.tui.widgets.PCAxis;
-    _ = PCAxis;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(PCAxis) == .@"struct");
 }
 
 test "iter413 - PCItem type available in sailor tui.widgets" {
     const sailor = @import("sailor");
     const PCItem = sailor.tui.widgets.PCItem;
-    _ = PCItem;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(PCItem) == .@"struct");
 }
 
 test "iter413 - ParallelCoordinates.MAX_AXES equals 8" {
@@ -122,15 +118,13 @@ test "iter413 - ParallelCoordinates.MAX_ITEMS equals 16" {
 test "iter413 - ParetoChart widget available in sailor tui.widgets" {
     const sailor = @import("sailor");
     const ParetoChart = sailor.tui.widgets.ParetoChart;
-    _ = ParetoChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ParetoChart) == .@"struct");
 }
 
 test "iter413 - ParetoItem type available in sailor tui.widgets" {
     const sailor = @import("sailor");
     const ParetoItem = sailor.tui.widgets.ParetoItem;
-    _ = ParetoItem;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(ParetoItem) == .@"struct");
 }
 
 test "iter413 - ParetoChart.MAX_ITEMS equals 32" {

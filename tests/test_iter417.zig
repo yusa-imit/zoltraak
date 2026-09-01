@@ -84,22 +84,19 @@ fn setup(allocator: std.mem.Allocator, port_str: []const u8) !struct {
 test "iter417 - sailor v2.89.0 build verification" {
     // Verify sailor v2.89.0 compiles (BumpChart widget added — no API breaks).
     const sailor = @import("sailor");
-    _ = sailor;
-    try testing.expect(true);
+    try testing.expect(@hasDecl(sailor, "tui"));
 }
 
 test "iter417 - BumpChart widget available in sailor v2.89.0 tui.widgets" {
     const sailor = @import("sailor");
     const BumpChart = sailor.tui.widgets.BumpChart;
-    _ = BumpChart;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(BumpChart) == .@"struct");
 }
 
 test "iter417 - BumpSeries type available in sailor v2.89.0 tui.widgets" {
     const sailor = @import("sailor");
     const BumpSeries = sailor.tui.widgets.BumpSeries;
-    _ = BumpSeries;
-    try testing.expect(true);
+    try testing.expect(@typeInfo(BumpSeries) == .@"struct");
 }
 
 test "iter417 - BumpChart.MAX_SERIES equals 8" {
@@ -173,12 +170,12 @@ test "iter417 - BumpChart.maxRank reports the highest rank across series" {
 // ─── tui_advanced CommandRankSnapshot + renderCommandPopularityBump ─────────
 
 test "iter417 - CommandRankSnapshot struct accessible via zoltraak module" {
-    const tui_adv = @import("zoltraak");
-    _ = tui_adv;
-    // tui_advanced is compiled as part of zoltraak; renderCommandPopularityBump
-    // maps CommandRankSnapshot samples to sailor's BumpSeries type
-    // (command -> label, ranks -> ranks).
-    try testing.expect(true);
+    // renderCommandPopularityBump maps CommandRankSnapshot samples to
+    // sailor's BumpSeries type (command -> label, ranks -> ranks).
+    const tui_adv = @import("zoltraak").tui_advanced;
+    const snap = tui_adv.CommandRankSnapshot{};
+    try testing.expectEqualStrings("", snap.command);
+    try testing.expectEqual(@as(usize, 0), snap.ranks.len);
 }
 
 test "iter417 - BumpSeries label/ranks map from command/ranks as-is" {
