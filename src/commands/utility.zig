@@ -7,6 +7,7 @@ const TxState = @import("transactions.zig").TxState;
 const ClientRegistry = @import("client.zig").ClientRegistry;
 const RespProtocol = @import("client.zig").RespProtocol;
 const ServerConfig = @import("../storage/config.zig").Config;
+const ReplicationState = @import("../storage/replication.zig").ReplicationState;
 
 /// ECHO command - returns the message
 pub fn cmdEcho(
@@ -346,6 +347,7 @@ pub fn cmdDebug(
     _: u64,
     config: *ServerConfig,
     protocol_version: u8,
+    repl: ?*ReplicationState,
 ) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -502,16 +504,14 @@ pub fn cmdDebug(
 
         return try w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "CHANGE-REPL-ID")) {
-        // DEBUG CHANGE-REPL-ID - force new replication ID
-        // Note: This is a stub since ReplicationState is owned by Server,
-        // not accessible from command handlers. In a real implementation,
-        // this would require passing server context through the command chain.
+        // DEBUG CHANGE-REPL-ID - force new replication ID (simulates a failover)
         if (args.len != 2) {
             return try w.writeError("ERR wrong number of arguments for 'debug change-repl-id' command");
         }
 
-        // Stub implementation - returns OK but doesn't actually change replid
-        // TODO: Implement when server context is available to commands
+        if (repl) |r| {
+            r.regenerateReplid();
+        }
         return try w.writeSimpleString("OK");
     } else if (std.ascii.eqlIgnoreCase(subcommand, "POPULATE")) {
         // DEBUG POPULATE <count> [<prefix>] [<size>] - fill DB with test keys
@@ -972,7 +972,7 @@ test "cmdDebug - OBJECT subcommand" {
     try storage.set("testkey", "testvalue", null);
 
     const args = [_][]const u8{ "DEBUG", "OBJECT", "testkey" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     // Should contain proper format fields
@@ -992,7 +992,7 @@ test "cmdDebug - HELP subcommand" {
     var config = ServerConfig.init();
 
     const args = [_][]const u8{ "DEBUG", "HELP" };
-    const result = try cmdDebug(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2);
+    const result = try cmdDebug(allocator, &args, &storage, &pubsub, null, &client_registry, 1, &config, 2, null);
     defer allocator.free(result);
 
     // Should contain help text
@@ -1279,7 +1279,7 @@ test "cmdDebug - DEBUG OBJECT shows key info with correct format" {
     try storage.set("testkey", "hello", null);
 
     const args = [_][]const u8{ "DEBUG", "OBJECT", "testkey" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     // Verify correct Redis-compatible format (type: field, hex address, no type name in addr field)
@@ -1305,7 +1305,7 @@ test "cmdDebug - DEBUG SET-ACTIVE-EXPIRE toggles flag" {
     // Disable
     {
         const args = [_][]const u8{ "DEBUG", "SET-ACTIVE-EXPIRE", "0" };
-        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
         defer allocator.free(result);
         try std.testing.expectEqualStrings(":0\r\n", result);
         try std.testing.expect(storage.active_expire_enabled == false);
@@ -1314,7 +1314,7 @@ test "cmdDebug - DEBUG SET-ACTIVE-EXPIRE toggles flag" {
     // Enable
     {
         const args = [_][]const u8{ "DEBUG", "SET-ACTIVE-EXPIRE", "1" };
-        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
         defer allocator.free(result);
         try std.testing.expectEqualStrings(":1\r\n", result);
         try std.testing.expect(storage.active_expire_enabled == true);
@@ -1333,7 +1333,7 @@ test "cmdDebug - DEBUG SLEEP sleeps for specified time" {
 
     const start = std.time.milliTimestamp();
     const args = [_][]const u8{ "DEBUG", "SLEEP", "0.1" }; // 100ms
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
     const elapsed = std.time.milliTimestamp() - start;
 
@@ -1352,7 +1352,7 @@ test "cmdDebug - DEBUG POPULATE creates keys" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "POPULATE", "10", "test:", "32" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -1375,7 +1375,7 @@ test "cmdDebug - DEBUG HELP returns help text" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "HELP" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "SET-ACTIVE-EXPIRE") != null);
@@ -1395,13 +1395,35 @@ test "cmdDebug - DEBUG wrong subcommand returns error" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "INVALID" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.startsWith(u8, result, "-ERR unknown subcommand"));
 }
 
-test "cmdDebug - DEBUG CHANGE-REPL-ID returns OK (stub)" {
+test "cmdDebug - DEBUG CHANGE-REPL-ID returns OK and generates a new replid" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    var pubsub = PubSub.init(allocator);
+    defer pubsub.deinit();
+    var client_registry = ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+    const config = storage.config;
+
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+    const original_replid = repl.replid;
+
+    const args = [_][]const u8{ "DEBUG", "CHANGE-REPL-ID" };
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, &repl);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expect(!std.mem.eql(u8, &original_replid, &repl.replid));
+}
+
+test "cmdDebug - DEBUG CHANGE-REPL-ID with no replication state returns OK" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
@@ -1412,7 +1434,7 @@ test "cmdDebug - DEBUG CHANGE-REPL-ID returns OK (stub)" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "CHANGE-REPL-ID" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -1429,7 +1451,7 @@ test "cmdDebug - QUICKLIST-PACKED-THRESHOLD sets threshold" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "QUICKLIST-PACKED-THRESHOLD", "1" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -1453,13 +1475,13 @@ test "cmdDebug - QUICKLIST-PACKED-THRESHOLD 0 resets to default" {
     // First set to 1
     {
         const args = [_][]const u8{ "DEBUG", "QUICKLIST-PACKED-THRESHOLD", "1" };
-        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+        const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
         defer allocator.free(result);
     }
 
     // Then reset to 0 (should restore to 4096)
     const args = [_][]const u8{ "DEBUG", "QUICKLIST-PACKED-THRESHOLD", "0" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -1479,7 +1501,7 @@ test "cmdDebug - JMAP returns OK" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "JMAP" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);
@@ -1496,7 +1518,7 @@ test "cmdDebug - DISABLE-NEXT-AOF-FSYNC returns OK" {
     const config = storage.config;
 
     const args = [_][]const u8{ "DEBUG", "DISABLE-NEXT-AOF-FSYNC" };
-    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2);
+    const result = try cmdDebug(allocator, &args, storage, &pubsub, null, &client_registry, 1, config, 2, null);
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("+OK\r\n", result);

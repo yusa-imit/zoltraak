@@ -194,6 +194,13 @@ pub const ReplicationState = struct {
         });
     }
 
+    /// Force a new random replication ID, discarding the current one.
+    /// Used by DEBUG CHANGE-REPL-ID to simulate what happens after a failover:
+    /// any replica still offering the old replid must perform a full resync.
+    pub fn regenerateReplid(self: *ReplicationState) void {
+        generateReplid(&self.replid);
+    }
+
     /// Propagate raw RESP bytes to all online replicas.
     /// Failed writes log a warning but do not abort propagation to other replicas.
     /// Also increments `repl_offset` by `data.len`.

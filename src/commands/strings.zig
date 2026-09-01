@@ -3219,7 +3219,7 @@ pub fn executeCommand(
                 };
             }
             const client_protocol = client_registry.getProtocol(client_id);
-            break :blk try utility_cmds.cmdDebug(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol));
+            break :blk try utility_cmds.cmdDebug(allocator, args, storage, ps, null, client_registry, client_id, storage.config, @intFromEnum(client_protocol), repl);
         } else if (std.mem.eql(u8, cmd_upper, "LOLWUT")) {
             var args = try allocator.alloc([]const u8, array.len);
             defer allocator.free(args);
