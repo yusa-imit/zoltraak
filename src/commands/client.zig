@@ -830,6 +830,7 @@ pub const ClientRegistry = struct {
         noloop: bool,
         next_cache: ?bool,
         prefixes: []const []const u8,
+        broken_redirect: bool,
     } {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -841,6 +842,13 @@ pub const ClientRegistry = struct {
                 prefixes[i] = try allocator.dupe(u8, prefix);
             }
 
+            // A redirect target > 0 that no longer has a registered client is a
+            // broken redirect: the client asked for invalidations to be sent
+            // elsewhere, but that connection has since gone away.
+            const broken_redirect = info.tracking_enabled and
+                info.tracking_redirect > 0 and
+                !self.clients.contains(@as(u64, @intCast(info.tracking_redirect)));
+
             return .{
                 .enabled = info.tracking_enabled,
                 .redirect = info.tracking_redirect,
@@ -850,6 +858,7 @@ pub const ClientRegistry = struct {
                 .noloop = info.tracking_noloop,
                 .next_cache = info.tracking_next_cache,
                 .prefixes = prefixes,
+                .broken_redirect = broken_redirect,
             };
         }
         return null;
@@ -2226,8 +2235,9 @@ fn cmdClientTrackinginfo(
         try flags.append(allocator, "noloop");
     }
 
-    // Check if redirect is valid (stub: we don't track broken redirects yet)
-    // In a full implementation, we'd check if the redirect client still exists
+    if (tracking_info.broken_redirect) {
+        try flags.append(allocator, "broken_redirect");
+    }
 
     // Format output as RESP map (RESP3) or array (RESP2)
     // For simplicity, we'll use array format compatible with both
@@ -4203,6 +4213,63 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
 
     // Should contain "optin" flag
     try std.testing.expect(std.mem.indexOf(u8, response2, "optin") != null);
+}
+
+test "CLIENT TRACKINGINFO - broken_redirect when redirect target disconnects" {
+    const allocator = std.testing.allocator;
+
+    var registry = ClientRegistry.init(allocator);
+    var blocking_queue = BlockingQueue.init(allocator);
+    defer blocking_queue.deinit();
+    defer registry.deinit();
+
+    const client1 = try registry.registerClient("127.0.0.1:12345", 42, "127.0.0.1:6379");
+    const client2 = try registry.registerClient("127.0.0.1:12346", 43, "127.0.0.1:6379");
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    // Enable tracking on client1 with REDIRECT to client2 (still connected)
+    var args = std.ArrayList(RespValue){};
+    try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
+    try args.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
+    const redirect_str = try std.fmt.allocPrint(arena_allocator, "{d}", .{client2});
+    try args.append(arena_allocator, RespValue{ .bulk_string = redirect_str });
+    const args_slice = try args.toOwnedSlice(arena_allocator);
+
+    const response = try cmdClient(allocator, &registry, client1, args_slice, .RESP2, &blocking_queue);
+    defer allocator.free(response);
+    try std.testing.expect(std.mem.startsWith(u8, response, "+OK"));
+
+    // While client2 is still connected, redirect is not broken
+    var arena2 = std.heap.ArenaAllocator.init(allocator);
+    defer arena2.deinit();
+    const arena_allocator2 = arena2.allocator();
+
+    var args2 = std.ArrayList(RespValue){};
+    try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
+    const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
+
+    const response2 = try cmdClient(allocator, &registry, client1, args_slice2, .RESP2, &blocking_queue);
+    defer allocator.free(response2);
+    try std.testing.expect(std.mem.indexOf(u8, response2, "broken_redirect") == null);
+
+    // Disconnect client2 — the redirect target is now gone
+    registry.unregisterClient(client2);
+
+    var arena3 = std.heap.ArenaAllocator.init(allocator);
+    defer arena3.deinit();
+    const arena_allocator3 = arena3.allocator();
+
+    var args3 = std.ArrayList(RespValue){};
+    try args3.append(arena_allocator3, RespValue{ .bulk_string = "TRACKINGINFO" });
+    const args_slice3 = try args3.toOwnedSlice(arena_allocator3);
+
+    const response3 = try cmdClient(allocator, &registry, client1, args_slice3, .RESP2, &blocking_queue);
+    defer allocator.free(response3);
+    try std.testing.expect(std.mem.indexOf(u8, response3, "broken_redirect") != null);
 }
 
 test "CLIENT GETREDIR - returns -1 when tracking disabled" {
