@@ -61,6 +61,30 @@ pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         if (std.ascii.eqlIgnoreCase(arg, "NOMKSTREAM")) {
             opts.nomkstream = true;
             idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(arg, "IDMP")) {
+            if (opts.idmp != null) return w.writeError("ERR syntax error");
+            idx += 1;
+            if (idx + 1 >= args.len) return w.writeError("ERR syntax error");
+            const producer_id = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            const idempotent_id = switch (args[idx + 1]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            opts.idmp = .{ .manual = .{ .producer_id = producer_id, .idempotent_id = idempotent_id } };
+            idx += 2;
+        } else if (std.ascii.eqlIgnoreCase(arg, "IDMPAUTO")) {
+            if (opts.idmp != null) return w.writeError("ERR syntax error");
+            idx += 1;
+            if (idx >= args.len) return w.writeError("ERR syntax error");
+            const producer_id = switch (args[idx]) {
+                .bulk_string => |s| s,
+                else => return w.writeError("ERR syntax error"),
+            };
+            opts.idmp = .{ .auto = .{ .producer_id = producer_id } };
+            idx += 1;
         } else if (std.ascii.eqlIgnoreCase(arg, "MAXLEN")) {
             idx += 1;
             if (idx >= args.len) return w.writeError("ERR syntax error");
@@ -181,6 +205,12 @@ pub fn cmdXadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         },
     };
     idx += 1;
+
+    // IDMP/IDMPAUTO require the ID to be auto-generated
+    if (opts.idmp != null and !std.mem.eql(u8, id_str, "*")) {
+        if (opts.minid_str) |m| allocator.free(m);
+        return w.writeError("ERR syntax error");
+    }
 
     // Remaining args should be field-value pairs
     if ((args.len - idx) % 2 != 0) {
@@ -2501,5 +2531,257 @@ test "streams - XTRIM with LIMIT parameter" {
 
     // Should delete exactly 2 due to LIMIT
     try std.testing.expect(std.mem.indexOf(u8, result, ":2") != null);
+}
+
+// ── IDMP (Idempotent Message Processing) tests ─────────────────────────────
+
+test "streams - XADD IDMP deduplicates repeated producer/iid" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iid1" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value1" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &args1, &ps, 0);
+    defer allocator.free(r1);
+
+    // Resend with the same (producer, iid) but different field content —
+    // IDMP must still return the *original* entry ID rather than adding.
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iid1" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value2" },
+    };
+    const r2 = try cmdXadd(allocator, storage, &args2, &ps, 0);
+    defer allocator.free(r2);
+
+    try std.testing.expectEqualStrings(r1, r2);
+
+    const len = try storage.xlen("s");
+    try std.testing.expectEqual(@as(usize, 1), len.?);
+}
+
+test "streams - XADD IDMPAUTO deduplicates identical content" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const same_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMPAUTO" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &same_args, &ps, 0);
+    defer allocator.free(r1);
+    const r2 = try cmdXadd(allocator, storage, &same_args, &ps, 0);
+    defer allocator.free(r2);
+
+    try std.testing.expectEqualStrings(r1, r2);
+    try std.testing.expectEqual(@as(usize, 1), (try storage.xlen("s")).?);
+
+    // Different content -> different auto-derived iid -> new entry.
+    const diff_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMPAUTO" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "other-value" },
+    };
+    const r3 = try cmdXadd(allocator, storage, &diff_args, &ps, 0);
+    defer allocator.free(r3);
+
+    try std.testing.expect(!std.mem.eql(u8, r1, r3));
+    try std.testing.expectEqual(@as(usize, 2), (try storage.xlen("s")).?);
+}
+
+test "streams - XADD IDMP requires auto-generated ID" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iid1" },
+        RespValue{ .bulk_string = "1000-0" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const result = try cmdXadd(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR syntax error") != null);
+}
+
+test "streams - XADD IDMP isolates duplicate iids across producers" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args1 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iid1" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &args1, &ps, 0);
+    defer allocator.free(r1);
+
+    const args2 = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer2" },
+        RespValue{ .bulk_string = "iid1" }, // same iid, different producer
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "field" },
+        RespValue{ .bulk_string = "value" },
+    };
+    const r2 = try cmdXadd(allocator, storage, &args2, &ps, 0);
+    defer allocator.free(r2);
+
+    try std.testing.expect(!std.mem.eql(u8, r1, r2));
+    try std.testing.expectEqual(@as(usize, 2), (try storage.xlen("s")).?);
+}
+
+test "streams - XADD IDMP-MAXSIZE evicts oldest iid per producer" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    // Cap this producer's tracked iids at 1.
+    const cfg_args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-MAXSIZE" },
+        RespValue{ .bulk_string = "1" },
+    };
+    // Stream must exist before XCFGSET; seed it with a plain XADD first.
+    const seed_args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const seed_result = try cmdXadd(allocator, storage, &seed_args, &ps, 0);
+    allocator.free(seed_result);
+
+    const cfg_result = try cmdXcfgset(allocator, storage, &cfg_args);
+    allocator.free(cfg_result);
+
+    const args_a = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iidA" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const ra = try cmdXadd(allocator, storage, &args_a, &ps, 0);
+    allocator.free(ra);
+
+    const args_b = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iidB" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    // With maxsize=1, adding iidB evicts iidA from tracking.
+    const rb = try cmdXadd(allocator, storage, &args_b, &ps, 0);
+    allocator.free(rb);
+
+    // Resending iidA is no longer tracked, so it must create a *new* entry
+    // instead of deduplicating against the original.
+    const rc = try cmdXadd(allocator, storage, &args_a, &ps, 0);
+    allocator.free(rc);
+
+    try std.testing.expectEqual(@as(usize, 4), (try storage.xlen("s")).?);
+}
+
+test "streams - XCFGSET clears IDMP map when duration changes" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "XADD" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP" },
+        RespValue{ .bulk_string = "producer1" },
+        RespValue{ .bulk_string = "iid1" },
+        RespValue{ .bulk_string = "*" },
+        RespValue{ .bulk_string = "f" },
+        RespValue{ .bulk_string = "v" },
+    };
+    const r1 = try cmdXadd(allocator, storage, &args, &ps, 0);
+    defer allocator.free(r1);
+
+    // Change IDMP-DURATION to a different value than the default (100) —
+    // this must clear the tracked iid map for the stream.
+    const cfg_args = [_]RespValue{
+        RespValue{ .bulk_string = "XCFGSET" },
+        RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "IDMP-DURATION" },
+        RespValue{ .bulk_string = "300" },
+    };
+    const cfg_result = try cmdXcfgset(allocator, storage, &cfg_args);
+    allocator.free(cfg_result);
+
+    // Same (producer, iid) resent after the map was cleared -> new entry.
+    const r2 = try cmdXadd(allocator, storage, &args, &ps, 0);
+    defer allocator.free(r2);
+
+    try std.testing.expect(!std.mem.eql(u8, r1, r2));
+    try std.testing.expectEqual(@as(usize, 2), (try storage.xlen("s")).?);
 }
 

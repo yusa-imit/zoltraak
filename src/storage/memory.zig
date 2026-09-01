@@ -81,6 +81,14 @@ pub const RangeUnit = enum {
     bit, // Redis 7.0+: start/end are bit indices
 };
 
+/// Idempotent message processing mode for XADD (Redis 8.6+)
+pub const IdmpMode = union(enum) {
+    /// IDMP producer-id idempotent-id — caller supplies both IDs explicitly.
+    manual: struct { producer_id: []const u8, idempotent_id: []const u8 },
+    /// IDMPAUTO producer-id — the idempotent-id is derived from field content.
+    auto: struct { producer_id: []const u8 },
+};
+
 /// Options for XADD command (Redis 7.x+)
 pub const XAddOptions = struct {
     nomkstream: bool = false, // If true, return null instead of creating stream
@@ -88,6 +96,7 @@ pub const XAddOptions = struct {
     minid_str: ?[]const u8 = null, // Trim entries with ID strictly less than this
     approx: bool = false, // ~ vs = (approximate/exact trimming)
     limit: ?usize = null, // Max entries to delete per trimming call
+    idmp: ?IdmpMode = null, // IDMP/IDMPAUTO idempotent message processing (Redis 8.6+)
 };
 
 /// Type of value stored in the key-value store
@@ -407,6 +416,28 @@ pub const Value = union(ValueType) {
         }
     };
 
+    /// A single tracked idempotent ID (iid) for one producer.
+    pub const IdmpRecord = struct {
+        entry_id: StreamId,
+        added_at: i64, // Unix timestamp in seconds when this iid was recorded
+    };
+
+    /// Per-producer idempotency tracking: iid -> IdmpRecord, plus FIFO insertion
+    /// order (oldest first) used for duration/maxsize-based eviction.
+    pub const ProducerIdmp = struct {
+        iids: std.StringHashMapUnmanaged(IdmpRecord) = .{},
+        /// FIFO of iid strings in insertion order. Slices are owned by `iids`'
+        /// keys (not duplicated here) — do not free through this list directly.
+        order: std.ArrayList([]const u8) = .{},
+
+        pub fn deinit(self: *ProducerIdmp, allocator: std.mem.Allocator) void {
+            var it = self.iids.keyIterator();
+            while (it.next()) |k| allocator.free(k.*);
+            self.iids.deinit(allocator);
+            self.order.deinit(allocator);
+        }
+    };
+
     /// Stream value with optional expiration
     /// Ordered log of entries with unique IDs
     pub const StreamValue = struct {
@@ -419,7 +450,10 @@ pub const Value = union(ValueType) {
         // IDMP (Idempotent Message Processing) configuration (Redis 8.6+)
         idmp_duration_sec: u32 = 100, // Default: 100 seconds (range: 1-86400)
         idmp_maxsize: u32 = 100, // Default: 100 entries per producer (range: 1-10000)
-        // Note: IDMP map is not yet implemented (requires producer ID tracking in XADD)
+        /// producer_id -> ProducerIdmp (owns the producer_id key string)
+        idmp_producers: std.StringHashMapUnmanaged(ProducerIdmp) = .{},
+        idmp_iids_added: u64 = 0, // Lifetime count of messages recorded with an iid
+        idmp_iids_duplicates: u64 = 0, // Lifetime count of duplicates prevented
 
         pub fn deinit(self: *StreamValue, allocator: std.mem.Allocator) void {
             for (self.entries.items) |*entry| {
@@ -433,6 +467,13 @@ pub const Value = union(ValueType) {
                 copy.deinit(allocator);
             }
             self.consumer_groups.deinit();
+
+            var pit = self.idmp_producers.iterator();
+            while (pit.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                entry.value_ptr.deinit(allocator);
+            }
+            self.idmp_producers.deinit(allocator);
         }
     };
 
@@ -6977,6 +7018,8 @@ pub const Storage = struct {
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(alloc),
                     .entries_added = st.entries_added,
                     .max_deleted_entry_id = st.max_deleted_entry_id,
+                    .idmp_duration_sec = st.idmp_duration_sec,
+                    .idmp_maxsize = st.idmp_maxsize,
                 } };
             },
             .hyperloglog => |hll| blk: {
@@ -9451,6 +9494,79 @@ pub const Storage = struct {
 
     // ── Stream operations ─────────────────────────────────────────────────────
 
+    /// Drop iids at the front of `producer`'s FIFO order that have aged past
+    /// `duration_sec`. Order is chronological (oldest first), so this stops at
+    /// the first non-expired entry.
+    fn idmpPurgeExpired(allocator: std.mem.Allocator, producer: *Value.ProducerIdmp, duration_sec: u32, now_ms: i64) void {
+        const duration_ms: i64 = @as(i64, duration_sec) * 1000;
+        while (producer.order.items.len > 0) {
+            const oldest_iid = producer.order.items[0];
+            const rec = producer.iids.get(oldest_iid) orelse {
+                _ = producer.order.orderedRemove(0);
+                continue;
+            };
+            if (now_ms - rec.added_at >= duration_ms) {
+                _ = producer.order.orderedRemove(0);
+                if (producer.iids.fetchRemove(oldest_iid)) |kv| {
+                    allocator.free(kv.key);
+                }
+            } else break;
+        }
+    }
+
+    /// Evict oldest iids until `producer` has room for one more, honoring
+    /// maxsize as a hard cap (stronger than duration-based expiry).
+    fn idmpEvictOldestIfFull(allocator: std.mem.Allocator, producer: *Value.ProducerIdmp, maxsize: u32) void {
+        while (producer.iids.count() >= maxsize and producer.order.items.len > 0) {
+            const oldest_iid = producer.order.orderedRemove(0);
+            if (producer.iids.fetchRemove(oldest_iid)) |kv| {
+                allocator.free(kv.key);
+            }
+        }
+    }
+
+    /// Check whether (producer_id, iid) was already recorded for this stream.
+    /// Purges expired iids for the producer as a side effect. Returns the
+    /// original entry ID if this is a duplicate (and bumps the duplicate
+    /// counter), or null if the (producer_id, iid) pair is new.
+    fn checkIdmpDuplicate(self: *Storage, stream_val: *Value.StreamValue, producer_id: []const u8, iid: []const u8, now_ms: i64) ?Value.StreamId {
+        const producer = stream_val.idmp_producers.getPtr(producer_id) orelse return null;
+        idmpPurgeExpired(self.allocator, producer, stream_val.idmp_duration_sec, now_ms);
+        const rec = producer.iids.get(iid) orelse return null;
+        stream_val.idmp_iids_duplicates += 1;
+        return rec.entry_id;
+    }
+
+    /// Record a newly-assigned entry ID under (producer_id, iid) for future
+    /// deduplication, evicting expired/overflow iids for that producer first.
+    fn recordIdmp(self: *Storage, stream_val: *Value.StreamValue, producer_id: []const u8, iid: []const u8, entry_id: Value.StreamId, now_ms: i64) !void {
+        const gop = try stream_val.idmp_producers.getOrPut(self.allocator, producer_id);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, producer_id);
+            gop.value_ptr.* = .{};
+        }
+        const producer = gop.value_ptr;
+        idmpPurgeExpired(self.allocator, producer, stream_val.idmp_duration_sec, now_ms);
+        idmpEvictOldestIfFull(self.allocator, producer, stream_val.idmp_maxsize);
+
+        const owned_iid = try self.allocator.dupe(u8, iid);
+        errdefer self.allocator.free(owned_iid);
+        try producer.iids.put(self.allocator, owned_iid, .{ .entry_id = entry_id, .added_at = now_ms });
+        try producer.order.append(self.allocator, owned_iid);
+        stream_val.idmp_iids_added += 1;
+    }
+
+    /// Free all tracked producer/iid state for a stream (used by XCFGSET when
+    /// IDMP-DURATION or IDMP-MAXSIZE actually change).
+    fn clearIdmpMap(allocator: std.mem.Allocator, stream_val: *Value.StreamValue) void {
+        var it = stream_val.idmp_producers.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(allocator);
+        }
+        stream_val.idmp_producers.clearAndFree(allocator);
+    }
+
     /// Add entry to stream with auto-generated or explicit ID.
     /// Returns the assigned StreamId or null if NOMKSTREAM and key doesn't exist.
     /// Other errors indicate invalid IDs or type mismatches.
@@ -9508,6 +9624,29 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .stream => |*stream_val| {
+                // Resolve IDMP producer/idempotent IDs up front so a duplicate
+                // can short-circuit before any entry is created.
+                var idmp_iid_buf: [16]u8 = undefined;
+                var idmp_pid: []const u8 = "";
+                var idmp_iid: []const u8 = "";
+                if (opts.idmp) |mode| {
+                    switch (mode) {
+                        .manual => |m| {
+                            idmp_pid = m.producer_id;
+                            idmp_iid = m.idempotent_id;
+                        },
+                        .auto => |a| {
+                            idmp_pid = a.producer_id;
+                            var hasher = std.hash.Wyhash.init(0);
+                            for (fields) |f| hasher.update(f);
+                            idmp_iid = std.fmt.bufPrint(&idmp_iid_buf, "{x:0>16}", .{hasher.final()}) catch unreachable;
+                        },
+                    }
+                    if (self.checkIdmpDuplicate(stream_val, idmp_pid, idmp_iid, now)) |existing_id| {
+                        return existing_id;
+                    }
+                }
+
                 // Parse and validate ID
                 const id = try Value.StreamId.parse(id_str, stream_val.last_id);
 
@@ -9539,6 +9678,10 @@ pub const Storage = struct {
                 });
                 stream_val.last_id = id;
                 stream_val.entries_added += 1;
+
+                if (opts.idmp != null) {
+                    try self.recordIdmp(stream_val, idmp_pid, idmp_iid, id, now);
+                }
 
                 // Apply trimming if requested
                 if (opts.maxlen) |maxlen| {
@@ -11725,7 +11868,8 @@ pub const Storage = struct {
     /// - duration: 1-86400 seconds (time to retain idempotent IDs)
     /// - maxsize: 1-10000 entries (max iids per producer)
     ///
-    /// Important: Calling XCFGSET clears the IDMP map (not yet implemented)
+    /// Important: Calling XCFGSET with a duration or maxsize different from
+    /// the stream's current value clears the IDMP producer/iid map.
     ///
     /// Returns error if:
     /// - Stream does not exist
@@ -11751,11 +11895,14 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .stream => |*stream_val| {
+                var changed = false;
+
                 // Validate duration (1-86400 seconds)
                 if (duration) |d| {
                     if (d < 1 or d > 86400) {
                         return error.InvalidDuration;
                     }
+                    if (d != stream_val.idmp_duration_sec) changed = true;
                     stream_val.idmp_duration_sec = d;
                 }
 
@@ -11764,12 +11911,13 @@ pub const Storage = struct {
                     if (ms < 1 or ms > 10000) {
                         return error.InvalidMaxsize;
                     }
+                    if (ms != stream_val.idmp_maxsize) changed = true;
                     stream_val.idmp_maxsize = ms;
                 }
 
-                // TODO: Clear IDMP map when implemented
-                // When IDMP tracking is added (producer ID -> idempotent ID map),
-                // this function should clear the map after updating config
+                if (changed) {
+                    clearIdmpMap(self.allocator, stream_val);
+                }
             },
             else => return error.WrongType,
         }
