@@ -11,6 +11,12 @@ const RespValue = @import("../protocol/parser.zig").RespValue;
 /// VADD key [REDUCE dim] (VALUES num | FP32) f1..fn element [SETATTR blob] [EF ef] [M m] [CAS] [NOQUANT|Q8|BIN]
 /// Redis 8.0 Vector Set add. One element per call.
 /// Returns 1 if newly added, 0 if updated.
+///
+/// Quantization: matches Redis's default of Q8 (int8) when no flag is given;
+/// NOQUANT selects FP32, BIN selects binary. A vector set's quantization is
+/// fixed at creation — later VADD calls with a conflicting explicit flag are
+/// rejected. Embeddings are stored as f32 internally regardless of the
+/// reported quantization (see `QuantizationType` doc comment).
 pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8, _: usize) !RespValue {
     if (args.len < 5) return RespValue{ .error_string = "ERR wrong number of arguments for 'vadd' command" };
 
@@ -66,6 +72,9 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
 
     // Optional trailing flags
     var setattr_blob: ?[]const u8 = null;
+    // Redis's actual default quantization is Q8 (int8), not raw FP32; NOQUANT
+    // opts into unquantized storage and BIN opts into binary quantization.
+    var requested_quant: ?QuantizationType = null;
     while (idx < args.len) {
         const flag = args[idx];
         if (std.ascii.eqlIgnoreCase(flag, "SETATTR")) {
@@ -73,11 +82,19 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
             if (idx >= args.len) return RespValue{ .error_string = "ERR SETATTR requires a value" };
             setattr_blob = args[idx];
             idx += 1;
-        } else if (std.ascii.eqlIgnoreCase(flag, "CAS") or
-                   std.ascii.eqlIgnoreCase(flag, "NOQUANT") or
-                   std.ascii.eqlIgnoreCase(flag, "Q8") or
-                   std.ascii.eqlIgnoreCase(flag, "BIN"))
-        {
+        } else if (std.ascii.eqlIgnoreCase(flag, "CAS")) {
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(flag, "NOQUANT")) {
+            if (requested_quant != null) return RespValue{ .error_string = "ERR syntax error" };
+            requested_quant = .fp32;
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(flag, "Q8")) {
+            if (requested_quant != null) return RespValue{ .error_string = "ERR syntax error" };
+            requested_quant = .int8;
+            idx += 1;
+        } else if (std.ascii.eqlIgnoreCase(flag, "BIN")) {
+            if (requested_quant != null) return RespValue{ .error_string = "ERR syntax error" };
+            requested_quant = .binary;
             idx += 1;
         } else if (std.ascii.eqlIgnoreCase(flag, "EF") or
                    std.ascii.eqlIgnoreCase(flag, "M"))
@@ -89,6 +106,7 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
             return RespValue{ .error_string = "ERR syntax error" };
         }
     }
+    const effective_quant = requested_quant orelse .int8;
 
     // Get or create vector set
     const gop = try storage.data.getOrPut(key);
@@ -98,6 +116,7 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
 
         var new_vs = try VectorSetValue.init(allocator, embedding.len, .cosine);
         errdefer new_vs.deinit();
+        new_vs.quantization = effective_quant;
 
         gop.key_ptr.* = key_copy;
         gop.value_ptr.* = Value{ .vector_set = new_vs };
@@ -107,6 +126,11 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
         }
         if (gop.value_ptr.vector_set.dimensionality != embedding.len) {
             return RespValue{ .error_string = "ERR dimensionality mismatch with existing vector set" };
+        }
+        if (requested_quant) |q| {
+            if (q != gop.value_ptr.vector_set.quantization) {
+                return RespValue{ .error_string = "ERR quantization type mismatch with existing vector set" };
+            }
         }
     }
 
@@ -647,6 +671,99 @@ test "cmdVadd: REDUCE option accepted" {
     const result = try cmdVadd(allocator, &storage, &args, 3);
     defer result.deinit(allocator);
     try std.testing.expectEqual(@as(i64, 1), result.integer);
+}
+
+// ============================================================================
+// VADD quantization flag tests
+// ============================================================================
+
+test "cmdVadd: default (no flag) quantizes as Q8/INT8" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
+    const result = try cmdVadd(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+
+    const value = storage.data.get("myvec").?;
+    try std.testing.expectEqual(QuantizationType.int8, value.vector_set.quantization);
+}
+
+test "cmdVadd: NOQUANT stores as FP32" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1", "NOQUANT" };
+    const result = try cmdVadd(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+
+    const value = storage.data.get("myvec").?;
+    try std.testing.expectEqual(QuantizationType.fp32, value.vector_set.quantization);
+}
+
+test "cmdVadd: Q8 flag explicitly stores as INT8" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1", "Q8" };
+    const result = try cmdVadd(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+
+    const value = storage.data.get("myvec").?;
+    try std.testing.expectEqual(QuantizationType.int8, value.vector_set.quantization);
+}
+
+test "cmdVadd: BIN flag stores as BIN" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1", "BIN" };
+    const result = try cmdVadd(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), result.integer);
+
+    const value = storage.data.get("myvec").?;
+    try std.testing.expectEqual(QuantizationType.binary, value.vector_set.quantization);
+}
+
+test "cmdVadd: conflicting quantization flags in one call is a syntax error" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const args = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1", "Q8", "NOQUANT" };
+    const result = try cmdVadd(allocator, &storage, &args, 3);
+    defer result.deinit(allocator);
+    try std.testing.expect(result == .error_string);
+}
+
+test "cmdVadd: quantization mismatch against existing vector set is rejected" {
+    const allocator = std.testing.allocator;
+    var storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" }; // defaults to INT8
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), r1.integer);
+
+    const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2", "NOQUANT" };
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    try std.testing.expect(r2 == .error_string);
+
+    // Matching the existing set's quantization (implicit or explicit Q8) still works.
+    const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3", "Q8" };
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1), r3.integer);
 }
 
 // ============================================================================
@@ -1257,7 +1374,7 @@ test "cmdVinfo: basic metadata" {
     try std.testing.expectEqualStrings("count", result.array[4].bulk_string);
     try std.testing.expectEqual(@as(i64, 2), result.array[5].integer);
     try std.testing.expectEqualStrings("quantization", result.array[6].bulk_string);
-    try std.testing.expectEqualStrings("FP32", result.array[7].bulk_string);
+    try std.testing.expectEqualStrings("INT8", result.array[7].bulk_string);
 }
 
 test "cmdVinfo: metric is COSINE (default)" {

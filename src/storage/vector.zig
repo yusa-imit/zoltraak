@@ -23,16 +23,23 @@ pub const DistanceMetric = enum {
     }
 };
 
-/// Quantization type for vector storage
+/// Quantization type for vector storage.
+///
+/// Embeddings are always kept as f32 internally (see `VectorEntry.embedding`);
+/// this field only tracks which quantization mode the vector set was created
+/// with so VADD/VINFO report Redis-compatible metadata. Actual compressed
+/// on-disk/in-memory representations for fp16/int8/binary are not implemented.
 pub const QuantizationType = enum {
-    fp32, // 32-bit floating point
+    fp32, // 32-bit floating point (NOQUANT)
     fp16, // 16-bit floating point (not implemented yet)
-    int8, // 8-bit integer (not implemented yet)
+    int8, // 8-bit integer (Q8 — Redis's default quantization)
+    binary, // 1-bit binary quantization (BIN)
 
     pub fn fromString(s: []const u8) !QuantizationType {
         if (std.ascii.eqlIgnoreCase(s, "fp32")) return .fp32;
         if (std.ascii.eqlIgnoreCase(s, "fp16")) return .fp16;
         if (std.ascii.eqlIgnoreCase(s, "int8")) return .int8;
+        if (std.ascii.eqlIgnoreCase(s, "bin") or std.ascii.eqlIgnoreCase(s, "binary")) return .binary;
         return error.InvalidQuantization;
     }
 
@@ -42,6 +49,7 @@ pub const QuantizationType = enum {
             .fp32 => "FP32",
             .fp16 => "FP16",
             .int8 => "INT8",
+            .binary => "BIN",
         };
     }
 };

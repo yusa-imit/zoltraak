@@ -12,7 +12,7 @@ Zoltraak — Redis-compatible in-memory data store written in Zig.
 
 ### Known stubs (need real implementation for 1.0)
 
-ACL (no enforcement), Cluster (single-node), SELECT (DB 0 only). All blocking commands have true polling-based semantics. SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE have real implementations. **Phase 2 Lua scripting 100% complete** ✅ (EVAL/EVALSHA with redis.call/pcall, sandboxing, timeout, SCRIPT KILL, cjson/cmsgpack/struct/bit libraries). **Phase 6 server management 100% complete** ✅
+All blocking commands have true polling-based semantics. SLOWLOG, MONITOR, LATENCY, MEMORY, DEBUG, SHUTDOWN, FAILOVER, ROLE have real implementations. **Phase 2 Lua scripting 100% complete** ✅ (EVAL/EVALSHA with redis.call/pcall, sandboxing, timeout, SCRIPT KILL, cjson/cmsgpack/struct/bit libraries). **Phase 3 ACL enforcement 100% complete** ✅ (NOAUTH, NOPERM command/key permission checks wired into dispatch). **Phase 6 server management 100% complete** ✅. **Phase 7 Multi-DB 100% complete** ✅ (SELECT 0-15). **Phase 8 Cluster 100% complete** ✅ (single-node topology with full CLUSTER subcommand surface). See `docs/milestones.md` for the authoritative per-phase status.
 
 ---
 
@@ -510,28 +510,29 @@ gh issue create --repo yusa-imit/sailor --title "feat: <기능>" --label "featur
 
 ## zuda Migration
 
-- **Current**: Not yet integrated — **READY for migration** (zuda v1.15.0 available with all target modules)
+- **Current**: 2/5 migrations complete (Glob, Haversine done; HyperLogLog and Geohash BLOCKED on zuda API mismatches; Sorted Set DEFERRED pending those). zuda v2.0.0 integrated.
 - **Repository**: https://github.com/yusa-imit/zuda
-- **Tracking**: See `docs/milestones.md` for migration targets and status
+- **Tracking**: `docs/milestones.md` "zuda Library" section is authoritative for migration targets and status — this table is a summary only.
 - **Compatibility layers**: `zuda.compat.zoltraak_sortedset` — drop-in SortedSet wrapper (Redis API-compatible)
 
 ### Migration Targets & Readiness
 
 | Target | LOC | Status | Notes |
 |--------|-----|--------|-------|
-| Glob Pattern Matching | 90 | **READY** | `zuda.algorithms.string.globMatch` — 가장 간단, 먼저 마이그레이션 |
-| HyperLogLog | 80 | **READY** | `zuda.containers.probabilistic.HyperLogLog` — 독립 모듈 |
-| Haversine Distance | 15 | **READY** | `zuda.algorithms.geometry.haversineDistance` — 단일 함수 교체 |
-| Geohash encoding | 1400 | **READY** | `zuda.algorithms.geometry.geohashEncode/Decode` |
-| Sorted Set | 1800 | **READY** | `zuda.compat.zoltraak_sortedset` or `zuda.containers.lists.SkipList` |
+| Glob Pattern Matching | 90 | **DONE** | `zuda.algorithms.string.globMatch` (Iteration 119) |
+| Haversine Distance | 15 | **DONE** | `zuda.algorithms.geometry.haversineDistanceM` (Iteration 118) |
+| HyperLogLog | 80 | **BLOCKED** | `zuda.containers.probabilistic.HyperLogLog` requires allocator + runtime init; Redis needs an embedded fixed-size `[16384]u8` array in the `Value` union (no error propagation) |
+| Geohash encoding | 1400 | **BLOCKED** | `zuda.algorithms.geometry.geohashEncode` uses base32 string encoding; Redis needs u64 binary encoding for sorted-set storage |
+| Sorted Set | 1800 | **DEFERRED** | pending HyperLogLog/Geohash resolution — `zuda.compat.zoltraak_sortedset` or `zuda.containers.lists.SkipList` |
 
 ### Migration Protocol (ACTIVE)
-1. READY 상태 마이그레이션은 **자율 세션에서 적극적으로 수행**한다 — 이슈 도착을 기다리지 않는다
-2. **마이그레이션 순서**: 간단한 것부터 → Glob (90 LOC) → Haversine (15 LOC) → HyperLogLog (80 LOC) → Geohash (1400 LOC) → Sorted Set (1800 LOC)
-3. `build.zig.zon`에 zuda 의존성 추가, 자체 구현을 zuda import로 교체
-4. Sorted Set 마이그레이션 시: SkipList의 `(score, member)` 복합 정렬 + rank/score range query 지원 확인 필수
-5. `zig build test` + `tests/integration_test.sh` 전체 통과 확인
-6. 완료된 마이그레이션의 자체 구현 코드 삭제, 관련 GitHub 이슈 닫기
+1. `docs/milestones.md`에서 `status: READY`인 미완료 마이그레이션을 먼저 확인 — 없으면 이 항목은 스킵하고 다음 우선순위로 이동
+2. READY 상태 마이그레이션은 **자율 세션에서 적극적으로 수행**한다 — 이슈 도착을 기다리지 않는다
+3. **마이그레이션 순서**: 간단한 것부터 진행 (이미 Glob/Haversine 완료). BLOCKED 항목은 zuda 쪽 API 변경 없이는 재시도하지 않는다
+4. `build.zig.zon`에 zuda 의존성 추가, 자체 구현을 zuda import로 교체
+5. Sorted Set 마이그레이션 시: SkipList의 `(score, member)` 복합 정렬 + rank/score range query 지원 확인 필수
+6. `zig build test` + `tests/integration_test.sh` 전체 통과 확인
+7. 완료된 마이그레이션의 자체 구현 코드 삭제, 관련 GitHub 이슈 닫기
 
 ### zuda-first Policy (CRITICAL)
 - 새로운 Redis 명령어 구현 시 데이터 구조/알고리즘이 필요하면, **zuda에 해당 모듈이 있는지 먼저 확인**한다
