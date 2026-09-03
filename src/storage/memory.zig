@@ -1071,6 +1071,8 @@ pub const Storage = struct {
             try storage.defrag_task.start();
         }
 
+        storage.module_store.storage = storage;
+
         return storage;
     }
 

@@ -520,6 +520,11 @@ pub const ModuleStore = struct {
     hooks: std.ArrayList(ModuleHook),
     timers: ModuleTimerStore,
     global_lock: GlobalLock,
+    /// Back-pointer to the owning Storage, used by getUsedMemoryRatio() to read
+    /// the live maxmemory config and current memory usage. Set by Storage.init()
+    /// once the Storage pointer is stable (null until then, matching the
+    /// pubsub_state deferred-wiring pattern elsewhere in Storage).
+    storage: ?*Storage = null,
 
     /// Initialize a new ModuleStore
     ///
@@ -537,6 +542,7 @@ pub const ModuleStore = struct {
             .hooks = std.ArrayList(ModuleHook){},
             .timers = ModuleTimerStore.init(allocator),
             .global_lock = GlobalLock.init(),
+            .storage = null,
         };
     }
 
@@ -971,12 +977,21 @@ pub const ModuleStore = struct {
 
     /// Get ratio of used memory to maxmemory limit
     /// Redis module ABI: float RedisModule_GetUsedMemoryRatio()
-    /// Returns 0.0 if no limit, otherwise used/limit
+    /// Returns 0.0 if no limit configured, no owning Storage is wired up yet,
+    /// or maxmemory is unparseable/non-positive; otherwise used/limit.
     pub fn getUsedMemoryRatio(self: *ModuleStore) f32 {
-        _ = self;
-        // TODO: Integrate with actual maxmemory configuration
-        // For now, return 0.0 (unlimited)
-        return 0.0;
+        const storage = self.storage orelse return 0.0;
+
+        const maxmemory_str = storage.config.getAsString("maxmemory") catch return 0.0;
+        defer if (maxmemory_str) |s| storage.allocator.free(s);
+        const maxmemory_str_val = maxmemory_str orelse return 0.0;
+
+        const maxmemory = std.fmt.parseInt(i64, maxmemory_str_val, 10) catch return 0.0;
+        if (maxmemory <= 0) return 0.0; // 0 (or negative) = unlimited
+
+        const current: f64 = @floatFromInt(storage.memory_tracker.current_allocated);
+        const limit: f64 = @floatFromInt(maxmemory);
+        return @floatCast(current / limit);
     }
 
     /// Remove all commands registered by a module

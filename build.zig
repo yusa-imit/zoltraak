@@ -2545,6 +2545,31 @@ pub fn build(b: *std.Build) void {
     const run_iter443_tests = b.addRunArtifact(iter443_tests);
     test_step.dependOn(&run_iter443_tests.step);
 
+    // Iteration 450: ModuleStore.getUsedMemoryRatio() (RedisModule_GetUsedMemoryRatio) was
+    // a permanent 0.0 stub, ignoring maxmemory config and live memory usage entirely.
+    const iter450_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_iter450.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zoltraak", .module = zoltraak_mod },
+                .{ .name = "sailor", .module = sailor_mod },
+            },
+        }),
+    });
+    iter450_tests.linkSystemLibrary("luajit-5.1");
+    iter450_tests.linkLibC();
+    if (target.result.os.tag == .macos) {
+        iter450_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/include/luajit-2.1" });
+        iter450_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/luajit/lib" });
+    } else if (target.result.os.tag == .linux) {
+        iter450_tests.addIncludePath(.{ .cwd_relative = "/usr/include/luajit-2.1" });
+    }
+
+    const run_iter450_tests = b.addRunArtifact(iter450_tests);
+    test_step.dependOn(&run_iter450_tests.step);
+
     // MONITOR command integration tests (Iteration 90)
     const monitor_tests = b.addTest(.{
         .root_module = b.createModule(.{
