@@ -285,29 +285,390 @@ fn registerCMsgPack(L: *lua.lua_State) !void {
     lua.lua_setfield(L, lua.LUA_GLOBALSINDEX, "cmsgpack");
 }
 
-/// cmsgpack.pack(value) - encode to MessagePack binary
-/// Minimal implementation - returns a stub binary representation
+/// Encode a signed 64-bit integer using the smallest applicable MessagePack int type.
+fn msgpackEncodeInt(n: i64, buf: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+    if (n >= 0) {
+        const u: u64 = @intCast(n);
+        if (u <= 0x7f) {
+            try buf.append(alloc, @intCast(u));
+        } else if (u <= 0xff) {
+            try buf.append(alloc, 0xcc);
+            try buf.append(alloc, @intCast(u));
+        } else if (u <= 0xffff) {
+            try buf.append(alloc, 0xcd);
+            var b: [2]u8 = undefined;
+            std.mem.writeInt(u16, &b, @intCast(u), .big);
+            try buf.appendSlice(alloc, &b);
+        } else if (u <= 0xffffffff) {
+            try buf.append(alloc, 0xce);
+            var b: [4]u8 = undefined;
+            std.mem.writeInt(u32, &b, @intCast(u), .big);
+            try buf.appendSlice(alloc, &b);
+        } else {
+            try buf.append(alloc, 0xcf);
+            var b: [8]u8 = undefined;
+            std.mem.writeInt(u64, &b, u, .big);
+            try buf.appendSlice(alloc, &b);
+        }
+    } else if (n >= -32) {
+        try buf.append(alloc, @bitCast(@as(i8, @intCast(n))));
+    } else if (n >= -128) {
+        try buf.append(alloc, 0xd0);
+        try buf.append(alloc, @bitCast(@as(i8, @intCast(n))));
+    } else if (n >= -32768) {
+        try buf.append(alloc, 0xd1);
+        var b: [2]u8 = undefined;
+        std.mem.writeInt(i16, &b, @intCast(n), .big);
+        try buf.appendSlice(alloc, &b);
+    } else if (n >= -2147483648) {
+        try buf.append(alloc, 0xd2);
+        var b: [4]u8 = undefined;
+        std.mem.writeInt(i32, &b, @intCast(n), .big);
+        try buf.appendSlice(alloc, &b);
+    } else {
+        try buf.append(alloc, 0xd3);
+        var b: [8]u8 = undefined;
+        std.mem.writeInt(i64, &b, n, .big);
+        try buf.appendSlice(alloc, &b);
+    }
+}
+
+/// Encode a Lua number: integral values use the smallest MessagePack int type,
+/// non-integral values use float64 (matches lua-cmsgpack's autodetection).
+fn msgpackEncodeNumber(num: f64, buf: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+    const is_int = @floor(num) == num and !std.math.isInf(num) and !std.math.isNan(num) and
+        num >= -9223372036854775808.0 and num < 9223372036854775808.0;
+    if (is_int) {
+        try msgpackEncodeInt(@intFromFloat(num), buf, alloc);
+    } else {
+        try buf.append(alloc, 0xcb);
+        var b: [8]u8 = undefined;
+        std.mem.writeInt(u64, &b, @bitCast(num), .big);
+        try buf.appendSlice(alloc, &b);
+    }
+}
+
+/// Encode a raw byte string using the smallest applicable MessagePack str type.
+fn msgpackEncodeString(s: []const u8, buf: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+    const len = s.len;
+    if (len <= 31) {
+        try buf.append(alloc, 0xa0 | @as(u8, @intCast(len)));
+    } else if (len <= 0xff) {
+        try buf.append(alloc, 0xd9);
+        try buf.append(alloc, @intCast(len));
+    } else if (len <= 0xffff) {
+        try buf.append(alloc, 0xda);
+        var b: [2]u8 = undefined;
+        std.mem.writeInt(u16, &b, @intCast(len), .big);
+        try buf.appendSlice(alloc, &b);
+    } else {
+        try buf.append(alloc, 0xdb);
+        var b: [4]u8 = undefined;
+        std.mem.writeInt(u32, &b, @intCast(len), .big);
+        try buf.appendSlice(alloc, &b);
+    }
+    try buf.appendSlice(alloc, s);
+}
+
+fn msgpackEncodeArrayHeader(len: usize, buf: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+    if (len <= 15) {
+        try buf.append(alloc, 0x90 | @as(u8, @intCast(len)));
+    } else if (len <= 0xffff) {
+        try buf.append(alloc, 0xdc);
+        var b: [2]u8 = undefined;
+        std.mem.writeInt(u16, &b, @intCast(len), .big);
+        try buf.appendSlice(alloc, &b);
+    } else {
+        try buf.append(alloc, 0xdd);
+        var b: [4]u8 = undefined;
+        std.mem.writeInt(u32, &b, @intCast(len), .big);
+        try buf.appendSlice(alloc, &b);
+    }
+}
+
+fn msgpackEncodeMapHeader(len: usize, buf: *std.ArrayList(u8), alloc: std.mem.Allocator) !void {
+    if (len <= 15) {
+        try buf.append(alloc, 0x80 | @as(u8, @intCast(len)));
+    } else if (len <= 0xffff) {
+        try buf.append(alloc, 0xde);
+        var b: [2]u8 = undefined;
+        std.mem.writeInt(u16, &b, @intCast(len), .big);
+        try buf.appendSlice(alloc, &b);
+    } else {
+        try buf.append(alloc, 0xdf);
+        var b: [4]u8 = undefined;
+        std.mem.writeInt(u32, &b, @intCast(len), .big);
+        try buf.appendSlice(alloc, &b);
+    }
+}
+
+/// Encode a Lua table at absolute stack index `abs`: arrays (lua_objlen > 0) use
+/// MessagePack array format, everything else (including empty tables) uses map format.
+fn msgpackEncodeTable(L: *lua.lua_State, abs: c_int, buf: *std.ArrayList(u8), alloc: std.mem.Allocator, depth: u8) anyerror!void {
+    const arr_len = lua.lua_objlen(L, abs);
+    if (arr_len > 0) {
+        try msgpackEncodeArrayHeader(arr_len, buf, alloc);
+        var i: c_int = 1;
+        while (i <= @as(c_int, @intCast(arr_len))) : (i += 1) {
+            lua.lua_rawgeti(L, abs, i);
+            try msgpackEncodeValue(L, -1, buf, alloc, depth + 1);
+            lua.lua_pop(L, 1);
+        }
+        return;
+    }
+
+    var count: usize = 0;
+    lua.lua_pushnil(L);
+    while (lua.lua_next(L, abs) != 0) {
+        count += 1;
+        lua.lua_pop(L, 1);
+    }
+
+    try msgpackEncodeMapHeader(count, buf, alloc);
+    lua.lua_pushnil(L);
+    while (lua.lua_next(L, abs) != 0) {
+        try msgpackEncodeValue(L, -2, buf, alloc, depth + 1);
+        try msgpackEncodeValue(L, -1, buf, alloc, depth + 1);
+        lua.lua_pop(L, 1); // pop value, keep key for next()
+    }
+}
+
+/// Recursively encode a Lua value at stack index idx as MessagePack binary into buf.
+fn msgpackEncodeValue(L: *lua.lua_State, idx: c_int, buf: *std.ArrayList(u8), alloc: std.mem.Allocator, depth: u8) anyerror!void {
+    if (depth > 64) {
+        try buf.append(alloc, 0xc0); // nil: excessive nesting collapses to nil, mirrors cjson
+        return;
+    }
+    const vtype = lua.lua_type(L, idx);
+    switch (vtype) {
+        lua.LUA_TNIL => try buf.append(alloc, 0xc0),
+        lua.LUA_TBOOLEAN => try buf.append(alloc, if (lua.lua_toboolean(L, idx) != 0) @as(u8, 0xc3) else @as(u8, 0xc2)),
+        lua.LUA_TNUMBER => try msgpackEncodeNumber(lua.lua_tonumber(L, idx), buf, alloc),
+        lua.LUA_TSTRING => {
+            var slen: usize = 0;
+            const sp = lua.lua_tolstring(L, idx, &slen);
+            const s = if (sp) |p| p[0..slen] else "";
+            try msgpackEncodeString(s, buf, alloc);
+        },
+        lua.LUA_TTABLE => {
+            const abs: c_int = if (idx < 0) lua.lua_gettop(L) + idx + 1 else idx;
+            try msgpackEncodeTable(L, abs, buf, alloc, depth);
+        },
+        else => try buf.append(alloc, 0xc0), // functions/userdata/threads have no MessagePack representation
+    }
+}
+
+/// cmsgpack.pack(v1, v2, ...) - encode each argument to MessagePack binary and concatenate.
+/// Redis uses lua-cmsgpack, which supports packing multiple values into one buffer.
 export fn cmsgpackPack(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
+    const nargs = lua.lua_gettop(state);
 
-    if (lua.lua_gettop(state) < 1) {
-        lua.lua_pushstring(state, "expected 1 argument");
+    if (nargs < 1) {
+        lua.lua_pushstring(state, "expected at least 1 argument");
         _ = lua.lua_error(state);
         return 0;
     }
 
-    // Stub: return empty msgpack (0x90 = empty array in msgpack)
-    const stub = "\x90";
-    lua.lua_pushlstring(state, stub.ptr, stub.len);
+    const alloc = std.heap.c_allocator;
+    var buf = std.ArrayList(u8).initCapacity(alloc, 64) catch {
+        lua.lua_pushstring(state, "ERR out of memory");
+        _ = lua.lua_error(state);
+        return 0;
+    };
+    defer buf.deinit(alloc);
+
+    var i: c_int = 1;
+    while (i <= nargs) : (i += 1) {
+        msgpackEncodeValue(state, i, &buf, alloc, 0) catch {
+            lua.lua_pushstring(state, "ERR cmsgpack encode failed");
+            _ = lua.lua_error(state);
+            return 0;
+        };
+    }
+
+    lua.lua_pushlstring(state, buf.items.ptr, buf.items.len);
     return 1;
 }
 
-/// cmsgpack.unpack(binary) - decode from MessagePack binary
-/// Minimal implementation - returns nil
+const MsgpackError = error{ UnexpectedEnd, InvalidFormat, TooDeep };
+
+fn msgpackReadBytes(data: []const u8, pos: usize, n: usize) MsgpackError![]const u8 {
+    if (pos + n > data.len) return MsgpackError.UnexpectedEnd;
+    return data[pos .. pos + n];
+}
+
+fn msgpackDecodeArray(L: *lua.lua_State, data: []const u8, offset: usize, len: usize, depth: u8) MsgpackError!usize {
+    lua.lua_createtable(L, @intCast(len), 0);
+    var pos = offset;
+    var i: usize = 1;
+    while (i <= len) : (i += 1) {
+        pos = try msgpackDecodeValue(L, data, pos, depth + 1);
+        lua.lua_rawseti(L, -2, @intCast(i));
+    }
+    return pos;
+}
+
+fn msgpackDecodeMap(L: *lua.lua_State, data: []const u8, offset: usize, len: usize, depth: u8) MsgpackError!usize {
+    lua.lua_createtable(L, 0, @intCast(len));
+    var pos = offset;
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        pos = try msgpackDecodeValue(L, data, pos, depth + 1); // key
+        pos = try msgpackDecodeValue(L, data, pos, depth + 1); // value
+        lua.lua_rawset(L, -3);
+    }
+    return pos;
+}
+
+/// Decode one MessagePack value starting at data[offset], pushing it onto the Lua
+/// stack. Returns the offset just past the decoded value.
+fn msgpackDecodeValue(L: *lua.lua_State, data: []const u8, offset: usize, depth: u8) MsgpackError!usize {
+    if (depth > 64) return MsgpackError.TooDeep;
+    if (offset >= data.len) return MsgpackError.UnexpectedEnd;
+    const b0 = data[offset];
+    var pos = offset + 1;
+
+    switch (b0) {
+        0x00...0x7f => lua.lua_pushnumber(L, @floatFromInt(b0)),
+        0xe0...0xff => lua.lua_pushnumber(L, @floatFromInt(@as(i8, @bitCast(b0)))),
+        0xc0 => lua.lua_pushnil(L),
+        0xc2 => lua.lua_pushboolean(L, 0),
+        0xc3 => lua.lua_pushboolean(L, 1),
+        0xcc => {
+            const b = try msgpackReadBytes(data, pos, 1);
+            lua.lua_pushnumber(L, @floatFromInt(b[0]));
+            pos += 1;
+        },
+        0xcd => {
+            const b = try msgpackReadBytes(data, pos, 2);
+            lua.lua_pushnumber(L, @floatFromInt(std.mem.readInt(u16, b[0..2], .big)));
+            pos += 2;
+        },
+        0xce => {
+            const b = try msgpackReadBytes(data, pos, 4);
+            lua.lua_pushnumber(L, @floatFromInt(std.mem.readInt(u32, b[0..4], .big)));
+            pos += 4;
+        },
+        0xcf => {
+            const b = try msgpackReadBytes(data, pos, 8);
+            lua.lua_pushnumber(L, @floatFromInt(std.mem.readInt(u64, b[0..8], .big)));
+            pos += 8;
+        },
+        0xd0 => {
+            const b = try msgpackReadBytes(data, pos, 1);
+            lua.lua_pushnumber(L, @floatFromInt(@as(i8, @bitCast(b[0]))));
+            pos += 1;
+        },
+        0xd1 => {
+            const b = try msgpackReadBytes(data, pos, 2);
+            lua.lua_pushnumber(L, @floatFromInt(std.mem.readInt(i16, b[0..2], .big)));
+            pos += 2;
+        },
+        0xd2 => {
+            const b = try msgpackReadBytes(data, pos, 4);
+            lua.lua_pushnumber(L, @floatFromInt(std.mem.readInt(i32, b[0..4], .big)));
+            pos += 4;
+        },
+        0xd3 => {
+            const b = try msgpackReadBytes(data, pos, 8);
+            lua.lua_pushnumber(L, @floatFromInt(std.mem.readInt(i64, b[0..8], .big)));
+            pos += 8;
+        },
+        0xca => {
+            const b = try msgpackReadBytes(data, pos, 4);
+            const bits = std.mem.readInt(u32, b[0..4], .big);
+            lua.lua_pushnumber(L, @as(f32, @bitCast(bits)));
+            pos += 4;
+        },
+        0xcb => {
+            const b = try msgpackReadBytes(data, pos, 8);
+            const bits = std.mem.readInt(u64, b[0..8], .big);
+            lua.lua_pushnumber(L, @as(f64, @bitCast(bits)));
+            pos += 8;
+        },
+        0xa0...0xbf => {
+            const len: usize = b0 & 0x1f;
+            const s = try msgpackReadBytes(data, pos, len);
+            lua.lua_pushlstring(L, s.ptr, s.len);
+            pos += len;
+        },
+        0xc4, 0xd9 => {
+            const lb = try msgpackReadBytes(data, pos, 1);
+            const len: usize = lb[0];
+            pos += 1;
+            const s = try msgpackReadBytes(data, pos, len);
+            lua.lua_pushlstring(L, s.ptr, s.len);
+            pos += len;
+        },
+        0xc5, 0xda => {
+            const lb = try msgpackReadBytes(data, pos, 2);
+            const len: usize = std.mem.readInt(u16, lb[0..2], .big);
+            pos += 2;
+            const s = try msgpackReadBytes(data, pos, len);
+            lua.lua_pushlstring(L, s.ptr, s.len);
+            pos += len;
+        },
+        0xc6, 0xdb => {
+            const lb = try msgpackReadBytes(data, pos, 4);
+            const len: usize = std.mem.readInt(u32, lb[0..4], .big);
+            pos += 4;
+            const s = try msgpackReadBytes(data, pos, len);
+            lua.lua_pushlstring(L, s.ptr, s.len);
+            pos += len;
+        },
+        0x90...0x9f => pos = try msgpackDecodeArray(L, data, pos, b0 & 0x0f, depth),
+        0xdc => {
+            const lb = try msgpackReadBytes(data, pos, 2);
+            const len: usize = std.mem.readInt(u16, lb[0..2], .big);
+            pos = try msgpackDecodeArray(L, data, pos + 2, len, depth);
+        },
+        0xdd => {
+            const lb = try msgpackReadBytes(data, pos, 4);
+            const len: usize = std.mem.readInt(u32, lb[0..4], .big);
+            pos = try msgpackDecodeArray(L, data, pos + 4, len, depth);
+        },
+        0x80...0x8f => pos = try msgpackDecodeMap(L, data, pos, b0 & 0x0f, depth),
+        0xde => {
+            const lb = try msgpackReadBytes(data, pos, 2);
+            const len: usize = std.mem.readInt(u16, lb[0..2], .big);
+            pos = try msgpackDecodeMap(L, data, pos + 2, len, depth);
+        },
+        0xdf => {
+            const lb = try msgpackReadBytes(data, pos, 4);
+            const len: usize = std.mem.readInt(u32, lb[0..4], .big);
+            pos = try msgpackDecodeMap(L, data, pos + 4, len, depth);
+        },
+        else => return MsgpackError.InvalidFormat, // 0xc1 (unused) and ext types (unsupported)
+    }
+    return pos;
+}
+
+/// cmsgpack.unpack(binary) - decode every MessagePack value in binary, returning
+/// them as multiple values (matches lua-cmsgpack: pack(1,2,3) round-trips via
+/// unpack into three return values).
 export fn cmsgpackUnpack(L: ?*lua.lua_State) callconv(.c) c_int {
     const state = L orelse return 0;
-    lua.lua_pushnil(state);
-    return 1;
+
+    var data_len: usize = 0;
+    const data_ptr = lua.lua_tolstring(state, 1, &data_len);
+    if (data_ptr == null or data_len == 0) {
+        lua.lua_pushnil(state);
+        return 1;
+    }
+    const data = data_ptr.?[0..data_len];
+
+    var pos: usize = 0;
+    var count: c_int = 0;
+    while (pos < data.len) {
+        pos = msgpackDecodeValue(state, data, pos, 0) catch {
+            lua.lua_pushstring(state, "ERR Missing bytes in input.");
+            _ = lua.lua_error(state);
+            return 0;
+        };
+        count += 1;
+    }
+    return count;
 }
 
 /// Register struct library - binary data packing/unpacking
@@ -963,7 +1324,7 @@ test "cjson encode-decode roundtrip" {
     try std.testing.expectEqual(@as(f64, 100.0), lua.lua_tonumber(L, -1));
 }
 
-test "cmsgpack pack returns binary" {
+test "cmsgpack pack: positive fixint" {
     const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
     defer lua.lua_close(L);
 
@@ -972,8 +1333,188 @@ test "cmsgpack pack returns binary" {
     _ = lua.luaL_loadstring(L, "return cmsgpack.pack(42)");
     _ = lua.lua_pcall(L, 0, 1, 0);
 
-    // Just verify it returns something
-    try std.testing.expect(lua.lua_isstring(L, -1));
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0x2a}, s.?[0..len]);
+}
+
+test "cmsgpack pack: negative fixint" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.pack(-1)");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0xff}, s.?[0..len]);
+}
+
+test "cmsgpack pack: nil, true, false" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.pack(nil, true, false)");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xc0, 0xc3, 0xc2 }, s.?[0..len]);
+}
+
+test "cmsgpack pack: fixstr" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.pack('hi')");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xa2, 'h', 'i' }, s.?[0..len]);
+}
+
+test "cmsgpack pack: fixarray" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.pack({1, 2, 3})");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x93, 0x01, 0x02, 0x03 }, s.?[0..len]);
+}
+
+test "cmsgpack pack: uint8 boundary (200)" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.pack(200)");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xcc, 200 }, s.?[0..len]);
+}
+
+test "cmsgpack unpack: scalar roundtrip" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.unpack(cmsgpack.pack(42))");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, 42.0), lua.lua_tonumber(L, -1));
+}
+
+test "cmsgpack unpack: string roundtrip" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.unpack(cmsgpack.pack('hello world'))");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("hello world", s.?[0..len]);
+}
+
+test "cmsgpack unpack: negative float roundtrip" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.unpack(cmsgpack.pack(-3.5))");
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    try std.testing.expectEqual(@as(f64, -3.5), lua.lua_tonumber(L, -1));
+}
+
+test "cmsgpack unpack: array roundtrip preserves order" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local t = cmsgpack.unpack(cmsgpack.pack({10, 20, 30}))
+        \\return t[1], t[2], t[3], #t
+    );
+    _ = lua.lua_pcall(L, 0, 4, 0);
+
+    try std.testing.expectEqual(@as(f64, 10.0), lua.lua_tonumber(L, -4));
+    try std.testing.expectEqual(@as(f64, 20.0), lua.lua_tonumber(L, -3));
+    try std.testing.expectEqual(@as(f64, 30.0), lua.lua_tonumber(L, -2));
+    try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(L, -1));
+}
+
+test "cmsgpack unpack: map roundtrip" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L,
+        \\local t = cmsgpack.unpack(cmsgpack.pack({foo = 'bar'}))
+        \\return t.foo
+    );
+    _ = lua.lua_pcall(L, 0, 1, 0);
+
+    var len: usize = 0;
+    const s = lua.lua_tolstring(L, -1, &len);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("bar", s.?[0..len]);
+}
+
+test "cmsgpack pack/unpack: multiple values round-trip as multiple returns" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    _ = lua.luaL_loadstring(L, "return cmsgpack.unpack(cmsgpack.pack(1, 2, 3))");
+    _ = lua.lua_pcall(L, 0, 3, 0);
+
+    try std.testing.expectEqual(@as(f64, 1.0), lua.lua_tonumber(L, -3));
+    try std.testing.expectEqual(@as(f64, 2.0), lua.lua_tonumber(L, -2));
+    try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(L, -1));
+}
+
+test "cmsgpack unpack: truncated input raises an error" {
+    const L = lua.luaL_newstate() orelse return error.LuaStateCreateFailed;
+    defer lua.lua_close(L);
+
+    try registerCMsgPack(L);
+
+    // 0xd2 (int32) header with no payload bytes
+    _ = lua.luaL_loadstring(L, "return pcall(cmsgpack.unpack, string.char(0xd2))");
+    _ = lua.lua_pcall(L, 0, 2, 0);
+
+    // pcall returns (false, err) on failure
+    try std.testing.expectEqual(@as(c_int, 0), lua.lua_toboolean(L, -2));
 }
 
 test "struct pack: i (little-endian 4-byte int)" {

@@ -228,6 +228,38 @@ test "Lua libraries: cmsgpack.pack works" {
     try testing.expect(std.mem.indexOf(u8, response, "ERR") == null);
 }
 
+test "Lua libraries: cmsgpack.pack/unpack round-trips a table through EVAL" {
+    const allocator = testing.allocator;
+
+    var storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    var script_store = try ScriptStore.init(allocator);
+    defer script_store.deinit();
+
+    var pubsub = try PubSub.init(allocator);
+    defer pubsub.deinit();
+
+    var tx_state = try TxState.init(allocator);
+    defer tx_state.deinit();
+
+    var client_registry = try ClientRegistry.init(allocator);
+    defer client_registry.deinit();
+
+    const script =
+        \\local cmsgpack = require('cmsgpack')
+        \\local t = cmsgpack.unpack(cmsgpack.pack({1, 2, 3}))
+        \\return t[1] + t[2] + t[3]
+    ;
+
+    const args = &[_][]const u8{ "0", script, "0" };
+    const response = try cmdEval(allocator, &storage, &script_store, &pubsub, &tx_state, &client_registry, 1, args);
+    defer allocator.free(response);
+
+    // 1 + 2 + 3 == 6, verifies real pack/unpack (not the old empty-array/nil stubs)
+    try testing.expect(std.mem.indexOf(u8, response, "6") != null);
+}
+
 test "Lua libraries: struct.pack works" {
     const allocator = testing.allocator;
 
