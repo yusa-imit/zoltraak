@@ -395,10 +395,22 @@ pub const ClusterState = struct {
     /// Migration tasks: tracks atomic slot migration tasks (Redis 8.4+)
     /// Maps task_id (40-char hex) -> MigrationTask
     migration_tasks: std.StringHashMap(*MigrationTask),
+    /// Per-slot cumulative CPU/network activity, indexed by slot number.
+    /// Populated by `recordSlotActivity` as commands are dispatched; backs
+    /// the cpu-usec/network-bytes-in/network-bytes-out metrics reported by
+    /// CLUSTER SLOT-STATS (see `getSlotStats`).
+    slot_activity: [CLUSTER_SLOTS]SlotActivity,
 
     pub const State = enum {
         ok,
         fail,
+    };
+
+    /// Cumulative CPU time and network I/O attributed to a single hash slot.
+    pub const SlotActivity = struct {
+        cpu_usec: u64 = 0,
+        network_bytes_in: u64 = 0,
+        network_bytes_out: u64 = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator) ClusterState {
@@ -418,6 +430,7 @@ pub const ClusterState = struct {
             .my_replication_offset = 0,
             .failure_reports = std.StringHashMap(std.ArrayListUnmanaged(FailureReport)).init(allocator),
             .migration_tasks = std.StringHashMap(*MigrationTask).init(allocator),
+            .slot_activity = [_]SlotActivity{.{}} ** CLUSTER_SLOTS,
         };
     }
 
@@ -1841,8 +1854,9 @@ pub const ClusterState = struct {
 
     /// Get statistics for a specific slot
     /// Returns SlotStats with key count and memory usage computed from the
-    /// live keyspace; cpu-usec/network-bytes remain stubs (no per-command
-    /// instrumentation exists yet to attribute CPU/network cost to a slot).
+    /// live keyspace, plus cpu-usec/network-bytes accumulated by
+    /// `recordSlotActivity` as commands touching this slot's keys are
+    /// dispatched.
     ///
     /// Arguments:
     ///   - data: The storage HashMap containing all keys
@@ -1854,7 +1868,6 @@ pub const ClusterState = struct {
     ///
     /// Returns SlotStats structure with metrics
     pub fn getSlotStats(self: *const ClusterState, data: anytype, slot: u16, estimateFn: anytype) SlotStats {
-        _ = self;
         var key_count: usize = 0;
         var memory_bytes: u64 = 0;
 
@@ -1868,14 +1881,35 @@ pub const ClusterState = struct {
             }
         }
 
+        const activity = if (slot < CLUSTER_SLOTS) self.slot_activity[slot] else SlotActivity{};
+
         return SlotStats{
             .slot = slot,
             .key_count = key_count,
-            .cpu_usec = 0, // Stub: real CPU tracking not implemented
+            .cpu_usec = activity.cpu_usec,
             .memory_bytes = memory_bytes,
-            .network_bytes_in = 0, // Stub: real network tracking not implemented
-            .network_bytes_out = 0, // Stub: real network tracking not implemented
+            .network_bytes_in = activity.network_bytes_in,
+            .network_bytes_out = activity.network_bytes_out,
         };
+    }
+
+    /// Attribute one command's CPU time and request/response byte counts to
+    /// the hash slot that `key` belongs to. Called from the dispatch path
+    /// (only while cluster mode is enabled) once per executed command that
+    /// operates on a key, so CLUSTER SLOT-STATS reports real cumulative
+    /// activity instead of zeroed placeholders.
+    pub fn recordSlotActivity(self: *ClusterState, key: []const u8, cpu_usec: u64, bytes_in: u64, bytes_out: u64) void {
+        const slot = keySlot(key);
+        const activity = &self.slot_activity[slot];
+        activity.cpu_usec += cpu_usec;
+        activity.network_bytes_in += bytes_in;
+        activity.network_bytes_out += bytes_out;
+    }
+
+    /// Clear all accumulated per-slot CPU/network activity (used by CLUSTER
+    /// RESET so a freshly reset node starts SLOT-STATS from zero).
+    pub fn resetSlotActivity(self: *ClusterState) void {
+        self.slot_activity = [_]SlotActivity{.{}} ** CLUSTER_SLOTS;
     }
 
     /// Get statistics for slots in a range [start, end]
@@ -2041,6 +2075,9 @@ pub const ClusterState = struct {
             report_list.deinit(self.allocator);
         }
         self.failure_reports.clearRetainingCapacity();
+
+        // Clear accumulated per-slot CPU/network activity
+        self.resetSlotActivity();
 
         // Update cluster state
         self.state = .fail; // No slots assigned
@@ -2292,6 +2329,98 @@ test "ClusterState slot assignment" {
     // Verify unassigned slot returns null
     const unassigned_node = cluster.getNodeBySlot(10000);
     try std.testing.expectEqual(null, unassigned_node);
+}
+
+test "ClusterState: recordSlotActivity accumulates cpu/network stats for getSlotStats" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(u32).init(allocator);
+    defer data.deinit();
+
+    const estimateFn = struct {
+        fn call(key: []const u8, value: *const u32) usize {
+            _ = value;
+            return key.len;
+        }
+    }.call;
+
+    const slot = keySlot("mykey");
+
+    // No activity recorded yet — stats start at zero.
+    const before = cluster.getSlotStats(&data, slot, estimateFn);
+    try std.testing.expectEqual(@as(u64, 0), before.cpu_usec);
+    try std.testing.expectEqual(@as(u64, 0), before.network_bytes_in);
+    try std.testing.expectEqual(@as(u64, 0), before.network_bytes_out);
+
+    cluster.recordSlotActivity("mykey", 150, 20, 5);
+    cluster.recordSlotActivity("mykey", 50, 10, 3);
+
+    const after = cluster.getSlotStats(&data, slot, estimateFn);
+    try std.testing.expectEqual(@as(u64, 200), after.cpu_usec);
+    try std.testing.expectEqual(@as(u64, 30), after.network_bytes_in);
+    try std.testing.expectEqual(@as(u64, 8), after.network_bytes_out);
+
+    // Activity recorded against a key in a different slot must not leak in.
+    const other_key = "a-totally-different-key-for-isolation-check";
+    const other_slot = keySlot(other_key);
+    if (other_slot != slot) {
+        cluster.recordSlotActivity(other_key, 999, 999, 999);
+        const still_after = cluster.getSlotStats(&data, slot, estimateFn);
+        try std.testing.expectEqual(@as(u64, 200), still_after.cpu_usec);
+        try std.testing.expectEqual(@as(u64, 30), still_after.network_bytes_in);
+        try std.testing.expectEqual(@as(u64, 8), still_after.network_bytes_out);
+    }
+}
+
+test "ClusterState: resetSlotActivity clears accumulated stats" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(u32).init(allocator);
+    defer data.deinit();
+
+    const estimateFn = struct {
+        fn call(key: []const u8, value: *const u32) usize {
+            _ = value;
+            return key.len;
+        }
+    }.call;
+
+    const slot = keySlot("mykey");
+    cluster.recordSlotActivity("mykey", 100, 10, 10);
+    cluster.resetSlotActivity();
+
+    const stats = cluster.getSlotStats(&data, slot, estimateFn);
+    try std.testing.expectEqual(@as(u64, 0), stats.cpu_usec);
+    try std.testing.expectEqual(@as(u64, 0), stats.network_bytes_in);
+    try std.testing.expectEqual(@as(u64, 0), stats.network_bytes_out);
+}
+
+test "ClusterState: resetSoft clears accumulated slot activity" {
+    const allocator = std.testing.allocator;
+    var cluster = ClusterState.init(allocator);
+    defer cluster.deinit();
+
+    var data = std.StringHashMap(u32).init(allocator);
+    defer data.deinit();
+
+    const estimateFn = struct {
+        fn call(key: []const u8, value: *const u32) usize {
+            _ = value;
+            return key.len;
+        }
+    }.call;
+
+    const slot = keySlot("mykey");
+    cluster.recordSlotActivity("mykey", 100, 10, 10);
+
+    try cluster.resetSoft(false);
+
+    const stats = cluster.getSlotStats(&data, slot, estimateFn);
+    try std.testing.expectEqual(@as(u64, 0), stats.cpu_usec);
 }
 
 test "ClusterState key routing" {

@@ -1739,6 +1739,55 @@ pub fn cmdClusterSlotStats(
     return w.writeArray(try response.toOwnedSlice(allocator));
 }
 
+// ============================================================================
+// Tests for CLUSTER SLOT-STATS real cpu-usec/network-bytes instrumentation
+// ============================================================================
+
+test "cmdClusterSlotStats - reports real cpu-usec and network-bytes after recordSlotActivity" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+    _ = try storage.set("mykey", "myvalue");
+
+    const slot = cluster_mod.keySlot("mykey");
+    storage.cluster.recordSlotActivity("mykey", 250, 40, 15);
+    // A second command touching the same key should accumulate, not overwrite.
+    storage.cluster.recordSlotActivity("mykey", 50, 10, 5);
+
+    var slot_buf: [8]u8 = undefined;
+    const slot_str = try std.fmt.bufPrint(&slot_buf, "{d}", .{slot});
+
+    const args = [_][]const u8{ "CLUSTER", "SLOT-STATS", "SLOTSRANGE", slot_str, slot_str };
+    const result = try cmdClusterSlotStats(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, ":300\r\n") != null); // cpu_usec: 250 + 50
+    try std.testing.expect(std.mem.indexOf(u8, result, ":50\r\n") != null); // network_bytes_in: 40 + 10
+    try std.testing.expect(std.mem.indexOf(u8, result, ":20\r\n") != null); // network_bytes_out: 15 + 5
+}
+
+test "cmdClusterSlotStats - zero cpu-usec/network-bytes for slot with no recorded activity" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    storage.cluster.enabled = true;
+    _ = try storage.set("untouched", "value");
+
+    const slot = cluster_mod.keySlot("untouched");
+    var slot_buf: [8]u8 = undefined;
+    const slot_str = try std.fmt.bufPrint(&slot_buf, "{d}", .{slot});
+
+    const args = [_][]const u8{ "CLUSTER", "SLOT-STATS", "SLOTSRANGE", slot_str, slot_str };
+    const result = try cmdClusterSlotStats(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+
+    // [slot, key-count=1, cpu-usec=0, memory-bytes=N, network-bytes-in=0, network-bytes-out=0]
+    try std.testing.expect(std.mem.indexOf(u8, result, ":0\r\n") != null);
+}
+
 test "cmdClusterAddSlots - single slot" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");

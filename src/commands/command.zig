@@ -543,6 +543,22 @@ pub fn cmdCommandInfo(allocator: std.mem.Allocator, args: []const []const u8, pr
 }
 
 /// COMMAND GETKEYS - Extract key positions from command
+/// Look up the argument index of a command's first key, using the same
+/// `first_key` metadata COMMAND GETKEYS relies on (see `cmdCommandGetKeys`).
+/// Returns null for commands with no keys (`first_key == 0`) or unknown
+/// command names. The returned index is relative to the full command array
+/// (index 0 is the command name itself), matching Redis's COMMAND INFO
+/// convention.
+pub fn firstKeyIndexForCommand(cmd_name: []const u8) ?i32 {
+    for (ALL_COMMANDS) |cmd| {
+        if (std.ascii.eqlIgnoreCase(cmd.name, cmd_name)) {
+            if (cmd.first_key == 0) return null;
+            return cmd.first_key;
+        }
+    }
+    return null;
+}
+
 pub fn cmdCommandGetKeys(allocator: std.mem.Allocator, args: []const []const u8) ![]const u8 {
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(allocator);
@@ -1641,6 +1657,26 @@ test "command metadata" {
         try expect(cmd.name.len > 0);
         try expect(cmd.arity != 0);
     }
+}
+
+test "firstKeyIndexForCommand - single-key command returns index 1" {
+    try std.testing.expectEqual(@as(?i32, 1), firstKeyIndexForCommand("get"));
+    try std.testing.expectEqual(@as(?i32, 1), firstKeyIndexForCommand("SET"));
+    // Case-insensitive, matching COMMAND GETKEYS lookup behavior.
+    try std.testing.expectEqual(@as(?i32, 1), firstKeyIndexForCommand("GeT"));
+}
+
+test "firstKeyIndexForCommand - multi-key command returns first key index" {
+    // MGET's keys start at index 1 and continue to the last argument.
+    try std.testing.expectEqual(@as(?i32, 1), firstKeyIndexForCommand("mget"));
+}
+
+test "firstKeyIndexForCommand - keyless command returns null" {
+    try std.testing.expectEqual(@as(?i32, null), firstKeyIndexForCommand("ping"));
+}
+
+test "firstKeyIndexForCommand - unknown command returns null" {
+    try std.testing.expectEqual(@as(?i32, null), firstKeyIndexForCommand("notacommand"));
 }
 
 test "COMMAND INFO - returns 10-element format for Redis 7.0+" {

@@ -10,6 +10,7 @@ const repl_mod = @import("storage/replication.zig");
 const client_mod = @import("commands/client.zig");
 const scripting_mod = @import("storage/scripting.zig");
 const cluster_mod = @import("storage/cluster.zig");
+const command_mod = @import("commands/command.zig");
 
 const Parser = protocol.Parser;
 const Writer = writer_mod.Writer;
@@ -554,17 +555,13 @@ pub const Server = struct {
             }
 
             // Extract command name for client tracking
-            const cmd_name = blk: {
-                const array = switch (cmd) {
-                    .array => |arr| arr,
-                    else => break :blk "",
-                };
-                if (array.len == 0) break :blk "";
-                const name = switch (array[0]) {
-                    .bulk_string => |s| s,
-                    else => break :blk "",
-                };
-                break :blk name;
+            const array: []const protocol.RespValue = switch (cmd) {
+                .array => |arr| arr,
+                else => &[_]protocol.RespValue{},
+            };
+            const cmd_name = if (array.len == 0) "" else switch (array[0]) {
+                .bulk_string => |s| s,
+                else => "",
             };
 
             // Get selected database for this client
@@ -602,6 +599,29 @@ pub const Server = struct {
             // Record per-command statistics for INFO commandstats
             if (cmd_name.len > 0) {
                 storage.recordCommandStat(cmd_name, cmd_elapsed_usec);
+            }
+
+            // Attribute this command's CPU time and byte counts to its key's hash
+            // slot for CLUSTER SLOT-STATS. Only tracked in cluster mode — the
+            // array-of-RespValue and ALL_COMMANDS lookup below are skipped
+            // entirely on the (default) single-node hot path.
+            if (storage.cluster.enabled and cmd_name.len > 0) {
+                if (command_mod.firstKeyIndexForCommand(cmd_name)) |key_idx| {
+                    const idx: usize = @intCast(key_idx);
+                    if (idx < array.len) {
+                        const key: ?[]const u8 = switch (array[idx]) {
+                            .bulk_string => |s| s,
+                            else => null,
+                        };
+                        if (key) |k| {
+                            var bytes_in: u64 = 0;
+                            for (array) |elem| {
+                                if (elem == .bulk_string) bytes_in += elem.bulk_string.len;
+                            }
+                            storage.cluster.recordSlotActivity(k, cmd_elapsed_usec, bytes_in, response.len);
+                        }
+                    }
+                }
             }
 
             // Record error type for INFO errorstats if response is a RESP error
