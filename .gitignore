@@ -8,8 +8,6 @@ zig-pkg/
 *.log
 *.db
 .DS_Store
-check_existing
-main
 appendonly.aof
 dump.rdb
 appendonlydir/
@@ -18,6 +16,4 @@ test_output.log
 test_results.log
 zoltraak.conf
 .iteration
-/test_*
 /test
-verify_*
