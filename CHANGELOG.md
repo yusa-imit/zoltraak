@@ -21,3 +21,8 @@ see `git tag -l 'v*'` and the corresponding GitHub releases for that history.
 
 - Untracked `src/.DS_Store` and dropped stale `.gitignore` entries (`check_existing`, `main`,
   `verify_*`, `/test_*`) left over from the pre-restructure build scripts.
+- `build.zig`: replaced all 105 `Step.Compile.linkSystemLibrary`/`.linkLibC`/`.addIncludePath`/
+  `.addLibraryPath` call sites (removed in Zig 0.16) with their `root_module`-based equivalents,
+  which exist identically on 0.15.2 and 0.16.0. Fixes the first 0.16 build-script wall (plan 001
+  item 3); zoltraak's own `build.zig` now compiles under 0.16.0 — remaining 0.16 errors are all
+  inside vendored `sailor`/`zuda` dependency build scripts, blocked on their v3.0.0 tags.
