@@ -111,6 +111,37 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    // Tidy: Tiger Style mechanical checks (line/function length, ban list, //! headers)
+    // gated against a shrink-only baseline. See tools/tidy.zig and tidy-baseline.zon.
+    const tidy_tool = b.addExecutable(.{
+        .name = "tidy",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/tidy.zig"),
+            .target = b.graph.host,
+        }),
+    });
+
+    const tidy_check = b.addRunArtifact(tidy_tool);
+    tidy_check.addArgs(&.{ "check", "src", "tidy-baseline.zon" });
+    const tidy_step = b.step("tidy", "Run Tiger Style tidy checks against the baseline");
+    tidy_step.dependOn(&tidy_check.step);
+    test_step.dependOn(tidy_step);
+
+    const tidy_record = b.addRunArtifact(tidy_tool);
+    tidy_record.addArgs(&.{ "record", "src", "tidy-baseline.zon" });
+    const tidy_record_step = b.step("tidy-record", "Regenerate tidy-baseline.zon from the current tree");
+    tidy_record_step.dependOn(&tidy_record.step);
+
+    const tidy_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/tidy.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_tidy_tests = b.addRunArtifact(tidy_tests);
+    test_step.dependOn(&run_tidy_tests.step);
+
     // Integration tests
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
