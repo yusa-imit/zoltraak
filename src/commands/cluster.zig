@@ -1130,20 +1130,16 @@ pub fn cmdMigrate(
     const port = std.fmt.parseInt(u16, port_str, 10) catch {
         return w.writeError("ERR invalid port");
     };
-    _ = port; // Will be used in real implementation
 
     // Validate destination db
     const dest_db = std.fmt.parseInt(u16, dest_db_str, 10) catch {
         return w.writeError("ERR invalid destination database");
     };
-    _ = dest_db; // Will be used in real implementation
 
     // Validate timeout
     const timeout_ms = std.fmt.parseInt(u32, timeout_str, 10) catch {
         return w.writeError("ERR timeout is not an integer or out of range");
     };
-    _ = timeout_ms; // Will be used in real implementation
-    _ = host; // Will be used in real implementation
 
     // Parse options
     var copy = false;
@@ -1216,37 +1212,154 @@ pub fn cmdMigrate(
         try migrate_keys.append(allocator, key_arg);
     }
 
-    // Check if any keys exist
-    var keys_exist = false;
+    // Only existing keys are actually transferred; the rest are silently skipped.
+    var existing_keys = try std.ArrayList([]const u8).initCapacity(allocator, migrate_keys.items.len);
+    defer existing_keys.deinit(allocator);
     for (migrate_keys.items) |key| {
         if (storage.exists(key)) {
-            keys_exist = true;
-            break;
+            try existing_keys.append(allocator, key);
         }
     }
 
-    if (!keys_exist) {
+    if (existing_keys.items.len == 0) {
         return w.writeSimpleString("NOKEY");
     }
 
-    // Stub implementation: In real implementation, this would:
-    // 1. Serialize each key using storage.dumpValue()
-    // 2. Open TCP connection to destination host:port
-    // 3. Authenticate with AUTH/AUTH2 if provided
-    // 4. Send RESTORE command for each key to destination
-    // 5. Delete keys from source if not COPY mode
-    //
-    // For now, we just validate arguments and return OK
-    // This allows tests to pass and provides the command structure
+    // Open TCP connection to the destination instance.
+    const address = std.net.Address.parseIp(host, port) catch {
+        return w.writeError("IOERR error or timeout connecting to the target instance");
+    };
+    const stream = std.net.tcpConnectToAddress(address) catch {
+        return w.writeError("IOERR error or timeout connecting to the target instance");
+    };
+    defer stream.close();
+    setSocketTimeout(stream, timeout_ms);
 
-    // If COPY mode, keys remain on source
-    // If not COPY, delete keys after successful migration (stub: we skip actual deletion for now)
-    if (!copy) {
-        // In real implementation, delete keys here after successful network transfer
-        // For now, we skip deletion in stub mode
+    // Authenticate on the target instance if credentials were provided.
+    if (auth_password) |password| {
+        const auth_cmd = if (auth_username) |username|
+            try buildRespCommand(allocator, &.{ "AUTH", username, password })
+        else
+            try buildRespCommand(allocator, &.{ "AUTH", password });
+        defer allocator.free(auth_cmd);
+
+        sendAndExpectOk(stream, auth_cmd, allocator) catch {
+            return migrateIoError(&w, "writing");
+        };
+    }
+
+    // Select the destination database.
+    var dest_db_buf: [8]u8 = undefined;
+    const dest_db_str_fmt = std.fmt.bufPrint(&dest_db_buf, "{d}", .{dest_db}) catch unreachable;
+    const select_cmd = try buildRespCommand(allocator, &.{ "SELECT", dest_db_str_fmt });
+    defer allocator.free(select_cmd);
+    sendAndExpectOk(stream, select_cmd, allocator) catch {
+        return migrateIoError(&w, "writing");
+    };
+
+    // Transfer each key via DUMP + RESTORE, tracking which ones succeed.
+    var migrated_keys = try std.ArrayList([]const u8).initCapacity(allocator, existing_keys.items.len);
+    defer migrated_keys.deinit(allocator);
+    var first_error: ?[]const u8 = null;
+    defer if (first_error) |msg| allocator.free(msg);
+
+    for (existing_keys.items) |key| {
+        const dump = (storage.dumpValue(allocator, key) catch null) orelse continue;
+        defer allocator.free(dump);
+
+        const ttl_remaining = storage.getTtlMs(key);
+        const ttl_arg: i64 = if (ttl_remaining > 0) ttl_remaining else 0;
+        var ttl_buf: [24]u8 = undefined;
+        const ttl_str = std.fmt.bufPrint(&ttl_buf, "{d}", .{ttl_arg}) catch unreachable;
+
+        const restore_cmd = if (replace)
+            try buildRespCommand(allocator, &.{ "RESTORE", key, ttl_str, dump, "REPLACE" })
+        else
+            try buildRespCommand(allocator, &.{ "RESTORE", key, ttl_str, dump });
+        defer allocator.free(restore_cmd);
+
+        const reply = sendAndReadReply(stream, restore_cmd, allocator) catch {
+            return migrateIoError(&w, "writing");
+        };
+        defer allocator.free(reply);
+
+        if (std.mem.startsWith(u8, reply, "+")) {
+            try migrated_keys.append(allocator, key);
+        } else if (first_error == null) {
+            const trimmed = std.mem.trimRight(u8, reply, "\r\n");
+            const detail = if (std.mem.startsWith(u8, trimmed, "-")) trimmed[1..] else trimmed;
+            first_error = try std.fmt.allocPrint(allocator, "ERR Target instance replied with error: {s}", .{detail});
+        }
+    }
+
+    // Successfully transferred keys are removed from the source unless COPY was requested.
+    if (!copy and migrated_keys.items.len > 0) {
+        _ = storage.del(migrated_keys.items);
+    }
+
+    if (first_error) |msg| {
+        return w.writeError(msg);
     }
 
     return w.writeSimpleString("OK");
+}
+
+/// Apply the MIGRATE timeout (milliseconds) as a socket send/receive timeout.
+/// Best-effort: failures to set the timeout do not abort the migration.
+fn setSocketTimeout(stream: std.net.Stream, timeout_ms: u32) void {
+    if (timeout_ms == 0) return;
+    const tv = std.posix.timeval{
+        .sec = @intCast(timeout_ms / 1000),
+        .usec = @intCast((timeout_ms % 1000) * 1000),
+    };
+    const tv_bytes = std.mem.asBytes(&tv);
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, tv_bytes) catch {};
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, tv_bytes) catch {};
+}
+
+/// Serialize a command as a RESP array of bulk strings, e.g. `["SET", "k", "v"]`.
+/// Caller owns the returned buffer.
+fn buildRespCommand(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+    try w.print("*{d}\r\n", .{parts.len});
+    for (parts) |part| {
+        try w.print("${d}\r\n", .{part.len});
+        try w.writeAll(part);
+        try w.writeAll("\r\n");
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Send `cmd` over `stream` and read back a single reply line (up to and including `\r\n`).
+/// Caller owns the returned buffer. Only simple/error replies (`+`/`-`) are expected from
+/// the destination instance for AUTH/SELECT/RESTORE.
+fn sendAndReadReply(stream: std.net.Stream, cmd: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    try stream.writeAll(cmd);
+
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 64);
+    errdefer buf.deinit(allocator);
+    var byte: [1]u8 = undefined;
+    while (true) {
+        const n = try stream.read(&byte);
+        if (n == 0) return error.EndOfStream;
+        try buf.append(allocator, byte[0]);
+        if (byte[0] == '\n') break;
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Send `cmd` and require a `+OK` simple-string reply.
+fn sendAndExpectOk(stream: std.net.Stream, cmd: []const u8, allocator: std.mem.Allocator) !void {
+    const reply = try sendAndReadReply(stream, cmd, allocator);
+    defer allocator.free(reply);
+    if (!std.mem.startsWith(u8, reply, "+OK")) return error.UnexpectedReply;
+}
+
+/// Map a network error encountered mid-transfer to the matching Redis MIGRATE IOERR message.
+fn migrateIoError(w: *Writer, comptime phase: []const u8) ![]const u8 {
+    return w.writeError("IOERR error or timeout " ++ phase ++ " to the target instance");
 }
 
 /// CLUSTER FAILOVER - Trigger manual failover
@@ -2248,92 +2361,218 @@ test "cmdMigrate - nonexistent key returns NOKEY" {
     try std.testing.expect(std.mem.indexOf(u8, result, "NOKEY") != null);
 }
 
-test "cmdMigrate - with COPY option" {
-    const allocator = std.testing.allocator;
-    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
-    defer storage.deinit();
-
-    // Set a key
-    _ = try storage.set("mykey", "myvalue");
-
-    // Migrate with COPY - key should remain after migration
-    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", "6380", "mykey", "0", "5000", "COPY" };
-    const result = try cmdMigrate(allocator, &args, storage, null, 0);
-    defer allocator.free(result);
-
-    // For now, we expect stub to return OK (actual network transfer not implemented)
-    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
-
-    // Key should still exist (COPY option)
-    const val = try storage.get(allocator, "mykey");
-    try std.testing.expect(val != null);
-    if (val) |v| allocator.free(v);
+/// Test double for a destination MIGRATE target: accepts exactly one connection
+/// and replies with `responses[i]` to the i-th command it receives, in order.
+fn mockMigrateServerRun(server: *std.net.Server, responses: []const []const u8) void {
+    const conn = server.accept() catch return;
+    defer conn.stream.close();
+    var buf: [8192]u8 = undefined;
+    for (responses) |resp| {
+        const n = conn.stream.read(&buf) catch return;
+        if (n == 0) return;
+        conn.stream.writeAll(resp) catch return;
+    }
 }
 
-test "cmdMigrate - with REPLACE option" {
+test "cmdMigrate - transfers key over real TCP connection and deletes source" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
-
-    // Set a key
     _ = try storage.set("mykey", "myvalue");
 
-    // Migrate with REPLACE
-    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", "6380", "mykey", "0", "5000", "REPLACE" };
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    const responses = [_][]const u8{ "+OK\r\n", "+OK\r\n" }; // SELECT, RESTORE
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000" };
     const result = try cmdMigrate(allocator, &args, storage, null, 0);
     defer allocator.free(result);
+    thread.join();
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expect(!storage.exists("mykey"));
+}
+
+test "cmdMigrate - with COPY option keeps the source key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    _ = try storage.set("mykey", "myvalue");
+
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    const responses = [_][]const u8{ "+OK\r\n", "+OK\r\n" };
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000", "COPY" };
+    const result = try cmdMigrate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+    thread.join();
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expect(storage.exists("mykey"));
+}
+
+test "cmdMigrate - with REPLACE option forwards the flag to RESTORE" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    _ = try storage.set("mykey", "myvalue");
+
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    const responses = [_][]const u8{ "+OK\r\n", "+OK\r\n" };
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000", "REPLACE" };
+    const result = try cmdMigrate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+    thread.join();
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
 }
 
 test "cmdMigrate - KEYS option with multiple keys" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
-
-    // Set multiple keys
     _ = try storage.set("key1", "value1");
     _ = try storage.set("key2", "value2");
     _ = try storage.set("key3", "value3");
 
-    // Migrate with KEYS option (empty string for key arg)
-    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", "6380", "", "0", "5000", "KEYS", "key1", "key2", "key3" };
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    // SELECT + RESTORE*3
+    const responses = [_][]const u8{ "+OK\r\n", "+OK\r\n", "+OK\r\n", "+OK\r\n" };
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "", "0", "1000", "KEYS", "key1", "key2", "key3" };
     const result = try cmdMigrate(allocator, &args, storage, null, 0);
     defer allocator.free(result);
+    thread.join();
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+    try std.testing.expect(!storage.exists("key1"));
+    try std.testing.expect(!storage.exists("key2"));
+    try std.testing.expect(!storage.exists("key3"));
 }
 
-test "cmdMigrate - AUTH option" {
+test "cmdMigrate - AUTH option sends AUTH before SELECT/RESTORE" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
-
-    // Set a key
     _ = try storage.set("mykey", "myvalue");
 
-    // Migrate with AUTH
-    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", "6380", "mykey", "0", "5000", "AUTH", "password123" };
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    // AUTH + SELECT + RESTORE
+    const responses = [_][]const u8{ "+OK\r\n", "+OK\r\n", "+OK\r\n" };
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000", "AUTH", "password123" };
     const result = try cmdMigrate(allocator, &args, storage, null, 0);
     defer allocator.free(result);
+    thread.join();
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+    try std.testing.expectEqualStrings("+OK\r\n", result);
 }
 
-test "cmdMigrate - AUTH2 option" {
+test "cmdMigrate - AUTH2 option sends username+password" {
     const allocator = std.testing.allocator;
     const storage = try Storage.init(allocator, 6379, "127.0.0.1");
     defer storage.deinit();
-
-    // Set a key
     _ = try storage.set("mykey", "myvalue");
 
-    // Migrate with AUTH2 (username + password)
-    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", "6380", "mykey", "0", "5000", "AUTH2", "admin", "password123" };
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    const responses = [_][]const u8{ "+OK\r\n", "+OK\r\n", "+OK\r\n" };
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000", "AUTH2", "admin", "password123" };
+    const result = try cmdMigrate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+    thread.join();
+
+    try std.testing.expectEqualStrings("+OK\r\n", result);
+}
+
+test "cmdMigrate - target BUSYKEY error leaves key on source" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    _ = try storage.set("mykey", "myvalue");
+
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const port = server.listen_address.getPort();
+
+    const responses = [_][]const u8{ "+OK\r\n", "-BUSYKEYERR Target key name already exists\r\n" };
+    const thread = try std.Thread.spawn(.{}, mockMigrateServerRun, .{ &server, &responses });
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000" };
+    const result = try cmdMigrate(allocator, &args, storage, null, 0);
+    defer allocator.free(result);
+    thread.join();
+
+    try std.testing.expect(std.mem.startsWith(u8, result, "-ERR"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "BUSYKEYERR") != null);
+    try std.testing.expect(storage.exists("mykey"));
+}
+
+test "cmdMigrate - connection refused returns IOERR" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+    _ = try storage.set("mykey", "myvalue");
+
+    // Bind then immediately release a port so nothing is listening on it.
+    const bind_address = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try bind_address.listen(.{ .reuse_address = true });
+    const port = server.listen_address.getPort();
+    server.deinit();
+
+    var port_buf: [8]u8 = undefined;
+    const port_str = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const args = [_][]const u8{ "MIGRATE", "127.0.0.1", port_str, "mykey", "0", "1000" };
     const result = try cmdMigrate(allocator, &args, storage, null, 0);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "OK") != null);
+    try std.testing.expect(std.mem.startsWith(u8, result, "-IOERR"));
+    try std.testing.expect(storage.exists("mykey"));
 }
 
 test "cmdClusterFailover - wrong arguments" {
