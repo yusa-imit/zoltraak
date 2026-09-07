@@ -274,7 +274,7 @@ pub fn cmdHotkeysGet(allocator: std.mem.Allocator, storage: *Storage, args: []co
     //   ]]
     // ]
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     // Main array with 6 elements (metadata pairs)

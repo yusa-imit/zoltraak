@@ -240,7 +240,7 @@ pub const LatencyMonitor = struct {
 
     /// Get all latest samples (one per event type)
     pub fn getAllLatest(self: *const LatencyMonitor, allocator: std.mem.Allocator) ![]EventSample {
-        var result = std.ArrayList(EventSample){};
+        var result = std.ArrayList(EventSample).empty;
         errdefer result.deinit(allocator);
 
         var it = self.histories.iterator();
@@ -287,7 +287,7 @@ pub const LatencyMonitor = struct {
 
     /// Get all command names with histograms
     pub fn getAllCommands(self: *const LatencyMonitor, allocator: std.mem.Allocator) ![][]const u8 {
-        var result = std.ArrayList([]const u8){};
+        var result = std.ArrayList([]const u8).empty;
         errdefer result.deinit(allocator);
 
         var it = self.histograms.keyIterator();
@@ -454,8 +454,8 @@ test "LatencyMonitor.getAllLatest includes max_latency" {
     var found = false;
     for (latest) |entry| {
         if (entry.event == .command) {
-            try std.testing.expectEqual(@as(u32, 3000), entry.sample.latency);  // latest
-            try std.testing.expectEqual(@as(u32, 10000), entry.max_latency);     // max
+            try std.testing.expectEqual(@as(u32, 3000), entry.sample.latency); // latest
+            try std.testing.expectEqual(@as(u32, 10000), entry.max_latency); // max
             found = true;
         }
     }

@@ -866,7 +866,6 @@ pub const HotkeyTracker = struct {
     pub fn getTopKeys(self: *HotkeyTracker, allocator: std.mem.Allocator) ![]heavykeeper_mod.HeavyKeeper.HotkeyItem {
         return try self.heavy_keeper.list(allocator);
     }
-
 };
 
 /// Thread-safe in-memory storage engine with TTL support
@@ -1603,7 +1602,7 @@ pub const Storage = struct {
             .noeviction => return false, // Should not be called with noeviction
             .allkeys_lru => {
                 // Sample N keys and find LRU
-                var candidates = std.ArrayList([]const u8){};
+                var candidates = std.ArrayList([]const u8).empty;
                 defer candidates.deinit();
 
                 var it = self.data.keyIterator();
@@ -1641,7 +1640,7 @@ pub const Storage = struct {
             },
             .volatile_lru => {
                 // Sample N keys with TTL and find LRU
-                var candidates = std.ArrayList([]const u8){};
+                var candidates = std.ArrayList([]const u8).empty;
                 defer candidates.deinit();
 
                 var it = self.data.iterator();
@@ -1701,7 +1700,7 @@ pub const Storage = struct {
             },
             .allkeys_lfu => {
                 // Sample N keys and find LFU (lowest frequency)
-                var candidates = std.ArrayList([]const u8){};
+                var candidates = std.ArrayList([]const u8).empty;
                 defer candidates.deinit();
 
                 var it = self.data.keyIterator();
@@ -1739,7 +1738,7 @@ pub const Storage = struct {
             },
             .volatile_lfu => {
                 // Sample N keys with TTL and find LFU
-                var candidates = std.ArrayList([]const u8){};
+                var candidates = std.ArrayList([]const u8).empty;
                 defer candidates.deinit();
 
                 var it = self.data.iterator();
@@ -1798,7 +1797,7 @@ pub const Storage = struct {
             },
             .allkeys_random => {
                 // Sample N keys and pick one randomly
-                var candidates = std.ArrayList([]const u8){};
+                var candidates = std.ArrayList([]const u8).empty;
                 defer candidates.deinit();
 
                 var it = self.data.keyIterator();
@@ -1828,7 +1827,7 @@ pub const Storage = struct {
             },
             .volatile_random => {
                 // Sample N keys with TTL and pick one randomly
-                var candidates = std.ArrayList([]const u8){};
+                var candidates = std.ArrayList([]const u8).empty;
                 defer candidates.deinit();
 
                 var it = self.data.iterator();
@@ -1879,7 +1878,7 @@ pub const Storage = struct {
             },
             .volatile_ttl => {
                 // Sample N keys with TTL and evict one with soonest expiration
-                var candidates = std.ArrayList(struct { key: []const u8, ttl: i64 }){};
+                var candidates = std.ArrayList(struct { key: []const u8, ttl: i64 }).empty;
                 defer candidates.deinit();
 
                 const now_ms = std.time.milliTimestamp();
@@ -3115,7 +3114,7 @@ pub const Storage = struct {
             .list => |*list_val| {
                 const items = list_val.data.items;
                 const len = items.len;
-                var results = std.ArrayList(usize){};
+                var results = std.ArrayList(usize).empty;
                 errdefer results.deinit(allocator);
 
                 const abs_rank: usize = if (rank < 0) @as(usize, @intCast(-rank)) else @as(usize, @intCast(rank));
@@ -3366,7 +3365,7 @@ pub const Storage = struct {
             // Create new set - decide encoding based on members
             // Check if all members are integers and count
             var all_integers = true;
-            var unique_members = std.ArrayListUnmanaged(i64){};
+            var unique_members = std.ArrayListUnmanaged(i64).empty;
             defer unique_members.deinit(self.allocator);
 
             for (members) |member| {
@@ -6355,7 +6354,7 @@ pub const Storage = struct {
         if (entry.isExpired(now)) return null;
 
         // Use the persistence module's RDB serialization format
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
 
         const w = buf.writer(allocator);
@@ -6577,7 +6576,7 @@ pub const Storage = struct {
                 const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
                 pos += 4;
 
-                var list = std.ArrayList([]const u8){};
+                var list = std.ArrayList([]const u8).empty;
                 errdefer {
                     for (list.items) |elem| self.allocator.free(elem);
                     list.deinit(self.allocator);
@@ -6645,7 +6644,7 @@ pub const Storage = struct {
                 pos += 4;
 
                 var members = std.StringHashMap(f64).init(self.allocator);
-                var sorted_list = std.ArrayList(Value.ScoredMember){};
+                var sorted_list = std.ArrayList(Value.ScoredMember).empty;
 
                 errdefer {
                     var it = members.keyIterator();
@@ -6673,7 +6672,7 @@ pub const Storage = struct {
                 const count = std.mem.readInt(u32, payload[pos..][0..4], .little);
                 pos += 4;
 
-                var entries = std.ArrayList(Value.StreamEntry){};
+                var entries = std.ArrayList(Value.StreamEntry).empty;
                 errdefer {
                     for (entries.items) |*e| e.deinit(self.allocator);
                     entries.deinit(self.allocator);
@@ -6691,7 +6690,7 @@ pub const Storage = struct {
                     const items_count = std.mem.readInt(u32, payload[pos..][0..4], .little);
                     pos += 4;
 
-                    var fields = std.ArrayList([]const u8){};
+                    var fields = std.ArrayList([]const u8).empty;
                     errdefer {
                         for (fields.items) |item| self.allocator.free(item);
                         fields.deinit(self.allocator);
@@ -6906,7 +6905,7 @@ pub const Storage = struct {
                 break :blk Value{ .string = .{ .data = data_copy, .expires_at = s.expires_at } };
             },
             .list => |l| blk: {
-                var list_copy = std.ArrayList([]const u8){};
+                var list_copy = std.ArrayList([]const u8).empty;
                 errdefer {
                     for (list_copy.items) |elem| alloc.free(elem);
                     list_copy.deinit(alloc);
@@ -6971,7 +6970,7 @@ pub const Storage = struct {
             },
             .sorted_set => |z| blk: {
                 var members_copy = std.StringHashMap(f64).init(alloc);
-                var sorted_list_copy = std.ArrayList(Value.ScoredMember){};
+                var sorted_list_copy = std.ArrayList(Value.ScoredMember).empty;
 
                 errdefer {
                     var it = members_copy.keyIterator();
@@ -6989,14 +6988,14 @@ pub const Storage = struct {
                 break :blk Value{ .sorted_set = .{ .members = members_copy, .sorted_list = sorted_list_copy, .expires_at = z.expires_at } };
             },
             .stream => |st| blk: {
-                var entries_copy = std.ArrayList(Value.StreamEntry){};
+                var entries_copy = std.ArrayList(Value.StreamEntry).empty;
                 errdefer {
                     for (entries_copy.items) |*e| e.deinit(alloc);
                     entries_copy.deinit(alloc);
                 }
 
                 for (st.entries.items) |e| {
-                    var fields_copy = std.ArrayList([]const u8){};
+                    var fields_copy = std.ArrayList([]const u8).empty;
                     errdefer {
                         for (fields_copy.items) |item| alloc.free(item);
                         fields_copy.deinit(alloc);
@@ -7126,7 +7125,7 @@ pub const Storage = struct {
         defer self.mutex.unlock();
 
         // Collect all keys first (can't mutate while iterating)
-        var keys_to_remove = std.ArrayList([]const u8){};
+        var keys_to_remove = std.ArrayList([]const u8).empty;
         defer keys_to_remove.deinit(self.allocator);
 
         var it = self.data.keyIterator();
@@ -8393,7 +8392,7 @@ pub const Storage = struct {
         switch (entry.value_ptr.*) {
             .sorted_set => |*zset| {
                 // Collect members to remove
-                var to_remove = std.ArrayList([]const u8){};
+                var to_remove = std.ArrayList([]const u8).empty;
                 defer to_remove.deinit(self.allocator);
 
                 for (zset.sorted_list.items) |item| {
@@ -8466,7 +8465,7 @@ pub const Storage = struct {
                 const max_info = try parseLexRange(max);
 
                 // Collect members to remove
-                var to_remove = std.ArrayList([]const u8){};
+                var to_remove = std.ArrayList([]const u8).empty;
                 defer to_remove.deinit(self.allocator);
 
                 for (zset.sorted_list.items) |item| {
@@ -8541,7 +8540,7 @@ pub const Storage = struct {
                 const max_info = try parseLexRange(max);
 
                 // Collect matching members
-                var result = std.ArrayList([]const u8){};
+                var result = std.ArrayList([]const u8).empty;
                 defer result.deinit(allocator);
 
                 var skip = offset orelse 0;
@@ -8601,7 +8600,7 @@ pub const Storage = struct {
                 const max_info = try parseLexRange(max);
 
                 // Collect matching members in reverse
-                var result = std.ArrayList([]const u8){};
+                var result = std.ArrayList([]const u8).empty;
                 defer result.deinit(allocator);
 
                 var skip = offset orelse 0;
@@ -9598,7 +9597,7 @@ pub const Storage = struct {
             entry.key_ptr.* = owned_key;
             entry.value_ptr.* = Value{
                 .stream = .{
-                    .entries = std.ArrayList(Value.StreamEntry){},
+                    .entries = std.ArrayList(Value.StreamEntry).empty,
                     .last_id = null,
                     .expires_at = expires_at,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
@@ -9613,7 +9612,7 @@ pub const Storage = struct {
                 value.deinit(self.allocator);
                 entry.value_ptr.* = Value{
                     .stream = .{
-                        .entries = std.ArrayList(Value.StreamEntry){},
+                        .entries = std.ArrayList(Value.StreamEntry).empty,
                         .last_id = null,
                         .expires_at = expires_at,
                         .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
@@ -9780,7 +9779,7 @@ pub const Storage = struct {
                     try Value.StreamId.parse(end_str, null);
 
                 // Filter entries in range - just reference existing entries
-                var result = std.ArrayList(Value.StreamEntry){};
+                var result = std.ArrayList(Value.StreamEntry).empty;
                 defer result.deinit(allocator);
 
                 for (stream_val.entries.items) |entry_item| {
@@ -9841,7 +9840,7 @@ pub const Storage = struct {
                     try Value.StreamId.parse(end_str, null);
 
                 // Filter entries in range (reverse order)
-                var result = std.ArrayList(Value.StreamEntry){};
+                var result = std.ArrayList(Value.StreamEntry).empty;
                 defer result.deinit(allocator);
 
                 var i = stream_val.entries.items.len;
@@ -10115,7 +10114,7 @@ pub const Storage = struct {
                     .name = owned_name,
                     .last_delivered_id = starting_id,
                     .consumers = std.StringHashMap(Value.Consumer).init(self.allocator),
-                    .pending = std.ArrayList(Value.PendingEntry){},
+                    .pending = std.ArrayList(Value.PendingEntry).empty,
                     .entries_read = effective_entries_read,
                     .creation_time = now_ms,
                     .arbitrary_start = is_arbitrary,
@@ -10230,7 +10229,7 @@ pub const Storage = struct {
 
                 try group_ptr.consumers.put(owned_consumer_name, Value.Consumer{
                     .name = owned_consumer_name,
-                    .pending = std.ArrayList(Value.StreamId){},
+                    .pending = std.ArrayList(Value.StreamId).empty,
                     .last_attempted_time = now_ms,
                     .last_successful_time = now_ms,
                     .creation_time = now_ms,
@@ -10322,7 +10321,7 @@ pub const Storage = struct {
                     consumer_entry.key_ptr.* = owned_consumer_name;
                     consumer_entry.value_ptr.* = Value.Consumer{
                         .name = owned_consumer_name,
-                        .pending = std.ArrayList(Value.StreamId){},
+                        .pending = std.ArrayList(Value.StreamId).empty,
                         .last_attempted_time = now_ms,
                         .last_successful_time = now_ms,
                         .creation_time = now_ms,
@@ -10339,13 +10338,13 @@ pub const Storage = struct {
                 } else if (std.mem.eql(u8, id_str, "0") or std.mem.eql(u8, id_str, "0-0")) {
                     // Read pending messages for this consumer
                     // For now, we'll return an empty list as pending message delivery is complex
-                    return std.ArrayList(Value.StreamEntry){};
+                    return std.ArrayList(Value.StreamEntry).empty;
                 } else blk: {
                     break :blk try Value.StreamId.parse(id_str, null);
                 };
 
                 // Collect entries
-                var result = std.ArrayList(Value.StreamEntry){};
+                var result = std.ArrayList(Value.StreamEntry).empty;
                 errdefer result.deinit(allocator);
 
                 var collected: usize = 0;
@@ -10359,7 +10358,7 @@ pub const Storage = struct {
                     }
 
                     // Clone entry
-                    var cloned_fields = std.ArrayList([]const u8){};
+                    var cloned_fields = std.ArrayList([]const u8).empty;
                     for (entry_item.fields.items) |field| {
                         const owned_field = try allocator.dupe(u8, field);
                         try cloned_fields.append(allocator, owned_field);
@@ -10802,7 +10801,7 @@ pub const Storage = struct {
                     consumer_entry.key_ptr.* = owned_consumer_name;
                     consumer_entry.value_ptr.* = Value.Consumer{
                         .name = owned_consumer_name,
-                        .pending = std.ArrayList(Value.StreamId){},
+                        .pending = std.ArrayList(Value.StreamId).empty,
                         .last_attempted_time = current_time,
                         .last_successful_time = current_time,
                         .creation_time = current_time,
@@ -10811,7 +10810,7 @@ pub const Storage = struct {
 
                 // Update last_attempted_time for every XCLAIM call
                 consumer_entry.value_ptr.last_attempted_time = current_time;
-                var result = std.ArrayList(Value.StreamEntry){};
+                var result = std.ArrayList(Value.StreamEntry).empty;
 
                 for (ids) |id_str| {
                     const id = Value.StreamId.parse(id_str, null) catch continue;
@@ -10894,7 +10893,7 @@ pub const Storage = struct {
                     // Build result entry
                     if (stream_entry) |se| {
                         if (!justid) {
-                            var cloned_fields = std.ArrayList([]const u8){};
+                            var cloned_fields = std.ArrayList([]const u8).empty;
                             for (se.fields.items) |field| {
                                 const owned_field = try allocator.dupe(u8, field);
                                 try cloned_fields.append(allocator, owned_field);
@@ -10905,9 +10904,10 @@ pub const Storage = struct {
                                 .fields = cloned_fields,
                             });
                         } else {
+                            // Empty fields for JUSTID.
                             try result.append(allocator, Value.StreamEntry{
                                 .id = se.id,
-                                .fields = std.ArrayList([]const u8){}, // Empty fields for JUSTID
+                                .fields = std.ArrayList([]const u8).empty,
                             });
                         }
                     }
@@ -10963,7 +10963,7 @@ pub const Storage = struct {
                     consumer_entry.key_ptr.* = owned_consumer_name;
                     consumer_entry.value_ptr.* = Value.Consumer{
                         .name = owned_consumer_name,
-                        .pending = std.ArrayList(Value.StreamId){},
+                        .pending = std.ArrayList(Value.StreamId).empty,
                         .last_attempted_time = current_time,
                         .last_successful_time = current_time,
                         .creation_time = current_time,
@@ -10972,10 +10972,10 @@ pub const Storage = struct {
 
                 // Update last_attempted_time for every XAUTOCLAIM call
                 consumer_entry.value_ptr.last_attempted_time = current_time;
-                var result = std.ArrayList(Value.StreamEntry){};
-                var deleted_ids = std.ArrayList(Value.StreamId){};
+                var result = std.ArrayList(Value.StreamEntry).empty;
+                var deleted_ids = std.ArrayList(Value.StreamId).empty;
                 errdefer deleted_ids.deinit(allocator);
-                var deleted_indices = std.ArrayList(usize){};
+                var deleted_indices = std.ArrayList(usize).empty;
                 errdefer deleted_indices.deinit(allocator);
                 var claimed_count: usize = 0;
                 var next_id_str: []const u8 = "0-0";
@@ -11045,7 +11045,7 @@ pub const Storage = struct {
                     // Build result
                     if (stream_entry) |se| {
                         if (!justid) {
-                            var cloned_fields = std.ArrayList([]const u8){};
+                            var cloned_fields = std.ArrayList([]const u8).empty;
                             for (se.fields.items) |field| {
                                 const owned_field = try allocator.dupe(u8, field);
                                 try cloned_fields.append(allocator, owned_field);
@@ -11058,7 +11058,7 @@ pub const Storage = struct {
                         } else {
                             try result.append(allocator, Value.StreamEntry{
                                 .id = se.id,
-                                .fields = std.ArrayList([]const u8){},
+                                .fields = std.ArrayList([]const u8).empty,
                             });
                         }
                     }
@@ -11149,7 +11149,7 @@ pub const Storage = struct {
                 }
 
                 // Format response
-                var buf = std.ArrayList(u8){};
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
 
                 const writer = buf.writer(allocator);
@@ -11216,7 +11216,7 @@ pub const Storage = struct {
                     try Value.StreamId.parse(end, null);
 
                 // Collect matching pending entries
-                var result_list = std.ArrayList(Value.PendingEntry){};
+                var result_list = std.ArrayList(Value.PendingEntry).empty;
                 defer result_list.deinit(allocator);
 
                 const now = std.time.milliTimestamp();
@@ -11249,7 +11249,7 @@ pub const Storage = struct {
                 }
 
                 // Format response: array of [id, consumer, elapsed_ms, delivery_count]
-                var buf = std.ArrayList(u8){};
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
 
                 const writer = buf.writer(allocator);
@@ -11296,7 +11296,7 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .stream => |*stream_val| {
-                var buf = std.ArrayList(u8){};
+                var buf = std.ArrayList(u8).empty;
                 defer buf.deinit(allocator);
 
                 const writer = buf.writer(allocator);
@@ -11621,7 +11621,7 @@ pub const Storage = struct {
                 const group_ptr = stream_val.consumer_groups.getPtr(group_name) orelse return error.NoGroup;
 
                 const now_ms = std.time.milliTimestamp();
-                var buf = std.ArrayList(u8){};
+                var buf = std.ArrayList(u8).empty;
                 const writer = buf.writer(allocator);
 
                 // RESP array header for consumers
@@ -11687,7 +11687,7 @@ pub const Storage = struct {
 
         switch (entry.value_ptr.*) {
             .stream => |*stream_val| {
-                var buf = std.ArrayList(u8){};
+                var buf = std.ArrayList(u8).empty;
                 const writer = buf.writer(allocator);
 
                 // RESP array header for groups
@@ -11798,7 +11798,7 @@ pub const Storage = struct {
 
             entry.value_ptr.* = Value{
                 .stream = .{
-                    .entries = std.ArrayList(Value.StreamEntry){},
+                    .entries = std.ArrayList(Value.StreamEntry).empty,
                     .last_id = parsed_id,
                     .expires_at = null,
                     .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
@@ -11826,7 +11826,7 @@ pub const Storage = struct {
 
                 entry.value_ptr.* = Value{
                     .stream = .{
-                        .entries = std.ArrayList(Value.StreamEntry){},
+                        .entries = std.ArrayList(Value.StreamEntry).empty,
                         .last_id = parsed_id,
                         .expires_at = null,
                         .consumer_groups = std.StringHashMap(Value.ConsumerGroup).init(self.allocator),
@@ -15181,11 +15181,11 @@ test "keyspace hits/misses - multiple GETs accumulate correctly" {
     try storage.set("k1", "v1", null);
     try storage.set("k2", "v2", null);
 
-    _ = storage.get("k1");   // hit
-    _ = storage.get("k2");   // hit
-    _ = storage.get("k3");   // miss
-    _ = storage.get("k4");   // miss
-    _ = storage.get("k5");   // miss
+    _ = storage.get("k1"); // hit
+    _ = storage.get("k2"); // hit
+    _ = storage.get("k3"); // miss
+    _ = storage.get("k4"); // miss
+    _ = storage.get("k5"); // miss
 
     try std.testing.expectEqual(@as(u64, 2), storage.getKeyspaceHits());
     try std.testing.expectEqual(@as(u64, 3), storage.getKeyspaceMisses());

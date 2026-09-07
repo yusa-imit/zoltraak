@@ -186,7 +186,7 @@ pub const TopKValue = struct {
             .depth = depth,
             .decay = decay,
             .hash_table = hash_table,
-            .heap = std.ArrayList(HeapItem){},
+            .heap = std.ArrayList(HeapItem).empty,
             .prng = std.Random.DefaultPrng.init(0),
             .expires_at = null,
         };
@@ -255,7 +255,7 @@ pub const TopKValue = struct {
     /// randomness, not correctness, so the reload reseeds deterministically from 0
     /// (matching `init`'s default seed) rather than round-tripping generator state.
     pub fn rdbSerialize(self: *const TopKValue, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 

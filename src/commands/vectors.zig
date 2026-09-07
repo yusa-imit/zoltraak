@@ -97,7 +97,7 @@ pub fn cmdVadd(allocator: Allocator, storage: *Storage, args: []const []const u8
             requested_quant = .binary;
             idx += 1;
         } else if (std.ascii.eqlIgnoreCase(flag, "EF") or
-                   std.ascii.eqlIgnoreCase(flag, "M"))
+            std.ascii.eqlIgnoreCase(flag, "M"))
         {
             idx += 1;
             if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
@@ -252,13 +252,18 @@ pub fn cmdVrandmember(allocator: Allocator, storage: *Storage, args: []const []c
         defer allocator.free(all_ids);
         var it = vs.vectors.keyIterator();
         var i: usize = 0;
-        while (it.next()) |k| { all_ids[i] = k.*; i += 1; }
+        while (it.next()) |k| {
+            all_ids[i] = k.*;
+            i += 1;
+        }
         // Fisher-Yates shuffle
         var j = all_ids.len;
         while (j > 1) {
             j -= 1;
             const r = @rem(std.crypto.random.int(usize), j + 1);
-            const tmp = all_ids[j]; all_ids[j] = all_ids[r]; all_ids[r] = tmp;
+            const tmp = all_ids[j];
+            all_ids[j] = all_ids[r];
+            all_ids[r] = tmp;
         }
         for (0..result_count) |k| {
             results[k] = RespValue{ .bulk_string = try allocator.dupe(u8, all_ids[k]) };
@@ -381,15 +386,15 @@ pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8
             with_attribs = true;
             idx += 1;
         } else if (std.ascii.eqlIgnoreCase(opt, "EF") or
-                   std.ascii.eqlIgnoreCase(opt, "EPSILON") or
-                   std.ascii.eqlIgnoreCase(opt, "FILTER") or
-                   std.ascii.eqlIgnoreCase(opt, "FILTER-EF"))
+            std.ascii.eqlIgnoreCase(opt, "EPSILON") or
+            std.ascii.eqlIgnoreCase(opt, "FILTER") or
+            std.ascii.eqlIgnoreCase(opt, "FILTER-EF"))
         {
             idx += 1;
             if (idx >= args.len) return RespValue{ .error_string = "ERR syntax error" };
             idx += 1;
         } else if (std.ascii.eqlIgnoreCase(opt, "TRUTH") or
-                   std.ascii.eqlIgnoreCase(opt, "NOTHREAD"))
+            std.ascii.eqlIgnoreCase(opt, "NOTHREAD"))
         {
             idx += 1;
         } else {
@@ -423,7 +428,7 @@ pub fn cmdVsim(allocator: Allocator, storage: *Storage, args: []const []const u8
         score: f32,
     };
 
-    var results = std.ArrayList(SimResult){};
+    var results = std.ArrayList(SimResult).empty;
     defer results.deinit(allocator);
 
     var it = vs.vectors.iterator();
@@ -511,7 +516,7 @@ pub fn cmdVrange(allocator: Allocator, storage: *Storage, args: []const []const 
     if (stop >= cnt_i64) stop = cnt_i64 - 1;
     if (start > stop) return RespValue{ .array = try allocator.alloc(RespValue, 0) };
 
-    var members = std.ArrayList(*VectorEntry){};
+    var members = std.ArrayList(*VectorEntry).empty;
     defer members.deinit(allocator);
     var it = vs.vectors.valueIterator();
     while (it.next()) |ep| try members.append(allocator, ep.*);
@@ -923,9 +928,12 @@ test "cmdVrem: basic remove" {
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
     const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
-    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
 
     const rem = [_][]const u8{ "VREM", "myvec", "v2" };
     const rr = try cmdVrem(allocator, &storage, &rem, 3);
@@ -946,9 +954,12 @@ test "cmdVrem: multiple removes" {
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
     const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
-    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
 
     const rem = [_][]const u8{ "VREM", "myvec", "v1", "v3" };
     const rr = try cmdVrem(allocator, &storage, &rem, 3);
@@ -967,7 +978,8 @@ test "cmdVrem: nonexistent vector" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const rem = [_][]const u8{ "VREM", "myvec", "v2" };
     const rr = try cmdVrem(allocator, &storage, &rem, 3);
@@ -1008,7 +1020,8 @@ test "cmdVismember: exists" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VISMEMBER", "myvec", "v1" };
     const result = try cmdVismember(allocator, &storage, &args, 3);
@@ -1022,7 +1035,8 @@ test "cmdVismember: not exists" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VISMEMBER", "myvec", "v2" };
     const result = try cmdVismember(allocator, &storage, &args, 3);
@@ -1064,8 +1078,10 @@ test "cmdVrandmember: single random" {
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
 
     const args = [_][]const u8{ "VRANDMEMBER", "myvec" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
@@ -1083,9 +1099,12 @@ test "cmdVrandmember: with positive count" {
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
     const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
-    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
 
     const args = [_][]const u8{ "VRANDMEMBER", "myvec", "2" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
@@ -1100,7 +1119,8 @@ test "cmdVrandmember: with negative count allows duplicates" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VRANDMEMBER", "myvec", "-3" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
@@ -1119,8 +1139,10 @@ test "cmdVrandmember: count exceeds size" {
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
 
     const args = [_][]const u8{ "VRANDMEMBER", "myvec", "5" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
@@ -1135,7 +1157,8 @@ test "cmdVrandmember: count zero" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VRANDMEMBER", "myvec", "0" };
     const result = try cmdVrandmember(allocator, &storage, &args, 3);
@@ -1189,10 +1212,12 @@ test "cmdVgetattr: returns stored blob" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const sa = [_][]const u8{ "VSETATTR", "myvec", "v1", "{\"category\":\"test\"}" };
-    const sr = try cmdVsetattr(allocator, &storage, &sa, 3); defer sr.deinit(allocator);
+    const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
+    defer sr.deinit(allocator);
 
     const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
     const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
@@ -1207,7 +1232,8 @@ test "cmdVgetattr: no attribute returns nil" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
     const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
@@ -1221,7 +1247,8 @@ test "cmdVgetattr: nonexistent member returns nil" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const ga = [_][]const u8{ "VGETATTR", "myvec", "v_none" };
     const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
@@ -1273,7 +1300,8 @@ test "cmdVsetattr: set blob returns 1" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const sa = [_][]const u8{ "VSETATTR", "myvec", "v1", "{\"x\":1}" };
     const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
@@ -1287,12 +1315,15 @@ test "cmdVsetattr: replace blob" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const sa1 = [_][]const u8{ "VSETATTR", "myvec", "v1", "old" };
-    const sr1 = try cmdVsetattr(allocator, &storage, &sa1, 3); defer sr1.deinit(allocator);
+    const sr1 = try cmdVsetattr(allocator, &storage, &sa1, 3);
+    defer sr1.deinit(allocator);
     const sa2 = [_][]const u8{ "VSETATTR", "myvec", "v1", "new" };
-    const sr2 = try cmdVsetattr(allocator, &storage, &sa2, 3); defer sr2.deinit(allocator);
+    const sr2 = try cmdVsetattr(allocator, &storage, &sa2, 3);
+    defer sr2.deinit(allocator);
 
     const ga = [_][]const u8{ "VGETATTR", "myvec", "v1" };
     const gr = try cmdVgetattr(allocator, &storage, &ga, 3);
@@ -1306,7 +1337,8 @@ test "cmdVsetattr: nonexistent member returns 0" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const sa = [_][]const u8{ "VSETATTR", "myvec", "v_none", "blob" };
     const sr = try cmdVsetattr(allocator, &storage, &sa, 3);
@@ -1359,8 +1391,10 @@ test "cmdVinfo: basic metadata" {
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "1.0", "2.0", "3.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "3", "4.0", "5.0", "6.0", "v2" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
 
     const args = [_][]const u8{ "VINFO", "myvec" };
     const result = try cmdVinfo(allocator, &storage, &args, 3);
@@ -1383,7 +1417,8 @@ test "cmdVinfo: metric is COSINE (default)" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VINFO", "myvec" };
     const result = try cmdVinfo(allocator, &storage, &args, 3);
@@ -1397,9 +1432,11 @@ test "cmdVinfo: empty vector set shows dim and count=0" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "4", "1.0", "2.0", "3.0", "4.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
     const rem = [_][]const u8{ "VREM", "myvec", "v1" };
-    const rr = try cmdVrem(allocator, &storage, &rem, 3); defer rr.deinit(allocator);
+    const rr = try cmdVrem(allocator, &storage, &rem, 3);
+    defer rr.deinit(allocator);
 
     const args = [_][]const u8{ "VINFO", "myvec" };
     const result = try cmdVinfo(allocator, &storage, &args, 3);
@@ -1444,9 +1481,12 @@ test "cmdVsim: ELE basic search" {
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.9", "0.1", "v2" };
     const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.0", "1.0", "v3" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
-    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
 
     const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "3" };
     const result = try cmdVsim(allocator, &storage, &args, 3);
@@ -1464,8 +1504,10 @@ test "cmdVsim: ELE with WITHSCORES returns flat array" {
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.0", "1.0", "v2" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
 
     const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "2", "WITHSCORES" };
     const result = try cmdVsim(allocator, &storage, &args, 3);
@@ -1485,8 +1527,10 @@ test "cmdVsim: VALUES query" {
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.0", "1.0", "v2" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
 
     // Query with a vector close to v1
     const args = [_][]const u8{ "VSIM", "myvec", "VALUES", "2", "0.99", "0.01", "COUNT", "2" };
@@ -1516,7 +1560,8 @@ test "cmdVsim: ELE nonexistent member returns error" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VSIM", "myvec", "ELE", "nonexistent" };
     const result = try cmdVsim(allocator, &storage, &args, 3);
@@ -1532,9 +1577,12 @@ test "cmdVsim: COUNT limits results" {
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.9", "0.1", "v2" };
     const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "0.8", "0.2", "v3" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
-    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
 
     const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "2" };
     const result = try cmdVsim(allocator, &storage, &args, 3);
@@ -1549,7 +1597,8 @@ test "cmdVsim: WITHATTRIBS returns attribute blobs" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "0.0", "v1", "SETATTR", "meta1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VSIM", "myvec", "ELE", "v1", "COUNT", "1", "WITHATTRIBS" };
     const result = try cmdVsim(allocator, &storage, &args, 3);
@@ -1573,9 +1622,12 @@ test "cmdVrange: basic range" {
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
     const a2 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "3.0", "4.0", "v2" };
     const a3 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "5.0", "6.0", "v3" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
-    const r2 = try cmdVadd(allocator, &storage, &a2, 3); defer r2.deinit(allocator);
-    const r3 = try cmdVadd(allocator, &storage, &a3, 3); defer r3.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
+    const r2 = try cmdVadd(allocator, &storage, &a2, 3);
+    defer r2.deinit(allocator);
+    const r3 = try cmdVadd(allocator, &storage, &a3, 3);
+    defer r3.deinit(allocator);
 
     const args = [_][]const u8{ "VRANGE", "myvec", "0", "1" };
     const result = try cmdVrange(allocator, &storage, &args, 3);
@@ -1590,7 +1642,8 @@ test "cmdVrange: with WITHEMBEDDINGS flag" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VRANGE", "myvec", "0", "0", "WITHEMBEDDINGS" };
     const result = try cmdVrange(allocator, &storage, &args, 3);
@@ -1611,7 +1664,8 @@ test "cmdVlinks: stub returns empty array" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VLINKS", "myvec", "v1" };
     const result = try cmdVlinks(allocator, &storage, &args, 3);
@@ -1626,7 +1680,8 @@ test "cmdVlinks: nonexistent member" {
     defer storage.deinit();
 
     const a1 = [_][]const u8{ "VADD", "myvec", "VALUES", "2", "1.0", "2.0", "v1" };
-    const r1 = try cmdVadd(allocator, &storage, &a1, 3); defer r1.deinit(allocator);
+    const r1 = try cmdVadd(allocator, &storage, &a1, 3);
+    defer r1.deinit(allocator);
 
     const args = [_][]const u8{ "VLINKS", "myvec", "nonexistent" };
     const result = try cmdVlinks(allocator, &storage, &args, 3);

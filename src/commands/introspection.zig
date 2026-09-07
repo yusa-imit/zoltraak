@@ -15,7 +15,7 @@ pub fn cmdMemoryStats(
     storage: *Storage,
     protocol_version: RespProtocol,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -192,7 +192,7 @@ pub fn cmdMemoryUsage(
 
 /// MEMORY DOCTOR - Return memory usage advice (real analysis)
 pub fn cmdMemoryDoctor(allocator: std.mem.Allocator, storage: *Storage) ![]const u8 {
-    var advice = std.ArrayList(u8){};
+    var advice = std.ArrayList(u8).empty;
     errdefer advice.deinit(allocator);
 
     const w = advice.writer(allocator);
@@ -273,7 +273,7 @@ pub fn cmdMemoryMallocStats(allocator: std.mem.Allocator) ![]const u8 {
 
 /// MEMORY HELP - Return MEMORY command help
 pub fn cmdMemoryHelp(allocator: std.mem.Allocator) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const help = [_][]const u8{
@@ -344,7 +344,7 @@ pub fn cmdMemory(
 pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?usize, protocol_version: RespProtocol) ![]const u8 {
     const entries = storage.slowlog.getEntries(count);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -359,7 +359,7 @@ pub fn cmdSlowlogGet(allocator: std.mem.Allocator, storage: *Storage, count: ?us
         const entry = entries[i];
 
         // Command (as array of strings) - split by spaces
-        var cmd_parts = std.ArrayList([]const u8){};
+        var cmd_parts = std.ArrayList([]const u8).empty;
         defer cmd_parts.deinit(allocator);
 
         var iter = std.mem.splitSequence(u8, entry.command, " ");
@@ -413,7 +413,7 @@ pub fn cmdSlowlogReset(allocator: std.mem.Allocator, storage: *Storage) ![]const
 
 /// SLOWLOG HELP - Return SLOWLOG command help
 pub fn cmdSlowlogHelp(allocator: std.mem.Allocator) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const help = [_][]const u8{
@@ -633,7 +633,7 @@ pub fn cmdLatencyLatest(
     const latest = try storage.latency_monitor.getAllLatest(allocator);
     defer allocator.free(latest);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -686,7 +686,7 @@ pub fn cmdLatencyHistory(
     const history = try storage.latency_monitor.getHistory(event_type, allocator);
     defer if (history) |h| allocator.free(h);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -748,7 +748,7 @@ pub fn cmdLatencyGraph(
     const history = try storage.latency_monitor.getHistory(event_type, allocator);
     defer if (history) |h| allocator.free(h);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -770,7 +770,7 @@ pub fn cmdLatencyGraph(
     }
 
     // Generate simple ASCII graph
-    var graph = std.ArrayList(u8){};
+    var graph = std.ArrayList(u8).empty;
     defer graph.deinit(allocator);
 
     const graph_w = graph.writer(allocator);
@@ -802,7 +802,7 @@ pub fn cmdLatencyHistogram(
     storage: *Storage,
     command_names: []const []const u8,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -866,7 +866,7 @@ pub fn cmdLatencyDoctor(
     const latest = try storage.latency_monitor.getAllLatest(allocator);
     defer allocator.free(latest);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const w = buf.writer(allocator);
@@ -907,7 +907,7 @@ pub fn cmdLatencyDoctor(
 
 /// LATENCY HELP - Show LATENCY command help
 pub fn cmdLatencyHelp(allocator: std.mem.Allocator) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const help = [_][]const u8{
@@ -1029,7 +1029,7 @@ test "cmdLatencyLatest max_latency tracking" {
 
     // Latest latency: 3ms (3000us), max latency: 10ms (10000us)
     try std.testing.expect(std.mem.indexOf(u8, result, ":10\r\n") != null); // max_ms
-    try std.testing.expect(std.mem.indexOf(u8, result, ":3\r\n") != null);  // latest_ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":3\r\n") != null); // latest_ms
 }
 
 test "cmdLatencyHistory" {
@@ -1047,8 +1047,8 @@ test "cmdLatencyHistory" {
     try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
     // Each entry should be [timestamp_sec, latency_ms]
     // 500us → 0ms, 1500us → 1ms
-    try std.testing.expect(std.mem.indexOf(u8, result, ":0\r\n") != null);  // 500us → 0ms
-    try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null);  // 1500us → 1ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":0\r\n") != null); // 500us → 0ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":1\r\n") != null); // 1500us → 1ms
 }
 
 test "cmdLatencyHistory unknown event returns empty array" {
@@ -1077,7 +1077,7 @@ test "cmdLatencyHistory returns correct Redis format" {
     // Should have 1 entry: *1 then *2 [timestamp_sec, 5ms]
     try std.testing.expect(std.mem.startsWith(u8, result, "*1\r\n"));
     try std.testing.expect(std.mem.indexOf(u8, result, "*2\r\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, ":5\r\n") != null);  // 5ms
+    try std.testing.expect(std.mem.indexOf(u8, result, ":5\r\n") != null); // 5ms
 }
 
 test "cmdLatencyReset specific event" {

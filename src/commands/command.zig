@@ -488,7 +488,7 @@ pub const ALL_COMMANDS = [_]CommandInfo{
 /// COMMAND - Return all commands
 /// RESP3: each entry is a map instead of an array
 pub fn cmdCommand(allocator: std.mem.Allocator, protocol_version: RespProtocol) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     // Write array header (outer array is always array, not map)
@@ -505,7 +505,7 @@ pub fn cmdCommand(allocator: std.mem.Allocator, protocol_version: RespProtocol) 
 
 /// COMMAND COUNT - Return number of commands
 pub fn cmdCommandCount(allocator: std.mem.Allocator) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try buf.append(allocator, ':');
@@ -518,7 +518,7 @@ pub fn cmdCommandCount(allocator: std.mem.Allocator) ![]const u8 {
 /// COMMAND INFO - Return specific command info
 /// RESP3: each entry is a map with flags/acl-categories as sets
 pub fn cmdCommandInfo(allocator: std.mem.Allocator, args: []const []const u8, protocol_version: RespProtocol) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try buf.append(allocator, '*');
@@ -560,7 +560,7 @@ pub fn firstKeyIndexForCommand(cmd_name: []const u8) ?i32 {
 }
 
 pub fn cmdCommandGetKeys(allocator: std.mem.Allocator, args: []const []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (args.len == 0) {
@@ -657,7 +657,7 @@ fn getCommandGroup(name: []const u8) ?[]const u8 {
 /// filter_value: the category name, glob pattern, or module name
 /// RESP3: returns a set (~) since command names are unique
 pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, filter_value: ?[]const u8, protocol_version: RespProtocol) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const ft = if (filter_type) |t| t else null;
@@ -673,7 +673,7 @@ pub fn cmdCommandList(allocator: std.mem.Allocator, filter_type: ?[]const u8, fi
     }
 
     // Collect matching command names
-    var matching = std.ArrayList([]const u8){};
+    var matching = std.ArrayList([]const u8).empty;
     defer matching.deinit(allocator);
 
     for (ALL_COMMANDS) |cmd| {
@@ -1147,7 +1147,7 @@ pub const COMMAND_DOCS = [_]CommandDoc{
 /// RESP3: map %N (name → doc_entry map).
 pub fn cmdCommandDocs(allocator: std.mem.Allocator, args: []const []const u8, protocol_version: RespProtocol) ![]const u8 {
     const resp3 = protocol_version == .RESP3;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (args.len == 0) {
@@ -1238,7 +1238,7 @@ fn writeDocEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), doc: Com
 /// Returns an array where each element is [key, [flags...]] for each key in the command.
 /// Key flags: "read", "write", "delete", "not_key", "incomplete", "channel".
 pub fn cmdCommandGetKeysAndFlags(allocator: std.mem.Allocator, args: []const []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (args.len == 0) {
@@ -1263,12 +1263,12 @@ pub fn cmdCommandGetKeysAndFlags(allocator: std.mem.Allocator, args: []const []c
                 if (std.mem.eql(u8, flag, "write")) is_write = true;
                 if (std.mem.eql(u8, flag, "write") and
                     (std.ascii.eqlIgnoreCase(cmd.name, "del") or
-                    std.ascii.eqlIgnoreCase(cmd.name, "unlink") or
-                    std.ascii.eqlIgnoreCase(cmd.name, "getdel"))) is_delete = true;
+                        std.ascii.eqlIgnoreCase(cmd.name, "unlink") or
+                        std.ascii.eqlIgnoreCase(cmd.name, "getdel"))) is_delete = true;
             }
 
             // Build key-level flags array
-            var key_flags = std.ArrayList([]const u8){};
+            var key_flags = std.ArrayList([]const u8).empty;
             defer key_flags.deinit(allocator);
             if (is_read) try key_flags.append(allocator, "read");
             if (is_write and !is_delete) try key_flags.append(allocator, "write");
@@ -1327,7 +1327,7 @@ pub fn cmdCommandGetKeysAndFlags(allocator: std.mem.Allocator, args: []const []c
 
 /// COMMAND HELP - Show help for COMMAND
 pub fn cmdCommandHelp(allocator: std.mem.Allocator) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const help_lines = [_][]const u8{
@@ -1355,7 +1355,7 @@ pub fn cmdCommandHelp(allocator: std.mem.Allocator) ![]const u8 {
 /// Derive ACL categories from command flags and name for Redis 7.0+ format.
 /// Returns a stack-allocated slice of category strings.
 fn deriveAclCategories(allocator: std.mem.Allocator, cmd: CommandInfo) ![]const []const u8 {
-    var cats = std.ArrayList([]const u8){};
+    var cats = std.ArrayList([]const u8).empty;
     errdefer cats.deinit(allocator);
 
     // Access direction from flags

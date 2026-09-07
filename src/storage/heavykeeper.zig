@@ -166,7 +166,7 @@ pub const HeavyKeeper = struct {
             .depth = depth,
             .decay = decay,
             .hash_table = hash_table,
-            .heap = std.ArrayList(MinHeapItem){},
+            .heap = std.ArrayList(MinHeapItem).empty,
             .prng = std.Random.DefaultPrng.init(42),
         };
     }

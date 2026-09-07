@@ -15,8 +15,8 @@ pub const RespProtocol = enum(u8) {
 
 /// Reply mode for CLIENT REPLY command
 pub const ReplyMode = enum {
-    ON,   // Normal replies (default)
-    OFF,  // Suppress all replies
+    ON, // Normal replies (default)
+    OFF, // Suppress all replies
     SKIP, // Skip next reply only, then revert to ON
 };
 
@@ -245,12 +245,12 @@ pub const ClientRegistry = struct {
             .tracking_optout = false, // OPTOUT off
             .tracking_noloop = false, // NOLOOP off
             .tracking_next_cache = null, // No override
-            .tracking_prefixes = std.ArrayList([]const u8){},
+            .tracking_prefixes = std.ArrayList([]const u8).empty,
             .monitor_mode = false, // Monitor mode off by default
             .client_repl_offset = 0, // Start at offset 0
             .authenticated_user = null, // Unauthenticated by default (will use "default" user)
             .selected_db = 0, // Start at database 0
-            .pending_invalidations = std.ArrayList([]u8){},
+            .pending_invalidations = std.ArrayList([]u8).empty,
             .sub_count = 0,
             .psub_count = 0,
             .ssub_count = 0,
@@ -558,7 +558,7 @@ pub const ClientRegistry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         const now = std.time.milliTimestamp();
@@ -638,7 +638,7 @@ pub const ClientRegistry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         const now = std.time.milliTimestamp();
@@ -976,7 +976,7 @@ pub const ClientRegistry = struct {
         // Look up clients tracking this key
         const client_set = self.tracking_table.get(key) orelse return &[_]InvalidationMessage{};
 
-        var messages = std.ArrayList(InvalidationMessage){};
+        var messages = std.ArrayList(InvalidationMessage).empty;
         defer messages.deinit(allocator);
 
         var it = client_set.keyIterator();
@@ -1099,7 +1099,7 @@ pub const ClientRegistry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var monitors = std.ArrayList(u64){};
+        var monitors = std.ArrayList(u64).empty;
         defer monitors.deinit(allocator);
 
         var it = self.clients.iterator();
@@ -1123,7 +1123,7 @@ pub const ClientRegistry = struct {
         client_addr: []const u8,
         command_args: []const []const u8,
     ) !std.ArrayList(MonitorMessage) {
-        var messages = std.ArrayList(MonitorMessage){};
+        var messages = std.ArrayList(MonitorMessage).empty;
         errdefer {
             for (messages.items) |msg| {
                 allocator.free(msg.message);
@@ -1135,7 +1135,7 @@ pub const ClientRegistry = struct {
         defer allocator.free(monitor_ids);
 
         // Format: +timestamp.microsec [db client_addr] "command" "arg1" "arg2" ...
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         const writer = buf.writer(allocator);
@@ -1352,7 +1352,7 @@ fn cmdClientList(
     protocol_version: RespProtocol,
 ) ![]const u8 {
     var filter_type: ?[]const u8 = null;
-    var id_filter = std.ArrayList(u64){};
+    var id_filter = std.ArrayList(u64).empty;
     defer id_filter.deinit(allocator);
 
     var i: usize = 1;
@@ -1390,7 +1390,7 @@ fn cmdClientList(
             {
                 var w = Writer.init(allocator);
                 defer w.deinit();
-                var buf = std.ArrayList(u8){};
+                var buf = std.ArrayList(u8).empty;
                 try buf.writer(allocator).print("ERR Unknown client type '{s}'", .{type_value});
                 const msg = try buf.toOwnedSlice(allocator);
                 defer allocator.free(msg);
@@ -1481,7 +1481,7 @@ fn cmdClientInfo(
     else
         -1;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     const is_pubsub = (info.sub_count + info.psub_count + info.ssub_count) > 0;
@@ -2109,7 +2109,7 @@ fn cmdClientTracking(
     var optin = false;
     var optout = false;
     var noloop = false;
-    var prefixes = std.ArrayList([]const u8){};
+    var prefixes = std.ArrayList([]const u8).empty;
     defer prefixes.deinit(allocator);
 
     var i: usize = 2;
@@ -2200,7 +2200,7 @@ fn cmdClientTrackinginfo(
     }
 
     // Build flags array
-    var flags = std.ArrayList([]const u8){};
+    var flags = std.ArrayList([]const u8).empty;
     defer flags.deinit(allocator);
 
     if (!tracking_info.enabled) {
@@ -2241,7 +2241,7 @@ fn cmdClientTrackinginfo(
 
     // Format output as RESP map (RESP3) or array (RESP2)
     // For simplicity, we'll use array format compatible with both
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     defer result.deinit(allocator);
 
     const proto = client_registry.getProtocol(client_id);
@@ -2510,7 +2510,7 @@ pub fn cmdClient(
     } else {
         var w = Writer.init(allocator);
         defer w.deinit();
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         // No defer buf.deinit() needed - toOwnedSlice handles it
         try buf.writer(allocator).print("ERR unknown subcommand '{s}'. Try CLIENT HELP.", .{subcmd});
         const msg = try buf.toOwnedSlice(allocator);
@@ -2630,7 +2630,7 @@ test "CLIENT ID command" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "ID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -2655,7 +2655,7 @@ test "CLIENT GETNAME command - no name set" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "GETNAME" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -2680,7 +2680,7 @@ test "CLIENT SETNAME command - success" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETNAME" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "my-client" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -2711,7 +2711,7 @@ test "CLIENT SETNAME command - rejects spaces" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETNAME" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "my client" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -2742,7 +2742,7 @@ test "CLIENT LIST command - basic" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -2772,7 +2772,7 @@ test "CLIENT LIST command - with TYPE filter" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIST" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "TYPE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "normal" });
@@ -2800,7 +2800,7 @@ test "CLIENT unknown subcommand" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNKNOWN" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -2825,7 +2825,7 @@ test "CLIENT LIST command - invalid TYPE" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIST" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "TYPE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "invalid" });
@@ -2885,7 +2885,7 @@ test "CLIENT INFO command" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "INFO" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -2914,7 +2914,7 @@ test "CLIENT HELP command" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "HELP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -2944,7 +2944,7 @@ test "CLIENT KILL command - old format" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "192.168.1.100:9999" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -2975,7 +2975,7 @@ test "CLIENT KILL command - by ID" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ID" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "2" });
@@ -3007,7 +3007,7 @@ test "CLIENT KILL command - by ADDR" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ADDR" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "127.0.0.1:12345" });
@@ -3035,7 +3035,7 @@ test "CLIENT KILL command - SKIPME YES" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ID" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1" });
@@ -3065,7 +3065,7 @@ test "CLIENT KILL command - SKIPME NO" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ID" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1" });
@@ -3096,7 +3096,7 @@ test "CLIENT KILL command - by TYPE" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "TYPE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "normal" });
@@ -3130,7 +3130,7 @@ test "CLIENT KILL command - by MAXAGE" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "MAXAGE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1" });
@@ -3162,7 +3162,7 @@ test "CLIENT KILL command - multiple filters" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "KILL" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "TYPE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "normal" });
@@ -3217,7 +3217,7 @@ test "CLIENT PAUSE command - WRITE mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "WRITE" });
@@ -3246,7 +3246,7 @@ test "CLIENT PAUSE command - ALL mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ALL" });
@@ -3275,7 +3275,7 @@ test "CLIENT PAUSE command - default WRITE mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3303,7 +3303,7 @@ test "CLIENT PAUSE command - zero timeout" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "0" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3330,7 +3330,7 @@ test "CLIENT PAUSE command - negative timeout rejected" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "-1" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3361,7 +3361,7 @@ test "CLIENT UNPAUSE command" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNPAUSE" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -3406,7 +3406,7 @@ test "CLIENT PAUSE command - invalid mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "PAUSE" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "1000" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
@@ -3432,7 +3432,7 @@ test "CLIENT UNBLOCK command - client not blocked" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" }); // Non-existent client
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3475,7 +3475,7 @@ test "CLIENT UNBLOCK command - default TIMEOUT mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3523,7 +3523,7 @@ test "CLIENT UNBLOCK command - ERROR mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ERROR" });
@@ -3554,7 +3554,7 @@ test "CLIENT UNBLOCK command - invalid mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "999" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
@@ -3581,7 +3581,7 @@ test "CLIENT UNBLOCK command - invalid client ID" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "UNBLOCK" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "not-a-number" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3608,7 +3608,7 @@ test "CLIENT NO-EVICT command - enable" {
     const arena_allocator = arena.allocator();
 
     // Test NO-EVICT ON
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3637,7 +3637,7 @@ test "CLIENT NO-EVICT command - disable" {
     const arena_allocator = arena.allocator();
 
     // Test NO-EVICT OFF
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3664,7 +3664,7 @@ test "CLIENT NO-EVICT command - get status" {
     const arena_allocator = arena.allocator();
 
     // Test NO-EVICT without argument (get status)
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-EVICT" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -3687,7 +3687,7 @@ test "CLIENT REPLY command - ON mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3712,7 +3712,7 @@ test "CLIENT REPLY command - OFF mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3737,7 +3737,7 @@ test "CLIENT REPLY command - SKIP mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "SKIP" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3766,7 +3766,7 @@ test "CLIENT REPLY command - invalid mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "REPLY" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3790,7 +3790,7 @@ test "CLIENT NO-TOUCH command - enable" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3818,7 +3818,7 @@ test "CLIENT NO-TOUCH command - disable" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OFF" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3844,7 +3844,7 @@ test "CLIENT NO-TOUCH command - get status" {
     const arena_allocator = arena.allocator();
 
     // Test default status (OFF)
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -3867,7 +3867,7 @@ test "CLIENT NO-TOUCH command - invalid argument" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "NO-TOUCH" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -3891,7 +3891,7 @@ test "CLIENT SETINFO command - LIB-NAME" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-NAME" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "redis-py" });
@@ -3916,7 +3916,7 @@ test "CLIENT SETINFO command - LIB-VER" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-VER" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "4.5.1" });
@@ -3941,7 +3941,7 @@ test "CLIENT SETINFO command - invalid attribute" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "value" });
@@ -3967,7 +3967,7 @@ test "CLIENT SETINFO command - value with space (rejected)" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-NAME" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "redis py" }); // space not allowed
@@ -3993,7 +3993,7 @@ test "CLIENT SETINFO command - wrong number of arguments" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "SETINFO" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "LIB-NAME" });
     // Missing value
@@ -4021,7 +4021,7 @@ test "CLIENT TRACKING - enable and disable" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -4036,7 +4036,7 @@ test "CLIENT TRACKING - enable and disable" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args2 = std.ArrayList(RespValue){};
+    var args2 = std.ArrayList(RespValue).empty;
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKING" });
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "OFF" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
@@ -4062,7 +4062,7 @@ test "CLIENT TRACKING - with OPTIN and OPTOUT" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking with OPTIN
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
@@ -4089,7 +4089,7 @@ test "CLIENT TRACKING - OPTIN and OPTOUT mutually exclusive" {
     const arena_allocator = arena.allocator();
 
     // Try to enable both OPTIN and OPTOUT
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
@@ -4118,7 +4118,7 @@ test "CLIENT TRACKING - with PREFIX in BCAST mode" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking with BCAST and PREFIX
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "BCAST" });
@@ -4149,7 +4149,7 @@ test "CLIENT TRACKINGINFO - basic functionality" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -4162,7 +4162,7 @@ test "CLIENT TRACKINGINFO - basic functionality" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args2 = std.ArrayList(RespValue){};
+    var args2 = std.ArrayList(RespValue).empty;
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
@@ -4190,7 +4190,7 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
@@ -4204,7 +4204,7 @@ test "CLIENT TRACKINGINFO - with OPTIN mode" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args2 = std.ArrayList(RespValue){};
+    var args2 = std.ArrayList(RespValue).empty;
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
@@ -4231,7 +4231,7 @@ test "CLIENT TRACKINGINFO - broken_redirect when redirect target disconnects" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking on client1 with REDIRECT to client2 (still connected)
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
@@ -4248,7 +4248,7 @@ test "CLIENT TRACKINGINFO - broken_redirect when redirect target disconnects" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args2 = std.ArrayList(RespValue){};
+    var args2 = std.ArrayList(RespValue).empty;
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "TRACKINGINFO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
 
@@ -4263,7 +4263,7 @@ test "CLIENT TRACKINGINFO - broken_redirect when redirect target disconnects" {
     defer arena3.deinit();
     const arena_allocator3 = arena3.allocator();
 
-    var args3 = std.ArrayList(RespValue){};
+    var args3 = std.ArrayList(RespValue).empty;
     try args3.append(arena_allocator3, RespValue{ .bulk_string = "TRACKINGINFO" });
     const args_slice3 = try args3.toOwnedSlice(arena_allocator3);
 
@@ -4286,7 +4286,7 @@ test "CLIENT GETREDIR - returns -1 when tracking disabled" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "GETREDIR" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -4313,7 +4313,7 @@ test "CLIENT GETREDIR - returns redirect client ID when enabled" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args_tracking = std.ArrayList(RespValue){};
+    var args_tracking = std.ArrayList(RespValue).empty;
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
@@ -4330,7 +4330,7 @@ test "CLIENT GETREDIR - returns redirect client ID when enabled" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator2, RespValue{ .bulk_string = "GETREDIR" });
     const args_slice = try args.toOwnedSlice(arena_allocator2);
 
@@ -4358,7 +4358,7 @@ test "CLIENT GETREDIR - returns -1 when redirect is 0 (self)" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var args_tracking = std.ArrayList(RespValue){};
+    var args_tracking = std.ArrayList(RespValue).empty;
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args_tracking.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     const tracking_args = try args_tracking.toOwnedSlice(arena_allocator);
@@ -4371,7 +4371,7 @@ test "CLIENT GETREDIR - returns -1 when redirect is 0 (self)" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator2, RespValue{ .bulk_string = "GETREDIR" });
     const args_slice = try args.toOwnedSlice(arena_allocator2);
 
@@ -4397,7 +4397,7 @@ test "CLIENT CACHING - YES and NO" {
     const arena_allocator = arena.allocator();
 
     // CLIENT CACHING YES
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "CACHING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "YES" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -4412,7 +4412,7 @@ test "CLIENT CACHING - YES and NO" {
     defer arena2.deinit();
     const arena_allocator2 = arena2.allocator();
 
-    var args2 = std.ArrayList(RespValue){};
+    var args2 = std.ArrayList(RespValue).empty;
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "CACHING" });
     try args2.append(arena_allocator2, RespValue{ .bulk_string = "NO" });
     const args_slice2 = try args2.toOwnedSlice(arena_allocator2);
@@ -4438,7 +4438,7 @@ test "CLIENT CACHING - invalid argument" {
     const arena_allocator = arena.allocator();
 
     // CLIENT CACHING INVALID
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "CACHING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "INVALID" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
@@ -4465,7 +4465,7 @@ test "CLIENT TRACKING - invalid redirect client" {
     const arena_allocator = arena.allocator();
 
     // Try to redirect to non-existent client 999
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
@@ -4495,7 +4495,7 @@ test "CLIENT TRACKING - valid redirect to another client" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking with REDIRECT to client2
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "REDIRECT" });
@@ -4524,7 +4524,7 @@ test "CLIENT TRACKING - with NOLOOP flag" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking with NOLOOP
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "NOLOOP" });
@@ -4551,7 +4551,7 @@ test "CLIENT TRACKING - missing ON/OFF argument" {
     const arena_allocator = arena.allocator();
 
     // Call TRACKING without ON/OFF
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     const args_slice = try args.toOwnedSlice(arena_allocator);
 
@@ -4577,7 +4577,7 @@ test "CLIENT TRACKING - combination BCAST NOLOOP PREFIX" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking with multiple options
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "BCAST" });
@@ -4607,7 +4607,7 @@ test "CLIENT TRACKING - OPTIN with NOLOOP" {
     const arena_allocator = arena.allocator();
 
     // Enable tracking with OPTIN and NOLOOP
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena_allocator, RespValue{ .bulk_string = "TRACKING" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "ON" });
     try args.append(arena_allocator, RespValue{ .bulk_string = "OPTIN" });
@@ -4814,7 +4814,7 @@ test "CLIENT LIST - includes resp field" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
@@ -4840,7 +4840,7 @@ test "CLIENT LIST - includes user and library fields" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
@@ -4865,7 +4865,7 @@ test "CLIENT INFO - includes library fields after SETINFO" {
     defer arena.deinit();
 
     // Set lib-name
-    var set_args = std.ArrayList(RespValue){};
+    var set_args = std.ArrayList(RespValue).empty;
     try set_args.append(arena.allocator(), RespValue{ .bulk_string = "SETINFO" });
     try set_args.append(arena.allocator(), RespValue{ .bulk_string = "LIB-NAME" });
     try set_args.append(arena.allocator(), RespValue{ .bulk_string = "ioredis" });
@@ -4874,7 +4874,7 @@ test "CLIENT INFO - includes library fields after SETINFO" {
     defer allocator.free(set_resp);
 
     // Get CLIENT INFO
-    var info_args = std.ArrayList(RespValue){};
+    var info_args = std.ArrayList(RespValue).empty;
     try info_args.append(arena.allocator(), RespValue{ .bulk_string = "INFO" });
     const info_slice = try info_args.toOwnedSlice(arena.allocator());
 
@@ -4898,7 +4898,7 @@ test "CLIENT LIST - redir=-1 when tracking disabled" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
@@ -4928,7 +4928,7 @@ test "CLIENT LIST ID filter - returns only specified clients" {
     const id1_str = std.fmt.bufPrint(&id1_buf, "{d}", .{client1}) catch unreachable;
     const id2_str = std.fmt.bufPrint(&id2_buf, "{d}", .{client2}) catch unreachable;
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     try args.append(arena.allocator(), RespValue{ .bulk_string = "ID" });
     try args.append(arena.allocator(), RespValue{ .bulk_string = id1_str });
@@ -4956,7 +4956,7 @@ test "CLIENT LIST - includes watch=0 and type=normal fields (Redis 7.x compat)" 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 
@@ -4979,7 +4979,7 @@ test "CLIENT INFO - includes watch=0 and type=normal fields (Redis 7.x compat)" 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "INFO" });
     const args_slice = try args.toOwnedSlice(arena.allocator());
 

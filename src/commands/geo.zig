@@ -284,7 +284,7 @@ pub fn cmdGeopos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     };
 
     // Build response array manually
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const member_count = args.len - 2;
@@ -412,7 +412,7 @@ pub fn cmdGeohash(allocator: std.mem.Allocator, storage: *Storage, args: []const
     };
 
     // Build response
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const member_count = args.len - 2;
@@ -594,19 +594,19 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
     const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
         // Key doesn't exist or is not a sorted set
         if (store_key != null) {
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
             defer buf.deinit(allocator);
             try buf.appendSlice(allocator, ":0\r\n");
             return buf.toOwnedSlice(allocator);
         }
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "*0\r\n");
         return buf.toOwnedSlice(allocator);
     };
     defer allocator.free(all_members);
 
-    var results = std.ArrayList(GeoResult){};
+    var results = std.ArrayList(GeoResult).empty;
     defer results.deinit(allocator);
 
     for (all_members) |member| {
@@ -649,12 +649,12 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     // STORE / STOREDIST: save results into destination sorted set and return count
     if (store_key) |dest_key| {
-        var members = std.ArrayList([]const u8){};
+        var members = std.ArrayList([]const u8).empty;
         defer {
             for (members.items) |m| allocator.free(m);
             members.deinit(allocator);
         }
-        var scores = std.ArrayList(f64){};
+        var scores = std.ArrayList(f64).empty;
         defer scores.deinit(allocator);
 
         for (results.items[0..result_count]) |result| {
@@ -683,14 +683,14 @@ pub fn cmdGeoradius(allocator: std.mem.Allocator, storage: *Storage, args: []con
             }
         }
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{result_count});
         return buf.toOwnedSlice(allocator);
     }
 
     // Build regular response
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{result_count});
@@ -791,7 +791,7 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
     // Look up member's position
     const score = storage.zscore(key, member) orelse {
         // Member not found - return empty array
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "*0\r\n");
         return buf.toOwnedSlice(allocator);
@@ -906,19 +906,19 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
     // Get all members and filter by radius (reuse GEORADIUS logic)
     const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
         if (store_key != null) {
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
             defer buf.deinit(allocator);
             try buf.appendSlice(allocator, ":0\r\n");
             return buf.toOwnedSlice(allocator);
         }
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "*0\r\n");
         return buf.toOwnedSlice(allocator);
     };
     defer allocator.free(all_members);
 
-    var results = std.ArrayList(GeoResult){};
+    var results = std.ArrayList(GeoResult).empty;
     defer results.deinit(allocator);
 
     for (all_members) |m| {
@@ -961,12 +961,12 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
 
     // STORE / STOREDIST: save results into destination sorted set and return count
     if (store_key) |dest_key| {
-        var members = std.ArrayList([]const u8){};
+        var members = std.ArrayList([]const u8).empty;
         defer {
             for (members.items) |m| allocator.free(m);
             members.deinit(allocator);
         }
-        var scores = std.ArrayList(f64){};
+        var scores = std.ArrayList(f64).empty;
         defer scores.deinit(allocator);
 
         for (results.items[0..result_count]) |result| {
@@ -995,14 +995,14 @@ pub fn cmdGeoradiusbymember(allocator: std.mem.Allocator, storage: *Storage, arg
             }
         }
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{result_count});
         return buf.toOwnedSlice(allocator);
     }
 
     // Build response (same format as GEORADIUS)
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{result_count});
@@ -1111,7 +1111,7 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
         };
         const score = storage.zscore(key, member) orelse {
             // Return empty array if member not found
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
             defer buf.deinit(allocator);
             try buf.appendSlice(allocator, "*0\r\n");
             return buf.toOwnedSlice(allocator);
@@ -1294,14 +1294,14 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
     // Reuse GEORADIUS logic
     const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
         // Key doesn't exist or is not a sorted set
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "*0\r\n");
         return buf.toOwnedSlice(allocator);
     };
     defer allocator.free(all_members);
 
-    var results = std.ArrayList(GeoResult){};
+    var results = std.ArrayList(GeoResult).empty;
     defer results.deinit(allocator);
 
     for (all_members) |member| {
@@ -1346,7 +1346,7 @@ pub fn cmdGeosearch(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     const result_count = if (count_limit) |limit| @min(limit, results.items.len) else results.items.len;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{result_count});
@@ -1448,7 +1448,7 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
         };
         const score = storage.zscore(key, member) orelse {
             // FROMMEMBER not found - return 0 and don't modify destination
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
             defer buf.deinit(allocator);
             try buf.appendSlice(allocator, ":0\r\n");
             return buf.toOwnedSlice(allocator);
@@ -1635,7 +1635,7 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
     // Get all members from source key
     const all_members = try storage.zrange(allocator, key, 0, -1, false) orelse {
         // Source key doesn't exist - return 0
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, ":0\r\n");
         return buf.toOwnedSlice(allocator);
@@ -1643,7 +1643,7 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
     defer allocator.free(all_members);
 
     // Filter members
-    var results = std.ArrayList(GeoResult){};
+    var results = std.ArrayList(GeoResult).empty;
     defer results.deinit(allocator);
 
     for (all_members) |member| {
@@ -1693,16 +1693,16 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
     if (result_count == 0) {
         // Empty result set - delete destination if it exists
         _ = storage.del(&[_][]const u8{dest_key});
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, ":0\r\n");
         return buf.toOwnedSlice(allocator);
     }
 
     // Prepare members and scores for zadd
-    var members = std.ArrayList([]const u8){};
+    var members = std.ArrayList([]const u8).empty;
     defer members.deinit(allocator);
-    var scores = std.ArrayList(f64){};
+    var scores = std.ArrayList(f64).empty;
     defer scores.deinit(allocator);
 
     for (results.items[0..result_count]) |result| {
@@ -1744,7 +1744,7 @@ pub fn cmdGeosearchstore(allocator: std.mem.Allocator, storage: *Storage, args: 
         allocator.free(member);
     }
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try std.fmt.format(buf.writer(allocator), ":{d}\r\n", .{result_count});
     return buf.toOwnedSlice(allocator);

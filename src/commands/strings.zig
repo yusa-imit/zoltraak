@@ -570,7 +570,7 @@ pub fn executeCommand(
         ) catch |err| blk: {
             // Log error but don't fail the command
             std.debug.print("MONITOR broadcast error: {}\n", .{err});
-            break :blk std.ArrayList(MonitorMessage){};
+            break :blk std.ArrayList(MonitorMessage).empty;
         };
         // Clean up monitor messages
         for (monitor_messages.items) |msg| {
@@ -3421,7 +3421,7 @@ fn cmdExec(
 
     // Build the response array from raw RESP bytes.
     // We concatenate all individual result bytes into one array response.
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
 
     const count_str = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{executed});
@@ -4806,7 +4806,7 @@ fn cmdLcs(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         // 3) "len"
         // 4) 11 (total LCS length)
 
-        var result = std.ArrayList(u8){};
+        var result = std.ArrayList(u8).empty;
         errdefer result.deinit(allocator);
 
         // Start with a map containing "matches" and "len"
@@ -4914,7 +4914,7 @@ fn computeLcs(allocator: std.mem.Allocator, str1: []const u8, str2: []const u8) 
     }
 
     // Backtrack to build the LCS string
-    var lcs = std.ArrayList(u8){};
+    var lcs = std.ArrayList(u8).empty;
     errdefer lcs.deinit(allocator);
 
     var i = m;
@@ -4948,7 +4948,7 @@ const LcsMatch = struct {
 };
 
 fn findLcsMatches(allocator: std.mem.Allocator, str1: []const u8, str2: []const u8, min_match_len: usize) !std.ArrayList(LcsMatch) {
-    var matches = std.ArrayList(LcsMatch){};
+    var matches = std.ArrayList(LcsMatch).empty;
     errdefer {
         for (matches.items) |match| {
             allocator.free(match.key1_range);
@@ -6335,7 +6335,7 @@ pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     };
 
     // Extract source keys
-    var srckeys = std.ArrayList([]const u8){};
+    var srckeys = std.ArrayList([]const u8).empty;
     defer srckeys.deinit(allocator);
 
     for (args[3..]) |arg| {

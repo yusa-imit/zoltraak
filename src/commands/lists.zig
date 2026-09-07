@@ -2338,7 +2338,7 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             try outer.append(allocator, RespValue{ .bulk_string = key });
 
             // Build array response for elements
-            var inner_buf = std.ArrayList(u8){};
+            var inner_buf = std.ArrayList(u8).empty;
             defer inner_buf.deinit(allocator);
             const inner_writer = inner_buf.writer(allocator);
             try inner_writer.print("*{d}\r\n", .{elements.items.len});
@@ -2354,7 +2354,7 @@ pub fn cmdLmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             defer allocator.free(inner_str);
 
             // Manually build response: *2\r\n$<keylen>\r\n<key>\r\n<inner>
-            var final_buf = std.ArrayList(u8){};
+            var final_buf = std.ArrayList(u8).empty;
             defer final_buf.deinit(allocator);
             const final_writer = final_buf.writer(allocator);
             try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, inner_str });
@@ -2504,7 +2504,7 @@ pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 try outer.append(allocator, RespValue{ .bulk_string = key });
 
                 // Build array response for elements
-                var inner_buf = std.ArrayList(u8){};
+                var inner_buf = std.ArrayList(u8).empty;
                 defer inner_buf.deinit(allocator);
                 const inner_writer = inner_buf.writer(allocator);
                 try inner_writer.print("*{d}\r\n", .{elements.items.len});
@@ -2520,7 +2520,7 @@ pub fn cmdBlmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 defer allocator.free(inner_str);
 
                 // Manually build response: *2\r\n$<keylen>\r\n<key>\r\n<inner>
-                var resp_buf = std.ArrayList(u8){};
+                var resp_buf = std.ArrayList(u8).empty;
                 defer resp_buf.deinit(allocator);
                 const resp_writer = resp_buf.writer(allocator);
                 try resp_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, inner_str });

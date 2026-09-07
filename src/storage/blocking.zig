@@ -109,7 +109,7 @@ pub const BlockingQueue = struct {
     pub fn enqueueXreadClient(self: *BlockingQueue, key: []const u8, client: BlockedClient) !void {
         const gop = try self.xread_clients.getOrPut(key);
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.ArrayList(BlockedClient){};
+            gop.value_ptr.* = std.ArrayList(BlockedClient).empty;
         }
         try gop.value_ptr.append(self.allocator, client);
     }
@@ -118,7 +118,7 @@ pub const BlockingQueue = struct {
     pub fn enqueueXreadgroupClient(self: *BlockingQueue, key: []const u8, client: BlockedXreadgroupClient) !void {
         const gop = try self.xreadgroup_clients.getOrPut(key);
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.ArrayList(BlockedXreadgroupClient){};
+            gop.value_ptr.* = std.ArrayList(BlockedXreadgroupClient).empty;
         }
         try gop.value_ptr.append(self.allocator, client);
     }

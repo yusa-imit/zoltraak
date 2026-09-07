@@ -32,7 +32,7 @@ const flags = [_]sailor.arg.FlagDef{
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -140,7 +140,7 @@ pub fn main() !void {
 
 fn sendCommand(stream: net.Stream, cmd: []const u8) !void {
     // Parse command into parts
-    var parts = std.ArrayList([]const u8){};
+    var parts = std.ArrayList([]const u8).empty;
     defer parts.deinit(std.heap.page_allocator);
 
     var it = std.mem.tokenizeAny(u8, cmd, " \t");
@@ -449,7 +449,7 @@ fn runTuiMode(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
     defer terminal.deinit();
 
     // Fetch initial keys
-    var keys_list = std.ArrayList([]const u8){};
+    var keys_list = std.ArrayList([]const u8).empty;
     defer {
         for (keys_list.items) |key| {
             allocator.free(key);
@@ -806,7 +806,7 @@ fn fetchKeyValue(allocator: std.mem.Allocator, stream: net.Stream, key: []const 
             break :blk try allocator.dupe(u8, int_str);
         },
         .array => |arr| blk: {
-            var value_buf = std.ArrayList(u8){};
+            var value_buf = std.ArrayList(u8).empty;
             defer value_buf.deinit(allocator);
             try value_buf.appendSlice(allocator, "[");
             for (arr, 0..) |item, idx| {

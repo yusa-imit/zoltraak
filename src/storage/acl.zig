@@ -126,7 +126,7 @@ pub const User = struct {
         }
 
         // Clone key pattern lists
-        var allowed_key_pats = std.ArrayList([]const u8){};
+        var allowed_key_pats = std.ArrayList([]const u8).empty;
         errdefer {
             for (allowed_key_pats.items) |pat| {
                 allocator.free(pat);
@@ -140,7 +140,7 @@ pub const User = struct {
             try allowed_key_pats.append(allocator, pat_copy);
         }
 
-        var read_only_pats = std.ArrayList([]const u8){};
+        var read_only_pats = std.ArrayList([]const u8).empty;
         errdefer {
             for (read_only_pats.items) |pat| {
                 allocator.free(pat);
@@ -154,7 +154,7 @@ pub const User = struct {
             try read_only_pats.append(allocator, pat_copy);
         }
 
-        var write_only_pats = std.ArrayList([]const u8){};
+        var write_only_pats = std.ArrayList([]const u8).empty;
         errdefer {
             for (write_only_pats.items) |pat| {
                 allocator.free(pat);
@@ -235,7 +235,7 @@ pub const User = struct {
     /// Serialize this user to a single ACL-file line: "user <name> <rules...>".
     /// Round-trips with the rule tokens accepted by ACL SETUSER / ACL LOAD.
     pub fn formatAclLine(self: *const User, allocator: Allocator) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 
@@ -370,7 +370,7 @@ pub const ACLStore = struct {
             .allocator = allocator,
             .users = std.StringHashMap(User).init(allocator),
             .mutex = .{},
-            .log = std.ArrayList(LogEntry){},
+            .log = std.ArrayList(LogEntry).empty,
             .log_max_len = ACL_LOG_MAX_DEFAULT,
             .next_entry_id = 0,
         };
@@ -499,9 +499,9 @@ pub const ACLStore = struct {
             .allowed_categories = std.AutoHashMap(CommandCategory, void).init(self.allocator),
             .denied_categories = std.AutoHashMap(CommandCategory, void).init(self.allocator),
             .all_keys_allowed = true, // Default user has all keys
-            .allowed_key_patterns = std.ArrayList([]const u8){},
-            .read_only_key_patterns = std.ArrayList([]const u8){},
-            .write_only_key_patterns = std.ArrayList([]const u8){},
+            .allowed_key_patterns = std.ArrayList([]const u8).empty,
+            .read_only_key_patterns = std.ArrayList([]const u8).empty,
+            .write_only_key_patterns = std.ArrayList([]const u8).empty,
         };
         try self.users.put(default_username, user);
     }
@@ -586,9 +586,9 @@ pub const ACLStore = struct {
             .allowed_categories = allowed_cats,
             .denied_categories = denied_cats,
             .all_keys_allowed = false, // Default to restrictive
-            .allowed_key_patterns = std.ArrayList([]const u8){},
-            .read_only_key_patterns = std.ArrayList([]const u8){},
-            .write_only_key_patterns = std.ArrayList([]const u8){},
+            .allowed_key_patterns = std.ArrayList([]const u8).empty,
+            .read_only_key_patterns = std.ArrayList([]const u8).empty,
+            .write_only_key_patterns = std.ArrayList([]const u8).empty,
         };
 
         try self.users.put(username_copy, user);
@@ -702,7 +702,7 @@ pub const ACLStore = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var list = std.ArrayList([]const u8){};
+        var list = std.ArrayList([]const u8).empty;
         errdefer {
             for (list.items) |name| allocator.free(name);
             list.deinit(allocator);
@@ -722,7 +722,7 @@ pub const ACLStore = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var list = std.ArrayList([]const u8){};
+        var list = std.ArrayList([]const u8).empty;
         errdefer {
             for (list.items) |item| {
                 allocator.free(item);
@@ -1035,9 +1035,9 @@ test "User: hasKeyPermission with all_keys_allowed=true allows any key" {
         .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = true,
-        .allowed_key_patterns = std.ArrayList([]const u8){},
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .allowed_key_patterns = std.ArrayList([]const u8).empty,
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1063,9 +1063,9 @@ test "User: hasKeyPermission with all_keys_allowed=false and empty patterns deni
         .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
-        .allowed_key_patterns = std.ArrayList([]const u8){},
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .allowed_key_patterns = std.ArrayList([]const u8).empty,
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1079,7 +1079,7 @@ test "User: hasKeyPermission with all_keys_allowed=false and empty patterns deni
 test "User: hasKeyPermission with ~pattern allows read and write" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "session:*"));
 
@@ -1094,8 +1094,8 @@ test "User: hasKeyPermission with ~pattern allows read and write" {
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1119,7 +1119,7 @@ test "User: hasKeyPermission with ~pattern allows read and write" {
 test "User: hasKeyPermission with %R~pattern allows read only" {
     const allocator = std.testing.allocator;
 
-    var read_only_patterns = std.ArrayList([]const u8){};
+    var read_only_patterns = std.ArrayList([]const u8).empty;
     try read_only_patterns.append(allocator, try allocator.dupe(u8, "config:*"));
 
     var user = User{
@@ -1132,9 +1132,9 @@ test "User: hasKeyPermission with %R~pattern allows read only" {
         .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
-        .allowed_key_patterns = std.ArrayList([]const u8){},
+        .allowed_key_patterns = std.ArrayList([]const u8).empty,
         .read_only_key_patterns = read_only_patterns,
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1152,7 +1152,7 @@ test "User: hasKeyPermission with %R~pattern allows read only" {
 test "User: hasKeyPermission with %W~pattern allows write only" {
     const allocator = std.testing.allocator;
 
-    var write_only_patterns = std.ArrayList([]const u8){};
+    var write_only_patterns = std.ArrayList([]const u8).empty;
     try write_only_patterns.append(allocator, try allocator.dupe(u8, "logs:*"));
 
     var user = User{
@@ -1165,8 +1165,8 @@ test "User: hasKeyPermission with %W~pattern allows write only" {
         .allowed_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
-        .allowed_key_patterns = std.ArrayList([]const u8){},
-        .read_only_key_patterns = std.ArrayList([]const u8){},
+        .allowed_key_patterns = std.ArrayList([]const u8).empty,
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
         .write_only_key_patterns = write_only_patterns,
     };
     defer user.deinit(allocator);
@@ -1185,10 +1185,10 @@ test "User: hasKeyPermission with %W~pattern allows write only" {
 test "User: hasKeyPermission with multiple patterns - first match wins" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
 
-    var read_only_patterns = std.ArrayList([]const u8){};
+    var read_only_patterns = std.ArrayList([]const u8).empty;
     try read_only_patterns.append(allocator, try allocator.dupe(u8, "user:admin:*"));
 
     var user = User{
@@ -1203,7 +1203,7 @@ test "User: hasKeyPermission with multiple patterns - first match wins" {
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
         .read_only_key_patterns = read_only_patterns,
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1220,7 +1220,7 @@ test "User: hasKeyPermission with multiple patterns - first match wins" {
 test "User: hasKeyPermission with glob wildcards - asterisk" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "cache:*:data"));
 
     var user = User{
@@ -1234,8 +1234,8 @@ test "User: hasKeyPermission with glob wildcards - asterisk" {
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1253,7 +1253,7 @@ test "User: hasKeyPermission with glob wildcards - asterisk" {
 test "User: hasKeyPermission with glob wildcards - question mark" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "tmp:?:key"));
 
     var user = User{
@@ -1267,8 +1267,8 @@ test "User: hasKeyPermission with glob wildcards - question mark" {
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1286,7 +1286,7 @@ test "User: hasKeyPermission with glob wildcards - question mark" {
 test "User: hasKeyPermission with glob wildcards - character class" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "env:[abc]:*"));
 
     var user = User{
@@ -1300,8 +1300,8 @@ test "User: hasKeyPermission with glob wildcards - character class" {
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1319,7 +1319,7 @@ test "User: hasKeyPermission with glob wildcards - character class" {
 test "User: hasKeyPermission with glob wildcards - character range" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "shard:[0-9]:*"));
 
     var user = User{
@@ -1333,8 +1333,8 @@ test "User: hasKeyPermission with glob wildcards - character range" {
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1352,7 +1352,7 @@ test "User: hasKeyPermission with glob wildcards - character range" {
 test "User: hasKeyPermission with glob wildcards - negated character class" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "data:[^t]*"));
 
     var user = User{
@@ -1366,8 +1366,8 @@ test "User: hasKeyPermission with glob wildcards - negated character class" {
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_patterns,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 
@@ -1384,13 +1384,13 @@ test "User: hasKeyPermission with glob wildcards - negated character class" {
 test "User: hasKeyPermission with common Redis key patterns" {
     const allocator = std.testing.allocator;
 
-    var allowed_patterns = std.ArrayList([]const u8){};
+    var allowed_patterns = std.ArrayList([]const u8).empty;
     try allowed_patterns.append(allocator, try allocator.dupe(u8, "user:*"));
 
-    var read_only_patterns = std.ArrayList([]const u8){};
+    var read_only_patterns = std.ArrayList([]const u8).empty;
     try read_only_patterns.append(allocator, try allocator.dupe(u8, "session:*"));
 
-    var write_only_patterns = std.ArrayList([]const u8){};
+    var write_only_patterns = std.ArrayList([]const u8).empty;
     try write_only_patterns.append(allocator, try allocator.dupe(u8, "cache:*:data"));
 
     var user = User{
@@ -1448,11 +1448,11 @@ test "ACLStore: createOrUpdateUser creates new user with all permissions" {
     const allowed_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
     const denied_cats = std.AutoHashMap(CommandCategory, void).init(allocator);
 
-    var allowed_keys = std.ArrayList([]const u8){};
+    var allowed_keys = std.ArrayList([]const u8).empty;
     try allowed_keys.append(allocator, try allocator.dupe(u8, "user:*"));
 
-    const read_only_keys = std.ArrayList([]const u8){};
-    const write_only_keys = std.ArrayList([]const u8){};
+    const read_only_keys = std.ArrayList([]const u8).empty;
+    const write_only_keys = std.ArrayList([]const u8).empty;
 
     // Create user
     try store.createOrUpdateUser(
@@ -1496,9 +1496,9 @@ test "ACLStore: createOrUpdateUser updates existing user" {
     const denied_cmds1 = std.StringHashMap(void).init(allocator);
     const allowed_cats1 = std.AutoHashMap(CommandCategory, void).init(allocator);
     const denied_cats1 = std.AutoHashMap(CommandCategory, void).init(allocator);
-    const allowed_keys1 = std.ArrayList([]const u8){};
-    const read_only_keys1 = std.ArrayList([]const u8){};
-    const write_only_keys1 = std.ArrayList([]const u8){};
+    const allowed_keys1 = std.ArrayList([]const u8).empty;
+    const read_only_keys1 = std.ArrayList([]const u8).empty;
+    const write_only_keys1 = std.ArrayList([]const u8).empty;
 
     try store.createOrUpdateUser(
         "testuser",
@@ -1522,10 +1522,10 @@ test "ACLStore: createOrUpdateUser updates existing user" {
     const denied_cmds2 = std.StringHashMap(void).init(allocator);
     const allowed_cats2 = std.AutoHashMap(CommandCategory, void).init(allocator);
     const denied_cats2 = std.AutoHashMap(CommandCategory, void).init(allocator);
-    var allowed_keys2 = std.ArrayList([]const u8){};
+    var allowed_keys2 = std.ArrayList([]const u8).empty;
     try allowed_keys2.append(allocator, try allocator.dupe(u8, "cache:*"));
-    const read_only_keys2 = std.ArrayList([]const u8){};
-    const write_only_keys2 = std.ArrayList([]const u8){};
+    const read_only_keys2 = std.ArrayList([]const u8).empty;
+    const write_only_keys2 = std.ArrayList([]const u8).empty;
 
     try store.createOrUpdateUser(
         "testuser",
@@ -1572,7 +1572,7 @@ test "User: formatAclLine renders password, key patterns, and explicit commands"
     var allowed_cmds = std.StringHashMap(void).init(allocator);
     try allowed_cmds.put(try allocator.dupe(u8, "GET"), {});
 
-    var allowed_keys = std.ArrayList([]const u8){};
+    var allowed_keys = std.ArrayList([]const u8).empty;
     try allowed_keys.append(allocator, try allocator.dupe(u8, "user:*"));
 
     var user = User{
@@ -1586,8 +1586,8 @@ test "User: formatAclLine renders password, key patterns, and explicit commands"
         .denied_categories = std.AutoHashMap(CommandCategory, void).init(allocator),
         .all_keys_allowed = false,
         .allowed_key_patterns = allowed_keys,
-        .read_only_key_patterns = std.ArrayList([]const u8){},
-        .write_only_key_patterns = std.ArrayList([]const u8){},
+        .read_only_key_patterns = std.ArrayList([]const u8).empty,
+        .write_only_key_patterns = std.ArrayList([]const u8).empty,
     };
     defer user.deinit(allocator);
 

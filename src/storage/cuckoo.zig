@@ -350,7 +350,7 @@ pub const CuckooFilterValue = struct {
     /// Serialize the full Cuckoo filter state (metadata + every sub-filter's
     /// buckets and fingerprint bytes) for RDB persistence.
     pub fn rdbSerialize(self: *const CuckooFilterValue, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 

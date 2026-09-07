@@ -740,7 +740,7 @@ pub const ClusterState = struct {
 
         // Check for importing→owner transition (increment config epoch)
         const is_importing_to_owner = self.slot_migration_states[slot].importing_from != null and
-                                      target_node == self.myself;
+            target_node == self.myself;
 
         if (is_importing_to_owner) {
             // Increment config epoch and update myself's epoch
@@ -992,7 +992,7 @@ pub const ClusterState = struct {
     /// Returns array of GossipNodeInfo that caller must free
     pub fn selectRandomNodesForGossip(self: *const ClusterState, allocator: std.mem.Allocator, max_nodes: usize) ![]GossipNodeInfo {
         // First, collect all eligible nodes (excluding ourselves)
-        var eligible = std.ArrayListUnmanaged(*ClusterNode){};
+        var eligible = std.ArrayListUnmanaged(*ClusterNode).empty;
         errdefer eligible.deinit(allocator);
 
         var it = self.nodes.valueIterator();
@@ -1027,7 +1027,7 @@ pub const ClusterState = struct {
         }
 
         // Build result from first selection_count elements
-        var result = std.ArrayListUnmanaged(GossipNodeInfo){};
+        var result = std.ArrayListUnmanaged(GossipNodeInfo).empty;
         errdefer result.deinit(allocator);
 
         for (eligible.items[0..selection_count]) |node| {
@@ -1236,8 +1236,8 @@ pub const ClusterState = struct {
         // Second pass: for each master, create a shard
         for (masters.items) |master| {
             var shard = ShardInfo{
-                .slots = std.ArrayListUnmanaged(u16){},
-                .nodes = std.ArrayListUnmanaged(*ClusterNode){},
+                .slots = std.ArrayListUnmanaged(u16).empty,
+                .nodes = std.ArrayListUnmanaged(*ClusterNode).empty,
             };
             errdefer shard.deinit(allocator);
 
@@ -1346,7 +1346,7 @@ pub const ClusterState = struct {
         // Get or create the report list for this node
         const gop = try self.failure_reports.getOrPut(self.allocator, reported_node_id[0..]);
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.ArrayListUnmanaged(FailureReport){};
+            gop.value_ptr.* = std.ArrayListUnmanaged(FailureReport).empty;
         }
 
         // Check if this reporter already has a report for this node
@@ -1385,7 +1385,7 @@ pub const ClusterState = struct {
         const expiry_threshold = now - 60_000; // 60 seconds
 
         var it = self.failure_reports.iterator();
-        var keys_to_remove = std.ArrayList([40]u8){};
+        var keys_to_remove = std.ArrayList([40]u8).empty;
         defer keys_to_remove.deinit();
 
         while (it.next()) |entry| {
@@ -1584,7 +1584,7 @@ pub const ClusterState = struct {
         }
 
         var file = std.fs.cwd().createFile(config_path, .{}) catch |err| {
-            std.log.err("Failed to create config file at {s}: {}", .{config_path, err});
+            std.log.err("Failed to create config file at {s}: {}", .{ config_path, err });
             return err;
         };
         defer file.close();
@@ -2147,7 +2147,7 @@ pub const ClusterState = struct {
         }
 
         // Format slot ranges as "start-end,start-end,..."
-        var slots_str = std.ArrayListUnmanaged(u8){};
+        var slots_str = std.ArrayListUnmanaged(u8).empty;
         errdefer slots_str.deinit(allocator);
 
         for (slot_ranges, 0..) |range, i| {
@@ -2200,7 +2200,7 @@ pub const ClusterState = struct {
         } else {
             // Cancel all tasks
             var it = self.migration_tasks.iterator();
-            var keys_to_remove = std.ArrayListUnmanaged([]const u8){};
+            var keys_to_remove = std.ArrayListUnmanaged([]const u8).empty;
             defer keys_to_remove.deinit(allocator);
 
             while (it.next()) |entry| {
@@ -2227,7 +2227,7 @@ pub const ClusterState = struct {
 
     /// Get all migration tasks
     pub fn getAllMigrationTasks(self: *const ClusterState, allocator: std.mem.Allocator) !std.ArrayListUnmanaged(*const MigrationTask) {
-        var tasks = std.ArrayListUnmanaged(*const MigrationTask){};
+        var tasks = std.ArrayListUnmanaged(*const MigrationTask).empty;
         var it = self.migration_tasks.valueIterator();
         while (it.next()) |task| {
             try tasks.append(allocator, task.*);
@@ -3732,7 +3732,6 @@ test "Background gossip: integration - full cycle" {
     try std.testing.expectEqual(@as(usize, 4), cluster.nodes.count()); // myself + 3 nodes
 }
 
-
 test "Failover: pfail promotion to fail with majority" {
     const allocator = std.testing.allocator;
     var cluster = ClusterState.init(allocator);
@@ -4691,12 +4690,12 @@ test "ClusterState: collectShards multi-shard with replicas" {
     try cluster.nodes.put(m2_key, master2);
 
     // Assign slots: master1 gets 0-8191, master2 gets 8192-16383
-    var slots1 = std.ArrayListUnmanaged(u16){};
+    var slots1 = std.ArrayListUnmanaged(u16).empty;
     try slots1.appendSlice(allocator, &[_]u16{ 0, 1, 2, 3, 4, 5, 6, 7, 8191 });
     try cluster.addSlotsToNode(master1, slots1.items);
     slots1.deinit(allocator);
 
-    var slots2 = std.ArrayListUnmanaged(u16){};
+    var slots2 = std.ArrayListUnmanaged(u16).empty;
     try slots2.appendSlice(allocator, &[_]u16{ 8192, 8193, 16383 });
     try cluster.addSlotsToNode(master2, slots2.items);
     slots2.deinit(allocator);
@@ -4807,7 +4806,7 @@ test "ClusterState: collectShards slot ranges compression" {
     node.flags.slave = false;
 
     // Assign non-contiguous slots: [0-99] and [200-299]
-    var slots = std.ArrayListUnmanaged(u16){};
+    var slots = std.ArrayListUnmanaged(u16).empty;
     for (0..100) |i| {
         try slots.append(allocator, @intCast(i));
     }
@@ -4856,8 +4855,8 @@ test "ClusterNode: shard_id generation on creation" {
     // Verify all characters are valid hex
     for (node.shard_id) |char| {
         const is_valid = (char >= '0' and char <= '9') or
-                        (char >= 'a' and char <= 'f') or
-                        (char >= 'A' and char <= 'F');
+            (char >= 'a' and char <= 'f') or
+            (char >= 'A' and char <= 'F');
         try std.testing.expect(is_valid);
     }
 }

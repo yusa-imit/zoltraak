@@ -257,7 +257,7 @@ pub const BloomFilterValue = struct {
     /// and item_count) for RDB persistence. Unlike `scanDump`, this is not
     /// chunk-size-limited and preserves `total_items_added`/`item_count` exactly.
     pub fn rdbSerialize(self: *const BloomFilterValue, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 
@@ -814,7 +814,7 @@ test "BloomFilterValue scanDump/loadChunk round-trip" {
     _ = try bf.add("cherry");
 
     // Dump all chunks
-    var chunks = std.ArrayList([]const u8){};
+    var chunks = std.ArrayList([]const u8).empty;
     defer {
         for (chunks.items) |chunk| {
             std.testing.allocator.free(chunk);
@@ -837,7 +837,7 @@ test "BloomFilterValue scanDump/loadChunk round-trip" {
     defer bf2.deinit();
 
     var context = BloomFilterValue.LoadContext{
-        .buffer = std.ArrayList(u8){},
+        .buffer = std.ArrayList(u8).empty,
         .expected_iterator = 0,
     };
     defer context.deinit();
@@ -875,7 +875,7 @@ test "BloomFilterValue loadChunk invalid iterator" {
     defer bf.deinit();
 
     var context = BloomFilterValue.LoadContext{
-        .buffer = std.ArrayList(u8){},
+        .buffer = std.ArrayList(u8).empty,
         .expected_iterator = 0,
     };
     defer context.deinit();
@@ -900,7 +900,7 @@ test "BloomFilterValue scanDump preserves nonscaling" {
     defer bf2.deinit();
 
     var context = BloomFilterValue.LoadContext{
-        .buffer = std.ArrayList(u8){},
+        .buffer = std.ArrayList(u8).empty,
         .expected_iterator = 0,
     };
     defer context.deinit();

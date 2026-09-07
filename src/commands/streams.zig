@@ -355,7 +355,7 @@ pub fn cmdXrange(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     // Build raw RESP response directly to avoid use-after-free from deferred frees in loop.
     // Each entry is formatted as *2\r\n$<id_len>\r\n<id>\r\n*<n>\r\n<fields...>
     // In RESP3, the inner fields list uses map type: %<n/2>\r\n instead of *<n>\r\n
-    var result_buf = std.ArrayList(u8){};
+    var result_buf = std.ArrayList(u8).empty;
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
@@ -451,7 +451,7 @@ pub fn cmdXrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     // Build raw RESP response directly to avoid use-after-free from deferred frees in loop.
     // In RESP3, the inner fields list uses map type: %<n/2>\r\n instead of *<n>\r\n
-    var result_buf = std.ArrayList(u8){};
+    var result_buf = std.ArrayList(u8).empty;
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
@@ -2784,4 +2784,3 @@ test "streams - XCFGSET clears IDMP map when duration changes" {
     try std.testing.expect(!std.mem.eql(u8, r1, r2));
     try std.testing.expectEqual(@as(usize, 2), (try storage.xlen("s")).?);
 }
-

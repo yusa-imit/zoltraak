@@ -47,7 +47,7 @@ pub const Persistence = struct {
     /// Accepts array of Storage pointers (one per database).
     pub fn save(databases: []Storage, path: []const u8, allocator: std.mem.Allocator) !void {
         // Build data in memory first
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         const w = buf.writer(allocator);
@@ -694,11 +694,11 @@ pub const Persistence = struct {
     /// can free them normally).
     fn readStreamValue(data: []const u8, pos: *usize, allocator: std.mem.Allocator, expires_at: ?i64) !Value.StreamValue {
         if (pos.* + 24 > data.len) return error.InvalidRdbFile;
-        const entries_added = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+        const entries_added = std.mem.readInt(u64, data[pos.*..][0..8], .little);
         pos.* += 8;
-        const del_ms = std.mem.readInt(i64, data[pos.* ..][0..8], .little);
+        const del_ms = std.mem.readInt(i64, data[pos.*..][0..8], .little);
         pos.* += 8;
-        const del_seq = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+        const del_seq = std.mem.readInt(u64, data[pos.*..][0..8], .little);
         pos.* += 8;
 
         if (pos.* >= data.len) return error.InvalidRdbFile;
@@ -707,18 +707,18 @@ pub const Persistence = struct {
         var last_id: ?Value.StreamId = null;
         if (has_last_id == 1) {
             if (pos.* + 16 > data.len) return error.InvalidRdbFile;
-            const lms = std.mem.readInt(i64, data[pos.* ..][0..8], .little);
+            const lms = std.mem.readInt(i64, data[pos.*..][0..8], .little);
             pos.* += 8;
-            const lseq = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+            const lseq = std.mem.readInt(u64, data[pos.*..][0..8], .little);
             pos.* += 8;
             last_id = .{ .ms = lms, .seq = lseq };
         }
 
         if (pos.* + 4 > data.len) return error.InvalidRdbFile;
-        const entry_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+        const entry_count = std.mem.readInt(u32, data[pos.*..][0..4], .little);
         pos.* += 4;
 
-        var entries = std.ArrayList(Value.StreamEntry){};
+        var entries = std.ArrayList(Value.StreamEntry).empty;
         errdefer {
             for (entries.items) |*e| e.deinit(allocator);
             entries.deinit(allocator);
@@ -727,16 +727,16 @@ pub const Persistence = struct {
         var ei: u32 = 0;
         while (ei < entry_count) : (ei += 1) {
             if (pos.* + 16 > data.len) return error.InvalidRdbFile;
-            const ems = std.mem.readInt(i64, data[pos.* ..][0..8], .little);
+            const ems = std.mem.readInt(i64, data[pos.*..][0..8], .little);
             pos.* += 8;
-            const eseq = std.mem.readInt(u64, data[pos.* ..][0..8], .little);
+            const eseq = std.mem.readInt(u64, data[pos.*..][0..8], .little);
             pos.* += 8;
 
             if (pos.* + 4 > data.len) return error.InvalidRdbFile;
-            const field_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+            const field_count = std.mem.readInt(u32, data[pos.*..][0..4], .little);
             pos.* += 4;
 
-            var fields = std.ArrayList([]const u8){};
+            var fields = std.ArrayList([]const u8).empty;
             errdefer {
                 for (fields.items) |f| allocator.free(f);
                 fields.deinit(allocator);
@@ -774,7 +774,7 @@ pub const Persistence = struct {
         }
 
         if (pos.* + 4 > data.len) return error.InvalidRdbFile;
-        const entry_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+        const entry_count = std.mem.readInt(u32, data[pos.*..][0..4], .little);
         pos.* += 4;
 
         for (0..entry_count) |_| {
@@ -782,11 +782,11 @@ pub const Persistence = struct {
             pos.* += 16; // id.ms(8) + id.seq(8)
 
             if (pos.* + 4 > data.len) return error.InvalidRdbFile;
-            const field_count = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+            const field_count = std.mem.readInt(u32, data[pos.*..][0..4], .little);
             pos.* += 4;
             for (0..field_count) |_| {
                 if (pos.* + 4 > data.len) return error.InvalidRdbFile;
-                const flen = std.mem.readInt(u32, data[pos.* ..][0..4], .little);
+                const flen = std.mem.readInt(u32, data[pos.*..][0..4], .little);
                 pos.* += 4 + flen;
             }
         }
@@ -844,7 +844,7 @@ pub const Persistence = struct {
     /// Save all databases to an in-memory byte buffer.
     /// The caller owns the returned slice and must free it with `allocator`.
     pub fn saveToBytes(databases: []Storage, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
 
         const w = buf.writer(allocator);

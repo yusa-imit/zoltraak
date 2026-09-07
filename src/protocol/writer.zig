@@ -36,7 +36,7 @@ pub const Writer = struct {
     /// Serialize a RespValue to RESP2 protocol bytes
     /// Caller owns returned memory and must free it
     pub fn serialize(self: *Writer, value: RespValue) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try self.writeValue(&buffer, value);
@@ -45,7 +45,7 @@ pub const Writer = struct {
 
     /// Write a simple string response (+OK\r\n)
     pub fn writeSimpleString(self: *Writer, str: []const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '+');
@@ -56,7 +56,7 @@ pub const Writer = struct {
 
     /// Write an error response (-ERR message\r\n)
     pub fn writeError(self: *Writer, msg: []const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '-');
@@ -67,7 +67,7 @@ pub const Writer = struct {
 
     /// Write an integer response (:123\r\n)
     pub fn writeInteger(self: *Writer, value: i64) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, ':');
@@ -79,7 +79,7 @@ pub const Writer = struct {
     /// Write a bulk string response ($6\r\nfoobar\r\n)
     /// If str is null, writes null bulk string ($-1\r\n)
     pub fn writeBulkString(self: *Writer, str: ?[]const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         if (str) |s| {
@@ -97,7 +97,7 @@ pub const Writer = struct {
     /// Write an array response (*2\r\n...\r\n)
     /// If values is null, writes null array (*-1\r\n)
     pub fn writeArray(self: *Writer, values: ?[]const RespValue) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         if (values) |vals| {
@@ -127,7 +127,7 @@ pub const Writer = struct {
     /// Write an array of bulk strings (convenience method)
     /// Converts a slice of strings to an array of bulk string RespValues
     pub fn writeArrayOfBulkStrings(self: *Writer, strings: []const []const u8) ![]const u8 {
-        var values = std.ArrayList(RespValue){};
+        var values = std.ArrayList(RespValue).empty;
         defer values.deinit(self.allocator);
 
         for (strings) |s| {
@@ -141,7 +141,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 null (_\r\n)
     pub fn writeResp3Null(self: *Writer) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.appendSlice(self.allocator, "_\r\n");
@@ -150,7 +150,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 boolean (#t\r\n or #f\r\n)
     pub fn writeBoolean(self: *Writer, value: bool) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '#');
@@ -161,7 +161,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 double (,3.14\r\n)
     pub fn writeDouble(self: *Writer, value: f64) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, ',');
@@ -180,7 +180,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 big number ((123...\r\n)
     pub fn writeBigNumber(self: *Writer, value: []const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '(');
@@ -191,7 +191,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 bulk error (!<len>\r\n<error>\r\n)
     pub fn writeBulkError(self: *Writer, error_msg: []const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '!');
@@ -204,7 +204,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 verbatim string (=<len>\r\n<format>:<data>\r\n)
     pub fn writeVerbatimString(self: *Writer, format: []const u8, data: []const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         const total_len = format.len + 1 + data.len; // format + ":" + data
@@ -220,7 +220,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 map (%<count>\r\n<key><value>...\r\n)
     pub fn writeMap(self: *Writer, pairs: []const MapPair) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '%');
@@ -237,7 +237,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 set (~<count>\r\n<elem>...\r\n)
     pub fn writeSet(self: *Writer, elements: []const RespValue) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '~');
@@ -253,7 +253,7 @@ pub const Writer = struct {
 
     /// Write a RESP3 push message (><count>\r\n<elem>...\r\n)
     pub fn writePush(self: *Writer, elements: []const RespValue) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '>');
@@ -271,7 +271,7 @@ pub const Writer = struct {
     /// Format: >2\r\n$10\r\ninvalidate\r\n*N\r\n<keys>
     /// This is used for CLIENT TRACKING invalidation messages
     pub fn writePushInvalidation(self: *Writer, keys: []const []const u8) ![]const u8 {
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         // Push type: >2\r\n (2 elements: "invalidate" and array of keys)
