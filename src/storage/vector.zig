@@ -183,7 +183,7 @@ pub const VectorSetValue = struct {
     /// self-contained binary format as bloom/cuckoo/CMS/top-k/t-digest; the
     /// caller (persistence.zig) wraps the result in a length-prefixed blob.
     pub fn rdbSerialize(self: *const VectorSetValue, allocator: Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 

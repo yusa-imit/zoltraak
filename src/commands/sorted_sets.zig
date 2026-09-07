@@ -1214,7 +1214,7 @@ pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
     if (protocol_version == .RESP3) {
         // RESP3: return array of doubles (or null bulk string for missing members)
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{scores.len});
         for (scores) |maybe_score| {
@@ -1856,14 +1856,14 @@ test "cmdZadd - GT option updates only when new score is greater" {
     // Add initial member with score 5
     const add_args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     _ = try cmdZadd(allocator, storage, &add_args, ps, 0);
 
     // GT with higher score should update (5 → 10)
     const gt_high = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "GT" },
-        .{ .bulk_string = "10" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "10" },   .{ .bulk_string = "m" },
     };
     const r1 = try cmdZadd(allocator, storage, &gt_high, ps, 0);
     defer allocator.free(r1);
@@ -1876,7 +1876,7 @@ test "cmdZadd - GT option updates only when new score is greater" {
     // GT with lower score should NOT update (10 → 3)
     const gt_low = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "GT" },
-        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "3" },    .{ .bulk_string = "m" },
     };
     const r2 = try cmdZadd(allocator, storage, &gt_low, ps, 0);
     defer allocator.free(r2);
@@ -1898,14 +1898,14 @@ test "cmdZadd - LT option updates only when new score is less" {
     // Add initial member with score 5
     const add_args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     _ = try cmdZadd(allocator, storage, &add_args, ps, 0);
 
     // LT with lower score should update (5 → 2)
     const lt_low = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "LT" },
-        .{ .bulk_string = "2" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "2" },    .{ .bulk_string = "m" },
     };
     const r1 = try cmdZadd(allocator, storage, &lt_low, ps, 0);
     defer allocator.free(r1);
@@ -1918,7 +1918,7 @@ test "cmdZadd - LT option updates only when new score is less" {
     // LT with higher score should NOT update (2 → 7)
     const lt_high = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "LT" },
-        .{ .bulk_string = "7" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "7" },    .{ .bulk_string = "m" },
     };
     const r2 = try cmdZadd(allocator, storage, &lt_high, ps, 0);
     defer allocator.free(r2);
@@ -1939,8 +1939,8 @@ test "cmdZadd - GT adds new members regardless" {
 
     // GT should still add new members (no existing score to compare)
     const gt_new = [_]RespValue{
-        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "GT" },
-        .{ .bulk_string = "3" }, .{ .bulk_string = "newmember" },
+        .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },        .{ .bulk_string = "GT" },
+        .{ .bulk_string = "3" },    .{ .bulk_string = "newmember" },
     };
     const r = try cmdZadd(allocator, storage, &gt_new, ps, 0);
     defer allocator.free(r);
@@ -1961,7 +1961,7 @@ test "cmdZadd - INCR mode works like ZINCRBY" {
     // INCR on new member: starts at 0 + 5 = 5
     const incr_new = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     const r1 = try cmdZadd(allocator, storage, &incr_new, ps, 0);
     defer allocator.free(r1);
@@ -1970,7 +1970,7 @@ test "cmdZadd - INCR mode works like ZINCRBY" {
     // INCR on existing member: 5 + 3 = 8
     const incr_existing = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "3" },    .{ .bulk_string = "m" },
     };
     const r2 = try cmdZadd(allocator, storage, &incr_existing, ps, 0);
     defer allocator.free(r2);
@@ -1988,15 +1988,15 @@ test "cmdZadd - INCR with NX returns null if member exists" {
     // Add member first
     const add_args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     _ = try cmdZadd(allocator, storage, &add_args, ps, 0);
 
     // INCR NX on existing member: should return null
     const incr_nx = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "NX" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "NX" },   .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" },    .{ .bulk_string = "m" },
     };
     const r = try cmdZadd(allocator, storage, &incr_nx, ps, 0);
     defer allocator.free(r);
@@ -2014,8 +2014,8 @@ test "cmdZadd - INCR with XX returns null if member does not exist" {
     // INCR XX on nonexistent member: should return null
     const incr_xx = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "XX" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "3" }, .{ .bulk_string = "newmember" },
+        .{ .bulk_string = "XX" },   .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" },    .{ .bulk_string = "newmember" },
     };
     const r = try cmdZadd(allocator, storage, &incr_xx, ps, 0);
     defer allocator.free(r);
@@ -2032,8 +2032,8 @@ test "cmdZadd - GT and LT are incompatible" {
 
     const args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "GT" }, .{ .bulk_string = "LT" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "GT" },   .{ .bulk_string = "LT" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     const r = try cmdZadd(allocator, storage, &args, ps, 0);
     defer allocator.free(r);
@@ -2050,8 +2050,8 @@ test "cmdZadd - NX and GT are incompatible" {
 
     const args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "NX" }, .{ .bulk_string = "GT" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "NX" },   .{ .bulk_string = "GT" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     const r = try cmdZadd(allocator, storage, &args, ps, 0);
     defer allocator.free(r);
@@ -2068,8 +2068,8 @@ test "cmdZadd - INCR with multiple pairs returns error" {
 
     const args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "1" }, .{ .bulk_string = "a" },
-        .{ .bulk_string = "2" }, .{ .bulk_string = "b" },
+        .{ .bulk_string = "1" },    .{ .bulk_string = "a" },  .{ .bulk_string = "2" },
+        .{ .bulk_string = "b" },
     };
     const r = try cmdZadd(allocator, storage, &args, ps, 0);
     defer allocator.free(r);
@@ -2087,15 +2087,15 @@ test "cmdZadd - INCR with GT returns null when condition not met" {
     // Add member with score 10
     const init_args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "10" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "10" },   .{ .bulk_string = "m" },
     };
     _ = try cmdZadd(allocator, storage, &init_args, ps, 0);
 
     // GT INCR -5: new_score=5, 5 < 10, GT condition NOT met → return null
     const gt_incr = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "GT" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "-5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "GT" },   .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "-5" },   .{ .bulk_string = "m" },
     };
     const r = try cmdZadd(allocator, storage, &gt_incr, ps, 0);
     defer allocator.free(r);
@@ -2118,15 +2118,15 @@ test "cmdZadd - INCR with LT returns null when condition not met" {
     // Add member with score 5
     const init_args = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "5" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "5" },    .{ .bulk_string = "m" },
     };
     _ = try cmdZadd(allocator, storage, &init_args, ps, 0);
 
     // LT INCR 3: new_score=8, 8 > 5, LT condition NOT met → return null
     const lt_incr = [_]RespValue{
         .{ .bulk_string = "ZADD" }, .{ .bulk_string = "zs" },
-        .{ .bulk_string = "LT" }, .{ .bulk_string = "INCR" },
-        .{ .bulk_string = "3" }, .{ .bulk_string = "m" },
+        .{ .bulk_string = "LT" },   .{ .bulk_string = "INCR" },
+        .{ .bulk_string = "3" },    .{ .bulk_string = "m" },
     };
     const r = try cmdZadd(allocator, storage, &lt_incr, ps, 0);
     defer allocator.free(r);
@@ -2667,7 +2667,7 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
             // Return [key, [member, score, ...]]
             // Build member-score array; RESP3: scores as double (,val\r\n), RESP2: bulk strings
-            var member_score_buf = std.ArrayList(u8){};
+            var member_score_buf = std.ArrayList(u8).empty;
             defer member_score_buf.deinit(allocator);
             const ms_writer = member_score_buf.writer(allocator);
 
@@ -2695,7 +2695,7 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             defer allocator.free(ms_str);
 
             // Build final response: *2\r\n$<keylen>\r\n<key>\r\n<member_score_array>
-            var final_buf = std.ArrayList(u8){};
+            var final_buf = std.ArrayList(u8).empty;
             defer final_buf.deinit(allocator);
             const final_writer = final_buf.writer(allocator);
             try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, ms_str });
@@ -2843,7 +2843,7 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
                 // Return [key, [member, score, ...]]
                 // Build member-score array; RESP3: scores as double (,val\r\n), RESP2: bulk strings
-                var member_score_buf = std.ArrayList(u8){};
+                var member_score_buf = std.ArrayList(u8).empty;
                 defer member_score_buf.deinit(allocator);
                 const ms_writer = member_score_buf.writer(allocator);
 
@@ -2871,7 +2871,7 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 defer allocator.free(ms_str);
 
                 // Build final response: *2\r\n$<keylen>\r\n<key>\r\n<member_score_array>
-                var final_buf = std.ArrayList(u8){};
+                var final_buf = std.ArrayList(u8).empty;
                 defer final_buf.deinit(allocator);
                 const final_writer = final_buf.writer(allocator);
                 try final_writer.print("*2\r\n${d}\r\n{s}\r\n{s}", .{ key.len, key, ms_str });

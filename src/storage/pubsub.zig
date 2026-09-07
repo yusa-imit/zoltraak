@@ -32,7 +32,7 @@ const SubscriberState = struct {
             .channels = std.StringHashMap(void).init(allocator),
             .patterns = std.StringHashMap(void).init(allocator),
             .sharded_channels = std.StringHashMap(void).init(allocator),
-            .pending = std.ArrayList([]const u8){},
+            .pending = std.ArrayList([]const u8).empty,
             .resp_version = 2, // Default to RESP2
         };
     }
@@ -161,7 +161,7 @@ pub const PubSub = struct {
             const chan_key = try self.allocator.dupe(u8, channel);
             errdefer self.allocator.free(chan_key);
 
-            var sub_list = std.ArrayList(u64){};
+            var sub_list = std.ArrayList(u64).empty;
             errdefer sub_list.deinit(self.allocator);
             try sub_list.append(self.allocator, subscriber_id);
 
@@ -214,7 +214,7 @@ pub const PubSub = struct {
         // We must copy the strings because `unsubscribe` frees the owned keys
         // from `state.channels`, which would invalidate raw pointers taken
         // from the iterator.
-        var channel_names = std.ArrayList([]u8){};
+        var channel_names = std.ArrayList([]u8).empty;
         defer channel_names.deinit(self.allocator);
 
         var chan_it = state.channels.keyIterator();
@@ -263,7 +263,7 @@ pub const PubSub = struct {
             const pat_key = try self.allocator.dupe(u8, pattern);
             errdefer self.allocator.free(pat_key);
 
-            var sub_list = std.ArrayList(u64){};
+            var sub_list = std.ArrayList(u64).empty;
             errdefer sub_list.deinit(self.allocator);
             try sub_list.append(self.allocator, subscriber_id);
 
@@ -313,7 +313,7 @@ pub const PubSub = struct {
         const state = self.subscribers.getPtr(subscriber_id) orelse return;
 
         // Duplicate pattern names into a temporary list
-        var pattern_names = std.ArrayList([]u8){};
+        var pattern_names = std.ArrayList([]u8).empty;
         defer pattern_names.deinit(self.allocator);
 
         var pat_it = state.patterns.keyIterator();
@@ -450,7 +450,7 @@ pub const PubSub = struct {
     /// at least one subscriber). Caller owns the returned slice but NOT the
     /// individual strings within it — those point into internal storage.
     pub fn activeChannels(self: *PubSub, allocator: std.mem.Allocator) ![][]const u8 {
-        var result = std.ArrayList([]const u8){};
+        var result = std.ArrayList([]const u8).empty;
         errdefer result.deinit(allocator);
 
         var it = self.channels.iterator();
@@ -496,7 +496,7 @@ pub const PubSub = struct {
             const chan_key = try self.allocator.dupe(u8, channel);
             errdefer self.allocator.free(chan_key);
 
-            var sub_list = std.ArrayList(u64){};
+            var sub_list = std.ArrayList(u64).empty;
             errdefer sub_list.deinit(self.allocator);
             try sub_list.append(self.allocator, subscriber_id);
 
@@ -546,7 +546,7 @@ pub const PubSub = struct {
         const state = self.subscribers.getPtr(subscriber_id) orelse return;
 
         // Duplicate channel names into a temporary list
-        var channel_names = std.ArrayList([]u8){};
+        var channel_names = std.ArrayList([]u8).empty;
         defer channel_names.deinit(self.allocator);
 
         var shard_it = state.sharded_channels.keyIterator();
@@ -600,7 +600,7 @@ pub const PubSub = struct {
     /// at least one subscriber). Caller owns the returned slice but NOT the
     /// individual strings within it — those point into internal storage.
     pub fn activeShardedChannels(self: *PubSub, allocator: std.mem.Allocator) ![][]const u8 {
-        var result = std.ArrayList([]const u8){};
+        var result = std.ArrayList([]const u8).empty;
         errdefer result.deinit(allocator);
 
         var it = self.sharded_channels.iterator();
@@ -666,7 +666,7 @@ pub const PubSub = struct {
 /// ```
 /// Caller owns the returned slice.
 pub fn buildMessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -689,7 +689,7 @@ pub fn buildMessageFrame(allocator: std.mem.Allocator, channel: []const u8, mess
 /// RESP3 format (version=3): `>2\r\n$4\r\npong\r\n$<len>\r\n<message>\r\n`
 /// Caller owns the returned slice.
 pub fn buildPingFrame(allocator: std.mem.Allocator, message: []const u8, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -720,7 +720,7 @@ pub fn buildPingFrame(allocator: std.mem.Allocator, message: []const u8, version
 /// ```
 /// Caller owns the returned slice.
 pub fn buildSubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -755,7 +755,7 @@ pub fn buildSubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, co
 /// ```
 /// Caller owns the returned slice.
 pub fn buildUnsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -800,7 +800,7 @@ pub fn buildUnsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8,
 /// ```
 /// Caller owns the returned slice.
 pub fn buildPmessageFrame(allocator: std.mem.Allocator, pattern: []const u8, channel: []const u8, message: []const u8, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -836,7 +836,7 @@ pub fn buildPmessageFrame(allocator: std.mem.Allocator, pattern: []const u8, cha
 /// ```
 /// Caller owns the returned slice.
 pub fn buildPsubscribeFrame(allocator: std.mem.Allocator, pattern: []const u8, count: usize, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -871,7 +871,7 @@ pub fn buildPsubscribeFrame(allocator: std.mem.Allocator, pattern: []const u8, c
 /// ```
 /// Caller owns the returned slice.
 pub fn buildPunsubscribeFrame(allocator: std.mem.Allocator, pattern: ?[]const u8, count: usize, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -914,7 +914,7 @@ pub fn buildPunsubscribeFrame(allocator: std.mem.Allocator, pattern: ?[]const u8
 /// ```
 /// Caller owns the returned slice.
 pub fn buildSmessageFrame(allocator: std.mem.Allocator, channel: []const u8, message: []const u8, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -949,7 +949,7 @@ pub fn buildSmessageFrame(allocator: std.mem.Allocator, channel: []const u8, mes
 /// ```
 /// Caller owns the returned slice.
 pub fn buildSsubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, count: usize, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {
@@ -984,7 +984,7 @@ pub fn buildSsubscribeFrame(allocator: std.mem.Allocator, channel: []const u8, c
 /// ```
 /// Caller owns the returned slice.
 pub fn buildSunsubscribeFrame(allocator: std.mem.Allocator, channel: ?[]const u8, count: usize, version: u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (version == 3) {

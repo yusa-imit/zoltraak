@@ -130,7 +130,7 @@ pub const Config = struct {
         config.* = Config{
             .allocator = allocator,
             .params = std.StringHashMap(ConfigValue).init(allocator),
-            .metadata = std.ArrayList(ConfigParam){},
+            .metadata = std.ArrayList(ConfigParam).empty,
             .mutex = std.Thread.Mutex{},
         };
 
@@ -640,8 +640,8 @@ pub const Config = struct {
                 // Validate specific string parameters
                 if (std.mem.eql(u8, name_lower, "maxmemory-policy")) {
                     const valid_policies = [_][]const u8{
-                        "noeviction",   "allkeys-lru",    "volatile-lru",
-                        "allkeys-lfu",  "volatile-lfu",   "allkeys-random",
+                        "noeviction",      "allkeys-lru",  "volatile-lru",
+                        "allkeys-lfu",     "volatile-lfu", "allkeys-random",
                         "volatile-random", "volatile-ttl",
                     };
                     var valid = false;
@@ -753,7 +753,7 @@ pub const Config = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var matches = std.ArrayList([]const u8){};
+        var matches = std.ArrayList([]const u8).empty;
         errdefer {
             for (matches.items) |match| {
                 self.allocator.free(match);

@@ -26,3 +26,9 @@ see `git tag -l 'v*'` and the corresponding GitHub releases for that history.
   which exist identically on 0.15.2 and 0.16.0. Fixes the first 0.16 build-script wall (plan 001
   item 3); zoltraak's own `build.zig` now compiles under 0.16.0 — remaining 0.16 errors are all
   inside vendored `sailor`/`zuda` dependency build scripts, blocked on their v3.0.0 tags.
+- Renamed `std.ArrayList(T){}`/`std.ArrayListUnmanaged(T){}` literal-init call sites to
+  `.empty` (471 sites, 52 files) and `std.heap.GeneralPurposeAllocator(.{}){}` to
+  `std.heap.DebugAllocator(.{}){}` (3 sites: `src/main.zig`, `src/cli.zig`,
+  `src/commands/command_registry.zig`) — plan 001 item 4, mechanical renames A (partial).
+  Both aliases already exist in the pinned Zig 0.15.2 stdlib, so this is forward-compatible
+  with 0.16.0 without changing behavior on the current toolchain.

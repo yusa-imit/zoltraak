@@ -305,7 +305,7 @@ test "SETBIT command" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -324,7 +324,7 @@ test "GETBIT command" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -346,7 +346,7 @@ test "BITCOUNT command" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -365,7 +365,7 @@ test "BITOP command" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -383,7 +383,7 @@ test "BITPOS command - find first 1" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -400,7 +400,7 @@ test "BITPOS command - find first 0" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -419,7 +419,7 @@ test "BITPOS command - with range" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -441,7 +441,7 @@ test "BITPOS command - non-existent key" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -460,7 +460,7 @@ test "BITPOS command - BIT mode with positive indices" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -487,7 +487,7 @@ test "BITPOS command - BIT mode with negative indices" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -513,7 +513,7 @@ test "BITPOS command - BIT vs BYTE mode comparison" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 
@@ -545,7 +545,7 @@ test "BITPOS command - invalid BYTE|BIT modifier" {
     var storage = Storage.init(testing.allocator);
     defer storage.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     const writer = buf.writer(testing.allocator);
 

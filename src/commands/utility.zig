@@ -135,7 +135,7 @@ pub fn cmdTime(
     const seconds = @divFloor(now, 1000);
     const microseconds = @mod(now, 1000) * 1000;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     const buf_writer = buf.writer(allocator);
 
@@ -366,7 +366,7 @@ pub fn cmdDebug(
 
         const key = args[2];
         if (storage.getType(key)) |value_type| {
-            var buf = std.ArrayList(u8){};
+            var buf = std.ArrayList(u8).empty;
             defer buf.deinit(allocator);
             const buf_writer = buf.writer(allocator);
 

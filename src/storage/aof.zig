@@ -58,7 +58,7 @@ pub const Aof = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(std.heap.page_allocator);
 
         const w = buf.writer(std.heap.page_allocator);
@@ -152,7 +152,7 @@ pub const Aof = struct {
     /// Rewrite the AOF file from current storage state.
     /// Produces a minimal, compact representation of the current dataset.
     pub fn rewrite(storage: *Storage, path: []const u8, allocator: std.mem.Allocator) !void {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         const w = buf.writer(allocator);
@@ -201,7 +201,7 @@ pub const Aof = struct {
                     }
                 },
                 .set => |s| {
-                    var sargs = std.ArrayList([]const u8){};
+                    var sargs = std.ArrayList([]const u8).empty;
                     defer sargs.deinit(allocator);
                     try sargs.append(allocator, "SADD");
                     try sargs.append(allocator, key);
@@ -230,7 +230,7 @@ pub const Aof = struct {
                     }
                 },
                 .hash => |h| {
-                    var hargs = std.ArrayList([]const u8){};
+                    var hargs = std.ArrayList([]const u8).empty;
                     defer hargs.deinit(allocator);
                     try hargs.append(allocator, "HSET");
                     try hargs.append(allocator, key);
@@ -250,7 +250,7 @@ pub const Aof = struct {
                     }
                 },
                 .sorted_set => |z| {
-                    var zargs = std.ArrayList([]const u8){};
+                    var zargs = std.ArrayList([]const u8).empty;
                     defer zargs.deinit(allocator);
                     try zargs.append(allocator, "ZADD");
                     try zargs.append(allocator, key);

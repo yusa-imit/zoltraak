@@ -539,7 +539,7 @@ pub const ModuleStore = struct {
             .commands = std.StringHashMap(ModuleCommand).init(allocator),
             .data_types = std.StringHashMap(ModuleDataType).init(allocator),
             .blocking = ModuleBlockingStore.init(allocator),
-            .hooks = std.ArrayList(ModuleHook){},
+            .hooks = std.ArrayList(ModuleHook).empty,
             .timers = ModuleTimerStore.init(allocator),
             .global_lock = GlobalLock.init(),
             .storage = null,
@@ -1373,7 +1373,7 @@ pub const ModuleTimerStore = struct {
     pub fn processTimers(self: *ModuleTimerStore) usize {
         const now_ms = std.time.milliTimestamp();
         var fired_count: usize = 0;
-        var to_remove = std.ArrayList(u64){};
+        var to_remove = std.ArrayList(u64).empty;
         defer to_remove.deinit(self.allocator);
 
         var iter = self.timers.iterator();
@@ -1407,7 +1407,7 @@ pub const ModuleTimerStore = struct {
     /// Arguments:
     ///   - module_name: Name of the module whose timers should be removed
     pub fn removeModuleTimers(self: *ModuleTimerStore, module_name: []const u8) void {
-        var to_remove = std.ArrayList(u64){};
+        var to_remove = std.ArrayList(u64).empty;
         defer to_remove.deinit(self.allocator);
 
         var iter = self.timers.iterator();
@@ -2234,7 +2234,7 @@ pub const ThreadSafeContext = struct {
             .creator_thread = std.Thread.getCurrentId(),
             .locked = false,
             .client_id = client_id,
-            .reply_buffer = std.ArrayList(u8){},
+            .reply_buffer = std.ArrayList(u8).empty,
         };
         return ctx;
     }

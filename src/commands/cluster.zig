@@ -260,7 +260,7 @@ pub fn cmdClusterNodes(
                 if (slot_range.start == slot_range.end) {
                     try writer.print("{d}", .{slot_range.start});
                 } else {
-                    try writer.print("{d}-{d}", .{slot_range.start, slot_range.end});
+                    try writer.print("{d}-{d}", .{ slot_range.start, slot_range.end });
                 }
             }
         }
@@ -3148,7 +3148,6 @@ pub fn cmdClusterKeyslot(
     return w.writeInteger(slot);
 }
 
-
 /// READONLY - Enable read queries on replica node
 pub fn cmdReadonly(
     allocator: std.mem.Allocator,
@@ -3694,7 +3693,7 @@ test "cmdClusterShards - single-node cluster" {
     my_node.flags.slave = false;
 
     // Assign all slots
-    var all_slots = std.ArrayListUnmanaged(u16){};
+    var all_slots = std.ArrayListUnmanaged(u16).empty;
     defer all_slots.deinit(allocator);
     for (0..cluster_mod.CLUSTER_SLOTS) |i| {
         try all_slots.append(allocator, @intCast(i));
@@ -3751,14 +3750,14 @@ test "cmdClusterShards - multi-shard with replicas" {
     master2.flags.slave = false;
 
     // Assign slots: master1 gets 0-8191, master2 gets 8192-16383
-    var slots1 = std.ArrayListUnmanaged(u16){};
+    var slots1 = std.ArrayListUnmanaged(u16).empty;
     defer slots1.deinit(allocator);
     for (0..8192) |i| {
         try slots1.append(allocator, @intCast(i));
     }
     try storage.cluster.addSlotsToNode(master1, slots1.items);
 
-    var slots2 = std.ArrayListUnmanaged(u16){};
+    var slots2 = std.ArrayListUnmanaged(u16).empty;
     defer slots2.deinit(allocator);
     for (8192..cluster_mod.CLUSTER_SLOTS) |i| {
         try slots2.append(allocator, @intCast(i));
@@ -4114,7 +4113,7 @@ fn cmdClusterMigrationImport(
     }
 
     // Parse slot ranges
-    var slot_ranges = std.ArrayListUnmanaged(struct { start: u16, end: u16 }){};
+    var slot_ranges = std.ArrayListUnmanaged(struct { start: u16, end: u16 }).empty;
     defer slot_ranges.deinit(allocator);
 
     var i: usize = 0;
@@ -4209,7 +4208,7 @@ fn cmdClusterMigrationStatus(
     }
 
     // Build array of task status information
-    var result = std.ArrayListUnmanaged(RespValue){};
+    var result = std.ArrayListUnmanaged(RespValue).empty;
     defer {
         for (result.items) |item| {
             deinitRespValue(allocator, item);
@@ -4237,7 +4236,7 @@ fn cmdClusterMigrationStatus(
 
 /// Format migration task as RESP array of field-value pairs
 fn formatMigrationTask(allocator: std.mem.Allocator, task: *const cluster_mod.MigrationTask) !RespValue {
-    var fields = std.ArrayListUnmanaged(RespValue){};
+    var fields = std.ArrayListUnmanaged(RespValue).empty;
     errdefer {
         for (fields.items) |item| {
             deinitRespValue(allocator, item);

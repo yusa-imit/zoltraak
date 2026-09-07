@@ -35,8 +35,8 @@ pub const TxState = struct {
         return TxState{
             .allocator = allocator,
             .active = false,
-            .queue = std.ArrayList(QueuedCommand){},
-            .watched_keys = std.ArrayList([]const u8){},
+            .queue = std.ArrayList(QueuedCommand).empty,
+            .watched_keys = std.ArrayList([]const u8).empty,
             .dirty = false,
         };
     }

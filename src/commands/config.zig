@@ -71,7 +71,7 @@ fn cmdConfigGet(
         return w.writeError("ERR wrong number of arguments for 'config get' command");
     }
 
-    var results = std.ArrayList([]const u8){};
+    var results = std.ArrayList([]const u8).empty;
     defer {
         for (results.items) |item| {
             allocator.free(item);
@@ -141,7 +141,7 @@ fn cmdConfigGet(
     }
 
     // Build RESP2 flat array manually
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     // Write array header: *N\r\n
@@ -278,7 +278,7 @@ fn cmdConfigRewrite(
     }
 
     // Build config file content
-    var content = std.ArrayList(u8){};
+    var content = std.ArrayList(u8).empty;
     defer content.deinit(allocator);
 
     const writer = content.writer(allocator);
@@ -365,7 +365,7 @@ fn cmdConfigHelp(allocator: std.mem.Allocator, args: []const RespValue) ![]const
     };
 
     // Build RESP array manually
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     // Write array header: *N\r\n

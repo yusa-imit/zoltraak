@@ -32,7 +32,7 @@ pub fn cmdSubscribe(
     }
 
     // Build a concatenated response of confirmation frames (one per channel)
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     for (args[1..]) |arg| {
@@ -70,7 +70,7 @@ pub fn cmdUnsubscribe(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (args.len == 1) {
@@ -84,7 +84,7 @@ pub fn cmdUnsubscribe(
             try buf.appendSlice(allocator, frame);
         } else {
             // Collect names first because unsubscribeAll frees them
-            var names = std.ArrayList([]const u8){};
+            var names = std.ArrayList([]const u8).empty;
             defer names.deinit(allocator);
 
             // We need a snapshot before we destroy state
@@ -183,7 +183,7 @@ pub fn cmdPubsubChannels(
     defer allocator.free(all_channels);
 
     // Filter by pattern if provided
-    var matched = std.ArrayList(RespValue){};
+    var matched = std.ArrayList(RespValue).empty;
     defer matched.deinit(allocator);
 
     for (all_channels) |ch| {
@@ -214,7 +214,7 @@ pub fn cmdPubsubNumsub(
     defer w.deinit();
 
     // args[0] = "PUBSUB", args[1] = "NUMSUB", args[2..] = channels
-    var result = std.ArrayList(RespValue){};
+    var result = std.ArrayList(RespValue).empty;
     defer result.deinit(allocator);
 
     for (args[2..]) |arg| {
@@ -252,7 +252,7 @@ pub fn cmdPsubscribe(
         return w.writeError("ERR wrong number of arguments for 'psubscribe' command");
     }
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     for (args[1..]) |arg| {
@@ -290,7 +290,7 @@ pub fn cmdPunsubscribe(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (args.len == 1) {
@@ -303,7 +303,7 @@ pub fn cmdPunsubscribe(
             try buf.appendSlice(allocator, frame);
         } else {
             // Collect pattern names first
-            var names = std.ArrayList([]const u8){};
+            var names = std.ArrayList([]const u8).empty;
             defer names.deinit(allocator);
 
             if (ps.subscribers.getPtr(subscriber_id)) |state| {
@@ -412,7 +412,7 @@ pub fn cmdSsubscribe(
     }
 
     // Build a concatenated response of confirmation frames (one per channel)
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     for (args[1..]) |arg| {
@@ -450,7 +450,7 @@ pub fn cmdSunsubscribe(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     if (args.len < 2) {
@@ -533,7 +533,7 @@ pub fn cmdPubsubShardchannels(
     defer allocator.free(channels);
 
     // Filter channels by pattern
-    var matches = std.ArrayList(RespValue){};
+    var matches = std.ArrayList(RespValue).empty;
     defer matches.deinit(allocator);
 
     for (channels) |ch| {
@@ -558,7 +558,7 @@ pub fn cmdPubsubShardnumsub(
     ps: *PubSub,
     args: []const RespValue,
 ) ![]const u8 {
-    var result = std.ArrayList(RespValue){};
+    var result = std.ArrayList(RespValue).empty;
     defer result.deinit(allocator);
 
     // Start from args[2] since args[0]=PUBSUB, args[1]=SHARDNUMSUB

@@ -79,7 +79,7 @@ pub const TDigestValue = struct {
 
     /// Serialize compression/min/max/total_count plus every centroid for RDB persistence.
     pub fn rdbSerialize(self: *const TDigestValue, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 

@@ -128,7 +128,7 @@ fn redis_call_or_pcall(L: *lua.lua_State) !c_int {
     }
 
     // Build RespValue array from Lua arguments
-    var args = std.ArrayList(RespValue){};
+    var args = std.ArrayList(RespValue).empty;
     defer {
         // Free owned strings in RespValue items
         for (args.items) |arg| {

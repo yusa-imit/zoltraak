@@ -55,10 +55,10 @@ pub const LuaEngine = struct {
     fn applySandbox(L: *lua.lua_State) void {
         // Remove dangerous modules and functions that allow file system/OS access
         const dangerous_modules = [_][:0]const u8{
-            "os",      // os.execute, os.exit, os.remove, etc.
-            "io",      // io.open, io.write, etc.
+            "os", // os.execute, os.exit, os.remove, etc.
+            "io", // io.open, io.write, etc.
             "loadfile", // Load and execute external files
-            "dofile",   // Load and execute external files
+            "dofile", // Load and execute external files
         };
 
         for (dangerous_modules) |module_name| {
@@ -213,7 +213,7 @@ pub const LuaEngine = struct {
             return result;
         }
 
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(self.allocator);
         try self.luaToRESP2Buf(&buf, lua.lua_gettop(self.L));
         lua.lua_pop(self.L, 1);

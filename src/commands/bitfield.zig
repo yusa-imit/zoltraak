@@ -186,7 +186,7 @@ pub fn cmdBitfield(
     };
 
     // Parse operations
-    var operations = std.ArrayList(Operation){};
+    var operations = std.ArrayList(Operation).empty;
     defer operations.deinit(allocator);
 
     var overflow = OverflowBehavior.wrap;
@@ -334,7 +334,7 @@ pub fn cmdBitfield(
     }
 
     // Execute operations
-    var results = std.ArrayList(?i64){};
+    var results = std.ArrayList(?i64).empty;
     defer results.deinit(allocator);
 
     // Get current value
@@ -396,7 +396,7 @@ pub fn cmdBitfield(
     }
 
     // Build response array
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     try buffer.append(allocator, '*');
@@ -436,7 +436,7 @@ pub fn cmdBitfieldRo(
     };
 
     // Parse GET operations only
-    var operations = std.ArrayList(GetOp){};
+    var operations = std.ArrayList(GetOp).empty;
     defer operations.deinit(allocator);
 
     var i: usize = 2;
@@ -487,7 +487,7 @@ pub fn cmdBitfieldRo(
     const current_val = storage.get(key) orelse "";
 
     // Execute GET operations
-    var results = std.ArrayList(i64){};
+    var results = std.ArrayList(i64).empty;
     defer results.deinit(allocator);
 
     for (operations.items) |op| {
@@ -496,7 +496,7 @@ pub fn cmdBitfieldRo(
     }
 
     // Build response array
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     try buffer.append(allocator, '*');

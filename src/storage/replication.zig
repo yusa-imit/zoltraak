@@ -116,7 +116,7 @@ pub const ReplicationState = struct {
             .role = .primary,
             .replid = undefined,
             .repl_offset = 0,
-            .replicas = std.ArrayList(ReplicaInfo){},
+            .replicas = std.ArrayList(ReplicaInfo).empty,
             .primary_host = null,
             .primary_port = 0,
             .primary_stream = null,
@@ -143,7 +143,7 @@ pub const ReplicationState = struct {
             .role = .replica,
             .replid = undefined,
             .repl_offset = -1,
-            .replicas = std.ArrayList(ReplicaInfo){},
+            .replicas = std.ArrayList(ReplicaInfo).empty,
             .primary_host = try allocator.dupe(u8, host),
             .primary_port = port,
             .primary_stream = null,
@@ -238,7 +238,7 @@ pub const ReplicationState = struct {
         _ = self;
 
         // Build RDB in memory
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(std.heap.page_allocator);
 
         // Temporarily save storage to a buffer via Persistence
@@ -389,7 +389,7 @@ fn digitCount(n: u16) usize {
 fn readLine(stream: std.net.Stream, buf: []u8) !usize {
     var total: usize = 0;
     while (total < buf.len) {
-        const n = try stream.read(buf[total..total + 1]);
+        const n = try stream.read(buf[total .. total + 1]);
         if (n == 0) return error.EndOfStream;
         total += n;
         if (buf[total - 1] == '\n') break;

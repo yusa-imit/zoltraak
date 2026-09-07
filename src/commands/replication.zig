@@ -161,7 +161,7 @@ pub fn cmdReplconf(
         defer allocator.free(offset_str);
 
         // RESP: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$<n>\r\n<offset>\r\n
-        var out = std.ArrayList(u8){};
+        var out = std.ArrayList(u8).empty;
         defer out.deinit(allocator);
         const hdr = try std.fmt.allocPrint(
             allocator,
@@ -414,7 +414,7 @@ pub fn cmdWaitaof(
 
     // Return [local_fsynced, replicas_fsynced] as array
     // RESP array format: *2\r\n:N\r\n:M\r\n
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     const buf_writer = buf.writer(allocator);
 
@@ -600,7 +600,7 @@ pub fn cmdRole(
         return w.writeError("ERR wrong number of arguments for 'role' command");
     }
 
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     if (repl.role == .primary) {
@@ -702,7 +702,7 @@ pub fn buildReplicationInfo(
     var w = Writer.init(allocator);
     defer w.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     const bw = buf.writer(allocator);

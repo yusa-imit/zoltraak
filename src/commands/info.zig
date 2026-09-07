@@ -59,7 +59,7 @@ pub fn cmdInfo(
     const section = try std.ascii.allocUpperString(allocator, section_arg);
     defer allocator.free(section);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     const show_all = std.mem.eql(u8, section, "ALL");
@@ -221,7 +221,10 @@ fn buildClientsSection(
     const maxclients: i64 = blk: {
         var cv = storage.config.get("maxclients") catch break :blk 10000;
         defer cv.deinit(allocator);
-        break :blk switch (cv) { .int => |i| i, else => 10000 };
+        break :blk switch (cv) {
+            .int => |i| i,
+            else => 10000,
+        };
     };
 
     try bw.writeAll("# Clients\r\n");
@@ -264,7 +267,10 @@ fn buildMemorySection(
     const maxmemory: i64 = blk: {
         var cv = storage.config.get("maxmemory") catch break :blk 0;
         defer cv.deinit(allocator);
-        break :blk switch (cv) { .int => |i| i, else => 0 };
+        break :blk switch (cv) {
+            .int => |i| i,
+            else => 0,
+        };
     };
     // Read maxmemory-policy from config
     const maxmemory_policy: []const u8 = blk: {
@@ -515,7 +521,10 @@ fn buildReplicationSection(
     const backlog_size: i64 = blk: {
         var cv = storage.config.get("repl-backlog-size") catch break :blk 1048576;
         defer cv.deinit(allocator);
-        break :blk switch (cv) { .int => |i| i, else => 1048576 };
+        break :blk switch (cv) {
+            .int => |i| i,
+            else => 1048576,
+        };
     };
 
     try bw.writeAll("# Replication\r\n");
@@ -1145,7 +1154,7 @@ test "INFO stats section shows keyspace hits and misses" {
 
     // Simulate some GET hits and misses
     try storage.set("k1", "v1", null);
-    _ = storage.get("k1");      // hit
+    _ = storage.get("k1"); // hit
     _ = storage.get("missing"); // miss
     _ = storage.get("missing"); // miss
 

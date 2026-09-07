@@ -341,12 +341,12 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     // Build response as array of [key, entries] pairs
     var has_data = false;
-    var result_buf = std.ArrayList(u8){};
+    var result_buf = std.ArrayList(u8).empty;
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
     var stream_count: usize = 0;
-    var temp_results = std.ArrayList(struct { key: []const u8, entries: std.ArrayList(StreamEntry) }){};
+    var temp_results = std.ArrayList(struct { key: []const u8, entries: std.ArrayList(StreamEntry) }).empty;
     defer {
         for (temp_results.items) |*item| {
             for (item.entries.items) |*entry| {
@@ -372,21 +372,21 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         var entries = blk: {
             if (std.mem.eql(u8, id_str, "$")) {
                 // Return empty - $ means "only new messages from now"
-                break :blk std.ArrayList(StreamEntry){};
+                break :blk std.ArrayList(StreamEntry).empty;
             }
 
             // Use xrange internally - need to convert entries to ArrayList
             const raw_entries = storage.xrange(allocator, key, id_str, "+", count) catch |err| switch (err) {
                 error.WrongType => continue,
                 else => |e| return e,
-            } orelse break :blk std.ArrayList(StreamEntry){};
+            } orelse break :blk std.ArrayList(StreamEntry).empty;
             defer allocator.free(raw_entries);
 
             // Convert slice to ArrayList
-            var result = std.ArrayList(StreamEntry){};
+            var result = std.ArrayList(StreamEntry).empty;
             for (raw_entries) |entry| {
                 // Clone fields
-                var cloned_fields = std.ArrayList([]const u8){};
+                var cloned_fields = std.ArrayList([]const u8).empty;
                 for (entry.fields.items) |field| {
                     const owned = try allocator.dupe(u8, field);
                     try cloned_fields.append(allocator, owned);
@@ -493,14 +493,14 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
                     const raw_entries = storage.xrange(allocator, key, effective_start, "+", count) catch |err| switch (err) {
                         error.WrongType => continue,
                         else => |e| return e,
-                    } orelse break :blk std.ArrayList(StreamEntry){};
+                    } orelse break :blk std.ArrayList(StreamEntry).empty;
                     defer allocator.free(raw_entries);
 
                     // Convert slice to ArrayList
-                    var result = std.ArrayList(StreamEntry){};
+                    var result = std.ArrayList(StreamEntry).empty;
                     for (raw_entries) |entry| {
                         // Clone fields
-                        var cloned_fields = std.ArrayList([]const u8){};
+                        var cloned_fields = std.ArrayList([]const u8).empty;
                         for (entry.fields.items) |field| {
                             const owned = try allocator.dupe(u8, field);
                             try cloned_fields.append(allocator, owned);
@@ -664,12 +664,12 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
 
     // Build response
     var has_data = false;
-    var result_buf = std.ArrayList(u8){};
+    var result_buf = std.ArrayList(u8).empty;
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
     var stream_count: usize = 0;
-    var temp_results = std.ArrayList(struct { key: []const u8, entries: std.ArrayList(StreamEntry) }){};
+    var temp_results = std.ArrayList(struct { key: []const u8, entries: std.ArrayList(StreamEntry) }).empty;
     defer {
         for (temp_results.items) |*item| {
             for (item.entries.items) |*entry| {
@@ -1032,7 +1032,7 @@ pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     // Collect IDs and options
-    var id_list = std.ArrayList([]const u8){};
+    var id_list = std.ArrayList([]const u8).empty;
     defer id_list.deinit(allocator);
 
     var idle: ?i64 = null;
@@ -1124,7 +1124,7 @@ pub fn cmdXclaim(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     // Format response manually using RESP protocol
-    var result_buf = std.ArrayList(u8){};
+    var result_buf = std.ArrayList(u8).empty;
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
@@ -1258,7 +1258,7 @@ pub fn cmdXautoclaim(allocator: std.mem.Allocator, storage: *Storage, args: []co
 
     // Format response manually using RESP protocol
     // Response format (Redis 7.0+): [next_cursor, [entries...], [deleted_ids...]]
-    var result_buf = std.ArrayList(u8){};
+    var result_buf = std.ArrayList(u8).empty;
     defer result_buf.deinit(allocator);
     const result_writer = result_buf.writer(allocator);
 
@@ -1444,7 +1444,7 @@ test "XAUTOCLAIM returns 3-element array with empty deleted_ids when none delete
 
     const xgroup_args = [_]RespValue{
         RespValue{ .bulk_string = "XGROUP" }, RespValue{ .bulk_string = "CREATE" },
-        RespValue{ .bulk_string = "s" },       RespValue{ .bulk_string = "g" },
+        RespValue{ .bulk_string = "s" },      RespValue{ .bulk_string = "g" },
         RespValue{ .bulk_string = "0" },
     };
     const xgroup_r = try cmdXgroup(allocator, &storage, &xgroup_args);
@@ -1482,15 +1482,17 @@ test "XAUTOCLAIM deleted_ids contains XDEL'd pending entries" {
 
     // Add two entries
     const xadd1 = [_]RespValue{
-        RespValue{ .bulk_string = "XADD" }, RespValue{ .bulk_string = "s" },
-        RespValue{ .bulk_string = "3000-0" }, RespValue{ .bulk_string = "k" }, RespValue{ .bulk_string = "v1" },
+        RespValue{ .bulk_string = "XADD" },   RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "3000-0" }, RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "v1" },
     };
     const xadd1_r = try streams.cmdXadd(allocator, &storage, &xadd1);
     defer allocator.free(xadd1_r);
 
     const xadd2 = [_]RespValue{
-        RespValue{ .bulk_string = "XADD" }, RespValue{ .bulk_string = "s" },
-        RespValue{ .bulk_string = "3001-0" }, RespValue{ .bulk_string = "k" }, RespValue{ .bulk_string = "v2" },
+        RespValue{ .bulk_string = "XADD" },   RespValue{ .bulk_string = "s" },
+        RespValue{ .bulk_string = "3001-0" }, RespValue{ .bulk_string = "k" },
+        RespValue{ .bulk_string = "v2" },
     };
     const xadd2_r = try streams.cmdXadd(allocator, &storage, &xadd2);
     defer allocator.free(xadd2_r);
@@ -1498,7 +1500,7 @@ test "XAUTOCLAIM deleted_ids contains XDEL'd pending entries" {
     // Create group and read both
     const xgroup_args = [_]RespValue{
         RespValue{ .bulk_string = "XGROUP" }, RespValue{ .bulk_string = "CREATE" },
-        RespValue{ .bulk_string = "s" },       RespValue{ .bulk_string = "g" },
+        RespValue{ .bulk_string = "s" },      RespValue{ .bulk_string = "g" },
         RespValue{ .bulk_string = "0" },
     };
     const xgroup_r = try cmdXgroup(allocator, &storage, &xgroup_args);
@@ -1635,7 +1637,7 @@ pub fn cmdXackdel(allocator: std.mem.Allocator, storage: *Storage, args: []const
     defer allocator.free(results);
 
     // Format response as array of integers
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     try buffer.append(allocator, '*');
@@ -1740,7 +1742,7 @@ pub fn cmdXdelex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     defer allocator.free(results);
 
     // Format response as array of integers
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     try buffer.append(allocator, '*');

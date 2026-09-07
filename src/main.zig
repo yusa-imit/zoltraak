@@ -95,7 +95,7 @@ fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
     _ = args.next(); // Skip program name
 
     // Collect args into slice
-    var arg_list = std.ArrayList([]const u8){};
+    var arg_list = std.ArrayList([]const u8).empty;
     defer arg_list.deinit(allocator);
     while (args.next()) |arg| {
         try arg_list.append(allocator, arg);
@@ -159,7 +159,7 @@ fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
 
 pub fn main() !void {
     // Set up allocator
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

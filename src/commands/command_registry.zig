@@ -333,7 +333,7 @@ pub fn getCategoriesForCommand(command_name: []const u8) ![]const CommandCategor
 /// Returns uppercase command names (as stored in COMMAND_CATEGORIES).
 /// Caller must free the returned slice.
 pub fn getCommandsInCategory(allocator: std.mem.Allocator, category: CommandCategory) ![]const []const u8 {
-    var commands = std.ArrayList([]const u8){};
+    var commands = std.ArrayList([]const u8).empty;
     errdefer commands.deinit(allocator);
 
     const all_keys = COMMAND_CATEGORIES.keys();
@@ -355,7 +355,7 @@ pub fn getCommandsInCategory(allocator: std.mem.Allocator, category: CommandCate
 /// Caller must free the returned slice.
 pub fn getAllCommandNames(allocator: std.mem.Allocator) ![]const []const u8 {
     const all_keys = COMMAND_CATEGORIES.keys();
-    var result = std.ArrayList([]const u8){};
+    var result = std.ArrayList([]const u8).empty;
     errdefer result.deinit(allocator);
     for (all_keys) |k| {
         try result.append(allocator, k);
@@ -394,7 +394,7 @@ test "getCategoriesForCommand returns empty for unknown command" {
 }
 
 test "getCommandsInCategory returns commands in category" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

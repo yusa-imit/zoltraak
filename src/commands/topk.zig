@@ -125,7 +125,7 @@ pub fn cmdTopkAdd(allocator: std.mem.Allocator, storage: *Storage, args: []proto
     var topk = &entry.value_ptr.top_k;
 
     // Process each item
-    var results = std.ArrayList(protocol.RespValue){};
+    var results = std.ArrayList(protocol.RespValue).empty;
     errdefer {
         for (results.items) |*item| {
             if (item.* == .bulk_string) {
@@ -188,7 +188,7 @@ pub fn cmdTopkQuery(allocator: std.mem.Allocator, storage: *Storage, args: []pro
     };
 
     // Process each item
-    var results = std.ArrayList(protocol.RespValue){};
+    var results = std.ArrayList(protocol.RespValue).empty;
     errdefer results.deinit(allocator);
 
     for (args[2..]) |arg| {
@@ -240,7 +240,7 @@ pub fn cmdTopkCount(allocator: std.mem.Allocator, storage: *Storage, args: []pro
     };
 
     // Process each item
-    var results = std.ArrayList(protocol.RespValue){};
+    var results = std.ArrayList(protocol.RespValue).empty;
     errdefer results.deinit(allocator);
 
     for (args[2..]) |arg| {
@@ -300,7 +300,7 @@ pub fn cmdTopkIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []pr
     var topk = &entry.value_ptr.top_k;
 
     // Process item-increment pairs
-    var results = std.ArrayList(protocol.RespValue){};
+    var results = std.ArrayList(protocol.RespValue).empty;
     errdefer {
         for (results.items) |*item| {
             if (item.* == .bulk_string) {
@@ -405,7 +405,7 @@ pub fn cmdTopkList(allocator: std.mem.Allocator, storage: *Storage, args: []prot
     defer allocator.free(items);
 
     // Build result array
-    var results = std.ArrayList(protocol.RespValue){};
+    var results = std.ArrayList(protocol.RespValue).empty;
     errdefer {
         for (results.items) |*r| {
             if (r.* == .bulk_string) {
@@ -462,7 +462,7 @@ pub fn cmdTopkInfo(allocator: std.mem.Allocator, storage: *Storage, args: []prot
     const metadata = topk.info();
 
     // Build response array: [k, width, depth, decay]
-    var results = std.ArrayList(protocol.RespValue){};
+    var results = std.ArrayList(protocol.RespValue).empty;
     errdefer results.deinit(allocator);
 
     try results.append(allocator, protocol.RespValue{ .integer = @intCast(metadata.k) });

@@ -38,7 +38,7 @@ pub fn cmdACLList(
             allocator.free(rules);
         }
 
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
 
         try std.fmt.format(buffer.writer(allocator), "*{d}\r\n", .{rules.len});
@@ -67,7 +67,7 @@ pub fn cmdACLUsers(
             allocator.free(usernames);
         }
 
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
 
         try std.fmt.format(buffer.writer(allocator), "*{d}\r\n", .{usernames.len});
@@ -100,12 +100,12 @@ fn buildGetUserResponseResp3(allocator: Allocator, user: *const ACLStorage.User)
     defer w.deinit();
 
     const has_nopass = user.password == null;
-    var flags_list = std.ArrayList(RespValue){};
+    var flags_list = std.ArrayList(RespValue).empty;
     defer flags_list.deinit(allocator);
     try flags_list.append(allocator, .{ .bulk_string = if (user.enabled) "on" else "off" });
     if (has_nopass) try flags_list.append(allocator, .{ .bulk_string = "nopass" });
 
-    var passwords_list = std.ArrayList(RespValue){};
+    var passwords_list = std.ArrayList(RespValue).empty;
     defer passwords_list.deinit(allocator);
     var hash_repr: ?[]const u8 = null;
     defer if (hash_repr) |h| allocator.free(h);
@@ -114,9 +114,9 @@ fn buildGetUserResponseResp3(allocator: Allocator, user: *const ACLStorage.User)
         try passwords_list.append(allocator, .{ .bulk_string = hash_repr.? });
     }
 
-    var keys_list = std.ArrayList(RespValue){};
+    var keys_list = std.ArrayList(RespValue).empty;
     defer keys_list.deinit(allocator);
-    var key_pat_bufs = std.ArrayList([]const u8){};
+    var key_pat_bufs = std.ArrayList([]const u8).empty;
     defer {
         for (key_pat_bufs.items) |p| allocator.free(p);
         key_pat_bufs.deinit(allocator);
@@ -149,7 +149,7 @@ fn buildGetUserResponseResp3(allocator: Allocator, user: *const ACLStorage.User)
 
 /// Build the RESP2 flat-array form of ACL GETUSER.
 fn buildGetUserResponseResp2(allocator: Allocator, user: *const ACLStorage.User) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     // Header: *12 (6 key-value pairs)
@@ -252,12 +252,12 @@ pub fn cmdACLGetuser(
             return w.writeMap(&pairs);
         }
         return w.writeArray(&[_]RespValue{
-            .{ .bulk_string = "flags" },       .{ .bulk_string = "on" },
-            .{ .bulk_string = "passwords" },   .{ .bulk_string = "" },
-            .{ .bulk_string = "commands" },    .{ .bulk_string = "+@all" },
-            .{ .bulk_string = "keys" },        .{ .bulk_string = "~*" },
-            .{ .bulk_string = "channels" },    .{ .bulk_string = "&*" },
-            .{ .bulk_string = "selectors" },   .{ .bulk_string = "" },
+            .{ .bulk_string = "flags" },     .{ .bulk_string = "on" },
+            .{ .bulk_string = "passwords" }, .{ .bulk_string = "" },
+            .{ .bulk_string = "commands" },  .{ .bulk_string = "+@all" },
+            .{ .bulk_string = "keys" },      .{ .bulk_string = "~*" },
+            .{ .bulk_string = "channels" },  .{ .bulk_string = "&*" },
+            .{ .bulk_string = "selectors" }, .{ .bulk_string = "" },
         });
     };
 
@@ -277,7 +277,7 @@ pub fn parseKeyPatternRules(
     write_only_key_patterns: std.ArrayList([]const u8),
 } {
     var all_keys_allowed = false;
-    var allowed_key_patterns = std.ArrayList([]const u8){};
+    var allowed_key_patterns = std.ArrayList([]const u8).empty;
     errdefer {
         for (allowed_key_patterns.items) |pattern| {
             allocator.free(pattern);
@@ -285,7 +285,7 @@ pub fn parseKeyPatternRules(
         allowed_key_patterns.deinit(allocator);
     }
 
-    var read_only_key_patterns = std.ArrayList([]const u8){};
+    var read_only_key_patterns = std.ArrayList([]const u8).empty;
     errdefer {
         for (read_only_key_patterns.items) |pattern| {
             allocator.free(pattern);
@@ -293,7 +293,7 @@ pub fn parseKeyPatternRules(
         read_only_key_patterns.deinit(allocator);
     }
 
-    var write_only_key_patterns = std.ArrayList([]const u8){};
+    var write_only_key_patterns = std.ArrayList([]const u8).empty;
     errdefer {
         for (write_only_key_patterns.items) |pattern| {
             allocator.free(pattern);
@@ -518,9 +518,9 @@ fn applyUserRuleTokens(
 ) ApplyUserRuleError!void {
     var enabled = true;
     var password: ?[]const u8 = null;
-    var permission_rules = std.ArrayList([]const u8){};
+    var permission_rules = std.ArrayList([]const u8).empty;
     defer permission_rules.deinit(allocator);
-    var key_pattern_rules = std.ArrayList([]const u8){};
+    var key_pattern_rules = std.ArrayList([]const u8).empty;
     defer key_pattern_rules.deinit(allocator);
 
     for (rule_tokens) |rule| {
@@ -607,9 +607,9 @@ fn applyUserRuleTokens(
 /// instead of storing it. Used by ACL LOAD to validate every line in the ACL
 /// file before mutating any in-memory ACL state.
 fn validateRuleTokens(allocator: Allocator, rule_tokens: []const []const u8) PermissionChangeError!void {
-    var permission_rules = std.ArrayList([]const u8){};
+    var permission_rules = std.ArrayList([]const u8).empty;
     defer permission_rules.deinit(allocator);
-    var key_pattern_rules = std.ArrayList([]const u8){};
+    var key_pattern_rules = std.ArrayList([]const u8).empty;
     defer key_pattern_rules.deinit(allocator);
 
     for (rule_tokens) |rule| {
@@ -669,7 +669,7 @@ pub fn cmdACLSetuser(
         else => return w.writeError("ERR invalid username"),
     };
 
-    var rule_tokens = std.ArrayList([]const u8){};
+    var rule_tokens = std.ArrayList([]const u8).empty;
     defer rule_tokens.deinit(allocator);
     for (array[2..]) |arg| {
         const rule = switch (arg) {
@@ -751,7 +751,7 @@ pub fn cmdACLCat(
             "scripting",
         };
 
-        var buffer = std.ArrayList(u8){};
+        var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(allocator);
 
         try buffer.append(allocator, '*');
@@ -825,7 +825,7 @@ fn parseCategoryName(name: []const u8) ?CommandCategory {
 
 /// Build a RESP array of lowercase command names from an uppercase slice.
 fn writeLowerCaseArray(allocator: Allocator, cmds: []const []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try std.fmt.format(buf.writer(allocator), "*{d}\r\n", .{cmds.len});
@@ -853,7 +853,7 @@ fn cmdACLCatSlow(allocator: Allocator) ![]const u8 {
 
     // Collect all commands not in the fast set
     const all_keys = CommandRegistry.COMMAND_CATEGORIES.keys();
-    var slow_list = std.ArrayList([]const u8){};
+    var slow_list = std.ArrayList([]const u8).empty;
     defer slow_list.deinit(allocator);
 
     for (all_keys) |cmd_name| {
@@ -895,7 +895,7 @@ pub fn cmdACLHelp(
         "    Return the current connection username.",
     };
 
-    var buffer = std.ArrayList(u8){};
+    var buffer = std.ArrayList(u8).empty;
     errdefer buffer.deinit(allocator);
 
     try buffer.append(allocator, '*');
@@ -915,7 +915,7 @@ pub fn cmdACLHelp(
 
 /// Format a single ACL log entry as a RESP2 flat array (20 elements = 10 key-value pairs).
 fn formatLogEntry(allocator: Allocator, entry: *const ACLStorage.LogEntry, current_ts: i64) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     // *20\r\n — 10 key-value pairs
@@ -1029,7 +1029,7 @@ pub fn cmdACLLog(
 
     if (entries.len == 0) return w.writeArray(&[_]RespValue{});
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     const header = try std.fmt.allocPrint(allocator, "*{d}\r\n", .{entries.len});
@@ -1077,7 +1077,7 @@ pub fn cmdACLSave(
         allocator.free(usernames);
     }
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     for (usernames) |username| {
@@ -1125,7 +1125,7 @@ pub fn cmdACLLoad(
         username: []const u8,
         tokens: std.ArrayList([]const u8),
     };
-    var parsed = std.ArrayList(ParsedUser){};
+    var parsed = std.ArrayList(ParsedUser).empty;
     defer {
         for (parsed.items) |*entry| entry.tokens.deinit(allocator);
         parsed.deinit(allocator);
@@ -1145,7 +1145,7 @@ pub fn cmdACLLoad(
             return w.writeError("ERR Invalid ACL file format: missing username");
         };
 
-        var tokens = std.ArrayList([]const u8){};
+        var tokens = std.ArrayList([]const u8).empty;
         errdefer tokens.deinit(allocator);
         while (tok_iter.next()) |tok| try tokens.append(allocator, tok);
 

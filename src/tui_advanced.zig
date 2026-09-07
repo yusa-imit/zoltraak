@@ -150,7 +150,7 @@ const KeysTree = struct {
             const node = try allocator.create(TreeNode);
             node.* = .{
                 .name = try allocator.dupe(u8, name),
-                .children = std.ArrayList(*TreeNode){},
+                .children = std.ArrayList(*TreeNode).empty,
                 .is_leaf = is_leaf,
             };
             return node;

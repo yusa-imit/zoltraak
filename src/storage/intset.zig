@@ -20,7 +20,7 @@ pub const IntSet = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .encoding = .int16,
-            .data = std.ArrayListUnmanaged(u8){},
+            .data = std.ArrayListUnmanaged(u8).empty,
             .length = 0,
             .allocator = allocator,
         };

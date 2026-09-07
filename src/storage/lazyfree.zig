@@ -56,7 +56,7 @@ pub const LazyFreeTask = struct {
 
     /// Initialize lazy free task
     pub fn init(allocator: std.mem.Allocator) !LazyFreeTask {
-        var queue = std.ArrayList(LazyFreeWork){};
+        var queue = std.ArrayList(LazyFreeWork).empty;
         errdefer queue.deinit(allocator);
 
         return LazyFreeTask{

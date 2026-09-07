@@ -94,7 +94,7 @@ pub const CountMinSketchValue = struct {
 
     /// Serialize the full counter matrix for RDB persistence.
     pub fn rdbSerialize(self: *const CountMinSketchValue, allocator: Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         const w = buf.writer(allocator);
 

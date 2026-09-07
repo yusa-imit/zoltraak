@@ -415,7 +415,7 @@ pub fn cmdScriptExists(
         return w.writeError("ERR wrong number of arguments for 'script|exists' command");
     }
 
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     const array_writer = result.writer(allocator);
 
     // Write array header
@@ -497,7 +497,7 @@ pub fn cmdScriptHelp(allocator: Allocator) ![]const u8 {
         "    Print this help.",
     };
 
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     const array_writer = result.writer(allocator);
 
     try array_writer.print("*{d}\r\n", .{help_lines.len});
