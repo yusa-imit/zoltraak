@@ -1250,7 +1250,11 @@ pub fn cmdMigrate(
 
     // Select the destination database.
     var dest_db_buf: [8]u8 = undefined;
-    const dest_db_str_fmt = std.fmt.bufPrint(&dest_db_buf, "{d}", .{dest_db}) catch unreachable;
+    const dest_db_str_fmt = std.fmt.bufPrint(
+        &dest_db_buf,
+        "{d}",
+        .{dest_db},
+    ) catch unreachable; // u16 fits in 5, buf 8
     const select_cmd = try buildRespCommand(allocator, &.{ "SELECT", dest_db_str_fmt });
     defer allocator.free(select_cmd);
     sendAndExpectOk(stream, select_cmd, allocator) catch {
@@ -1270,7 +1274,11 @@ pub fn cmdMigrate(
         const ttl_remaining = storage.getTtlMs(key);
         const ttl_arg: i64 = if (ttl_remaining > 0) ttl_remaining else 0;
         var ttl_buf: [24]u8 = undefined;
-        const ttl_str = std.fmt.bufPrint(&ttl_buf, "{d}", .{ttl_arg}) catch unreachable;
+        const ttl_str = std.fmt.bufPrint(
+            &ttl_buf,
+            "{d}",
+            .{ttl_arg},
+        ) catch unreachable; // i64 fits in 20, ttl_buf 24
 
         const restore_cmd = if (replace)
             try buildRespCommand(allocator, &.{ "RESTORE", key, ttl_str, dump, "REPLACE" })

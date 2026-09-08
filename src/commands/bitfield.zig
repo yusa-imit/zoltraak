@@ -401,12 +401,20 @@ pub fn cmdBitfield(
 
     try buffer.append(allocator, '*');
     var buf: [32]u8 = undefined;
-    const len_str = std.fmt.bufPrint(&buf, "{d}\r\n", .{results.items.len}) catch unreachable;
+    const len_str = std.fmt.bufPrint(
+        &buf,
+        "{d}\r\n",
+        .{results.items.len},
+    ) catch unreachable; // usize fits in 20, +2 for \r\n, buf 32
     try buffer.appendSlice(allocator, len_str);
 
     for (results.items) |maybe_val| {
         if (maybe_val) |val| {
-            const val_str = std.fmt.bufPrint(&buf, ":{d}\r\n", .{val}) catch unreachable;
+            const val_str = std.fmt.bufPrint(
+                &buf,
+                ":{d}\r\n",
+                .{val},
+            ) catch unreachable; // i64 fits in 20, +3 for ":"/"\r\n", buf 32
             try buffer.appendSlice(allocator, val_str);
         } else {
             try buffer.appendSlice(allocator, "$-1\r\n"); // nil
@@ -501,11 +509,19 @@ pub fn cmdBitfieldRo(
 
     try buffer.append(allocator, '*');
     var buf: [32]u8 = undefined;
-    const len_str = std.fmt.bufPrint(&buf, "{d}\r\n", .{results.items.len}) catch unreachable;
+    const len_str = std.fmt.bufPrint(
+        &buf,
+        "{d}\r\n",
+        .{results.items.len},
+    ) catch unreachable; // usize fits in 20, +2 for \r\n, buf 32
     try buffer.appendSlice(allocator, len_str);
 
     for (results.items) |val| {
-        const val_str = std.fmt.bufPrint(&buf, ":{d}\r\n", .{val}) catch unreachable;
+        const val_str = std.fmt.bufPrint(
+            &buf,
+            ":{d}\r\n",
+            .{val},
+        ) catch unreachable; // i64 fits in 20, +3 for ":"/"\r\n", buf 32
         try buffer.appendSlice(allocator, val_str);
     }
 

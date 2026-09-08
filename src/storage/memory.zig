@@ -926,6 +926,10 @@ pub const Storage = struct {
     ///   - bind: Server bind address for read-only CONFIG parameter
     ///
     /// Returns error.OutOfMemory if allocation fails.
+    fn formatHexByte(dest: []u8, byte: u8) void {
+        _ = std.fmt.bufPrint(dest, "{x:0>2}", .{byte}) catch unreachable; // u8 -> 2 hex chars, dest is 2 bytes
+    }
+
     pub fn init(allocator: std.mem.Allocator, port: u16, bind: []const u8) !*Storage {
         const storage = try allocator.create(Storage);
         errdefer allocator.destroy(storage);
@@ -953,16 +957,10 @@ pub const Storage = struct {
         var random = prng.random();
 
         var run_id: [40]u8 = undefined;
-        for (0..20) |i| {
-            const byte = random.int(u8);
-            _ = std.fmt.bufPrint(run_id[i * 2 .. i * 2 + 2], "{x:0>2}", .{byte}) catch unreachable;
-        }
+        for (0..20) |i| formatHexByte(run_id[i * 2 .. i * 2 + 2], random.int(u8));
 
         var node_id: [40]u8 = undefined;
-        for (0..20) |i| {
-            const byte = random.int(u8);
-            _ = std.fmt.bufPrint(node_id[i * 2 .. i * 2 + 2], "{x:0>2}", .{byte}) catch unreachable;
-        }
+        for (0..20) |i| formatHexByte(node_id[i * 2 .. i * 2 + 2], random.int(u8));
 
         // Create a single node for this instance
         const node = try allocator.create(cluster_mod.ClusterNode);
@@ -6053,7 +6051,11 @@ pub const Storage = struct {
 
         // Format new value as string
         var buf: [32]u8 = undefined;
-        const new_str = std.fmt.bufPrint(&buf, "{d}", .{new_val}) catch unreachable;
+        const new_str = std.fmt.bufPrint(
+            &buf,
+            "{d}",
+            .{new_val},
+        ) catch unreachable; // i64 fits in 20, buf 32
         const owned_str = try self.allocator.dupe(u8, new_str);
         errdefer self.allocator.free(owned_str);
 
@@ -9640,7 +9642,11 @@ pub const Storage = struct {
                             idmp_pid = a.producer_id;
                             var hasher = std.hash.Wyhash.init(0);
                             for (fields) |f| hasher.update(f);
-                            idmp_iid = std.fmt.bufPrint(&idmp_iid_buf, "{x:0>16}", .{hasher.final()}) catch unreachable;
+                            idmp_iid = std.fmt.bufPrint(
+                                &idmp_iid_buf,
+                                "{x:0>16}",
+                                .{hasher.final()},
+                            ) catch unreachable; // u64 hash is exactly 16 hex chars, buf is 16
                         },
                     }
                     if (self.checkIdmpDuplicate(stream_val, idmp_pid, idmp_iid, now)) |existing_id| {

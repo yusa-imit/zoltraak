@@ -4925,8 +4925,16 @@ test "CLIENT LIST ID filter - returns only specified clients" {
 
     var id1_buf: [20]u8 = undefined;
     var id2_buf: [20]u8 = undefined;
-    const id1_str = std.fmt.bufPrint(&id1_buf, "{d}", .{client1}) catch unreachable;
-    const id2_str = std.fmt.bufPrint(&id2_buf, "{d}", .{client2}) catch unreachable;
+    const id1_str = std.fmt.bufPrint(
+        &id1_buf,
+        "{d}",
+        .{client1},
+    ) catch unreachable; // u64 fits in 20, id1_buf 20
+    const id2_str = std.fmt.bufPrint(
+        &id2_buf,
+        "{d}",
+        .{client2},
+    ) catch unreachable; // u64 fits in 20, id2_buf 20
 
     var args = std.ArrayList(RespValue).empty;
     try args.append(arena.allocator(), RespValue{ .bulk_string = "LIST" });
