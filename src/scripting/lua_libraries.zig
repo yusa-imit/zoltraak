@@ -76,7 +76,11 @@ fn appendJsonString(bytes: []const u8, buf: *std.ArrayList(u8), alloc: std.mem.A
             // Other control chars: exclude \t (0x09), \n (0x0a), \r (0x0d) already handled
             0x00...0x08, 0x0B...0x0C, 0x0E...0x1F => {
                 var esc: [7]u8 = undefined;
-                const esc_s = std.fmt.bufPrint(&esc, "\\u{X:0>4}", .{c}) catch unreachable;
+                const esc_s = std.fmt.bufPrint(
+                    &esc,
+                    "\\u{X:0>4}",
+                    .{c},
+                ) catch unreachable; // "\u" + 4 hex chars = 6 bytes, esc is 7
                 try buf.appendSlice(alloc, esc_s);
             },
             else => try buf.append(alloc, c),

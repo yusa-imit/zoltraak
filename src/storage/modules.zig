@@ -2446,7 +2446,7 @@ test "ThreadSafeContext: lock and unlock" {
     var lock = GlobalLock.init();
 
     const ctx = try ThreadSafeContext.init(allocator, &lock);
-    defer ctx.deinit(allocator) catch unreachable;
+    defer ctx.deinit(allocator) catch unreachable; // never locked, errors only when locked
 
     try testing.expect(!ctx.isLocked());
     try testing.expect(!lock.isOwnedByCurrentThread());
@@ -2465,7 +2465,7 @@ test "ThreadSafeContext: tryLock" {
     var lock = GlobalLock.init();
 
     const ctx = try ThreadSafeContext.init(allocator, &lock);
-    defer ctx.deinit(allocator) catch unreachable;
+    defer ctx.deinit(allocator) catch unreachable; // unlocked below, errors only when locked
 
     // First tryLock succeeds
     try testing.expect(ctx.tryLockContext());
@@ -2473,7 +2473,7 @@ test "ThreadSafeContext: tryLock" {
 
     // Create another context (simulating different thread context)
     const ctx2 = try ThreadSafeContext.init(allocator, &lock);
-    defer ctx2.deinit(allocator) catch unreachable;
+    defer ctx2.deinit(allocator) catch unreachable; // never locks, errors only when locked
 
     // Second tryLock fails (lock already held)
     try testing.expect(!ctx2.tryLockContext());
@@ -2532,7 +2532,10 @@ test "ModuleCtx: bound thread-safe context with reply accumulation" {
 
     // Create bound context
     const ts_ctx = try ctx.getThreadSafeContextBound(allocator, client_id);
-    defer ctx.freeThreadSafeContext(allocator, ts_ctx) catch unreachable;
+    defer ctx.freeThreadSafeContext(
+        allocator,
+        ts_ctx,
+    ) catch unreachable; // never locked, errors only when locked
 
     try testing.expect(ts_ctx.client_id.? == client_id);
     try testing.expect(ts_ctx.reply_buffer != null);
