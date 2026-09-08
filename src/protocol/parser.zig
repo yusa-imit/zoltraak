@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 /// Key-value pair for RESP3 map type
 pub const MapEntry = struct {
@@ -63,6 +64,7 @@ pub const ParseError = error{
     OutOfMemory,
     InvalidDouble,
     InvalidBoolean,
+    LengthTooLarge,
 };
 
 /// RESP protocol parser (supports RESP2 and RESP3)
@@ -73,19 +75,34 @@ pub const Parser = struct {
     /// Protocol version: 2 for RESP2, 3 for RESP3
     version: u8,
 
-    /// Initialize a new parser with the given allocator
+    /// Maximum accepted bulk-string/bulk-error/verbatim-string byte length
+    /// (matches Redis's default `proto-max-bulk-len` of 512 MiB). Rejecting
+    /// an oversized declared length here, before any allocation, turns a
+    /// hostile length prefix into a typed error instead of an OOM abort.
+    pub const bulk_len_max: i64 = 512 * 1024 * 1024;
+    /// Maximum accepted element/pair count for array, map, set, and push
+    /// frames (matches Redis's fixed multibulk count ceiling).
+    pub const multibulk_count_max: i64 = 1024 * 1024;
+
+    /// Initialize a new parser with the given allocator.
     pub fn init(allocator: std.mem.Allocator) Parser {
-        return Parser{
+        const parser = Parser{
             .allocator = allocator,
             .buffer = &[_]u8{},
             .pos = 0,
             .version = 2, // Default to RESP2
         };
+        assert(parser.pos == 0);
+        assert(parser.version == 2);
+        return parser;
     }
 
-    /// Set the RESP protocol version for this parser
+    /// Set the RESP protocol version for this parser.
+    /// Precondition: `version` is 2 (RESP2) or 3 (RESP3).
     pub fn setVersion(self: *Parser, version: u8) void {
+        assert(version == 2 or version == 3);
         self.version = version;
+        assert(self.version == version);
     }
 
     /// Deinitialize the parser (currently no-op, included for API consistency)
@@ -93,16 +110,21 @@ pub const Parser = struct {
         _ = self;
     }
 
-    /// Parse a complete RESP message from the given data
-    /// Memory allocated for the RespValue must be freed with freeValue()
+    /// Parse a complete RESP message from the given data.
+    /// Memory allocated for the RespValue must be freed with freeValue().
     pub fn parse(self: *Parser, data: []const u8) ParseError!RespValue {
         self.buffer = data;
         self.pos = 0;
-        return self.parseValue();
+        assert(self.pos == 0);
+        assert(self.buffer.len == data.len);
+        const value = try self.parseValue();
+        assert(self.pos <= self.buffer.len);
+        return value;
     }
 
     /// Free memory associated with a parsed RespValue
     pub fn freeValue(self: *Parser, value: RespValue) void {
+        assert(self.pos <= self.buffer.len);
         switch (value) {
             .simple_string => |s| self.allocator.free(s),
             .error_string => |s| self.allocator.free(s),
@@ -147,12 +169,14 @@ pub const Parser = struct {
     // Private parsing methods
 
     fn parseValue(self: *Parser) ParseError!RespValue {
+        assert(self.pos <= self.buffer.len);
         if (self.pos >= self.buffer.len) {
             return ParseError.UnexpectedEOF;
         }
 
         const type_byte = self.buffer[self.pos];
         self.pos += 1;
+        assert(self.pos <= self.buffer.len);
 
         return switch (type_byte) {
             // RESP2 types
@@ -177,15 +201,20 @@ pub const Parser = struct {
 
     fn parseSimpleString(self: *Parser) ParseError![]const u8 {
         const line = try self.readLine();
-        return self.allocator.dupe(u8, line) catch return ParseError.OutOfMemory;
+        const owned = self.allocator.dupe(u8, line) catch return ParseError.OutOfMemory;
+        assert(owned.len == line.len);
+        return owned;
     }
 
     fn parseError(self: *Parser) ParseError![]const u8 {
         const line = try self.readLine();
-        return self.allocator.dupe(u8, line) catch return ParseError.OutOfMemory;
+        const owned = self.allocator.dupe(u8, line) catch return ParseError.OutOfMemory;
+        assert(owned.len == line.len);
+        return owned;
     }
 
     fn parseInteger(self: *Parser) ParseError!i64 {
+        assert(self.pos <= self.buffer.len);
         const line = try self.readLine();
         return std.fmt.parseInt(i64, line, 10) catch return ParseError.InvalidInteger;
     }
@@ -201,8 +230,12 @@ pub const Parser = struct {
         if (length < 0) {
             return ParseError.InvalidLength;
         }
+        if (length > bulk_len_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(length);
+        assert(len <= bulk_len_max);
         const data = try self.readBytes(len);
 
         // Read and verify trailing \r\n
@@ -229,8 +262,12 @@ pub const Parser = struct {
         if (count < 0) {
             return ParseError.InvalidLength;
         }
+        if (count > multibulk_count_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(count);
+        assert(len <= multibulk_count_max);
         const elements = self.allocator.alloc(RespValue, len) catch return ParseError.OutOfMemory;
         errdefer self.allocator.free(elements);
 
@@ -246,10 +283,13 @@ pub const Parser = struct {
             elements[i] = try self.parseValue();
         }
 
+        assert(i == len);
+        assert(elements.len == len);
         return RespValue{ .array = elements };
     }
 
     fn readLine(self: *Parser) ParseError![]const u8 {
+        assert(self.pos <= self.buffer.len);
         const start = self.pos;
         while (self.pos < self.buffer.len) : (self.pos += 1) {
             if (self.buffer[self.pos] == '\r') {
@@ -259,6 +299,8 @@ pub const Parser = struct {
                 if (self.buffer[self.pos + 1] == '\n') {
                     const line = self.buffer[start..self.pos];
                     self.pos += 2; // Skip \r\n
+                    assert(self.pos <= self.buffer.len);
+                    assert(self.pos == start + line.len + 2);
                     return line;
                 }
             }
@@ -266,12 +308,18 @@ pub const Parser = struct {
         return ParseError.UnexpectedEOF;
     }
 
+    /// Read exactly `count` bytes from the buffer at the current position.
+    /// Precondition: `count` fits within `bulk_len_max` (checked by callers
+    /// against the declared protocol length before allocation ever happens).
     fn readBytes(self: *Parser, count: usize) ParseError![]const u8 {
+        assert(self.pos <= self.buffer.len);
         if (self.pos + count > self.buffer.len) {
             return ParseError.UnexpectedEOF;
         }
         const data = self.buffer[self.pos .. self.pos + count];
         self.pos += count;
+        assert(data.len == count);
+        assert(self.pos <= self.buffer.len);
         return data;
     }
 
@@ -300,7 +348,9 @@ pub const Parser = struct {
 
     fn parseBigNumber(self: *Parser) ParseError![]const u8 {
         const line = try self.readLine();
-        return self.allocator.dupe(u8, line) catch return ParseError.OutOfMemory;
+        const owned = self.allocator.dupe(u8, line) catch return ParseError.OutOfMemory;
+        assert(owned.len == line.len);
+        return owned;
     }
 
     fn parseBulkError(self: *Parser) ParseError![]const u8 {
@@ -311,8 +361,12 @@ pub const Parser = struct {
         if (length < 0) {
             return ParseError.InvalidLength;
         }
+        if (length > bulk_len_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(length);
+        assert(len <= bulk_len_max);
         const data = try self.readBytes(len);
 
         // Read and verify trailing \r\n
@@ -335,8 +389,12 @@ pub const Parser = struct {
         if (length < 4) { // Minimum: 3-byte format + ":"
             return ParseError.InvalidLength;
         }
+        if (length > bulk_len_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(length);
+        assert(len <= bulk_len_max);
         const data = try self.readBytes(len);
 
         // Read and verify trailing \r\n
@@ -372,8 +430,12 @@ pub const Parser = struct {
         if (count < 0) {
             return ParseError.InvalidLength;
         }
+        if (count > multibulk_count_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(count);
+        assert(len <= multibulk_count_max);
         const pairs = self.allocator.alloc(MapEntry, len) catch return ParseError.OutOfMemory;
         errdefer self.allocator.free(pairs);
 
@@ -399,6 +461,8 @@ pub const Parser = struct {
             pairs[i] = .{ .key = key_ptr, .value = value_ptr };
         }
 
+        assert(i == len);
+        assert(pairs.len == len);
         return RespValue{ .map = pairs };
     }
 
@@ -409,8 +473,12 @@ pub const Parser = struct {
         if (count < 0) {
             return ParseError.InvalidLength;
         }
+        if (count > multibulk_count_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(count);
+        assert(len <= multibulk_count_max);
         const elements = self.allocator.alloc(RespValue, len) catch return ParseError.OutOfMemory;
         errdefer self.allocator.free(elements);
 
@@ -425,6 +493,8 @@ pub const Parser = struct {
             elements[i] = try self.parseValue();
         }
 
+        assert(i == len);
+        assert(elements.len == len);
         return RespValue{ .set = elements };
     }
 
@@ -435,8 +505,12 @@ pub const Parser = struct {
         if (count < 0) {
             return ParseError.InvalidLength;
         }
+        if (count > multibulk_count_max) {
+            return ParseError.LengthTooLarge;
+        }
 
         const len: usize = @intCast(count);
+        assert(len <= multibulk_count_max);
         const elements = self.allocator.alloc(RespValue, len) catch return ParseError.OutOfMemory;
         errdefer self.allocator.free(elements);
 
@@ -451,6 +525,8 @@ pub const Parser = struct {
             elements[i] = try self.parseValue();
         }
 
+        assert(i == len);
+        assert(elements.len == len);
         return RespValue{ .push = elements };
     }
 };
@@ -848,6 +924,102 @@ test "RESP3 parser - set" {
     try std.testing.expectEqual(RespType.set, @as(RespType, result));
     try std.testing.expectEqual(@as(usize, 3), result.set.len);
     try std.testing.expectEqualStrings("elem1", result.set[0].simple_string);
+}
+
+test "RESP parser - bulk string length exceeds max is rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const too_long = Parser.bulk_len_max + 1;
+    const input = std.fmt.bufPrint(&buf, "${d}\r\n", .{too_long}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.LengthTooLarge, parser.parse(input));
+}
+
+test "RESP parser - bulk string length at max boundary is not rejected for length" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const max_len = Parser.bulk_len_max;
+    // Declare the max length but supply no body: expect UnexpectedEOF (past the
+    // length check), never LengthTooLarge, proving the boundary is exact.
+    const input = std.fmt.bufPrint(&buf, "${d}\r\n", .{max_len}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.UnexpectedEOF, parser.parse(input));
+}
+
+test "RESP parser - array count exceeds max is rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const too_many = Parser.multibulk_count_max + 1;
+    const input = std.fmt.bufPrint(&buf, "*{d}\r\n", .{too_many}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.LengthTooLarge, parser.parse(input));
+}
+
+test "RESP3 parser - map count exceeds max is rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    parser.setVersion(3);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const too_many = Parser.multibulk_count_max + 1;
+    const input = std.fmt.bufPrint(&buf, "%{d}\r\n", .{too_many}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.LengthTooLarge, parser.parse(input));
+}
+
+test "RESP3 parser - set count exceeds max is rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    parser.setVersion(3);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const too_many = Parser.multibulk_count_max + 1;
+    const input = std.fmt.bufPrint(&buf, "~{d}\r\n", .{too_many}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.LengthTooLarge, parser.parse(input));
+}
+
+test "RESP3 parser - push count exceeds max is rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    parser.setVersion(3);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const too_many = Parser.multibulk_count_max + 1;
+    const input = std.fmt.bufPrint(&buf, ">{d}\r\n", .{too_many}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.LengthTooLarge, parser.parse(input));
+}
+
+test "RESP3 parser - bulk error length exceeds max is rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    parser.setVersion(3);
+    defer parser.deinit();
+
+    var buf: [64]u8 = undefined;
+    const too_long = Parser.bulk_len_max + 1;
+    const input = std.fmt.bufPrint(&buf, "!{d}\r\n", .{too_long}) catch unreachable; // fits 64B
+    try std.testing.expectError(ParseError.LengthTooLarge, parser.parse(input));
+}
+
+test "RESP parser - array count zero boundary is not rejected" {
+    const allocator = std.testing.allocator;
+    var parser = Parser.init(allocator);
+    defer parser.deinit();
+
+    const input = "*0\r\n";
+    const result = try parser.parse(input);
+    defer parser.freeValue(result);
+
+    try std.testing.expectEqual(RespType.array, @as(RespType, result));
+    try std.testing.expectEqual(@as(usize, 0), result.array.len);
 }
 
 test "RESP3 parser - push" {

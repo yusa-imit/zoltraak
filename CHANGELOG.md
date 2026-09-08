@@ -11,6 +11,14 @@ see `git tag -l 'v*'` and the corresponding GitHub releases for that history.
 
 ### Added
 
+- `src/protocol/parser.zig` (plan 001 item 10, assertion baseline, scoped this cycle to this
+  module): Tiger Style pre/post-condition assertions on every public and private function (35
+  asserts, up from 0), plus a new `ParseError.LengthTooLarge` variant enforcing `bulk_len_max`
+  (512 MiB) and `multibulk_count_max` (1,048,576) ceilings on declared bulk-string/bulk-error/
+  verbatim-string lengths and array/map/set/push element counts — a hostile length prefix is now
+  a typed error before any allocation, instead of an unbounded allocation attempt. The remaining
+  four hot modules (`storage/memory.zig`, `protocol/writer.zig`, `server.zig`,
+  `commands/strings.zig`) are deferred to future cycles.
 - `zig build tidy` (gates `zig build test`): Tiger Style mechanical checks over `src/` — line
   length, function length, `std.debug.print`/`std.time.*`/unproven-`catch unreachable`/`usize`-
   in-wire-format ban list, and `//!` module headers — checked against a shrink-only baseline in
