@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const parser = @import("parser.zig");
 const RespValue = parser.RespValue;
 const RespType = parser.RespType;
@@ -17,15 +18,19 @@ pub const Writer = struct {
 
     /// Initialize a new RESP writer
     pub fn init(allocator: std.mem.Allocator) Writer {
-        return Writer{
+        const w = Writer{
             .allocator = allocator,
             .version = 2, // Default to RESP2
         };
+        assert(w.version == 2);
+        return w;
     }
 
     /// Set the RESP protocol version for this writer
     pub fn setVersion(self: *Writer, version: u8) void {
+        assert(version == 2 or version == 3);
         self.version = version;
+        assert(self.version == version);
     }
 
     /// Deinitialize the writer (currently no-op, included for API consistency)
@@ -40,7 +45,11 @@ pub const Writer = struct {
         errdefer buffer.deinit(self.allocator);
 
         try self.writeValue(&buffer, value);
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len > 0);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a simple string response (+OK\r\n)
@@ -51,7 +60,11 @@ pub const Writer = struct {
         try buffer.append(self.allocator, '+');
         try buffer.appendSlice(self.allocator, str);
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len == str.len + 3);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write an error response (-ERR message\r\n)
@@ -62,7 +75,11 @@ pub const Writer = struct {
         try buffer.append(self.allocator, '-');
         try buffer.appendSlice(self.allocator, msg);
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len == msg.len + 3);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write an integer response (:123\r\n)
@@ -73,7 +90,11 @@ pub const Writer = struct {
         try buffer.append(self.allocator, ':');
         try std.fmt.format(buffer.writer(self.allocator), "{d}", .{value});
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len >= 4); // ':' + at least one digit + "\r\n".
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a bulk string response ($6\r\nfoobar\r\n)
@@ -88,10 +109,15 @@ pub const Writer = struct {
             try buffer.appendSlice(self.allocator, "\r\n");
             try buffer.appendSlice(self.allocator, s);
             try buffer.appendSlice(self.allocator, "\r\n");
+            assert(buffer.items.len >= s.len + 6); // '$' + >=1 digit + CRLF + s + CRLF.
         } else {
             try buffer.appendSlice(self.allocator, "$-1\r\n");
+            assert(buffer.items.len == 5);
         }
-        return buffer.toOwnedSlice(self.allocator);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write an array response (*2\r\n...\r\n)
@@ -106,22 +132,32 @@ pub const Writer = struct {
             try buffer.appendSlice(self.allocator, "\r\n");
 
             for (vals) |val| {
+                const len_before = buffer.items.len;
                 try self.writeValue(&buffer, val);
+                assert(buffer.items.len > len_before);
             }
         } else {
             try buffer.appendSlice(self.allocator, "*-1\r\n");
+            assert(buffer.items.len == 5);
         }
-        return buffer.toOwnedSlice(self.allocator);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a null bulk string ($-1\r\n)
     pub fn writeNull(self: *Writer) ![]const u8 {
-        return self.writeBulkString(null);
+        const result = try self.writeBulkString(null);
+        assert(result.len == 5);
+        return result;
     }
 
     /// Write a simple OK response (+OK\r\n)
     pub fn writeOK(self: *Writer) ![]const u8 {
-        return self.writeSimpleString("OK");
+        const result = try self.writeSimpleString("OK");
+        assert(result.len == 5);
+        return result;
     }
 
     /// Write an array of bulk strings (convenience method)
@@ -133,6 +169,7 @@ pub const Writer = struct {
         for (strings) |s| {
             try values.append(self.allocator, RespValue{ .bulk_string = s });
         }
+        assert(values.items.len == strings.len);
 
         return self.writeArray(try values.toOwnedSlice(self.allocator));
     }
@@ -145,7 +182,11 @@ pub const Writer = struct {
         errdefer buffer.deinit(self.allocator);
 
         try buffer.appendSlice(self.allocator, "_\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len == 3);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 boolean (#t\r\n or #f\r\n)
@@ -156,7 +197,11 @@ pub const Writer = struct {
         try buffer.append(self.allocator, '#');
         try buffer.append(self.allocator, if (value) 't' else 'f');
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len == 4);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 double (,3.14\r\n)
@@ -175,18 +220,27 @@ pub const Writer = struct {
             try std.fmt.format(buffer.writer(self.allocator), "{d}", .{value});
         }
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len >= 4); // ',' + >=1 digit + "\r\n".
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 big number ((123...\r\n)
     pub fn writeBigNumber(self: *Writer, value: []const u8) ![]const u8 {
+        assert(value.len > 0);
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
         try buffer.append(self.allocator, '(');
         try buffer.appendSlice(self.allocator, value);
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len == value.len + 3);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 bulk error (!<len>\r\n<error>\r\n)
@@ -199,11 +253,17 @@ pub const Writer = struct {
         try buffer.appendSlice(self.allocator, "\r\n");
         try buffer.appendSlice(self.allocator, error_msg);
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len >= error_msg.len + 6); // '!' + >=1 digit + CRLF + msg + CRLF.
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 verbatim string (=<len>\r\n<format>:<data>\r\n)
+    /// Precondition: `format` is exactly 3 bytes (the fixed-width RESP3 type code, e.g. "txt").
     pub fn writeVerbatimString(self: *Writer, format: []const u8, data: []const u8) ![]const u8 {
+        assert(format.len == 3); // RESP3 verbatim strings use a fixed 3-byte type code.
         var buffer = std.ArrayList(u8).empty;
         errdefer buffer.deinit(self.allocator);
 
@@ -215,7 +275,11 @@ pub const Writer = struct {
         try buffer.append(self.allocator, ':');
         try buffer.appendSlice(self.allocator, data);
         try buffer.appendSlice(self.allocator, "\r\n");
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len >= total_len + 6); // '=' + >=1 digit + CRLF + payload + CRLF.
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 map (%<count>\r\n<key><value>...\r\n)
@@ -228,11 +292,16 @@ pub const Writer = struct {
         try buffer.appendSlice(self.allocator, "\r\n");
 
         for (pairs) |pair| {
+            const len_before = buffer.items.len;
             try self.writeValue(&buffer, pair.key);
             try self.writeValue(&buffer, pair.value);
+            assert(buffer.items.len > len_before);
         }
 
-        return buffer.toOwnedSlice(self.allocator);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 set (~<count>\r\n<elem>...\r\n)
@@ -245,10 +314,15 @@ pub const Writer = struct {
         try buffer.appendSlice(self.allocator, "\r\n");
 
         for (elements) |elem| {
+            const len_before = buffer.items.len;
             try self.writeValue(&buffer, elem);
+            assert(buffer.items.len > len_before);
         }
 
-        return buffer.toOwnedSlice(self.allocator);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 push message (><count>\r\n<elem>...\r\n)
@@ -261,10 +335,15 @@ pub const Writer = struct {
         try buffer.appendSlice(self.allocator, "\r\n");
 
         for (elements) |elem| {
+            const len_before = buffer.items.len;
             try self.writeValue(&buffer, elem);
+            assert(buffer.items.len > len_before);
         }
 
-        return buffer.toOwnedSlice(self.allocator);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write a RESP3 push invalidation message for client-side caching
@@ -286,14 +365,19 @@ pub const Writer = struct {
         try buffer.appendSlice(self.allocator, "\r\n");
 
         for (keys) |key| {
+            const len_before = buffer.items.len;
             try buffer.append(self.allocator, '$');
             try std.fmt.format(buffer.writer(self.allocator), "{d}", .{key.len});
             try buffer.appendSlice(self.allocator, "\r\n");
             try buffer.appendSlice(self.allocator, key);
             try buffer.appendSlice(self.allocator, "\r\n");
+            assert(buffer.items.len > len_before);
         }
 
-        return buffer.toOwnedSlice(self.allocator);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     /// Write any RespValue to a RESP-encoded response
@@ -301,7 +385,11 @@ pub const Writer = struct {
         var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 512);
         errdefer buffer.deinit(self.allocator);
         try self.writeValue(&buffer, value);
-        return buffer.toOwnedSlice(self.allocator);
+        assert(buffer.items.len > 0);
+        const written_len = buffer.items.len;
+        const result = try buffer.toOwnedSlice(self.allocator);
+        assert(result.len == written_len);
+        return result;
     }
 
     // Helper to write a value to a buffer
