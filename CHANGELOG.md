@@ -23,6 +23,15 @@ see `git tag -l 'v*'` and the corresponding GitHub releases for that history.
   across recursive `writeValue` calls, and a 3-byte format-code precondition on
   `writeVerbatimString`. The remaining three hot modules (`storage/memory.zig`, `server.zig`,
   `commands/strings.zig`) are deferred to future cycles.
+- `src/server.zig` (plan 001 item 11, assertion baseline continuation): Tiger Style pre/post-
+  condition assertions on `ServerStats`, `ShutdownState`, `GossipTask`, `Server.init`/`deinit`,
+  `performShutdown`, and `detectPsync` — atomic-counter monotonicity, uptime non-negativity,
+  requested-shutdown/request-payload consistency, gossip-task running/thread-handle invariants,
+  database-count postconditions, and a case-insensitive PSYNC match proof. New unit tests cover
+  the four testable pieces this file previously had none for; `start`/`handleConnection` (the
+  socket-bound accept loop) stay covered by the existing shell integration suite, not new unit
+  tests, and were kept at their `tidy-baseline.zon` line-count ceiling. `storage/memory.zig` and
+  `commands/strings.zig` remain for future cycles.
 - `zig build tidy` (gates `zig build test`): Tiger Style mechanical checks over `src/` — line
   length, function length, `std.debug.print`/`std.time.*`/unproven-`catch unreachable`/`usize`-
   in-wire-format ban list, and `//!` module headers — checked against a shrink-only baseline in
