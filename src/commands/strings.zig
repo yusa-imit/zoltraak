@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
@@ -141,22 +142,19 @@ fn checkKeyPermissions(
 fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
     // Read commands
     const read_commands = [_][]const u8{
-        "GET", "MGET", "EXISTS", "TTL", "PTTL", "TYPE", "STRLEN",
-        "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS",
-        "LLEN", "LINDEX", "LRANGE", "LPOS",
-        "SMEMBERS", "SCARD", "SISMEMBER", "SMISMEMBER", "SRANDMEMBER",
-        "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
-        "ZREVRANGEBYLEX", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZSCORE", "ZMSCORE",
-        "ZRANK", "ZREVRANK", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION",
-        "SDIFF", "SINTER", "SUNION",
-        "XLEN", "XRANGE", "XREVRANGE", "XREAD", "XREADGROUP", "XPENDING", "XINFO",
-        "GETRANGE", "SUBSTR", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
-        "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
-        "PFCOUNT",
-        "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
-        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE", "TS.QUERYINDEX", "TS.INFO",
-        "VCARD", "VDIM", "VEMB", "VISMEMBER", "VRANDMEMBER", "VGETATTR", "VINFO", "VSIM", "VRANGE", "VLINKS",
-        "EVAL_RO", "EVALSHA_RO", "FCALL_RO",
+        "GET",            "MGET",        "EXISTS",      "TTL",               "PTTL",          "TYPE",             "STRLEN",
+        "HGET",           "HMGET",       "HGETALL",     "HKEYS",             "HVALS",         "HLEN",             "HEXISTS",
+        "LLEN",           "LINDEX",      "LRANGE",      "LPOS",              "SMEMBERS",      "SCARD",            "SISMEMBER",
+        "SMISMEMBER",     "SRANDMEMBER", "ZRANGE",      "ZREVRANGE",         "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
+        "ZREVRANGEBYLEX", "ZCARD",       "ZCOUNT",      "ZLEXCOUNT",         "ZSCORE",        "ZMSCORE",          "ZRANK",
+        "ZREVRANK",       "ZRANDMEMBER", "ZDIFF",       "ZINTER",            "ZUNION",        "SDIFF",            "SINTER",
+        "SUNION",         "XLEN",        "XRANGE",      "XREVRANGE",         "XREAD",         "XREADGROUP",       "XPENDING",
+        "XINFO",          "GETRANGE",    "SUBSTR",      "GETBIT",            "BITCOUNT",      "BITPOS",           "BITFIELD_RO",
+        "GEODIST",        "GEOPOS",      "GEORADIUS",   "GEORADIUSBYMEMBER", "GEOHASH",       "GEOSEARCH",        "PFCOUNT",
+        "DUMP",           "OBJECT",      "LCS",         "SORT_RO",           "HRANDFIELD",    "HSCAN",            "TS.GET",
+        "TS.MGET",        "TS.RANGE",    "TS.REVRANGE", "TS.MRANGE",         "TS.MREVRANGE",  "TS.QUERYINDEX",    "TS.INFO",
+        "VCARD",          "VDIM",        "VEMB",        "VISMEMBER",         "VRANDMEMBER",   "VGETATTR",         "VINFO",
+        "VSIM",           "VRANGE",      "VLINKS",      "EVAL_RO",           "EVALSHA_RO",    "FCALL_RO",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -164,28 +162,23 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
 
     // Write commands
     const write_commands = [_][]const u8{
-        "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "MSETEX",
-        "SETRANGE", "APPEND", "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
-        "GETSET", "GETDEL", "GETEX",
-        "DEL", "UNLINK", "RENAME", "RENAMENX", "COPY", "MOVE",
-        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
-        "HSET", "HMSET", "HSETNX", "HINCRBY", "HINCRBYFLOAT", "HDEL",
-        "HGETDEL", "HGETEX", "HSETEX",
-        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LSET",
-        "LINSERT", "LREM", "LTRIM", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP",
-        "BLMOVE", "BRPOPLPUSH", "LMPOP", "BLMPOP",
-        "SADD", "SREM", "SPOP", "SMOVE", "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-        "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZMPOP", "BZPOPMIN",
-        "BZPOPMAX", "BZMPOP", "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-        "XADD", "XDEL", "XTRIM", "XSETID", "XCFGSET", "XGROUP", "XACK", "XCLAIM",
-        "XAUTOCLAIM", "XACKDEL", "XDELEX",
-        "SETBIT", "BITOP", "BITFIELD",
-        "GEOADD", "GEOSEARCHSTORE", "PFADD", "PFMERGE",
-        "RESTORE", "SORT", "DELEX", "MIGRATE",
-        "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
-        "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
-        "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
-        "VADD", "VREM", "VSETATTR",
+        "SET",            "SETEX",         "PSETEX",       "SETNX",       "MSET",        "MSETNX",         "MSETEX",
+        "SETRANGE",       "APPEND",        "INCR",         "DECR",        "INCRBY",      "DECRBY",         "INCRBYFLOAT",
+        "GETSET",         "GETDEL",        "GETEX",        "DEL",         "UNLINK",      "RENAME",         "RENAMENX",
+        "COPY",           "MOVE",          "EXPIRE",       "PEXPIRE",     "EXPIREAT",    "PEXPIREAT",      "PERSIST",
+        "TOUCH",          "HSET",          "HMSET",        "HSETNX",      "HINCRBY",     "HINCRBYFLOAT",   "HDEL",
+        "HGETDEL",        "HGETEX",        "HSETEX",       "LPUSH",       "RPUSH",       "LPUSHX",         "RPUSHX",
+        "LPOP",           "RPOP",          "LSET",         "LINSERT",     "LREM",        "LTRIM",          "LMOVE",
+        "RPOPLPUSH",      "BLPOP",         "BRPOP",        "BLMOVE",      "BRPOPLPUSH",  "LMPOP",          "BLMPOP",
+        "SADD",           "SREM",          "SPOP",         "SMOVE",       "SUNIONSTORE", "SINTERSTORE",    "SDIFFSTORE",
+        "ZADD",           "ZREM",          "ZINCRBY",      "ZPOPMIN",     "ZPOPMAX",     "ZMPOP",          "BZPOPMIN",
+        "BZPOPMAX",       "BZMPOP",        "ZRANGESTORE",  "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",     "XADD",
+        "XDEL",           "XTRIM",         "XSETID",       "XCFGSET",     "XGROUP",      "XACK",           "XCLAIM",
+        "XAUTOCLAIM",     "XACKDEL",       "XDELEX",       "SETBIT",      "BITOP",       "BITFIELD",       "GEOADD",
+        "GEOSEARCHSTORE", "PFADD",         "PFMERGE",      "RESTORE",     "SORT",        "DELEX",          "MIGRATE",
+        "TS.CREATE",      "TS.ADD",        "TS.MADD",      "TS.INCRBY",   "TS.DECRBY",   "TS.DEL",         "TS.ALTER",
+        "TS.CREATERULE",  "TS.DELETERULE", "TOPK.RESERVE", "TOPK.ADD",    "TOPK.INCRBY", "TDIGEST.CREATE", "TDIGEST.ADD",
+        "TDIGEST.RESET",  "TDIGEST.MERGE", "VADD",         "VREM",        "VSETATTR",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -216,31 +209,23 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
 
     // Single-key commands (key at position 1)
     const single_key_commands = [_][]const u8{
-        "GET", "SET", "SETEX", "PSETEX", "SETNX", "GETSET", "GETDEL", "GETEX",
-        "APPEND", "STRLEN", "SETRANGE", "GETRANGE",
-        "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
-        "EXISTS", "DEL", "UNLINK", "TYPE", "TTL", "PTTL",
-        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
-        "DUMP", "OBJECT",
-        "HSET", "HGET", "HMSET", "HMGET", "HGETALL", "HDEL", "HEXISTS",
-        "HINCRBY", "HINCRBYFLOAT", "HKEYS", "HVALS", "HLEN", "HSETNX",
-        "HGETDEL", "HGETEX", "HSETEX", "HRANDFIELD", "HSCAN",
-        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LLEN",
-        "LINDEX", "LSET", "LRANGE", "LTRIM", "LREM", "LINSERT", "LPOS", "LMPOP",
-        "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SMISMEMBER", "SCARD",
-        "SPOP", "SRANDMEMBER",
-        "ZADD", "ZREM", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZRANGE", "ZREVRANGE",
-        "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGEBYLEX",
-        "ZSCORE", "ZMSCORE", "ZRANK", "ZREVRANK", "ZINCRBY", "ZPOPMIN", "ZPOPMAX",
-        "ZMPOP", "ZRANDMEMBER",
-        "XADD", "XDEL", "XTRIM", "XLEN", "XRANGE", "XREVRANGE", "XREAD",
-        "XREADGROUP", "XPENDING", "XINFO", "XSETID", "XCFGSET", "XGROUP",
-        "XACK", "XCLAIM", "XAUTOCLAIM", "XACKDEL", "XDELEX",
-        "SETBIT", "GETBIT", "BITCOUNT", "BITPOS", "BITOP", "BITFIELD", "BITFIELD_RO",
-        "GEOADD", "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER",
-        "GEOHASH", "GEOSEARCH", "GEOSEARCHSTORE",
-        "PFADD", "PFCOUNT", "PFMERGE",
-        "LCS", "DELEX", "SORT", "SORT_RO",
+        "GET",              "SET",               "SETEX",          "PSETEX",      "SETNX",          "GETSET",  "GETDEL",    "GETEX",
+        "APPEND",           "STRLEN",            "SETRANGE",       "GETRANGE",    "INCR",           "DECR",    "INCRBY",    "DECRBY",
+        "INCRBYFLOAT",      "EXISTS",            "DEL",            "UNLINK",      "TYPE",           "TTL",     "PTTL",      "EXPIRE",
+        "PEXPIRE",          "EXPIREAT",          "PEXPIREAT",      "PERSIST",     "TOUCH",          "DUMP",    "OBJECT",    "HSET",
+        "HGET",             "HMSET",             "HMGET",          "HGETALL",     "HDEL",           "HEXISTS", "HINCRBY",   "HINCRBYFLOAT",
+        "HKEYS",            "HVALS",             "HLEN",           "HSETNX",      "HGETDEL",        "HGETEX",  "HSETEX",    "HRANDFIELD",
+        "HSCAN",            "LPUSH",             "RPUSH",          "LPUSHX",      "RPUSHX",         "LPOP",    "RPOP",      "LLEN",
+        "LINDEX",           "LSET",              "LRANGE",         "LTRIM",       "LREM",           "LINSERT", "LPOS",      "LMPOP",
+        "SADD",             "SREM",              "SMEMBERS",       "SISMEMBER",   "SMISMEMBER",     "SCARD",   "SPOP",      "SRANDMEMBER",
+        "ZADD",             "ZREM",              "ZCARD",          "ZCOUNT",      "ZLEXCOUNT",      "ZRANGE",  "ZREVRANGE", "ZRANGEBYSCORE",
+        "ZREVRANGEBYSCORE", "ZRANGEBYLEX",       "ZREVRANGEBYLEX", "ZSCORE",      "ZMSCORE",        "ZRANK",   "ZREVRANK",  "ZINCRBY",
+        "ZPOPMIN",          "ZPOPMAX",           "ZMPOP",          "ZRANDMEMBER", "XADD",           "XDEL",    "XTRIM",     "XLEN",
+        "XRANGE",           "XREVRANGE",         "XREAD",          "XREADGROUP",  "XPENDING",       "XINFO",   "XSETID",    "XCFGSET",
+        "XGROUP",           "XACK",              "XCLAIM",         "XAUTOCLAIM",  "XACKDEL",        "XDELEX",  "SETBIT",    "GETBIT",
+        "BITCOUNT",         "BITPOS",            "BITOP",          "BITFIELD",    "BITFIELD_RO",    "GEOADD",  "GEODIST",   "GEOPOS",
+        "GEORADIUS",        "GEORADIUSBYMEMBER", "GEOHASH",        "GEOSEARCH",   "GEOSEARCHSTORE", "PFADD",   "PFCOUNT",   "PFMERGE",
+        "LCS",              "DELEX",             "SORT",           "SORT_RO",
     };
     for (single_key_commands) |cmd| {
         if (std.mem.eql(u8, cmd_upper, cmd)) {
@@ -583,11 +568,10 @@ pub fn executeCommand(
     // Check if the command should be redirected to another node (ASK or MOVED)
     // Skip redirect check for non-key commands and cluster management commands
     const skip_redirect_cmds = [_][]const u8{
-        "PING", "INFO", "AUTH", "HELLO", "CLUSTER", "SENTINEL", "ASKING", "MIGRATE",
-        "READONLY", "READWRITE",
-        "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH",
-        "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",
-        "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT", "MODULE",
+        "PING",       "INFO",      "AUTH",   "HELLO",  "CLUSTER", "SENTINEL", "ASKING",  "MIGRATE",
+        "READONLY",   "READWRITE", "MULTI",  "EXEC",   "DISCARD", "WATCH",    "UNWATCH", "SUBSCRIBE",
+        "PSUBSCRIBE", "PUBLISH",   "PUBSUB", "CLIENT", "CONFIG",  "COMMAND",  "ACL",     "SCRIPT",
+        "MODULE",
     };
     var should_check_redirect = true;
     for (skip_redirect_cmds) |skip_cmd| {
@@ -617,11 +601,7 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(
-                    &buf,
-                    "ASK {d} {s}:{d}",
-                    .{slot, dest_node.addr, dest_node.port}
-                );
+                const redirect_msg = try std.fmt.bufPrint(&buf, "ASK {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
                 return w.writeError(redirect_msg);
             }
 
@@ -630,11 +610,7 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(
-                    &buf,
-                    "MOVED {d} {s}:{d}",
-                    .{slot, dest_node.addr, dest_node.port}
-                );
+                const redirect_msg = try std.fmt.bufPrint(&buf, "MOVED {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
                 return w.writeError(redirect_msg);
             }
 
@@ -660,34 +636,29 @@ pub fn executeCommand(
                 }
             }
             const write_cmds = [_][]const u8{
-                "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-                "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
-                "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
-                "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
-                "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
-                "APPEND",     "GETSET",     "GETDEL",     "GETEX",
-                "SETNX",      "SETEX",      "PSETEX",
-                "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
-                "UNLINK",
-                "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
-                "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
-                "HGETDEL",    "HGETEX",     "HSETEX",
-                "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-                "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-                "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-                "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-                "BLMOVE",     "LMPOP",      "BLMPOP",
-                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
-                "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
-                "SETBIT",     "BITOP",      "BITFIELD",
-                "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
-                "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
-                "GEOADD",     "PFADD",      "PFMERGE",
-                "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
-                "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
-                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY", "CMS.MERGE",
-                "TOPK.RESERVE", "TOPK.ADD",
-                "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
+                "SET",           "DEL",            "LPUSH",       "RPUSH",         "LPOP",
+                "RPOP",          "SADD",           "SREM",        "HSET",          "HMSET",
+                "HDEL",          "ZADD",           "ZREM",        "FLUSHDB",       "FLUSHALL",
+                "EXPIRE",        "PEXPIRE",        "EXPIREAT",    "PEXPIREAT",     "PERSIST",
+                "INCR",          "DECR",           "INCRBY",      "DECRBY",        "INCRBYFLOAT",
+                "APPEND",        "GETSET",         "GETDEL",      "GETEX",         "SETNX",
+                "SETEX",         "PSETEX",         "MSET",        "MSETNX",        "MSETEX",
+                "RENAME",        "RENAMENX",       "UNLINK",      "DUMP",          "RESTORE",
+                "COPY",          "TOUCH",          "MOVE",        "HINCRBY",       "HINCRBYFLOAT",
+                "HSETNX",        "HGETDEL",        "HGETEX",      "HSETEX",        "ZINCRBY",
+                "SUNIONSTORE",   "SINTERSTORE",    "SDIFFSTORE",  "ZRANGESTORE",   "ZUNIONSTORE",
+                "ZINTERSTORE",   "ZDIFFSTORE",     "LSET",        "LTRIM",         "LREM",
+                "LPUSHX",        "RPUSHX",         "LINSERT",     "LMOVE",         "RPOPLPUSH",
+                "BLPOP",         "BRPOP",          "BLMOVE",      "LMPOP",         "BLMPOP",
+                "SPOP",          "SMOVE",          "ZPOPMIN",     "ZPOPMAX",       "ZMPOP",
+                "BZPOPMIN",      "BZPOPMAX",       "BZMPOP",      "SETRANGE",      "SETBIT",
+                "BITOP",         "BITFIELD",       "XADD",        "XDEL",          "XTRIM",
+                "XSETID",        "XCFGSET",        "XGROUP",      "XACK",          "XCLAIM",
+                "XAUTOCLAIM",    "GEOADD",         "PFADD",       "PFMERGE",       "BF.ADD",
+                "BF.RESERVE",    "BF.MADD",        "BF.INSERT",   "BF.INFO",       "CF.ADD",
+                "CF.RESERVE",    "CF.ADDNX",       "CF.INSERT",   "CF.INSERTNX",   "CF.DEL",
+                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY",  "CMS.MERGE",     "TOPK.RESERVE",
+                "TOPK.ADD",      "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -791,31 +762,27 @@ pub fn executeCommand(
     // Determine if this is a write command that should be AOF-logged
     const is_write_cmd = blk: {
         const write_cmds = [_][]const u8{
-            "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-            "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
-            "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
-            "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
-            "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
-            "APPEND",     "GETSET",     "GETDEL",     "GETEX",
-            "SETNX",      "SETEX",      "PSETEX",
-            "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
-            "UNLINK",
-            "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
-            "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
-            "HGETDEL",    "HGETEX",     "HSETEX",
-            "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-            "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-            "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-            "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-            "BLMOVE",     "LMPOP",      "BLMPOP",
-            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
-            "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
-            "SETBIT",     "BITOP",      "BITFIELD",
-            "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
-            "XACK",       "XCLAIM",     "XAUTOCLAIM",
-            "GEOADD",     "PFADD",      "PFMERGE",
-            "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.LOADCHUNK",
-            "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
+            "SET",         "DEL",         "LPUSH",        "RPUSH",       "LPOP",
+            "RPOP",        "SADD",        "SREM",         "HSET",        "HMSET",
+            "HDEL",        "ZADD",        "ZREM",         "FLUSHDB",     "FLUSHALL",
+            "EXPIRE",      "PEXPIRE",     "EXPIREAT",     "PEXPIREAT",   "PERSIST",
+            "INCR",        "DECR",        "INCRBY",       "DECRBY",      "INCRBYFLOAT",
+            "APPEND",      "GETSET",      "GETDEL",       "GETEX",       "SETNX",
+            "SETEX",       "PSETEX",      "MSET",         "MSETNX",      "MSETEX",
+            "RENAME",      "RENAMENX",    "UNLINK",       "DUMP",        "RESTORE",
+            "COPY",        "TOUCH",       "MOVE",         "HINCRBY",     "HINCRBYFLOAT",
+            "HSETNX",      "HGETDEL",     "HGETEX",       "HSETEX",      "ZINCRBY",
+            "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",   "ZRANGESTORE", "ZUNIONSTORE",
+            "ZINTERSTORE", "ZDIFFSTORE",  "LSET",         "LTRIM",       "LREM",
+            "LPUSHX",      "RPUSHX",      "LINSERT",      "LMOVE",       "RPOPLPUSH",
+            "BLPOP",       "BRPOP",       "BLMOVE",       "LMPOP",       "BLMPOP",
+            "SPOP",        "SMOVE",       "ZPOPMIN",      "ZPOPMAX",     "ZMPOP",
+            "BZPOPMIN",    "BZPOPMAX",    "BZMPOP",       "SETRANGE",    "SETBIT",
+            "BITOP",       "BITFIELD",    "XADD",         "XDEL",        "XTRIM",
+            "XSETID",      "XGROUP",      "XACK",         "XCLAIM",      "XAUTOCLAIM",
+            "GEOADD",      "PFADD",       "PFMERGE",      "BF.ADD",      "BF.RESERVE",
+            "BF.MADD",     "BF.INSERT",   "BF.LOADCHUNK", "CF.ADD",      "CF.RESERVE",
+            "CF.ADDNX",    "CF.INSERT",   "CF.INSERTNX",  "CF.DEL",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -1861,8 +1828,7 @@ pub fn executeCommand(
                 defer w.deinit();
                 break :blk try w.writeError("ERR unknown FUNCTION subcommand");
             }
-        }
-        else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
+        } else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
             break :blk try function_cmds.cmdFcall(
@@ -1884,8 +1850,7 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
-        }
-        else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
+        } else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
             const args_fcall_ro = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall_ro);
             break :blk try function_cmds.cmdFcallRo(
@@ -3302,7 +3267,10 @@ pub fn executeCommand(
             for (array, 0..) |arg, i| {
                 aof_args[i] = switch (arg) {
                     .bulk_string => |s| s,
-                    else => { valid = false; break; },
+                    else => {
+                        valid = false;
+                        break;
+                    },
                 };
             }
             if (valid) {
@@ -4201,6 +4169,8 @@ pub fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     if (val != null) {
         notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .generic, "del");
     }
+    // GETDEL always removes the key when present, and it was never there when absent.
+    assert(!storage.exists(key));
 
     return w.writeBulkString(val);
 }
@@ -4301,7 +4271,9 @@ pub fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeInteger(0);
     }
 
+    assert(!storage.exists(key));
     try storage.set(key, value, null);
+    assert(storage.exists(key));
     // Fire "set" notification only when key was actually set
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
     return w.writeInteger(1);
@@ -5089,6 +5061,7 @@ pub fn cmdDigest(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     // Convert to hex string (16 lowercase hex characters for 64-bit hash)
     const hex_str = try std.fmt.allocPrint(allocator, "{x:0>16}", .{hash_value});
     defer allocator.free(hex_str);
+    assert(hex_str.len == 16);
 
     return w.writeBulkString(hex_str);
 }
@@ -5097,6 +5070,15 @@ pub fn cmdDigest(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 /// Conditionally delete a key based on value or digest comparison.
 /// Redis 8.4+ — atomic compare-and-delete for optimistic concurrency control.
 /// Time complexity: O(1) for IFEQ/IFNE, O(N) for IFDEQ/IFDNE where N is value length.
+/// True when `value`'s XXH3-64 digest (same algorithm as cmdDigest) equals `expected_hex`.
+fn digestMatches(allocator: std.mem.Allocator, value: []const u8, expected_hex: []const u8) !bool {
+    const hash = std.hash.XxHash3.hash(0, value);
+    const hex = try std.fmt.allocPrint(allocator, "{x:0>16}", .{hash});
+    defer allocator.free(hex);
+    assert(hex.len == 16);
+    return std.mem.eql(u8, hex, expected_hex);
+}
+
 pub fn cmdDelex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespValue) ![]const u8 {
     var w = Writer.init(allocator);
     defer w.deinit();
@@ -5181,6 +5163,8 @@ pub fn cmdDelex(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
     }
 
+    assert((condition == null) == (condition_value == null));
+
     // No condition means unconditional delete (same as DEL)
     if (condition == null) {
         const deleted = storage.del(&[_][]const u8{key});
@@ -5195,28 +5179,18 @@ pub fn cmdDelex(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeInteger(0);
     }
 
-    // Check condition
+    // Check condition. IFDEQ/IFDNE must hash with the same algorithm as
+    // DIGEST (XXH3-64) so a digest a client obtained from DIGEST matches.
     const should_delete = switch (condition.?) {
         .ifeq => std.mem.eql(u8, current_value.?, condition_value.?),
         .ifne => !std.mem.eql(u8, current_value.?, condition_value.?),
-        .ifdeq => blk: {
-            // Compute digest of current value
-            const current_hash = std.hash.Wyhash.hash(0, current_value.?);
-            const current_hex = try std.fmt.allocPrint(allocator, "{x:0>16}", .{current_hash});
-            defer allocator.free(current_hex);
-            break :blk std.mem.eql(u8, current_hex, condition_value.?);
-        },
-        .ifdne => blk: {
-            // Compute digest of current value
-            const current_hash = std.hash.Wyhash.hash(0, current_value.?);
-            const current_hex = try std.fmt.allocPrint(allocator, "{x:0>16}", .{current_hash});
-            defer allocator.free(current_hex);
-            break :blk !std.mem.eql(u8, current_hex, condition_value.?);
-        },
+        .ifdeq => try digestMatches(allocator, current_value.?, condition_value.?),
+        .ifdne => !try digestMatches(allocator, current_value.?, condition_value.?),
     };
 
     if (should_delete) {
         const deleted = storage.del(&[_][]const u8{key});
+        assert(!storage.exists(key));
         return w.writeInteger(@intCast(deleted));
     } else {
         return w.writeInteger(0);
@@ -5332,17 +5306,11 @@ test "commands - SET with PX option" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5365,17 +5333,11 @@ test "commands - SET with NX when key doesn't exist" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5399,17 +5361,11 @@ test "commands - SET with NX when key exists" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5434,17 +5390,11 @@ test "commands - SET with XX when key exists" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5467,17 +5417,11 @@ test "commands - SET with XX when key doesn't exist" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5501,17 +5445,11 @@ test "commands - SET with both NX and XX returns error" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5534,17 +5472,11 @@ test "commands - SET with negative expiration" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5741,10 +5673,7 @@ test "commands - GET existing key" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5764,10 +5693,7 @@ test "commands - GET non-existent key" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5786,10 +5712,7 @@ test "commands - GET wrong number of arguments" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5811,17 +5734,11 @@ test "commands - DEL single key" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5847,17 +5764,11 @@ test "commands - DEL multiple keys" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5877,17 +5788,11 @@ test "commands - DEL non-existent key" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -6136,6 +6041,8 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
         return err;
     };
+    assert(new_len >= required_len);
+    assert(new_len <= MAX_STRING_BYTES);
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "setrange");
@@ -6189,6 +6096,15 @@ pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeError("ERR bit offset is not an integer or out of range");
     };
 
+    // Redis caps bit offset so the backing string never exceeds the same 512MB
+    // maximum enforced by SETRANGE (see MAX_STRING_BYTES in cmdSetrange) — without
+    // this bound a hostile client could force an unbounded allocation via a huge
+    // bit offset (e.g. SETBIT key 999999999999 1).
+    const max_bit_offset: usize = 512 * 1024 * 1024 * 8 - 1;
+    if (offset > max_bit_offset) {
+        return w.writeError("ERR bit offset is not an integer or out of range");
+    }
+
     const value_int = std.fmt.parseInt(u8, value_str, 10) catch {
         return w.writeError("ERR bit is not an integer or out of range");
     };
@@ -6197,6 +6113,7 @@ pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeError("ERR bit is not an integer or out of range");
     }
 
+    assert(value_int <= 1);
     const value: u1 = @intCast(value_int);
 
     const original_bit = storage.setbit(key, offset, value) catch |err| {
@@ -6300,6 +6217,7 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
         return err;
     };
+    assert(count >= 0);
 
     return w.writeInteger(count);
 }
@@ -6349,6 +6267,9 @@ pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     if (operation == .NOT and srckeys.items.len != 1) {
         return w.writeError("ERR BITOP NOT must be called with a single source key");
     }
+    // args.len >= 4 was checked above, so args[3..] always yielded at least one key.
+    assert(srckeys.items.len >= 1);
+    if (operation == .NOT) assert(srckeys.items.len == 1);
 
     const result_len = storage.bitop(operation, destkey, srckeys.items) catch |err| {
         if (err == error.WrongType) {
@@ -6396,6 +6317,7 @@ pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeError("ERR bit must be 0 or 1");
     }
 
+    assert(bit_int <= 1);
     const bit: u1 = @intCast(bit_int);
 
     const start: ?i64 = if (args.len >= 4) blk: {
@@ -6436,6 +6358,7 @@ pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         }
         return err;
     };
+    assert(position >= -1);
 
     return w.writeInteger(position);
 }
@@ -7169,7 +7092,7 @@ test "commands - DIGEST returns hash for existing key" {
     const result = try cmdDigest(allocator, storage, &args);
     defer allocator.free(result);
 
-    // Should return a bulk string with hex digest (16 hex chars for Wyhash)
+    // Should return a bulk string with hex digest (16 hex chars for XXH3-64)
     try std.testing.expect(std.mem.startsWith(u8, result, "$"));
     try std.testing.expect(result.len > 10); // At least some hex digits
 }
@@ -7848,6 +7771,178 @@ test "SETRANGE - rejects offset that would exceed 512MB" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "ERR string exceeds maximum allowed size") != null);
+}
+
+test "SETBIT - rejects bit offset that would exceed 512MB string" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // bit offset 4294967296 (512MB * 8) is one past the last valid bit offset.
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETBIT" },
+        RespValue{ .bulk_string = "bigkey" },
+        RespValue{ .bulk_string = "4294967296" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdSetbit(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "ERR bit offset is not an integer or out of range") != null);
+    try std.testing.expect(!storage.exists("bigkey"));
+}
+
+test "SETBIT - accepts bit offset at exactly the 512MB boundary" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    // bit offset 4294967295 is the last valid bit offset (512MB string, 0-indexed).
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETBIT" },
+        RespValue{ .bulk_string = "bigkey" },
+        RespValue{ .bulk_string = "4294967295" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdSetbit(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":0\r\n", result);
+    try std.testing.expect(storage.exists("bigkey"));
+}
+
+test "commands - SETBIT and GETBIT round-trip" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const set_args = [_]RespValue{
+        RespValue{ .bulk_string = "SETBIT" },
+        RespValue{ .bulk_string = "bitkey" },
+        RespValue{ .bulk_string = "7" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const set_result = try cmdSetbit(allocator, storage, &set_args, &ps, 0);
+    defer allocator.free(set_result);
+    try std.testing.expectEqualStrings(":0\r\n", set_result);
+
+    const get_args = [_]RespValue{
+        RespValue{ .bulk_string = "GETBIT" },
+        RespValue{ .bulk_string = "bitkey" },
+        RespValue{ .bulk_string = "7" },
+    };
+    const get_result = try cmdGetbit(allocator, storage, &get_args);
+    defer allocator.free(get_result);
+    try std.testing.expectEqualStrings(":1\r\n", get_result);
+}
+
+test "commands - GETBIT out of range offset returns 0" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("shortkey", "a", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETBIT" },
+        RespValue{ .bulk_string = "shortkey" },
+        RespValue{ .bulk_string = "100" },
+    };
+    const result = try cmdGetbit(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":0\r\n", result);
+}
+
+test "commands - BITOP AND combines two keys" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    try storage.set("k1", "\xff\x00", null);
+    try storage.set("k2", "\x0f\xff", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITOP" },
+        RespValue{ .bulk_string = "AND" },
+        RespValue{ .bulk_string = "dest" },
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "k2" },
+    };
+    const result = try cmdBitop(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":2\r\n", result);
+    const stored = storage.get("dest").?;
+    try std.testing.expectEqualSlices(u8, "\x0f\x00", stored);
+}
+
+test "commands - BITPOS finds first set bit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    try storage.set("k1", "\x00\x0f\x00", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "BITPOS" },
+        RespValue{ .bulk_string = "k1" },
+        RespValue{ .bulk_string = "1" },
+    };
+    const result = try cmdBitpos(allocator, storage, &args);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(":12\r\n", result);
+}
+
+test "commands - GETDEL postcondition: key gone after delete" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    try storage.set("key1", "value1", null);
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "GETDEL" },
+        RespValue{ .bulk_string = "key1" },
+    };
+    const result = try cmdGetdel(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expect(!storage.exists("key1"));
+}
+
+test "commands - SETNX postcondition: key exists after set" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator);
+    defer storage.deinit();
+
+    var ps = pubsub_mod.PubSub.init(allocator);
+    defer ps.deinit();
+
+    const args = [_]RespValue{
+        RespValue{ .bulk_string = "SETNX" },
+        RespValue{ .bulk_string = "key1" },
+        RespValue{ .bulk_string = "value1" },
+    };
+    const result = try cmdSetnx(allocator, storage, &args, &ps, 0);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
+    try std.testing.expect(storage.exists("key1"));
 }
 
 test "APPEND - normal operation works correctly" {
