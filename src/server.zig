@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const sailor = @import("sailor");
 const protocol = @import("protocol/parser.zig");
 const writer_mod = @import("protocol/writer.zig");
@@ -43,19 +44,26 @@ pub const ServerStats = struct {
     start_time_seconds: i64,
 
     pub fn init() ServerStats {
-        return ServerStats{
+        const stats = ServerStats{
             .total_commands_processed = std.atomic.Value(u64).init(0),
             .total_connections_received = std.atomic.Value(u64).init(0),
             .start_time_seconds = std.time.timestamp(),
         };
+        assert(stats.getCommandsProcessed() == 0);
+        assert(stats.getConnectionsReceived() == 0);
+        return stats;
     }
 
     pub fn recordCommand(self: *ServerStats) void {
+        const before = self.total_commands_processed.load(.acquire);
         _ = self.total_commands_processed.fetchAdd(1, .release);
+        assert(self.getCommandsProcessed() == before + 1);
     }
 
     pub fn recordConnection(self: *ServerStats) void {
+        const before = self.total_connections_received.load(.acquire);
         _ = self.total_connections_received.fetchAdd(1, .release);
+        assert(self.getConnectionsReceived() == before + 1);
     }
 
     pub fn getCommandsProcessed(self: *const ServerStats) u64 {
@@ -67,9 +75,27 @@ pub const ServerStats = struct {
     }
 
     pub fn getUptimeSeconds(self: *const ServerStats) i64 {
-        return std.time.timestamp() - self.start_time_seconds;
+        const uptime = std.time.timestamp() - self.start_time_seconds;
+        assert(uptime >= 0);
+        return uptime;
     }
 };
+
+test "ServerStats starts at zero and getters mirror recorders" {
+    var stats = ServerStats.init();
+    try std.testing.expectEqual(@as(u64, 0), stats.getCommandsProcessed());
+    try std.testing.expectEqual(@as(u64, 0), stats.getConnectionsReceived());
+    try std.testing.expect(stats.getUptimeSeconds() >= 0);
+
+    stats.recordCommand();
+    stats.recordCommand();
+    try std.testing.expectEqual(@as(u64, 2), stats.getCommandsProcessed());
+    try std.testing.expectEqual(@as(u64, 0), stats.getConnectionsReceived());
+
+    stats.recordConnection();
+    try std.testing.expectEqual(@as(u64, 1), stats.getConnectionsReceived());
+    try std.testing.expectEqual(@as(u64, 2), stats.getCommandsProcessed());
+}
 
 /// Shutdown request state
 pub const ShutdownRequest = struct {
@@ -85,11 +111,14 @@ pub const ShutdownState = struct {
     mutex: std.Thread.Mutex,
 
     pub fn init() ShutdownState {
-        return ShutdownState{
+        const state = ShutdownState{
             .requested = std.atomic.Value(bool).init(false),
             .request = null,
             .mutex = std.Thread.Mutex{},
         };
+        assert(!state.requested.load(.acquire));
+        assert(state.request == null);
+        return state;
     }
 
     pub fn requestShutdown(self: *ShutdownState, req: ShutdownRequest) void {
@@ -97,6 +126,8 @@ pub const ShutdownState = struct {
         defer self.mutex.unlock();
         self.request = req;
         self.requested.store(true, .release);
+        assert(self.requested.load(.acquire));
+        assert(self.request != null);
     }
 
     pub fn isRequested(self: *ShutdownState) bool {
@@ -106,9 +137,24 @@ pub const ShutdownState = struct {
     pub fn getRequest(self: *ShutdownState) ?ShutdownRequest {
         self.mutex.lock();
         defer self.mutex.unlock();
+        // Positive space: a requested shutdown always carries a request.
+        if (self.requested.load(.acquire)) assert(self.request != null);
         return self.request;
     }
 };
+
+test "ShutdownState starts idle and records a requested shutdown" {
+    var state = ShutdownState.init();
+    try std.testing.expect(!state.isRequested());
+    try std.testing.expectEqual(@as(?ShutdownRequest, null), state.getRequest());
+
+    state.requestShutdown(.{ .save = true, .now = false, .force = true });
+    try std.testing.expect(state.isRequested());
+    const req = state.getRequest() orelse return error.TestExpectedRequest;
+    try std.testing.expect(req.save);
+    try std.testing.expect(!req.now);
+    try std.testing.expect(req.force);
+}
 
 /// Background task for cluster gossip protocol
 /// Periodically sends PING messages to random nodes and updates health status
@@ -125,13 +171,17 @@ pub const GossipTask = struct {
 
     /// Initialize a new gossip task
     pub fn init(allocator: std.mem.Allocator, cluster: *ClusterState, interval_ms: u64) GossipTask {
-        return GossipTask{
+        assert(interval_ms > 0);
+        const task = GossipTask{
             .allocator = allocator,
             .cluster = cluster,
             .thread = null,
             .running = std.atomic.Value(bool).init(false),
             .interval_ms = interval_ms,
         };
+        assert(!task.running.load(.acquire));
+        assert(task.thread == null);
+        return task;
     }
 
     /// Start the background gossip task
@@ -142,10 +192,13 @@ pub const GossipTask = struct {
         if (self.running.load(.acquire)) {
             return error.AlreadyRunning;
         }
+        assert(self.thread == null);
 
         // Release: ensure running=true is visible to spawned thread
         self.running.store(true, .release);
         self.thread = try std.Thread.spawn(.{}, gossipLoop, .{self});
+        assert(self.thread != null);
+        assert(self.running.load(.acquire));
     }
 
     /// Stop the background gossip task
@@ -164,6 +217,8 @@ pub const GossipTask = struct {
             thread.join();
             self.thread = null;
         }
+        assert(self.thread == null);
+        assert(!self.running.load(.acquire));
     }
 
     /// Main loop for the gossip task.
@@ -251,6 +306,9 @@ pub const Server = struct {
     /// Initialize a new server instance.
     /// If `config.replicaof_host` is set, the server starts as a replica.
     pub fn init(allocator: std.mem.Allocator, config: Config) !*Server {
+        assert(config.host.len > 0);
+        assert(config.buffer_size > 0);
+
         const server = try allocator.create(Server);
         errdefer allocator.destroy(server);
 
@@ -258,6 +316,7 @@ pub const Server = struct {
         const num_databases: u16 = 16;
         const databases = try allocator.alloc(Storage, num_databases);
         errdefer allocator.free(databases);
+        assert(databases.len == num_databases);
 
         var db_idx: usize = 0;
         errdefer {
@@ -312,11 +371,15 @@ pub const Server = struct {
             server.gossip_task = GossipTask.init(allocator, &databases[0].cluster, GOSSIP_INTERVAL_MS);
         }
 
+        assert(server.num_databases == num_databases);
+        assert(server.databases.len == server.num_databases);
         return server;
     }
 
     /// Deinitialize the server and free resources
     pub fn deinit(self: *Server) void {
+        assert(self.databases.len == self.num_databases);
+
         // Stop gossip task if running
         if (self.gossip_task) |*task| {
             task.stop();
@@ -426,6 +489,7 @@ pub const Server = struct {
 
     /// Perform graceful shutdown based on shutdown request
     fn performShutdown(self: *Server) !void {
+        assert(self.shutdown_state.isRequested());
         const req = self.shutdown_state.getRequest() orelse return;
 
         std.debug.print("\x1b[1;33mShutdown requested\x1b[0m (save={}, now={}, force={})\n", .{ req.save, req.now, req.force });
@@ -451,6 +515,7 @@ pub const Server = struct {
 
         // Stop accepting new connections
         self.running.store(false, .monotonic);
+        assert(!self.running.load(.monotonic));
         std.debug.print("\x1b[1;32mShutdown complete\x1b[0m\n", .{});
     }
 
@@ -708,9 +773,41 @@ pub const Server = struct {
             .bulk_string => |s| s,
             else => return false,
         };
-        return std.ascii.eqlIgnoreCase(name, "PSYNC");
+        const is_psync = std.ascii.eqlIgnoreCase(name, "PSYNC");
+        // Negative space: nothing but an exact case-insensitive "PSYNC" matches.
+        if (!std.ascii.eqlIgnoreCase(name, "psync")) assert(!is_psync);
+        return is_psync;
     }
 };
 
-// Note: Server tests would require integration testing with actual TCP connections.
-// Unit tests are provided for the individual components (parser, writer, storage, commands).
+test "detectPsync matches only a case-insensitive PSYNC array command" {
+    const bulk = protocol.RespValue{ .bulk_string = "PSYNC" };
+    const psync_cmd = protocol.RespValue{ .array = &[_]protocol.RespValue{bulk} };
+    try std.testing.expect(Server.detectPsync(psync_cmd));
+
+    const lower_bulk = protocol.RespValue{ .bulk_string = "psync" };
+    const lower_cmd = protocol.RespValue{ .array = &[_]protocol.RespValue{lower_bulk} };
+    try std.testing.expect(Server.detectPsync(lower_cmd));
+
+    const other_bulk = protocol.RespValue{ .bulk_string = "GET" };
+    const other_cmd = protocol.RespValue{ .array = &[_]protocol.RespValue{other_bulk} };
+    try std.testing.expect(!Server.detectPsync(other_cmd));
+
+    const empty_cmd = protocol.RespValue{ .array = &[_]protocol.RespValue{} };
+    try std.testing.expect(!Server.detectPsync(empty_cmd));
+
+    const non_array_cmd = protocol.RespValue{ .simple_string = "OK" };
+    try std.testing.expect(!Server.detectPsync(non_array_cmd));
+}
+
+test "Server.init allocates the configured database count and deinit frees it" {
+    const server = try Server.init(std.testing.allocator, .{});
+    defer server.deinit();
+
+    try std.testing.expectEqual(@as(u16, 16), server.num_databases);
+    try std.testing.expectEqual(@as(usize, 16), server.databases.len);
+}
+
+// Note: connection-handling tests (start/handleConnection) would require integration
+// testing with actual TCP connections. Unit tests are provided for the individual
+// components (parser, writer, storage, commands) and the pure/testable pieces above.
