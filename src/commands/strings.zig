@@ -141,22 +141,19 @@ fn checkKeyPermissions(
 fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
     // Read commands
     const read_commands = [_][]const u8{
-        "GET", "MGET", "EXISTS", "TTL", "PTTL", "TYPE", "STRLEN",
-        "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS",
-        "LLEN", "LINDEX", "LRANGE", "LPOS",
-        "SMEMBERS", "SCARD", "SISMEMBER", "SMISMEMBER", "SRANDMEMBER",
-        "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
-        "ZREVRANGEBYLEX", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZSCORE", "ZMSCORE",
-        "ZRANK", "ZREVRANK", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION",
-        "SDIFF", "SINTER", "SUNION",
-        "XLEN", "XRANGE", "XREVRANGE", "XREAD", "XREADGROUP", "XPENDING", "XINFO",
-        "GETRANGE", "SUBSTR", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
-        "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
-        "PFCOUNT",
-        "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
-        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE", "TS.QUERYINDEX", "TS.INFO",
-        "VCARD", "VDIM", "VEMB", "VISMEMBER", "VRANDMEMBER", "VGETATTR", "VINFO", "VSIM", "VRANGE", "VLINKS",
-        "EVAL_RO", "EVALSHA_RO", "FCALL_RO",
+        "GET",            "MGET",        "EXISTS",      "TTL",               "PTTL",          "TYPE",             "STRLEN",
+        "HGET",           "HMGET",       "HGETALL",     "HKEYS",             "HVALS",         "HLEN",             "HEXISTS",
+        "LLEN",           "LINDEX",      "LRANGE",      "LPOS",              "SMEMBERS",      "SCARD",            "SISMEMBER",
+        "SMISMEMBER",     "SRANDMEMBER", "ZRANGE",      "ZREVRANGE",         "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
+        "ZREVRANGEBYLEX", "ZCARD",       "ZCOUNT",      "ZLEXCOUNT",         "ZSCORE",        "ZMSCORE",          "ZRANK",
+        "ZREVRANK",       "ZRANDMEMBER", "ZDIFF",       "ZINTER",            "ZUNION",        "SDIFF",            "SINTER",
+        "SUNION",         "XLEN",        "XRANGE",      "XREVRANGE",         "XREAD",         "XREADGROUP",       "XPENDING",
+        "XINFO",          "GETRANGE",    "SUBSTR",      "GETBIT",            "BITCOUNT",      "BITPOS",           "BITFIELD_RO",
+        "GEODIST",        "GEOPOS",      "GEORADIUS",   "GEORADIUSBYMEMBER", "GEOHASH",       "GEOSEARCH",        "PFCOUNT",
+        "DUMP",           "OBJECT",      "LCS",         "SORT_RO",           "HRANDFIELD",    "HSCAN",            "TS.GET",
+        "TS.MGET",        "TS.RANGE",    "TS.REVRANGE", "TS.MRANGE",         "TS.MREVRANGE",  "TS.QUERYINDEX",    "TS.INFO",
+        "VCARD",          "VDIM",        "VEMB",        "VISMEMBER",         "VRANDMEMBER",   "VGETATTR",         "VINFO",
+        "VSIM",           "VRANGE",      "VLINKS",      "EVAL_RO",           "EVALSHA_RO",    "FCALL_RO",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -164,28 +161,23 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
 
     // Write commands
     const write_commands = [_][]const u8{
-        "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "MSETEX",
-        "SETRANGE", "APPEND", "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
-        "GETSET", "GETDEL", "GETEX",
-        "DEL", "UNLINK", "RENAME", "RENAMENX", "COPY", "MOVE",
-        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
-        "HSET", "HMSET", "HSETNX", "HINCRBY", "HINCRBYFLOAT", "HDEL",
-        "HGETDEL", "HGETEX", "HSETEX",
-        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LSET",
-        "LINSERT", "LREM", "LTRIM", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP",
-        "BLMOVE", "BRPOPLPUSH", "LMPOP", "BLMPOP",
-        "SADD", "SREM", "SPOP", "SMOVE", "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-        "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZMPOP", "BZPOPMIN",
-        "BZPOPMAX", "BZMPOP", "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-        "XADD", "XDEL", "XTRIM", "XSETID", "XCFGSET", "XGROUP", "XACK", "XCLAIM",
-        "XAUTOCLAIM", "XACKDEL", "XDELEX",
-        "SETBIT", "BITOP", "BITFIELD",
-        "GEOADD", "GEOSEARCHSTORE", "PFADD", "PFMERGE",
-        "RESTORE", "SORT", "DELEX", "MIGRATE",
-        "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
-        "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
-        "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
-        "VADD", "VREM", "VSETATTR",
+        "SET",            "SETEX",         "PSETEX",       "SETNX",       "MSET",        "MSETNX",         "MSETEX",
+        "SETRANGE",       "APPEND",        "INCR",         "DECR",        "INCRBY",      "DECRBY",         "INCRBYFLOAT",
+        "GETSET",         "GETDEL",        "GETEX",        "DEL",         "UNLINK",      "RENAME",         "RENAMENX",
+        "COPY",           "MOVE",          "EXPIRE",       "PEXPIRE",     "EXPIREAT",    "PEXPIREAT",      "PERSIST",
+        "TOUCH",          "HSET",          "HMSET",        "HSETNX",      "HINCRBY",     "HINCRBYFLOAT",   "HDEL",
+        "HGETDEL",        "HGETEX",        "HSETEX",       "LPUSH",       "RPUSH",       "LPUSHX",         "RPUSHX",
+        "LPOP",           "RPOP",          "LSET",         "LINSERT",     "LREM",        "LTRIM",          "LMOVE",
+        "RPOPLPUSH",      "BLPOP",         "BRPOP",        "BLMOVE",      "BRPOPLPUSH",  "LMPOP",          "BLMPOP",
+        "SADD",           "SREM",          "SPOP",         "SMOVE",       "SUNIONSTORE", "SINTERSTORE",    "SDIFFSTORE",
+        "ZADD",           "ZREM",          "ZINCRBY",      "ZPOPMIN",     "ZPOPMAX",     "ZMPOP",          "BZPOPMIN",
+        "BZPOPMAX",       "BZMPOP",        "ZRANGESTORE",  "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",     "XADD",
+        "XDEL",           "XTRIM",         "XSETID",       "XCFGSET",     "XGROUP",      "XACK",           "XCLAIM",
+        "XAUTOCLAIM",     "XACKDEL",       "XDELEX",       "SETBIT",      "BITOP",       "BITFIELD",       "GEOADD",
+        "GEOSEARCHSTORE", "PFADD",         "PFMERGE",      "RESTORE",     "SORT",        "DELEX",          "MIGRATE",
+        "TS.CREATE",      "TS.ADD",        "TS.MADD",      "TS.INCRBY",   "TS.DECRBY",   "TS.DEL",         "TS.ALTER",
+        "TS.CREATERULE",  "TS.DELETERULE", "TOPK.RESERVE", "TOPK.ADD",    "TOPK.INCRBY", "TDIGEST.CREATE", "TDIGEST.ADD",
+        "TDIGEST.RESET",  "TDIGEST.MERGE", "VADD",         "VREM",        "VSETATTR",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -216,31 +208,23 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
 
     // Single-key commands (key at position 1)
     const single_key_commands = [_][]const u8{
-        "GET", "SET", "SETEX", "PSETEX", "SETNX", "GETSET", "GETDEL", "GETEX",
-        "APPEND", "STRLEN", "SETRANGE", "GETRANGE",
-        "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
-        "EXISTS", "DEL", "UNLINK", "TYPE", "TTL", "PTTL",
-        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
-        "DUMP", "OBJECT",
-        "HSET", "HGET", "HMSET", "HMGET", "HGETALL", "HDEL", "HEXISTS",
-        "HINCRBY", "HINCRBYFLOAT", "HKEYS", "HVALS", "HLEN", "HSETNX",
-        "HGETDEL", "HGETEX", "HSETEX", "HRANDFIELD", "HSCAN",
-        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LLEN",
-        "LINDEX", "LSET", "LRANGE", "LTRIM", "LREM", "LINSERT", "LPOS", "LMPOP",
-        "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SMISMEMBER", "SCARD",
-        "SPOP", "SRANDMEMBER",
-        "ZADD", "ZREM", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZRANGE", "ZREVRANGE",
-        "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGEBYLEX",
-        "ZSCORE", "ZMSCORE", "ZRANK", "ZREVRANK", "ZINCRBY", "ZPOPMIN", "ZPOPMAX",
-        "ZMPOP", "ZRANDMEMBER",
-        "XADD", "XDEL", "XTRIM", "XLEN", "XRANGE", "XREVRANGE", "XREAD",
-        "XREADGROUP", "XPENDING", "XINFO", "XSETID", "XCFGSET", "XGROUP",
-        "XACK", "XCLAIM", "XAUTOCLAIM", "XACKDEL", "XDELEX",
-        "SETBIT", "GETBIT", "BITCOUNT", "BITPOS", "BITOP", "BITFIELD", "BITFIELD_RO",
-        "GEOADD", "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER",
-        "GEOHASH", "GEOSEARCH", "GEOSEARCHSTORE",
-        "PFADD", "PFCOUNT", "PFMERGE",
-        "LCS", "DELEX", "SORT", "SORT_RO",
+        "GET",              "SET",               "SETEX",          "PSETEX",      "SETNX",          "GETSET",  "GETDEL",    "GETEX",
+        "APPEND",           "STRLEN",            "SETRANGE",       "GETRANGE",    "INCR",           "DECR",    "INCRBY",    "DECRBY",
+        "INCRBYFLOAT",      "EXISTS",            "DEL",            "UNLINK",      "TYPE",           "TTL",     "PTTL",      "EXPIRE",
+        "PEXPIRE",          "EXPIREAT",          "PEXPIREAT",      "PERSIST",     "TOUCH",          "DUMP",    "OBJECT",    "HSET",
+        "HGET",             "HMSET",             "HMGET",          "HGETALL",     "HDEL",           "HEXISTS", "HINCRBY",   "HINCRBYFLOAT",
+        "HKEYS",            "HVALS",             "HLEN",           "HSETNX",      "HGETDEL",        "HGETEX",  "HSETEX",    "HRANDFIELD",
+        "HSCAN",            "LPUSH",             "RPUSH",          "LPUSHX",      "RPUSHX",         "LPOP",    "RPOP",      "LLEN",
+        "LINDEX",           "LSET",              "LRANGE",         "LTRIM",       "LREM",           "LINSERT", "LPOS",      "LMPOP",
+        "SADD",             "SREM",              "SMEMBERS",       "SISMEMBER",   "SMISMEMBER",     "SCARD",   "SPOP",      "SRANDMEMBER",
+        "ZADD",             "ZREM",              "ZCARD",          "ZCOUNT",      "ZLEXCOUNT",      "ZRANGE",  "ZREVRANGE", "ZRANGEBYSCORE",
+        "ZREVRANGEBYSCORE", "ZRANGEBYLEX",       "ZREVRANGEBYLEX", "ZSCORE",      "ZMSCORE",        "ZRANK",   "ZREVRANK",  "ZINCRBY",
+        "ZPOPMIN",          "ZPOPMAX",           "ZMPOP",          "ZRANDMEMBER", "XADD",           "XDEL",    "XTRIM",     "XLEN",
+        "XRANGE",           "XREVRANGE",         "XREAD",          "XREADGROUP",  "XPENDING",       "XINFO",   "XSETID",    "XCFGSET",
+        "XGROUP",           "XACK",              "XCLAIM",         "XAUTOCLAIM",  "XACKDEL",        "XDELEX",  "SETBIT",    "GETBIT",
+        "BITCOUNT",         "BITPOS",            "BITOP",          "BITFIELD",    "BITFIELD_RO",    "GEOADD",  "GEODIST",   "GEOPOS",
+        "GEORADIUS",        "GEORADIUSBYMEMBER", "GEOHASH",        "GEOSEARCH",   "GEOSEARCHSTORE", "PFADD",   "PFCOUNT",   "PFMERGE",
+        "LCS",              "DELEX",             "SORT",           "SORT_RO",
     };
     for (single_key_commands) |cmd| {
         if (std.mem.eql(u8, cmd_upper, cmd)) {
@@ -583,11 +567,10 @@ pub fn executeCommand(
     // Check if the command should be redirected to another node (ASK or MOVED)
     // Skip redirect check for non-key commands and cluster management commands
     const skip_redirect_cmds = [_][]const u8{
-        "PING", "INFO", "AUTH", "HELLO", "CLUSTER", "SENTINEL", "ASKING", "MIGRATE",
-        "READONLY", "READWRITE",
-        "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH",
-        "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",
-        "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT", "MODULE",
+        "PING",       "INFO",      "AUTH",   "HELLO",  "CLUSTER", "SENTINEL", "ASKING",  "MIGRATE",
+        "READONLY",   "READWRITE", "MULTI",  "EXEC",   "DISCARD", "WATCH",    "UNWATCH", "SUBSCRIBE",
+        "PSUBSCRIBE", "PUBLISH",   "PUBSUB", "CLIENT", "CONFIG",  "COMMAND",  "ACL",     "SCRIPT",
+        "MODULE",
     };
     var should_check_redirect = true;
     for (skip_redirect_cmds) |skip_cmd| {
@@ -617,11 +600,7 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(
-                    &buf,
-                    "ASK {d} {s}:{d}",
-                    .{slot, dest_node.addr, dest_node.port}
-                );
+                const redirect_msg = try std.fmt.bufPrint(&buf, "ASK {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
                 return w.writeError(redirect_msg);
             }
 
@@ -630,11 +609,7 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(
-                    &buf,
-                    "MOVED {d} {s}:{d}",
-                    .{slot, dest_node.addr, dest_node.port}
-                );
+                const redirect_msg = try std.fmt.bufPrint(&buf, "MOVED {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
                 return w.writeError(redirect_msg);
             }
 
@@ -660,34 +635,29 @@ pub fn executeCommand(
                 }
             }
             const write_cmds = [_][]const u8{
-                "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-                "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
-                "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
-                "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
-                "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
-                "APPEND",     "GETSET",     "GETDEL",     "GETEX",
-                "SETNX",      "SETEX",      "PSETEX",
-                "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
-                "UNLINK",
-                "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
-                "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
-                "HGETDEL",    "HGETEX",     "HSETEX",
-                "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-                "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-                "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-                "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-                "BLMOVE",     "LMPOP",      "BLMPOP",
-                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
-                "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
-                "SETBIT",     "BITOP",      "BITFIELD",
-                "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
-                "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
-                "GEOADD",     "PFADD",      "PFMERGE",
-                "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
-                "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
-                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY", "CMS.MERGE",
-                "TOPK.RESERVE", "TOPK.ADD",
-                "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
+                "SET",           "DEL",            "LPUSH",       "RPUSH",         "LPOP",
+                "RPOP",          "SADD",           "SREM",        "HSET",          "HMSET",
+                "HDEL",          "ZADD",           "ZREM",        "FLUSHDB",       "FLUSHALL",
+                "EXPIRE",        "PEXPIRE",        "EXPIREAT",    "PEXPIREAT",     "PERSIST",
+                "INCR",          "DECR",           "INCRBY",      "DECRBY",        "INCRBYFLOAT",
+                "APPEND",        "GETSET",         "GETDEL",      "GETEX",         "SETNX",
+                "SETEX",         "PSETEX",         "MSET",        "MSETNX",        "MSETEX",
+                "RENAME",        "RENAMENX",       "UNLINK",      "DUMP",          "RESTORE",
+                "COPY",          "TOUCH",          "MOVE",        "HINCRBY",       "HINCRBYFLOAT",
+                "HSETNX",        "HGETDEL",        "HGETEX",      "HSETEX",        "ZINCRBY",
+                "SUNIONSTORE",   "SINTERSTORE",    "SDIFFSTORE",  "ZRANGESTORE",   "ZUNIONSTORE",
+                "ZINTERSTORE",   "ZDIFFSTORE",     "LSET",        "LTRIM",         "LREM",
+                "LPUSHX",        "RPUSHX",         "LINSERT",     "LMOVE",         "RPOPLPUSH",
+                "BLPOP",         "BRPOP",          "BLMOVE",      "LMPOP",         "BLMPOP",
+                "SPOP",          "SMOVE",          "ZPOPMIN",     "ZPOPMAX",       "ZMPOP",
+                "BZPOPMIN",      "BZPOPMAX",       "BZMPOP",      "SETRANGE",      "SETBIT",
+                "BITOP",         "BITFIELD",       "XADD",        "XDEL",          "XTRIM",
+                "XSETID",        "XCFGSET",        "XGROUP",      "XACK",          "XCLAIM",
+                "XAUTOCLAIM",    "GEOADD",         "PFADD",       "PFMERGE",       "BF.ADD",
+                "BF.RESERVE",    "BF.MADD",        "BF.INSERT",   "BF.INFO",       "CF.ADD",
+                "CF.RESERVE",    "CF.ADDNX",       "CF.INSERT",   "CF.INSERTNX",   "CF.DEL",
+                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY",  "CMS.MERGE",     "TOPK.RESERVE",
+                "TOPK.ADD",      "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -791,31 +761,27 @@ pub fn executeCommand(
     // Determine if this is a write command that should be AOF-logged
     const is_write_cmd = blk: {
         const write_cmds = [_][]const u8{
-            "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-            "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
-            "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
-            "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
-            "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
-            "APPEND",     "GETSET",     "GETDEL",     "GETEX",
-            "SETNX",      "SETEX",      "PSETEX",
-            "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
-            "UNLINK",
-            "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
-            "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
-            "HGETDEL",    "HGETEX",     "HSETEX",
-            "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-            "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-            "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-            "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-            "BLMOVE",     "LMPOP",      "BLMPOP",
-            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
-            "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
-            "SETBIT",     "BITOP",      "BITFIELD",
-            "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
-            "XACK",       "XCLAIM",     "XAUTOCLAIM",
-            "GEOADD",     "PFADD",      "PFMERGE",
-            "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.LOADCHUNK",
-            "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
+            "SET",         "DEL",         "LPUSH",        "RPUSH",       "LPOP",
+            "RPOP",        "SADD",        "SREM",         "HSET",        "HMSET",
+            "HDEL",        "ZADD",        "ZREM",         "FLUSHDB",     "FLUSHALL",
+            "EXPIRE",      "PEXPIRE",     "EXPIREAT",     "PEXPIREAT",   "PERSIST",
+            "INCR",        "DECR",        "INCRBY",       "DECRBY",      "INCRBYFLOAT",
+            "APPEND",      "GETSET",      "GETDEL",       "GETEX",       "SETNX",
+            "SETEX",       "PSETEX",      "MSET",         "MSETNX",      "MSETEX",
+            "RENAME",      "RENAMENX",    "UNLINK",       "DUMP",        "RESTORE",
+            "COPY",        "TOUCH",       "MOVE",         "HINCRBY",     "HINCRBYFLOAT",
+            "HSETNX",      "HGETDEL",     "HGETEX",       "HSETEX",      "ZINCRBY",
+            "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",   "ZRANGESTORE", "ZUNIONSTORE",
+            "ZINTERSTORE", "ZDIFFSTORE",  "LSET",         "LTRIM",       "LREM",
+            "LPUSHX",      "RPUSHX",      "LINSERT",      "LMOVE",       "RPOPLPUSH",
+            "BLPOP",       "BRPOP",       "BLMOVE",       "LMPOP",       "BLMPOP",
+            "SPOP",        "SMOVE",       "ZPOPMIN",      "ZPOPMAX",     "ZMPOP",
+            "BZPOPMIN",    "BZPOPMAX",    "BZMPOP",       "SETRANGE",    "SETBIT",
+            "BITOP",       "BITFIELD",    "XADD",         "XDEL",        "XTRIM",
+            "XSETID",      "XGROUP",      "XACK",         "XCLAIM",      "XAUTOCLAIM",
+            "GEOADD",      "PFADD",       "PFMERGE",      "BF.ADD",      "BF.RESERVE",
+            "BF.MADD",     "BF.INSERT",   "BF.LOADCHUNK", "CF.ADD",      "CF.RESERVE",
+            "CF.ADDNX",    "CF.INSERT",   "CF.INSERTNX",  "CF.DEL",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -1861,8 +1827,7 @@ pub fn executeCommand(
                 defer w.deinit();
                 break :blk try w.writeError("ERR unknown FUNCTION subcommand");
             }
-        }
-        else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
+        } else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
             break :blk try function_cmds.cmdFcall(
@@ -1884,8 +1849,7 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
-        }
-        else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
+        } else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
             const args_fcall_ro = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall_ro);
             break :blk try function_cmds.cmdFcallRo(
@@ -3302,7 +3266,10 @@ pub fn executeCommand(
             for (array, 0..) |arg, i| {
                 aof_args[i] = switch (arg) {
                     .bulk_string => |s| s,
-                    else => { valid = false; break; },
+                    else => {
+                        valid = false;
+                        break;
+                    },
                 };
             }
             if (valid) {
@@ -5332,17 +5299,11 @@ test "commands - SET with PX option" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5365,17 +5326,11 @@ test "commands - SET with NX when key doesn't exist" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5399,17 +5354,11 @@ test "commands - SET with NX when key exists" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5434,17 +5383,11 @@ test "commands - SET with XX when key exists" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5467,17 +5410,11 @@ test "commands - SET with XX when key doesn't exist" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5501,17 +5438,11 @@ test "commands - SET with both NX and XX returns error" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5534,17 +5465,11 @@ test "commands - SET with negative expiration" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5741,10 +5666,7 @@ test "commands - GET existing key" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5764,10 +5686,7 @@ test "commands - GET non-existent key" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5786,10 +5705,7 @@ test "commands - GET wrong number of arguments" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5811,17 +5727,11 @@ test "commands - DEL single key" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5847,17 +5757,11 @@ test "commands - DEL multiple keys" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5877,17 +5781,11 @@ test "commands - DEL non-existent key" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -7867,3 +7765,4 @@ test "APPEND - normal operation works correctly" {
     defer allocator.free(result);
     try std.testing.expectEqualStrings(":5\r\n", result);
 }
+// cache-bust-probe
