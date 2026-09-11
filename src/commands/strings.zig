@@ -142,19 +142,24 @@ fn checkKeyPermissions(
 fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
     // Read commands
     const read_commands = [_][]const u8{
-        "GET",            "MGET",        "EXISTS",      "TTL",               "PTTL",          "TYPE",             "STRLEN",
-        "HGET",           "HMGET",       "HGETALL",     "HKEYS",             "HVALS",         "HLEN",             "HEXISTS",
-        "LLEN",           "LINDEX",      "LRANGE",      "LPOS",              "SMEMBERS",      "SCARD",            "SISMEMBER",
-        "SMISMEMBER",     "SRANDMEMBER", "ZRANGE",      "ZREVRANGE",         "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
-        "ZREVRANGEBYLEX", "ZCARD",       "ZCOUNT",      "ZLEXCOUNT",         "ZSCORE",        "ZMSCORE",          "ZRANK",
-        "ZREVRANK",       "ZRANDMEMBER", "ZDIFF",       "ZINTER",            "ZUNION",        "SDIFF",            "SINTER",
-        "SUNION",         "XLEN",        "XRANGE",      "XREVRANGE",         "XREAD",         "XREADGROUP",       "XPENDING",
-        "XINFO",          "GETRANGE",    "SUBSTR",      "GETBIT",            "BITCOUNT",      "BITPOS",           "BITFIELD_RO",
-        "GEODIST",        "GEOPOS",      "GEORADIUS",   "GEORADIUSBYMEMBER", "GEOHASH",       "GEOSEARCH",        "PFCOUNT",
-        "DUMP",           "OBJECT",      "LCS",         "SORT_RO",           "HRANDFIELD",    "HSCAN",            "TS.GET",
-        "TS.MGET",        "TS.RANGE",    "TS.REVRANGE", "TS.MRANGE",         "TS.MREVRANGE",  "TS.QUERYINDEX",    "TS.INFO",
-        "VCARD",          "VDIM",        "VEMB",        "VISMEMBER",         "VRANDMEMBER",   "VGETATTR",         "VINFO",
-        "VSIM",           "VRANGE",      "VLINKS",      "EVAL_RO",           "EVALSHA_RO",    "FCALL_RO",
+        "GET",           "MGET",             "EXISTS",      "TTL",            "PTTL",
+        "TYPE",          "STRLEN",           "HGET",        "HMGET",          "HGETALL",
+        "HKEYS",         "HVALS",            "HLEN",        "HEXISTS",        "LLEN",
+        "LINDEX",        "LRANGE",           "LPOS",        "SMEMBERS",       "SCARD",
+        "SISMEMBER",     "SMISMEMBER",       "SRANDMEMBER", "ZRANGE",         "ZREVRANGE",
+        "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZCARD",
+        "ZCOUNT",        "ZLEXCOUNT",        "ZSCORE",      "ZMSCORE",        "ZRANK",
+        "ZREVRANK",      "ZRANDMEMBER",      "ZDIFF",       "ZINTER",         "ZUNION",
+        "SDIFF",         "SINTER",           "SUNION",      "XLEN",           "XRANGE",
+        "XREVRANGE",     "XREAD",            "XREADGROUP",  "XPENDING",       "XINFO",
+        "GETRANGE",      "SUBSTR",           "GETBIT",      "BITCOUNT",       "BITPOS",
+        "BITFIELD_RO",   "GEODIST",          "GEOPOS",      "GEORADIUS",      "GEORADIUSBYMEMBER",
+        "GEOHASH",       "GEOSEARCH",        "PFCOUNT",     "DUMP",           "OBJECT",
+        "LCS",           "SORT_RO",          "HRANDFIELD",  "HSCAN",          "TS.GET",
+        "TS.MGET",       "TS.RANGE",         "TS.REVRANGE", "TS.MRANGE",      "TS.MREVRANGE",
+        "TS.QUERYINDEX", "TS.INFO",          "VCARD",       "VDIM",           "VEMB",
+        "VISMEMBER",     "VRANDMEMBER",      "VGETATTR",    "VINFO",          "VSIM",
+        "VRANGE",        "VLINKS",           "EVAL_RO",     "EVALSHA_RO",     "FCALL_RO",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -162,23 +167,30 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
 
     // Write commands
     const write_commands = [_][]const u8{
-        "SET",            "SETEX",         "PSETEX",       "SETNX",       "MSET",        "MSETNX",         "MSETEX",
-        "SETRANGE",       "APPEND",        "INCR",         "DECR",        "INCRBY",      "DECRBY",         "INCRBYFLOAT",
-        "GETSET",         "GETDEL",        "GETEX",        "DEL",         "UNLINK",      "RENAME",         "RENAMENX",
-        "COPY",           "MOVE",          "EXPIRE",       "PEXPIRE",     "EXPIREAT",    "PEXPIREAT",      "PERSIST",
-        "TOUCH",          "HSET",          "HMSET",        "HSETNX",      "HINCRBY",     "HINCRBYFLOAT",   "HDEL",
-        "HGETDEL",        "HGETEX",        "HSETEX",       "LPUSH",       "RPUSH",       "LPUSHX",         "RPUSHX",
-        "LPOP",           "RPOP",          "LSET",         "LINSERT",     "LREM",        "LTRIM",          "LMOVE",
-        "RPOPLPUSH",      "BLPOP",         "BRPOP",        "BLMOVE",      "BRPOPLPUSH",  "LMPOP",          "BLMPOP",
-        "SADD",           "SREM",          "SPOP",         "SMOVE",       "SUNIONSTORE", "SINTERSTORE",    "SDIFFSTORE",
-        "ZADD",           "ZREM",          "ZINCRBY",      "ZPOPMIN",     "ZPOPMAX",     "ZMPOP",          "BZPOPMIN",
-        "BZPOPMAX",       "BZMPOP",        "ZRANGESTORE",  "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",     "XADD",
-        "XDEL",           "XTRIM",         "XSETID",       "XCFGSET",     "XGROUP",      "XACK",           "XCLAIM",
-        "XAUTOCLAIM",     "XACKDEL",       "XDELEX",       "SETBIT",      "BITOP",       "BITFIELD",       "GEOADD",
-        "GEOSEARCHSTORE", "PFADD",         "PFMERGE",      "RESTORE",     "SORT",        "DELEX",          "MIGRATE",
-        "TS.CREATE",      "TS.ADD",        "TS.MADD",      "TS.INCRBY",   "TS.DECRBY",   "TS.DEL",         "TS.ALTER",
-        "TS.CREATERULE",  "TS.DELETERULE", "TOPK.RESERVE", "TOPK.ADD",    "TOPK.INCRBY", "TDIGEST.CREATE", "TDIGEST.ADD",
-        "TDIGEST.RESET",  "TDIGEST.MERGE", "VADD",         "VREM",        "VSETATTR",
+        "SET",            "SETEX",          "PSETEX",        "SETNX",         "MSET",
+        "MSETNX",         "MSETEX",         "SETRANGE",      "APPEND",        "INCR",
+        "DECR",           "INCRBY",         "DECRBY",        "INCRBYFLOAT",   "GETSET",
+        "GETDEL",         "GETEX",          "DEL",           "UNLINK",        "RENAME",
+        "RENAMENX",       "COPY",           "MOVE",          "EXPIRE",        "PEXPIRE",
+        "EXPIREAT",       "PEXPIREAT",      "PERSIST",       "TOUCH",         "HSET",
+        "HMSET",          "HSETNX",         "HINCRBY",       "HINCRBYFLOAT",  "HDEL",
+        "HGETDEL",        "HGETEX",         "HSETEX",        "LPUSH",         "RPUSH",
+        "LPUSHX",         "RPUSHX",         "LPOP",          "RPOP",          "LSET",
+        "LINSERT",        "LREM",           "LTRIM",         "LMOVE",         "RPOPLPUSH",
+        "BLPOP",          "BRPOP",          "BLMOVE",        "BRPOPLPUSH",    "LMPOP",
+        "BLMPOP",         "SADD",           "SREM",          "SPOP",          "SMOVE",
+        "SUNIONSTORE",    "SINTERSTORE",    "SDIFFSTORE",    "ZADD",          "ZREM",
+        "ZINCRBY",        "ZPOPMIN",        "ZPOPMAX",       "ZMPOP",         "BZPOPMIN",
+        "BZPOPMAX",       "BZMPOP",         "ZRANGESTORE",   "ZUNIONSTORE",   "ZINTERSTORE",
+        "ZDIFFSTORE",     "XADD",           "XDEL",          "XTRIM",         "XSETID",
+        "XCFGSET",        "XGROUP",         "XACK",          "XCLAIM",        "XAUTOCLAIM",
+        "XACKDEL",        "XDELEX",         "SETBIT",        "BITOP",         "BITFIELD",
+        "GEOADD",         "GEOSEARCHSTORE", "PFADD",         "PFMERGE",       "RESTORE",
+        "SORT",           "DELEX",          "MIGRATE",       "TS.CREATE",     "TS.ADD",
+        "TS.MADD",        "TS.INCRBY",      "TS.DECRBY",     "TS.DEL",        "TS.ALTER",
+        "TS.CREATERULE",  "TS.DELETERULE",  "TOPK.RESERVE",  "TOPK.ADD",      "TOPK.INCRBY",
+        "TDIGEST.CREATE", "TDIGEST.ADD",    "TDIGEST.RESET", "TDIGEST.MERGE", "VADD",
+        "VREM",           "VSETATTR",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -209,23 +221,33 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
 
     // Single-key commands (key at position 1)
     const single_key_commands = [_][]const u8{
-        "GET",              "SET",               "SETEX",          "PSETEX",      "SETNX",          "GETSET",  "GETDEL",    "GETEX",
-        "APPEND",           "STRLEN",            "SETRANGE",       "GETRANGE",    "INCR",           "DECR",    "INCRBY",    "DECRBY",
-        "INCRBYFLOAT",      "EXISTS",            "DEL",            "UNLINK",      "TYPE",           "TTL",     "PTTL",      "EXPIRE",
-        "PEXPIRE",          "EXPIREAT",          "PEXPIREAT",      "PERSIST",     "TOUCH",          "DUMP",    "OBJECT",    "HSET",
-        "HGET",             "HMSET",             "HMGET",          "HGETALL",     "HDEL",           "HEXISTS", "HINCRBY",   "HINCRBYFLOAT",
-        "HKEYS",            "HVALS",             "HLEN",           "HSETNX",      "HGETDEL",        "HGETEX",  "HSETEX",    "HRANDFIELD",
-        "HSCAN",            "LPUSH",             "RPUSH",          "LPUSHX",      "RPUSHX",         "LPOP",    "RPOP",      "LLEN",
-        "LINDEX",           "LSET",              "LRANGE",         "LTRIM",       "LREM",           "LINSERT", "LPOS",      "LMPOP",
-        "SADD",             "SREM",              "SMEMBERS",       "SISMEMBER",   "SMISMEMBER",     "SCARD",   "SPOP",      "SRANDMEMBER",
-        "ZADD",             "ZREM",              "ZCARD",          "ZCOUNT",      "ZLEXCOUNT",      "ZRANGE",  "ZREVRANGE", "ZRANGEBYSCORE",
-        "ZREVRANGEBYSCORE", "ZRANGEBYLEX",       "ZREVRANGEBYLEX", "ZSCORE",      "ZMSCORE",        "ZRANK",   "ZREVRANK",  "ZINCRBY",
-        "ZPOPMIN",          "ZPOPMAX",           "ZMPOP",          "ZRANDMEMBER", "XADD",           "XDEL",    "XTRIM",     "XLEN",
-        "XRANGE",           "XREVRANGE",         "XREAD",          "XREADGROUP",  "XPENDING",       "XINFO",   "XSETID",    "XCFGSET",
-        "XGROUP",           "XACK",              "XCLAIM",         "XAUTOCLAIM",  "XACKDEL",        "XDELEX",  "SETBIT",    "GETBIT",
-        "BITCOUNT",         "BITPOS",            "BITOP",          "BITFIELD",    "BITFIELD_RO",    "GEOADD",  "GEODIST",   "GEOPOS",
-        "GEORADIUS",        "GEORADIUSBYMEMBER", "GEOHASH",        "GEOSEARCH",   "GEOSEARCHSTORE", "PFADD",   "PFCOUNT",   "PFMERGE",
-        "LCS",              "DELEX",             "SORT",           "SORT_RO",
+        "GET",              "SET",               "SETEX",          "PSETEX",     "SETNX",
+        "GETSET",           "GETDEL",            "GETEX",          "APPEND",     "STRLEN",
+        "SETRANGE",         "GETRANGE",          "INCR",           "DECR",       "INCRBY",
+        "DECRBY",           "INCRBYFLOAT",       "EXISTS",         "DEL",        "UNLINK",
+        "TYPE",             "TTL",               "PTTL",           "EXPIRE",     "PEXPIRE",
+        "EXPIREAT",         "PEXPIREAT",         "PERSIST",        "TOUCH",      "DUMP",
+        "OBJECT",           "HSET",              "HGET",           "HMSET",      "HMGET",
+        "HGETALL",          "HDEL",              "HEXISTS",        "HINCRBY",    "HINCRBYFLOAT",
+        "HKEYS",            "HVALS",             "HLEN",           "HSETNX",     "HGETDEL",
+        "HGETEX",           "HSETEX",            "HRANDFIELD",     "HSCAN",      "LPUSH",
+        "RPUSH",            "LPUSHX",            "RPUSHX",         "LPOP",       "RPOP",
+        "LLEN",             "LINDEX",            "LSET",           "LRANGE",     "LTRIM",
+        "LREM",             "LINSERT",           "LPOS",           "LMPOP",      "SADD",
+        "SREM",             "SMEMBERS",          "SISMEMBER",      "SMISMEMBER", "SCARD",
+        "SPOP",             "SRANDMEMBER",       "ZADD",           "ZREM",       "ZCARD",
+        "ZCOUNT",           "ZLEXCOUNT",         "ZRANGE",         "ZREVRANGE",  "ZRANGEBYSCORE",
+        "ZREVRANGEBYSCORE", "ZRANGEBYLEX",       "ZREVRANGEBYLEX", "ZSCORE",     "ZMSCORE",
+        "ZRANK",            "ZREVRANK",          "ZINCRBY",        "ZPOPMIN",    "ZPOPMAX",
+        "ZMPOP",            "ZRANDMEMBER",       "XADD",           "XDEL",       "XTRIM",
+        "XLEN",             "XRANGE",            "XREVRANGE",      "XREAD",      "XREADGROUP",
+        "XPENDING",         "XINFO",             "XSETID",         "XCFGSET",    "XGROUP",
+        "XACK",             "XCLAIM",            "XAUTOCLAIM",     "XACKDEL",    "XDELEX",
+        "SETBIT",           "GETBIT",            "BITCOUNT",       "BITPOS",     "BITOP",
+        "BITFIELD",         "BITFIELD_RO",       "GEOADD",         "GEODIST",    "GEOPOS",
+        "GEORADIUS",        "GEORADIUSBYMEMBER", "GEOHASH",        "GEOSEARCH",  "GEOSEARCHSTORE",
+        "PFADD",            "PFCOUNT",           "PFMERGE",        "LCS",        "DELEX",
+        "SORT",             "SORT_RO",
     };
     for (single_key_commands) |cmd| {
         if (std.mem.eql(u8, cmd_upper, cmd)) {
@@ -259,21 +281,15 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
         return static.positions[0..count];
     }
 
-    if (std.mem.eql(u8, cmd_upper, "RENAME") or std.mem.eql(u8, cmd_upper, "RENAMENX")) {
+    if (std.mem.eql(u8, cmd_upper, "RENAME") or std.mem.eql(u8, cmd_upper, "RENAMENX") or
+        std.mem.eql(u8, cmd_upper, "COPY") or std.mem.eql(u8, cmd_upper, "LMOVE") or
+        std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "BRPOPLPUSH") or
+        std.mem.eql(u8, cmd_upper, "RPOPLPUSH") or std.mem.eql(u8, cmd_upper, "SMOVE"))
+    {
         // Two keys: source and destination
         if (args.len > 2) {
             static.positions[0] = 1; // source key
             static.positions[1] = 2; // dest key
-            count = 2;
-        }
-        return static.positions[0..count];
-    }
-
-    if (std.mem.eql(u8, cmd_upper, "COPY") or std.mem.eql(u8, cmd_upper, "LMOVE") or std.mem.eql(u8, cmd_upper, "BLMOVE") or std.mem.eql(u8, cmd_upper, "BRPOPLPUSH") or std.mem.eql(u8, cmd_upper, "RPOPLPUSH") or std.mem.eql(u8, cmd_upper, "SMOVE")) {
-        // Two keys: source and destination
-        if (args.len > 2) {
-            static.positions[0] = 1;
-            static.positions[1] = 2;
             count = 2;
         }
         return static.positions[0..count];
@@ -568,10 +584,10 @@ pub fn executeCommand(
     // Check if the command should be redirected to another node (ASK or MOVED)
     // Skip redirect check for non-key commands and cluster management commands
     const skip_redirect_cmds = [_][]const u8{
-        "PING",       "INFO",      "AUTH",   "HELLO",  "CLUSTER", "SENTINEL", "ASKING",  "MIGRATE",
-        "READONLY",   "READWRITE", "MULTI",  "EXEC",   "DISCARD", "WATCH",    "UNWATCH", "SUBSCRIBE",
-        "PSUBSCRIBE", "PUBLISH",   "PUBSUB", "CLIENT", "CONFIG",  "COMMAND",  "ACL",     "SCRIPT",
-        "MODULE",
+        "PING",    "INFO",      "AUTH",       "HELLO",   "CLUSTER", "SENTINEL", "ASKING",
+        "MIGRATE", "READONLY",  "READWRITE",  "MULTI",   "EXEC",    "DISCARD",  "WATCH",
+        "UNWATCH", "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",  "CLIENT",   "CONFIG",
+        "COMMAND", "ACL",       "SCRIPT",     "MODULE",
     };
     var should_check_redirect = true;
     for (skip_redirect_cmds) |skip_cmd| {
@@ -601,7 +617,11 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(&buf, "ASK {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
+                const redirect_msg = try std.fmt.bufPrint(
+                    &buf,
+                    "ASK {d} {s}:{d}",
+                    .{ slot, dest_node.addr, dest_node.port },
+                );
                 return w.writeError(redirect_msg);
             }
 
@@ -610,7 +630,11 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(&buf, "MOVED {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
+                const redirect_msg = try std.fmt.bufPrint(
+                    &buf,
+                    "MOVED {d} {s}:{d}",
+                    .{ slot, dest_node.addr, dest_node.port },
+                );
                 return w.writeError(redirect_msg);
             }
 
@@ -3479,28 +3503,36 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const seconds = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const seconds = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), seconds, 1000) catch
                 return w.writeError("ERR invalid expire time in 'set' command");
         } else if (std.mem.eql(u8, opt_upper, "PX")) {
             if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const milliseconds = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const milliseconds = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), milliseconds, 1) catch
                 return w.writeError("ERR invalid expire time in 'set' command");
         } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
             if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const unix_sec = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const unix_sec = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             if (unix_sec < 0) return w.writeError("ERR invalid expire time in 'set' command");
             expires_at = unix_sec * 1000; // convert seconds to milliseconds
         } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
             if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const unix_ms = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const unix_ms = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             if (unix_ms < 0) return w.writeError("ERR invalid expire time in 'set' command");
             expires_at = unix_ms;
         } else if (std.mem.eql(u8, opt_upper, "KEEPTTL")) {
@@ -3852,7 +3884,10 @@ fn relativeExpiryMs(now_ms: i64, value: i64, scale_ms: i64) error{InvalidExpire}
 }
 
 test "relativeExpiryMs accepts a positive duration and rejects zero or negative" {
-    try std.testing.expectEqual(@as(i64, 1_000_000 + 5000), try relativeExpiryMs(1_000_000, 5, 1000));
+    try std.testing.expectEqual(
+        @as(i64, 1_000_000 + 5000),
+        try relativeExpiryMs(1_000_000, 5, 1000),
+    );
     try std.testing.expectEqual(@as(i64, 1_000_000 + 7), try relativeExpiryMs(1_000_000, 7, 1));
     try std.testing.expectError(error.InvalidExpire, relativeExpiryMs(1_000_000, 0, 1000));
     try std.testing.expectError(error.InvalidExpire, relativeExpiryMs(1_000_000, -1, 1));
@@ -4628,7 +4663,9 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
             if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const seconds = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const seconds = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), seconds, 1000) catch
                 return w.writeError("ERR invalid expire time in 'msetex' command");
             i += 1;
@@ -4636,7 +4673,9 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
             if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const millis = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const millis = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), millis, 1) catch
                 return w.writeError("ERR invalid expire time in 'msetex' command");
             i += 1;
@@ -4644,14 +4683,18 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
             if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const timestamp = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const timestamp = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             expires_at = timestamp * 1000;
             i += 1;
         } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
             if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
             if (i >= args.len) return w.writeError("ERR syntax error");
-            const timestamp = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            const timestamp = parseInteger(args[i]) catch return w.writeError(
+                "ERR value is not an integer or out of range",
+            );
             expires_at = timestamp;
             i += 1;
         } else {
