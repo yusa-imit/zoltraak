@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const protocol = @import("../protocol/parser.zig");
 const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
@@ -141,22 +142,19 @@ fn checkKeyPermissions(
 fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
     // Read commands
     const read_commands = [_][]const u8{
-        "GET", "MGET", "EXISTS", "TTL", "PTTL", "TYPE", "STRLEN",
-        "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS",
-        "LLEN", "LINDEX", "LRANGE", "LPOS",
-        "SMEMBERS", "SCARD", "SISMEMBER", "SMISMEMBER", "SRANDMEMBER",
-        "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
-        "ZREVRANGEBYLEX", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZSCORE", "ZMSCORE",
-        "ZRANK", "ZREVRANK", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION",
-        "SDIFF", "SINTER", "SUNION",
-        "XLEN", "XRANGE", "XREVRANGE", "XREAD", "XREADGROUP", "XPENDING", "XINFO",
-        "GETRANGE", "SUBSTR", "GETBIT", "BITCOUNT", "BITPOS", "BITFIELD_RO",
-        "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER", "GEOHASH", "GEOSEARCH",
-        "PFCOUNT",
-        "DUMP", "OBJECT", "LCS", "SORT_RO", "HRANDFIELD", "HSCAN",
-        "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE", "TS.MRANGE", "TS.MREVRANGE", "TS.QUERYINDEX", "TS.INFO",
-        "VCARD", "VDIM", "VEMB", "VISMEMBER", "VRANDMEMBER", "VGETATTR", "VINFO", "VSIM", "VRANGE", "VLINKS",
-        "EVAL_RO", "EVALSHA_RO", "FCALL_RO",
+        "GET",            "MGET",        "EXISTS",      "TTL",               "PTTL",          "TYPE",             "STRLEN",
+        "HGET",           "HMGET",       "HGETALL",     "HKEYS",             "HVALS",         "HLEN",             "HEXISTS",
+        "LLEN",           "LINDEX",      "LRANGE",      "LPOS",              "SMEMBERS",      "SCARD",            "SISMEMBER",
+        "SMISMEMBER",     "SRANDMEMBER", "ZRANGE",      "ZREVRANGE",         "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX",
+        "ZREVRANGEBYLEX", "ZCARD",       "ZCOUNT",      "ZLEXCOUNT",         "ZSCORE",        "ZMSCORE",          "ZRANK",
+        "ZREVRANK",       "ZRANDMEMBER", "ZDIFF",       "ZINTER",            "ZUNION",        "SDIFF",            "SINTER",
+        "SUNION",         "XLEN",        "XRANGE",      "XREVRANGE",         "XREAD",         "XREADGROUP",       "XPENDING",
+        "XINFO",          "GETRANGE",    "SUBSTR",      "GETBIT",            "BITCOUNT",      "BITPOS",           "BITFIELD_RO",
+        "GEODIST",        "GEOPOS",      "GEORADIUS",   "GEORADIUSBYMEMBER", "GEOHASH",       "GEOSEARCH",        "PFCOUNT",
+        "DUMP",           "OBJECT",      "LCS",         "SORT_RO",           "HRANDFIELD",    "HSCAN",            "TS.GET",
+        "TS.MGET",        "TS.RANGE",    "TS.REVRANGE", "TS.MRANGE",         "TS.MREVRANGE",  "TS.QUERYINDEX",    "TS.INFO",
+        "VCARD",          "VDIM",        "VEMB",        "VISMEMBER",         "VRANDMEMBER",   "VGETATTR",         "VINFO",
+        "VSIM",           "VRANGE",      "VLINKS",      "EVAL_RO",           "EVALSHA_RO",    "FCALL_RO",
     };
     for (read_commands) |rc| {
         if (std.mem.eql(u8, cmd_upper, rc)) return .read;
@@ -164,28 +162,23 @@ fn getCommandAccessMode(cmd_upper: []const u8) ?AccessMode {
 
     // Write commands
     const write_commands = [_][]const u8{
-        "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "MSETEX",
-        "SETRANGE", "APPEND", "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
-        "GETSET", "GETDEL", "GETEX",
-        "DEL", "UNLINK", "RENAME", "RENAMENX", "COPY", "MOVE",
-        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
-        "HSET", "HMSET", "HSETNX", "HINCRBY", "HINCRBYFLOAT", "HDEL",
-        "HGETDEL", "HGETEX", "HSETEX",
-        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LSET",
-        "LINSERT", "LREM", "LTRIM", "LMOVE", "RPOPLPUSH", "BLPOP", "BRPOP",
-        "BLMOVE", "BRPOPLPUSH", "LMPOP", "BLMPOP",
-        "SADD", "SREM", "SPOP", "SMOVE", "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-        "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZMPOP", "BZPOPMIN",
-        "BZPOPMAX", "BZMPOP", "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-        "XADD", "XDEL", "XTRIM", "XSETID", "XCFGSET", "XGROUP", "XACK", "XCLAIM",
-        "XAUTOCLAIM", "XACKDEL", "XDELEX",
-        "SETBIT", "BITOP", "BITFIELD",
-        "GEOADD", "GEOSEARCHSTORE", "PFADD", "PFMERGE",
-        "RESTORE", "SORT", "DELEX", "MIGRATE",
-        "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY", "TS.DECRBY", "TS.DEL", "TS.ALTER", "TS.CREATERULE", "TS.DELETERULE",
-        "TOPK.RESERVE", "TOPK.ADD", "TOPK.INCRBY",
-        "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
-        "VADD", "VREM", "VSETATTR",
+        "SET",            "SETEX",         "PSETEX",       "SETNX",       "MSET",        "MSETNX",         "MSETEX",
+        "SETRANGE",       "APPEND",        "INCR",         "DECR",        "INCRBY",      "DECRBY",         "INCRBYFLOAT",
+        "GETSET",         "GETDEL",        "GETEX",        "DEL",         "UNLINK",      "RENAME",         "RENAMENX",
+        "COPY",           "MOVE",          "EXPIRE",       "PEXPIRE",     "EXPIREAT",    "PEXPIREAT",      "PERSIST",
+        "TOUCH",          "HSET",          "HMSET",        "HSETNX",      "HINCRBY",     "HINCRBYFLOAT",   "HDEL",
+        "HGETDEL",        "HGETEX",        "HSETEX",       "LPUSH",       "RPUSH",       "LPUSHX",         "RPUSHX",
+        "LPOP",           "RPOP",          "LSET",         "LINSERT",     "LREM",        "LTRIM",          "LMOVE",
+        "RPOPLPUSH",      "BLPOP",         "BRPOP",        "BLMOVE",      "BRPOPLPUSH",  "LMPOP",          "BLMPOP",
+        "SADD",           "SREM",          "SPOP",         "SMOVE",       "SUNIONSTORE", "SINTERSTORE",    "SDIFFSTORE",
+        "ZADD",           "ZREM",          "ZINCRBY",      "ZPOPMIN",     "ZPOPMAX",     "ZMPOP",          "BZPOPMIN",
+        "BZPOPMAX",       "BZMPOP",        "ZRANGESTORE",  "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",     "XADD",
+        "XDEL",           "XTRIM",         "XSETID",       "XCFGSET",     "XGROUP",      "XACK",           "XCLAIM",
+        "XAUTOCLAIM",     "XACKDEL",       "XDELEX",       "SETBIT",      "BITOP",       "BITFIELD",       "GEOADD",
+        "GEOSEARCHSTORE", "PFADD",         "PFMERGE",      "RESTORE",     "SORT",        "DELEX",          "MIGRATE",
+        "TS.CREATE",      "TS.ADD",        "TS.MADD",      "TS.INCRBY",   "TS.DECRBY",   "TS.DEL",         "TS.ALTER",
+        "TS.CREATERULE",  "TS.DELETERULE", "TOPK.RESERVE", "TOPK.ADD",    "TOPK.INCRBY", "TDIGEST.CREATE", "TDIGEST.ADD",
+        "TDIGEST.RESET",  "TDIGEST.MERGE", "VADD",         "VREM",        "VSETATTR",
     };
     for (write_commands) |wc| {
         if (std.mem.eql(u8, cmd_upper, wc)) return .write;
@@ -216,31 +209,23 @@ fn getCommandKeyPositions(cmd_upper: []const u8, args: []const RespValue) []cons
 
     // Single-key commands (key at position 1)
     const single_key_commands = [_][]const u8{
-        "GET", "SET", "SETEX", "PSETEX", "SETNX", "GETSET", "GETDEL", "GETEX",
-        "APPEND", "STRLEN", "SETRANGE", "GETRANGE",
-        "INCR", "DECR", "INCRBY", "DECRBY", "INCRBYFLOAT",
-        "EXISTS", "DEL", "UNLINK", "TYPE", "TTL", "PTTL",
-        "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST", "TOUCH",
-        "DUMP", "OBJECT",
-        "HSET", "HGET", "HMSET", "HMGET", "HGETALL", "HDEL", "HEXISTS",
-        "HINCRBY", "HINCRBYFLOAT", "HKEYS", "HVALS", "HLEN", "HSETNX",
-        "HGETDEL", "HGETEX", "HSETEX", "HRANDFIELD", "HSCAN",
-        "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LLEN",
-        "LINDEX", "LSET", "LRANGE", "LTRIM", "LREM", "LINSERT", "LPOS", "LMPOP",
-        "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SMISMEMBER", "SCARD",
-        "SPOP", "SRANDMEMBER",
-        "ZADD", "ZREM", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZRANGE", "ZREVRANGE",
-        "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZREVRANGEBYLEX",
-        "ZSCORE", "ZMSCORE", "ZRANK", "ZREVRANK", "ZINCRBY", "ZPOPMIN", "ZPOPMAX",
-        "ZMPOP", "ZRANDMEMBER",
-        "XADD", "XDEL", "XTRIM", "XLEN", "XRANGE", "XREVRANGE", "XREAD",
-        "XREADGROUP", "XPENDING", "XINFO", "XSETID", "XCFGSET", "XGROUP",
-        "XACK", "XCLAIM", "XAUTOCLAIM", "XACKDEL", "XDELEX",
-        "SETBIT", "GETBIT", "BITCOUNT", "BITPOS", "BITOP", "BITFIELD", "BITFIELD_RO",
-        "GEOADD", "GEODIST", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER",
-        "GEOHASH", "GEOSEARCH", "GEOSEARCHSTORE",
-        "PFADD", "PFCOUNT", "PFMERGE",
-        "LCS", "DELEX", "SORT", "SORT_RO",
+        "GET",              "SET",               "SETEX",          "PSETEX",      "SETNX",          "GETSET",  "GETDEL",    "GETEX",
+        "APPEND",           "STRLEN",            "SETRANGE",       "GETRANGE",    "INCR",           "DECR",    "INCRBY",    "DECRBY",
+        "INCRBYFLOAT",      "EXISTS",            "DEL",            "UNLINK",      "TYPE",           "TTL",     "PTTL",      "EXPIRE",
+        "PEXPIRE",          "EXPIREAT",          "PEXPIREAT",      "PERSIST",     "TOUCH",          "DUMP",    "OBJECT",    "HSET",
+        "HGET",             "HMSET",             "HMGET",          "HGETALL",     "HDEL",           "HEXISTS", "HINCRBY",   "HINCRBYFLOAT",
+        "HKEYS",            "HVALS",             "HLEN",           "HSETNX",      "HGETDEL",        "HGETEX",  "HSETEX",    "HRANDFIELD",
+        "HSCAN",            "LPUSH",             "RPUSH",          "LPUSHX",      "RPUSHX",         "LPOP",    "RPOP",      "LLEN",
+        "LINDEX",           "LSET",              "LRANGE",         "LTRIM",       "LREM",           "LINSERT", "LPOS",      "LMPOP",
+        "SADD",             "SREM",              "SMEMBERS",       "SISMEMBER",   "SMISMEMBER",     "SCARD",   "SPOP",      "SRANDMEMBER",
+        "ZADD",             "ZREM",              "ZCARD",          "ZCOUNT",      "ZLEXCOUNT",      "ZRANGE",  "ZREVRANGE", "ZRANGEBYSCORE",
+        "ZREVRANGEBYSCORE", "ZRANGEBYLEX",       "ZREVRANGEBYLEX", "ZSCORE",      "ZMSCORE",        "ZRANK",   "ZREVRANK",  "ZINCRBY",
+        "ZPOPMIN",          "ZPOPMAX",           "ZMPOP",          "ZRANDMEMBER", "XADD",           "XDEL",    "XTRIM",     "XLEN",
+        "XRANGE",           "XREVRANGE",         "XREAD",          "XREADGROUP",  "XPENDING",       "XINFO",   "XSETID",    "XCFGSET",
+        "XGROUP",           "XACK",              "XCLAIM",         "XAUTOCLAIM",  "XACKDEL",        "XDELEX",  "SETBIT",    "GETBIT",
+        "BITCOUNT",         "BITPOS",            "BITOP",          "BITFIELD",    "BITFIELD_RO",    "GEOADD",  "GEODIST",   "GEOPOS",
+        "GEORADIUS",        "GEORADIUSBYMEMBER", "GEOHASH",        "GEOSEARCH",   "GEOSEARCHSTORE", "PFADD",   "PFCOUNT",   "PFMERGE",
+        "LCS",              "DELEX",             "SORT",           "SORT_RO",
     };
     for (single_key_commands) |cmd| {
         if (std.mem.eql(u8, cmd_upper, cmd)) {
@@ -583,11 +568,10 @@ pub fn executeCommand(
     // Check if the command should be redirected to another node (ASK or MOVED)
     // Skip redirect check for non-key commands and cluster management commands
     const skip_redirect_cmds = [_][]const u8{
-        "PING", "INFO", "AUTH", "HELLO", "CLUSTER", "SENTINEL", "ASKING", "MIGRATE",
-        "READONLY", "READWRITE",
-        "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH",
-        "SUBSCRIBE", "PSUBSCRIBE", "PUBLISH", "PUBSUB",
-        "CLIENT", "CONFIG", "COMMAND", "ACL", "SCRIPT", "MODULE",
+        "PING",       "INFO",      "AUTH",   "HELLO",  "CLUSTER", "SENTINEL", "ASKING",  "MIGRATE",
+        "READONLY",   "READWRITE", "MULTI",  "EXEC",   "DISCARD", "WATCH",    "UNWATCH", "SUBSCRIBE",
+        "PSUBSCRIBE", "PUBLISH",   "PUBSUB", "CLIENT", "CONFIG",  "COMMAND",  "ACL",     "SCRIPT",
+        "MODULE",
     };
     var should_check_redirect = true;
     for (skip_redirect_cmds) |skip_cmd| {
@@ -617,11 +601,7 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(
-                    &buf,
-                    "ASK {d} {s}:{d}",
-                    .{slot, dest_node.addr, dest_node.port}
-                );
+                const redirect_msg = try std.fmt.bufPrint(&buf, "ASK {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
                 return w.writeError(redirect_msg);
             }
 
@@ -630,11 +610,7 @@ pub fn executeCommand(
                 var w = Writer.init(allocator);
                 defer w.deinit();
                 var buf: [256]u8 = undefined;
-                const redirect_msg = try std.fmt.bufPrint(
-                    &buf,
-                    "MOVED {d} {s}:{d}",
-                    .{slot, dest_node.addr, dest_node.port}
-                );
+                const redirect_msg = try std.fmt.bufPrint(&buf, "MOVED {d} {s}:{d}", .{ slot, dest_node.addr, dest_node.port });
                 return w.writeError(redirect_msg);
             }
 
@@ -660,34 +636,29 @@ pub fn executeCommand(
                 }
             }
             const write_cmds = [_][]const u8{
-                "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-                "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
-                "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
-                "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
-                "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
-                "APPEND",     "GETSET",     "GETDEL",     "GETEX",
-                "SETNX",      "SETEX",      "PSETEX",
-                "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
-                "UNLINK",
-                "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
-                "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
-                "HGETDEL",    "HGETEX",     "HSETEX",
-                "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-                "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-                "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-                "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-                "BLMOVE",     "LMPOP",      "BLMPOP",
-                "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
-                "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
-                "SETBIT",     "BITOP",      "BITFIELD",
-                "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XCFGSET",
-                "XGROUP",     "XACK",       "XCLAIM",     "XAUTOCLAIM",
-                "GEOADD",     "PFADD",      "PFMERGE",
-                "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.INFO",
-                "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
-                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY", "CMS.MERGE",
-                "TOPK.RESERVE", "TOPK.ADD",
-                "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
+                "SET",           "DEL",            "LPUSH",       "RPUSH",         "LPOP",
+                "RPOP",          "SADD",           "SREM",        "HSET",          "HMSET",
+                "HDEL",          "ZADD",           "ZREM",        "FLUSHDB",       "FLUSHALL",
+                "EXPIRE",        "PEXPIRE",        "EXPIREAT",    "PEXPIREAT",     "PERSIST",
+                "INCR",          "DECR",           "INCRBY",      "DECRBY",        "INCRBYFLOAT",
+                "APPEND",        "GETSET",         "GETDEL",      "GETEX",         "SETNX",
+                "SETEX",         "PSETEX",         "MSET",        "MSETNX",        "MSETEX",
+                "RENAME",        "RENAMENX",       "UNLINK",      "DUMP",          "RESTORE",
+                "COPY",          "TOUCH",          "MOVE",        "HINCRBY",       "HINCRBYFLOAT",
+                "HSETNX",        "HGETDEL",        "HGETEX",      "HSETEX",        "ZINCRBY",
+                "SUNIONSTORE",   "SINTERSTORE",    "SDIFFSTORE",  "ZRANGESTORE",   "ZUNIONSTORE",
+                "ZINTERSTORE",   "ZDIFFSTORE",     "LSET",        "LTRIM",         "LREM",
+                "LPUSHX",        "RPUSHX",         "LINSERT",     "LMOVE",         "RPOPLPUSH",
+                "BLPOP",         "BRPOP",          "BLMOVE",      "LMPOP",         "BLMPOP",
+                "SPOP",          "SMOVE",          "ZPOPMIN",     "ZPOPMAX",       "ZMPOP",
+                "BZPOPMIN",      "BZPOPMAX",       "BZMPOP",      "SETRANGE",      "SETBIT",
+                "BITOP",         "BITFIELD",       "XADD",        "XDEL",          "XTRIM",
+                "XSETID",        "XCFGSET",        "XGROUP",      "XACK",          "XCLAIM",
+                "XAUTOCLAIM",    "GEOADD",         "PFADD",       "PFMERGE",       "BF.ADD",
+                "BF.RESERVE",    "BF.MADD",        "BF.INSERT",   "BF.INFO",       "CF.ADD",
+                "CF.RESERVE",    "CF.ADDNX",       "CF.INSERT",   "CF.INSERTNX",   "CF.DEL",
+                "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY",  "CMS.MERGE",     "TOPK.RESERVE",
+                "TOPK.ADD",      "TDIGEST.CREATE", "TDIGEST.ADD", "TDIGEST.RESET", "TDIGEST.MERGE",
             };
             var is_write = false;
             for (write_cmds) |wc| {
@@ -791,31 +762,27 @@ pub fn executeCommand(
     // Determine if this is a write command that should be AOF-logged
     const is_write_cmd = blk: {
         const write_cmds = [_][]const u8{
-            "SET",        "DEL",        "LPUSH",      "RPUSH",      "LPOP",
-            "RPOP",       "SADD",       "SREM",       "HSET",       "HMSET",      "HDEL",
-            "ZADD",       "ZREM",       "FLUSHDB",    "FLUSHALL",
-            "EXPIRE",     "PEXPIRE",    "EXPIREAT",   "PEXPIREAT",  "PERSIST",
-            "INCR",       "DECR",       "INCRBY",     "DECRBY",     "INCRBYFLOAT",
-            "APPEND",     "GETSET",     "GETDEL",     "GETEX",
-            "SETNX",      "SETEX",      "PSETEX",
-            "MSET",       "MSETNX",     "MSETEX",     "RENAME",     "RENAMENX",
-            "UNLINK",
-            "DUMP",       "RESTORE",    "COPY",       "TOUCH",      "MOVE",
-            "HINCRBY",    "HINCRBYFLOAT", "HSETNX",
-            "HGETDEL",    "HGETEX",     "HSETEX",
-            "ZINCRBY",    "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",
-            "ZRANGESTORE", "ZUNIONSTORE", "ZINTERSTORE", "ZDIFFSTORE",
-            "LSET",       "LTRIM",      "LREM",       "LPUSHX",     "RPUSHX",
-            "LINSERT",    "LMOVE",      "RPOPLPUSH",  "BLPOP",      "BRPOP",
-            "BLMOVE",     "LMPOP",      "BLMPOP",
-            "SPOP",       "SMOVE",      "ZPOPMIN",    "ZPOPMAX",    "ZMPOP",
-            "BZPOPMIN",   "BZPOPMAX",   "BZMPOP",     "SETRANGE",
-            "SETBIT",     "BITOP",      "BITFIELD",
-            "XADD",       "XDEL",       "XTRIM",      "XSETID",     "XGROUP",
-            "XACK",       "XCLAIM",     "XAUTOCLAIM",
-            "GEOADD",     "PFADD",      "PFMERGE",
-            "BF.ADD",     "BF.RESERVE", "BF.MADD",    "BF.INSERT",  "BF.LOADCHUNK",
-            "CF.ADD",     "CF.RESERVE", "CF.ADDNX",   "CF.INSERT",  "CF.INSERTNX", "CF.DEL",
+            "SET",         "DEL",         "LPUSH",        "RPUSH",       "LPOP",
+            "RPOP",        "SADD",        "SREM",         "HSET",        "HMSET",
+            "HDEL",        "ZADD",        "ZREM",         "FLUSHDB",     "FLUSHALL",
+            "EXPIRE",      "PEXPIRE",     "EXPIREAT",     "PEXPIREAT",   "PERSIST",
+            "INCR",        "DECR",        "INCRBY",       "DECRBY",      "INCRBYFLOAT",
+            "APPEND",      "GETSET",      "GETDEL",       "GETEX",       "SETNX",
+            "SETEX",       "PSETEX",      "MSET",         "MSETNX",      "MSETEX",
+            "RENAME",      "RENAMENX",    "UNLINK",       "DUMP",        "RESTORE",
+            "COPY",        "TOUCH",       "MOVE",         "HINCRBY",     "HINCRBYFLOAT",
+            "HSETNX",      "HGETDEL",     "HGETEX",       "HSETEX",      "ZINCRBY",
+            "SUNIONSTORE", "SINTERSTORE", "SDIFFSTORE",   "ZRANGESTORE", "ZUNIONSTORE",
+            "ZINTERSTORE", "ZDIFFSTORE",  "LSET",         "LTRIM",       "LREM",
+            "LPUSHX",      "RPUSHX",      "LINSERT",      "LMOVE",       "RPOPLPUSH",
+            "BLPOP",       "BRPOP",       "BLMOVE",       "LMPOP",       "BLMPOP",
+            "SPOP",        "SMOVE",       "ZPOPMIN",      "ZPOPMAX",     "ZMPOP",
+            "BZPOPMIN",    "BZPOPMAX",    "BZMPOP",       "SETRANGE",    "SETBIT",
+            "BITOP",       "BITFIELD",    "XADD",         "XDEL",        "XTRIM",
+            "XSETID",      "XGROUP",      "XACK",         "XCLAIM",      "XAUTOCLAIM",
+            "GEOADD",      "PFADD",       "PFMERGE",      "BF.ADD",      "BF.RESERVE",
+            "BF.MADD",     "BF.INSERT",   "BF.LOADCHUNK", "CF.ADD",      "CF.RESERVE",
+            "CF.ADDNX",    "CF.INSERT",   "CF.INSERTNX",  "CF.DEL",
         };
         for (write_cmds) |wc| {
             if (std.mem.eql(u8, cmd_upper, wc)) break :blk true;
@@ -1861,8 +1828,7 @@ pub fn executeCommand(
                 defer w.deinit();
                 break :blk try w.writeError("ERR unknown FUNCTION subcommand");
             }
-        }
-        else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
+        } else if (std.mem.eql(u8, cmd_upper, "FCALL")) {
             const args_fcall = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall);
             break :blk try function_cmds.cmdFcall(
@@ -1884,8 +1850,7 @@ pub fn executeCommand(
                 databases,
                 num_databases,
             );
-        }
-        else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
+        } else if (std.mem.eql(u8, cmd_upper, "FCALL_RO")) {
             const args_fcall_ro = try extractBulkStrings(allocator, array[1..]);
             defer allocator.free(args_fcall_ro);
             break :blk try function_cmds.cmdFcallRo(
@@ -3302,7 +3267,10 @@ pub fn executeCommand(
             for (array, 0..) |arg, i| {
                 aof_args[i] = switch (arg) {
                     .bulk_string => |s| s,
-                    else => { valid = false; break; },
+                    else => {
+                        valid = false;
+                        break;
+                    },
                 };
             }
             if (valid) {
@@ -3508,64 +3476,32 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
         defer allocator.free(opt_upper);
 
         if (std.mem.eql(u8, opt_upper, "EX")) {
-            if (expires_at != null or keepttl) {
-                return w.writeError("ERR syntax error");
-            }
+            if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const seconds = parseInteger(args[i]) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
-            if (seconds <= 0) {
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const seconds = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), seconds, 1000) catch
                 return w.writeError("ERR invalid expire time in 'set' command");
-            }
-            expires_at = Storage.getCurrentTimestamp() + (seconds * 1000);
         } else if (std.mem.eql(u8, opt_upper, "PX")) {
-            if (expires_at != null or keepttl) {
-                return w.writeError("ERR syntax error");
-            }
+            if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const milliseconds = parseInteger(args[i]) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
-            if (milliseconds <= 0) {
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const milliseconds = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), milliseconds, 1) catch
                 return w.writeError("ERR invalid expire time in 'set' command");
-            }
-            expires_at = Storage.getCurrentTimestamp() + milliseconds;
         } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
-            if (expires_at != null or keepttl) {
-                return w.writeError("ERR syntax error");
-            }
+            if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const unix_sec = parseInteger(args[i]) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
-            if (unix_sec < 0) {
-                return w.writeError("ERR invalid expire time in 'set' command");
-            }
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const unix_sec = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            if (unix_sec < 0) return w.writeError("ERR invalid expire time in 'set' command");
             expires_at = unix_sec * 1000; // convert seconds to milliseconds
         } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
-            if (expires_at != null or keepttl) {
-                return w.writeError("ERR syntax error");
-            }
+            if (expires_at != null or keepttl) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const unix_ms = parseInteger(args[i]) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
-            if (unix_ms < 0) {
-                return w.writeError("ERR invalid expire time in 'set' command");
-            }
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const unix_ms = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            if (unix_ms < 0) return w.writeError("ERR invalid expire time in 'set' command");
             expires_at = unix_ms;
         } else if (std.mem.eql(u8, opt_upper, "KEEPTTL")) {
             if (expires_at != null) {
@@ -3588,6 +3524,10 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             return w.writeError("ERR syntax error");
         }
     }
+    // Each branch above rejects the option that would violate these pairs, so both hold
+    // no matter which arm of the loop last ran.
+    assert(!(nx and xx));
+    assert(!(keepttl and expires_at != null));
 
     // GET option: retrieve old value before applying NX/XX/SET logic.
     // Returns WRONGTYPE if key exists as a non-string type.
@@ -3602,6 +3542,8 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
             old_value_buf = try allocator.dupe(u8, e.value);
         }
     }
+    // Negative space: GET was never requested, so nothing was fetched.
+    if (!get_flag) assert(old_value_buf == null);
 
     // Check NX condition (key must NOT exist)
     if (nx and storage.exists(key)) {
@@ -3625,6 +3567,7 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     // Execute SET
     const was_new = !storage.exists(key);
     try storage.set(key, value, final_expires_at);
+    assert(storage.exists(key)); // Postcondition: SET always leaves the key present.
 
     // Notify clients about key invalidation (generate messages and cleanup tracking)
     client_cmds.notifyInvalidation(client_registry, key, client_id, allocator) catch |err| {
@@ -3656,6 +3599,10 @@ fn cmdGet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     };
 
     const value = storage.get(key);
+    // Cross-check against the independent `exists` query: a returned value implies the key
+    // is present, and a missing key never yields a value.
+    if (value != null) assert(storage.exists(key));
+    if (!storage.exists(key)) assert(value == null);
 
     // Track key access for client-side caching
     client_registry.trackKeyAccess(client_id, key) catch |err| {
@@ -3891,6 +3838,26 @@ fn parseInteger(value: RespValue) !i64 {
     return std.fmt.parseInt(i64, str, 10);
 }
 
+/// Computes the millisecond-absolute expiry for a relative SET/MSETEX-style EX (seconds,
+/// `scale_ms == 1000`) or PX (milliseconds, `scale_ms == 1`) option: `now_ms + value * scale_ms`.
+/// Redis requires EX/PX to name a strictly positive duration; a non-positive `value` returns
+/// `error.InvalidExpire` for the caller to report with its own command-specific message.
+fn relativeExpiryMs(now_ms: i64, value: i64, scale_ms: i64) error{InvalidExpire}!i64 {
+    assert(now_ms >= 0);
+    assert(scale_ms == 1 or scale_ms == 1000);
+    if (value <= 0) return error.InvalidExpire;
+    const expires_at = now_ms + value * scale_ms;
+    assert(expires_at > now_ms); // Postcondition: a positive delta always moves time forward.
+    return expires_at;
+}
+
+test "relativeExpiryMs accepts a positive duration and rejects zero or negative" {
+    try std.testing.expectEqual(@as(i64, 1_000_000 + 5000), try relativeExpiryMs(1_000_000, 5, 1000));
+    try std.testing.expectEqual(@as(i64, 1_000_000 + 7), try relativeExpiryMs(1_000_000, 7, 1));
+    try std.testing.expectError(error.InvalidExpire, relativeExpiryMs(1_000_000, 0, 1000));
+    try std.testing.expectError(error.InvalidExpire, relativeExpiryMs(1_000_000, -1, 1));
+}
+
 // ── String counter commands ───────────────────────────────────────────────────
 
 /// INCR key
@@ -3914,6 +3881,7 @@ fn cmdIncr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
         error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
         else => return err,
     };
+    assert(storage.exists(key)); // Postcondition: a successful INCR always leaves the key set.
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "incr");
@@ -3942,6 +3910,7 @@ fn cmdDecr(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
         error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
         else => return err,
     };
+    assert(storage.exists(key)); // Postcondition: a successful DECR always leaves the key set.
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "decr");
@@ -3974,6 +3943,7 @@ fn cmdIncrby(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
         else => return err,
     };
+    assert(storage.exists(key)); // Postcondition: a successful INCRBY always leaves the key set.
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "incrby");
@@ -4004,6 +3974,7 @@ fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     const neg_delta = std.math.negate(delta) catch {
         return w.writeError("ERR increment or decrement would overflow");
     };
+    assert(neg_delta == -delta); // The only case negate fails (i64 min) already returned above.
 
     const new_val = storage.incrby(key, neg_delta) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
@@ -4011,6 +3982,7 @@ fn cmdDecrby(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         error.Overflow => return w.writeError("ERR increment or decrement would overflow"),
         else => return err,
     };
+    assert(storage.exists(key)); // Postcondition: a successful DECRBY always leaves the key set.
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "decrby");
@@ -4053,6 +4025,10 @@ fn cmdIncrbyfloat(allocator: std.mem.Allocator, storage: *Storage, args: []const
         error.NanOrInfinity => return w.writeError("ERR increment would produce NaN or Infinity"),
         else => return err,
     };
+    // Our pre-check above and storage's own internal check are two independent guards
+    // against the same NaN/Infinity postcondition.
+    assert(!std.math.isNan(new_val));
+    assert(!std.math.isInf(new_val));
 
     // RESP3: return native double type
     if (protocol_version == .RESP3) {
@@ -4099,6 +4075,10 @@ fn cmdAppend(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         error.StringTooLarge => return w.writeError("ERR string exceeds maximum allowed size (512mb)"),
         else => return err,
     };
+    // Postcondition: the result can never be shorter than the bytes just appended, and the
+    // key must now exist.
+    assert(new_len >= suffix.len);
+    assert(storage.exists(key));
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "append");
@@ -4129,6 +4109,9 @@ fn cmdStrlen(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
     const val = storage.get(key);
     const len: i64 = if (val) |v| @intCast(v.len) else 0;
+    assert(len >= 0);
+    // Negative space: a key that was never seen as a string reports length zero.
+    if (vtype == null) assert(len == 0);
     return w.writeInteger(len);
 }
 
@@ -4167,8 +4150,12 @@ pub fn cmdGetset(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     const old_val = storage.get(key);
     const old_copy: ?[]u8 = if (old_val) |v| try allocator.dupe(u8, v) else null;
     defer if (old_copy) |c| allocator.free(c);
+    // The duplicate never outlives or diverges from what `get` returned in the same call.
+    if (old_val == null) assert(old_copy == null);
+    if (old_copy) |c| assert(std.mem.eql(u8, c, old_val.?));
 
     try storage.set(key, value, null);
+    assert(storage.exists(key)); // Postcondition: GETSET always leaves the key set.
 
     // Fire "set" keyspace notification (GETSET always overwrites)
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
@@ -4191,11 +4178,16 @@ pub fn cmdGetdel(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         else => return w.writeError("ERR invalid key"),
     };
 
+    const existed_before = storage.exists(key);
     const val = storage.getdel(key) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         else => return err,
     };
     defer if (val) |v| allocator.free(v);
+    // Positive space: a string key that existed always yields its value here (WRONGTYPE
+    // already returned above otherwise). Negative space: either way, the key is now gone.
+    if (existed_before) assert(val != null);
+    assert(!storage.exists(key));
 
     // Fire "del" keyspace notification only when the key actually existed and was deleted
     if (val != null) {
@@ -4257,12 +4249,19 @@ fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
             return w.writeError("ERR syntax error");
         }
     }
+    // The else-if chain above lets only one option arm run, so PERSIST and an explicit
+    // expiry can never both land here together.
+    assert(!(persist and expires_at != null));
 
     const val = storage.getex(key, expires_at, persist) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         else => return err,
     };
     defer if (val) |v| allocator.free(v);
+    // Postcondition: PERSIST on a still-present key always clears its expiry.
+    if (persist and val != null) {
+        if (storage.getStringWithExpiry(key) catch null) |entry| assert(entry.expires_at == null);
+    }
 
     // Publish "getex" notification (for expiry modification)
     if (val != null and (expires_at != null or persist)) {
@@ -4300,8 +4299,10 @@ pub fn cmdSetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     if (storage.exists(key)) {
         return w.writeInteger(0);
     }
+    assert(!storage.exists(key));
 
     try storage.set(key, value, null);
+    assert(storage.exists(key)); // Postcondition: SETNX on a fresh key always sets it.
     // Fire "set" notification only when key was actually set
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "set");
     return w.writeInteger(1);
@@ -4330,19 +4331,17 @@ fn cmdSetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
     const seconds = parseInteger(args[2]) catch {
         return w.writeError("ERR value is not an integer or out of range");
     };
-
-    if (seconds <= 0) {
+    const expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), seconds, 1000) catch
         return w.writeError("ERR invalid expire time in 'setex' command");
-    }
 
     const value = switch (args[3]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid value"),
     };
 
-    const expires_at = Storage.getCurrentTimestamp() + (seconds * 1000);
     const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
+    assert(storage.exists(key)); // Postcondition: SETEX always leaves the key set.
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "setex");
@@ -4376,19 +4375,17 @@ fn cmdPsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     const milliseconds = parseInteger(args[2]) catch {
         return w.writeError("ERR value is not an integer or out of range");
     };
-
-    if (milliseconds <= 0) {
+    const expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), milliseconds, 1) catch
         return w.writeError("ERR invalid expire time in 'psetex' command");
-    }
 
     const value = switch (args[3]) {
         .bulk_string => |s| s,
         else => return w.writeError("ERR invalid value"),
     };
 
-    const expires_at = Storage.getCurrentTimestamp() + milliseconds;
     const was_new = !storage.exists(key);
     try storage.set(key, value, expires_at);
+    assert(storage.exists(key)); // Postcondition: PSETEX always leaves the key set.
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "psetex");
@@ -4412,6 +4409,7 @@ fn cmdMget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
     }
 
     const count = args.len - 1;
+    assert(count >= 1);
     var buf = std.ArrayList(u8){ .items = &.{}, .capacity = 0 };
     defer buf.deinit(allocator);
 
@@ -4447,6 +4445,7 @@ fn cmdMget(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
         // Track key access for client-side caching
         client_registry.trackKeyAccess(client_id, key) catch {};
     }
+    assert(buf.items.len >= header.len); // Postcondition: at least the array header was written.
 
     return buf.toOwnedSlice(allocator);
 }
@@ -4460,6 +4459,7 @@ fn cmdMset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
     if (args.len < 3 or (args.len - 1) % 2 != 0) {
         return w.writeError("ERR wrong number of arguments for 'mset' command");
     }
+    assert((args.len - 1) % 2 == 0);
 
     var i: usize = 1;
     while (i < args.len) : (i += 2) {
@@ -4475,6 +4475,7 @@ fn cmdMset(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVa
 
         try storage.set(key, value, null);
     }
+    assert(i == args.len); // Postcondition: the paired step lands exactly on args.len.
 
     return w.writeOK();
 }
@@ -4489,6 +4490,7 @@ fn cmdMsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
     if (args.len < 3 or (args.len - 1) % 2 != 0) {
         return w.writeError("ERR wrong number of arguments for 'msetnx' command");
     }
+    assert((args.len - 1) % 2 == 0);
 
     // Check if any key already exists
     var i: usize = 1;
@@ -4502,6 +4504,7 @@ fn cmdMsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
             return w.writeInteger(0);
         }
     }
+    assert(i == args.len); // Postcondition (first pass): the paired step reached args.len.
 
     // All keys are new — set them all
     i = 1;
@@ -4518,6 +4521,7 @@ fn cmdMsetnx(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
 
         try storage.set(key, value, null);
     }
+    assert(i == args.len); // Postcondition (second pass): same invariant, independent loop.
 
     return w.writeInteger(1);
 }
@@ -4582,6 +4586,10 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         try values.append(allocator, value);
         i += 2;
     }
+    // Every iteration appends exactly one key and one value, so the two lists — built by
+    // two independent `append` calls — never drift apart.
+    assert(keys.items.len == numkeys);
+    assert(values.items.len == numkeys);
 
     // Parse options
     var nx_flag = false;
@@ -4617,83 +4625,41 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
             keepttl_flag = true;
             i += 1;
         } else if (std.mem.eql(u8, opt_upper, "EX")) {
-            if (keepttl_flag or expires_at != null) {
-                return w.writeError("ERR syntax error");
-            }
+            if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const seconds_str = switch (args[i]) {
-                .bulk_string => |s| s,
-                else => return w.writeError("ERR value is not an integer or out of range"),
-            };
-            const seconds = std.fmt.parseInt(i64, seconds_str, 10) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
-            if (seconds <= 0) {
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const seconds = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), seconds, 1000) catch
                 return w.writeError("ERR invalid expire time in 'msetex' command");
-            }
-            expires_at = std.time.milliTimestamp() + (seconds * 1000);
             i += 1;
         } else if (std.mem.eql(u8, opt_upper, "PX")) {
-            if (keepttl_flag or expires_at != null) {
-                return w.writeError("ERR syntax error");
-            }
+            if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const millis_str = switch (args[i]) {
-                .bulk_string => |s| s,
-                else => return w.writeError("ERR value is not an integer or out of range"),
-            };
-            const millis = std.fmt.parseInt(i64, millis_str, 10) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
-            if (millis <= 0) {
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const millis = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
+            expires_at = relativeExpiryMs(Storage.getCurrentTimestamp(), millis, 1) catch
                 return w.writeError("ERR invalid expire time in 'msetex' command");
-            }
-            expires_at = std.time.milliTimestamp() + millis;
             i += 1;
         } else if (std.mem.eql(u8, opt_upper, "EXAT")) {
-            if (keepttl_flag or expires_at != null) {
-                return w.writeError("ERR syntax error");
-            }
+            if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const timestamp_str = switch (args[i]) {
-                .bulk_string => |s| s,
-                else => return w.writeError("ERR value is not an integer or out of range"),
-            };
-            const timestamp = std.fmt.parseInt(i64, timestamp_str, 10) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const timestamp = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
             expires_at = timestamp * 1000;
             i += 1;
         } else if (std.mem.eql(u8, opt_upper, "PXAT")) {
-            if (keepttl_flag or expires_at != null) {
-                return w.writeError("ERR syntax error");
-            }
+            if (keepttl_flag or expires_at != null) return w.writeError("ERR syntax error");
             i += 1;
-            if (i >= args.len) {
-                return w.writeError("ERR syntax error");
-            }
-            const timestamp_str = switch (args[i]) {
-                .bulk_string => |s| s,
-                else => return w.writeError("ERR value is not an integer or out of range"),
-            };
-            const timestamp = std.fmt.parseInt(i64, timestamp_str, 10) catch {
-                return w.writeError("ERR value is not an integer or out of range");
-            };
+            if (i >= args.len) return w.writeError("ERR syntax error");
+            const timestamp = parseInteger(args[i]) catch return w.writeError("ERR value is not an integer or out of range");
             expires_at = timestamp;
             i += 1;
         } else {
             return w.writeError("ERR syntax error");
         }
     }
+    assert(!(nx_flag and xx_flag));
+    assert(!(keepttl_flag and expires_at != null));
 
     // Execute msetex
     const success = try storage.msetex(
@@ -4704,6 +4670,8 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
         xx_flag,
         keepttl_flag,
     );
+    // Postcondition: a reported success always leaves at least the first pair set.
+    if (success) assert(storage.exists(keys.items[0]));
 
     return w.writeInteger(if (success) 1 else 0);
 }
@@ -5332,17 +5300,11 @@ test "commands - SET with PX option" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5365,17 +5327,11 @@ test "commands - SET with NX when key doesn't exist" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5399,17 +5355,11 @@ test "commands - SET with NX when key exists" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5434,17 +5384,11 @@ test "commands - SET with XX when key exists" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5467,17 +5411,11 @@ test "commands - SET with XX when key doesn't exist" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5501,17 +5439,11 @@ test "commands - SET with both NX and XX returns error" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5534,17 +5466,11 @@ test "commands - SET with negative expiration" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdSet(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5741,10 +5667,7 @@ test "commands - GET existing key" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5764,10 +5687,7 @@ test "commands - GET non-existent key" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5786,10 +5706,7 @@ test "commands - GET wrong number of arguments" {
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdGet(allocator, storage, &args, &registry, 0);
     defer allocator.free(result);
@@ -5811,17 +5728,11 @@ test "commands - DEL single key" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5847,17 +5758,11 @@ test "commands - DEL multiple keys" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -5877,17 +5782,11 @@ test "commands - DEL non-existent key" {
 
     var ps = PubSub.init(allocator);
 
-
     defer ps.deinit();
-
-
 
     var registry = ClientRegistry.init(allocator);
 
-
     defer registry.deinit();
-
-
 
     const result = try cmdDel(allocator, storage, &args, &ps, 0, &registry, 0);
     defer allocator.free(result);
@@ -6071,6 +5970,8 @@ pub fn cmdGetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return err;
     };
     defer allocator.free(result);
+    // A substring can never exceed Redis's own 512MB maximum string size.
+    assert(result.len <= 512 * 1024 * 1024);
 
     return w.writeBulkString(result);
 }
@@ -6122,6 +6023,7 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
     if (offset < 0) {
         return w.writeError("ERR offset is out of range");
     }
+    assert(offset >= 0);
 
     // Redis enforces a 512MB maximum string size
     const MAX_STRING_BYTES: usize = 512 * 1024 * 1024;
@@ -6136,6 +6038,9 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
         return err;
     };
+    // Postcondition: the result can never be shorter than offset+value, whether the string
+    // was created fresh or an existing longer string was only partially overwritten.
+    assert(new_len >= required_len);
 
     // Publish keyspace notification
     notifyKeyspaceEvent(allocator, storage, ps, db_index, key, .string, "setrange");
