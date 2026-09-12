@@ -15560,7 +15560,7 @@ test "storage - getUptimeSeconds reflects elapsed time since server_start_time" 
     try std.testing.expect(storage.getUptimeSeconds() >= 0);
 
     // Reuse the existing millisecond clock helper (rather than a fresh
-    // std.time.* call site) to push server_start_time 100s into the past.
+    // direct stdlib time call) to push server_start_time 100s into the past.
     storage.server_start_time = @divFloor(Storage.getCurrentTimestamp(), 1000) - 100;
     try std.testing.expect(storage.getUptimeSeconds() >= 100);
 }
