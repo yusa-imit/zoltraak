@@ -15496,6 +15496,376 @@ test "storage - dirty_count increments on hset()" {
     try std.testing.expectEqual(before + 1, storage.getDirtyCount());
 }
 
+// ── Tiger Style assertion baseline: lifecycle/stats/introspection coverage ──
+
+test "storage - checkMemoryLimitAndEvict allows writes when maxmemory is unlimited (default)" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Default maxmemory is 0 (unlimited). Pretend memory usage is enormous;
+    // the unlimited config must still let a memory-growing command through.
+    storage.memory_tracker.current_allocated = 1_000_000_000;
+    try storage.checkMemoryLimitAndEvict("SET");
+}
+
+test "storage - checkMemoryLimitAndEvict allows non-memory-growing commands over the limit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set("maxmemory", "1");
+    storage.memory_tracker.current_allocated = 1_000_000;
+
+    // GET does not grow memory, so it is always allowed regardless of policy
+    // or how far over the (fake) limit current usage is.
+    try storage.checkMemoryLimitAndEvict("GET");
+}
+
+test "storage - checkMemoryLimitAndEvict returns OOM under noeviction policy when over the limit" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.config.set("maxmemory", "1");
+    try storage.config.set("maxmemory-policy", "noeviction");
+    storage.memory_tracker.current_allocated = 1_000_000;
+
+    try std.testing.expectError(error.OOM, storage.checkMemoryLimitAndEvict("SET"));
+}
+
+test "storage - checkMemoryLimitAndEvict evicts a candidate and counts it under allkeys-random" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("victim", "v", null);
+    try storage.config.set("maxmemory", "1");
+    try storage.config.set("maxmemory-policy", "allkeys-random");
+    storage.memory_tracker.current_allocated = 1_000_000;
+
+    try std.testing.expectEqual(@as(u64, 0), storage.getEvictedKeysCount());
+    // The tracker's current_allocated never drops (nothing decrements it here),
+    // so eviction is attempted and exhausts the only candidate before OOM.
+    try std.testing.expectError(error.OOM, storage.checkMemoryLimitAndEvict("SET"));
+    try std.testing.expect(!storage.exists("victim"));
+    try std.testing.expectEqual(@as(u64, 1), storage.getEvictedKeysCount());
+}
+
+test "storage - getUptimeSeconds reflects elapsed time since server_start_time" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expect(storage.getUptimeSeconds() >= 0);
+
+    // Reuse the existing millisecond clock helper (rather than a fresh
+    // std.time.* call site) to push server_start_time 100s into the past.
+    storage.server_start_time = @divFloor(Storage.getCurrentTimestamp(), 1000) - 100;
+    try std.testing.expect(storage.getUptimeSeconds() >= 100);
+}
+
+test "storage - incrementCommandsProcessed and incrementConnectionsReceived are independent" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), storage.total_commands_processed.load(.monotonic));
+    try std.testing.expectEqual(@as(u64, 0), storage.total_connections_received.load(.monotonic));
+
+    storage.incrementCommandsProcessed();
+    storage.incrementCommandsProcessed();
+    storage.incrementConnectionsReceived();
+
+    try std.testing.expectEqual(@as(u64, 2), storage.total_commands_processed.load(.monotonic));
+    try std.testing.expectEqual(@as(u64, 1), storage.total_connections_received.load(.monotonic));
+}
+
+test "storage - getKeyVersion starts at one, increments on overwrite, null when absent" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?u64, null), storage.getKeyVersion("nokey"));
+
+    try storage.set("k", "v1", null);
+    try std.testing.expectEqual(@as(?u64, 1), storage.getKeyVersion("k"));
+
+    try storage.set("k", "v2", null);
+    try std.testing.expectEqual(@as(?u64, 2), storage.getKeyVersion("k"));
+
+    _ = storage.del(&[_][]const u8{"k"});
+    try std.testing.expectEqual(@as(?u64, null), storage.getKeyVersion("k"));
+}
+
+test "storage - getSetEncoding is intset for integers, hashmap after a non-integer promotes it" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?Value.SetEncoding, null), storage.getSetEncoding("noset"));
+
+    _ = try storage.sadd("intset_key", &[_][]const u8{ "1", "2", "3" }, null);
+    try std.testing.expectEqual(Value.SetEncoding.intset, storage.getSetEncoding("intset_key").?);
+
+    _ = try storage.sadd("intset_key", &[_][]const u8{"not-a-number"}, null);
+    try std.testing.expectEqual(Value.SetEncoding.hashmap, storage.getSetEncoding("intset_key").?);
+
+    try storage.set("stringkey", "v", null);
+    try std.testing.expectEqual(@as(?Value.SetEncoding, null), storage.getSetEncoding("stringkey"));
+}
+
+test "storage - getObjectFreq returns zero for an untracked and for a nonexistent key" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), storage.getObjectFreq("nokey"));
+
+    try storage.set("k", "v", null);
+    try std.testing.expectEqual(@as(u8, 0), storage.getObjectFreq("k"));
+
+    try storage.lfu_counter.counters.put("k", 7);
+    try std.testing.expectEqual(@as(u8, 7), storage.getObjectFreq("k"));
+}
+
+test "storage - getObjectIdleTime is zero for an untouched key, null for a nonexistent one" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?u32, null), storage.getObjectIdleTime("nokey"));
+
+    // set() alone does not record LRU access, so idle time is 0 (tracked-absent),
+    // not null (key-absent).
+    try storage.set("k", "v", null);
+    try std.testing.expectEqual(@as(u32, 0), storage.getObjectIdleTime("k").?);
+}
+
+test "storage - getHashMaxElementLength returns the longest field or value, null otherwise" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), storage.getHashMaxElementLength("nokey"));
+
+    try storage.set("stringkey", "v", null);
+    try std.testing.expectEqual(@as(?usize, null), storage.getHashMaxElementLength("stringkey"));
+
+    _ = try storage.hset(
+        "myhash",
+        &[_][]const u8{ "shortfield", "f2" },
+        &[_][]const u8{ "v", "a_much_longer_value" },
+        null,
+    );
+    const max_len = storage.getHashMaxElementLength("myhash").?;
+    try std.testing.expectEqual(@as(usize, "a_much_longer_value".len), max_len);
+}
+
+test "storage - getSetMaxMemberLength is null for intset encoding, correct for hashmap encoding" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), storage.getSetMaxMemberLength("nokey"));
+
+    _ = try storage.sadd("intset_key", &[_][]const u8{ "1", "2" }, null);
+    try std.testing.expectEqual(@as(?usize, null), storage.getSetMaxMemberLength("intset_key"));
+
+    _ = try storage.sadd("hashset_key", &[_][]const u8{ "ab", "a_longer_member" }, null);
+    try std.testing.expectEqual(
+        @as(usize, "a_longer_member".len),
+        storage.getSetMaxMemberLength("hashset_key").?,
+    );
+}
+
+test "storage - getZsetMaxMemberLength returns the longest member, null for missing or wrong type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), storage.getZsetMaxMemberLength("nokey"));
+
+    try storage.set("stringkey", "v", null);
+    try std.testing.expectEqual(@as(?usize, null), storage.getZsetMaxMemberLength("stringkey"));
+
+    const scores = [_]f64{ 1.0, 2.0 };
+    const members = [_][]const u8{ "a", "a_much_longer_member" };
+    _ = try storage.zadd("myzset", &scores, &members, 0, null);
+    try std.testing.expectEqual(
+        @as(usize, "a_much_longer_member".len),
+        storage.getZsetMaxMemberLength("myzset").?,
+    );
+}
+
+test "storage - getListMaxElementLength and getListTotalByteSize compute correctly" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), storage.getListMaxElementLength("nokey"));
+    try std.testing.expectEqual(@as(?usize, null), storage.getListTotalByteSize("nokey"));
+
+    _ = try storage.lpush("mylist", &[_][]const u8{ "ab", "abcde" }, null);
+    try std.testing.expectEqual(@as(usize, 5), storage.getListMaxElementLength("mylist").?);
+    try std.testing.expectEqual(@as(usize, 7), storage.getListTotalByteSize("mylist").?);
+}
+
+test "storage - getStreamTotalFieldBytes sums field+value bytes, null for missing or wrong type" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(?usize, null), storage.getStreamTotalFieldBytes("nokey"));
+
+    try storage.set("stringkey", "v", null);
+    try std.testing.expectEqual(@as(?usize, null), storage.getStreamTotalFieldBytes("stringkey"));
+
+    // "temp"(4) + "25"(2) = 6 for the first entry.
+    _ = try storage.xadd("mystream", "*", &[_][]const u8{ "temp", "25" }, null, .{});
+    try std.testing.expectEqual(@as(usize, 6), storage.getStreamTotalFieldBytes("mystream").?);
+
+    // Second entry adds "humidity"(8) + "60"(2) = 10 more, for a running total of 16.
+    _ = try storage.xadd("mystream", "*", &[_][]const u8{ "humidity", "60" }, null, .{});
+    try std.testing.expectEqual(@as(usize, 16), storage.getStreamTotalFieldBytes("mystream").?);
+}
+
+test "storage - updateNotificationFlags parses known characters and ignores unknown ones" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(u16, 0), storage.getNotificationFlags());
+
+    storage.updateNotificationFlags("Kg");
+    const expected = notifications_mod.parseNotificationFlags("Kg");
+    try std.testing.expect(expected != 0);
+    try std.testing.expectEqual(expected, storage.getNotificationFlags());
+
+    // Unknown characters are silently ignored rather than erroring, and an
+    // empty string clears back to zero (both boundary and negative-space).
+    storage.updateNotificationFlags("Q!?");
+    try std.testing.expectEqual(@as(u16, 0), storage.getNotificationFlags());
+
+    storage.updateNotificationFlags("");
+    try std.testing.expectEqual(@as(u16, 0), storage.getNotificationFlags());
+}
+
+test "storage - updateRequirepass sets and then clears the default ACL user's password" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    // Fresh storage starts nopass.
+    const default_user = storage.acl.?.getUser("default").?;
+    try std.testing.expectEqual(@as(?[]const u8, null), default_user.password);
+
+    storage.updateRequirepass("s3cret");
+    try std.testing.expectEqualStrings("s3cret", default_user.password.?);
+
+    // Empty string restores nopass behavior.
+    storage.updateRequirepass("");
+    try std.testing.expectEqual(@as(?[]const u8, null), default_user.password);
+}
+
+test "storage - updateLazyfreeFlags sets each flag independently and ignores unknown names" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expect(!storage.lazy_expire.load(.acquire));
+    try std.testing.expect(!storage.lazy_eviction.load(.acquire));
+    try std.testing.expect(!storage.lazy_server_del.load(.acquire));
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-expire", true);
+    try std.testing.expect(storage.lazy_expire.load(.acquire));
+    try std.testing.expect(!storage.lazy_eviction.load(.acquire));
+    try std.testing.expect(!storage.lazy_server_del.load(.acquire));
+
+    storage.updateLazyfreeFlags("lazyfree-lazy-eviction", true);
+    storage.updateLazyfreeFlags("lazyfree-lazy-server-del", true);
+    try std.testing.expect(storage.lazy_eviction.load(.acquire));
+    try std.testing.expect(storage.lazy_server_del.load(.acquire));
+
+    // An unrecognized parameter name must not touch any flag.
+    storage.updateLazyfreeFlags("lazyfree-lazy-unknown", true);
+    storage.updateLazyfreeFlags("lazyfree-lazy-expire", false);
+    try std.testing.expect(!storage.lazy_expire.load(.acquire));
+    try std.testing.expect(storage.lazy_eviction.load(.acquire));
+    try std.testing.expect(storage.lazy_server_del.load(.acquire));
+}
+
+test "storage - msetex sets multiple keys atomically with a shared expiration" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const future = Storage.getCurrentTimestamp() + 60_000;
+    const ok = try storage.msetex(
+        &[_][]const u8{ "a", "b" },
+        &[_][]const u8{ "1", "2" },
+        future,
+        false,
+        false,
+        false,
+    );
+    try std.testing.expect(ok);
+    try std.testing.expectEqualStrings("1", storage.get("a").?);
+    try std.testing.expectEqualStrings("2", storage.get("b").?);
+}
+
+test "storage - msetex NX fails and changes nothing when any key already exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("a", "original", null);
+    const ok = try storage.msetex(
+        &[_][]const u8{ "a", "b" },
+        &[_][]const u8{ "new", "2" },
+        null,
+        true, // nx_flag
+        false,
+        false,
+    );
+    try std.testing.expect(!ok);
+    try std.testing.expectEqualStrings("original", storage.get("a").?);
+    try std.testing.expect(!storage.exists("b"));
+}
+
+test "storage - msetex XX fails and creates nothing when any key is missing" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("a", "original", null);
+    const ok = try storage.msetex(
+        &[_][]const u8{ "a", "missing" },
+        &[_][]const u8{ "new", "v" },
+        null,
+        false,
+        true, // xx_flag
+        false,
+    );
+    try std.testing.expect(!ok);
+    try std.testing.expectEqualStrings("original", storage.get("a").?);
+    try std.testing.expect(!storage.exists("missing"));
+}
+
+test "storage - msetex rejects mismatched lengths and treats an empty key list as a no-op" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectError(
+        error.InvalidArgument,
+        storage.msetex(&[_][]const u8{"a"}, &[_][]const u8{}, null, false, false, false),
+    );
+
+    const ok = try storage.msetex(&[_][]const u8{}, &[_][]const u8{}, null, false, false, false);
+    try std.testing.expect(!ok);
+}
+
 // ── XINFO STREAM FULL format tests (Iteration 319) ───────────────────────────
 
 test "storage - xinfoStream FULL empty group has 12 elements" {
