@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const zuda = @import("zuda");
 const config_mod = @import("config.zig");
 const blocking_mod = @import("blocking.zig");
@@ -931,6 +932,7 @@ pub const Storage = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, port: u16, bind: []const u8) !*Storage {
+        assert(bind.len > 0); // Precondition: callers always pass a real bind address.
         const storage = try allocator.create(Storage);
         errdefer allocator.destroy(storage);
 
@@ -1070,6 +1072,11 @@ pub const Storage = struct {
 
         storage.module_store.storage = storage;
 
+        // Postcondition: a freshly initialized instance owns no keys yet and every
+        // lifetime counter starts at zero, checked on two independent fields.
+        assert(storage.data.count() == 0);
+        assert(storage.total_commands_processed.load(.monotonic) == 0);
+        assert(storage.evicted_keys.load(.monotonic) == 0);
         return storage;
     }
 
@@ -1368,8 +1375,35 @@ pub const Storage = struct {
         try self.lfu_counter.counters.put(key, new_counter);
     }
 
+    /// Precondition helper for deinit: no other thread may still be touching
+    /// command/error stats when the storage instance is torn down. tryLock succeeding
+    /// on both proves no concurrent holder, checked on two independent locks.
+    fn assertStatsMutexesFree(self: *Storage) void {
+        assert(self.command_stats_mutex.tryLock());
+        self.command_stats_mutex.unlock();
+        assert(self.error_stats_mutex.tryLock());
+        self.error_stats_mutex.unlock();
+    }
+
+    /// Free every key and value owned by self.data, then destroy the map itself.
+    /// Postcondition: every entry present before the loop was freed exactly once.
+    fn freeAllDataEntries(self: *Storage) void {
+        const count_before = self.data.count();
+        var freed: usize = 0;
+        var it = self.data.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            var value = entry.value_ptr.*;
+            value.deinit(self.allocator);
+            freed += 1;
+        }
+        assert(freed == count_before);
+        self.data.deinit();
+    }
+
     /// Deinitialize storage and free all keys and values
     pub fn deinit(self: *Storage) void {
+        self.assertStatsMutexesFree();
         self.mutex.lock();
 
         // Free TLS config
@@ -1412,13 +1446,7 @@ pub const Storage = struct {
         self.bloom_load_contexts.deinit();
 
         // Free all keys and values
-        var it = self.data.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            var value = entry.value_ptr.*;
-            value.deinit(self.allocator);
-        }
-        self.data.deinit();
+        self.freeAllDataEntries();
 
         self.blocking_queue.deinit();
         self.slowlog.deinit();
@@ -1471,6 +1499,8 @@ pub const Storage = struct {
     /// Returns error.OOM if noeviction policy and memory limit reached
     /// This should be called before write commands that grow memory
     pub fn checkMemoryLimitAndEvict(self: *Storage, command_name: []const u8) !void {
+        assert(command_name.len > 0); // Precondition: callers always pass a real command name.
+
         // Get maxmemory config (0 = unlimited)
         const maxmemory_str = self.config.getAsString("maxmemory") catch return; // Continue if not set
         defer if (maxmemory_str) |s| self.allocator.free(s);
@@ -1519,10 +1549,12 @@ pub const Storage = struct {
             // Recheck memory after each eviction
             const current = self.memory_tracker.current_allocated;
             if (current <= maxmemory) {
+                assert(evictions <= max_evictions); // Postcondition: eviction loop stayed in bound.
                 return; // Success!
             }
 
             // Try to evict one key
+            const evicted_before = self.getEvictedKeysCount();
             const evicted = try self.evictOneKey(policy);
             if (!evicted) {
                 // No more keys can be evicted
@@ -1530,9 +1562,12 @@ pub const Storage = struct {
             }
 
             evictions += 1;
+            // Two independent counters (local loop count, storage-wide stat) agree.
+            assert(self.getEvictedKeysCount() == evicted_before + 1);
         }
 
         // If we exhausted max_evictions and memory still high, return error
+        assert(evictions == max_evictions); // Postcondition: only this path exits at the bound.
         return error.OOM;
     }
 
@@ -2198,8 +2233,13 @@ pub const Storage = struct {
     /// Overwrites existing value if key exists
     /// expires_at: Unix timestamp in milliseconds, null = no expiration
     pub fn set(self: *Storage, key: []const u8, value: []const u8, expires_at: ?i64) !void {
+        if (expires_at) |exp| assert(exp >= 0); // Precondition: never a negative epoch-ms value.
+
         self.mutex.lock();
         defer self.mutex.unlock();
+
+        const count_before = self.data.count();
+        const existed_before = self.data.contains(key);
 
         // Copy value
         const owned_value = try self.allocator.dupe(u8, value);
@@ -2233,6 +2273,15 @@ pub const Storage = struct {
         }
         self.bumpKeyVersionLocked(key);
         self.incrementDirty(1);
+
+        assert(self.data.contains(key)); // Postcondition: SET always leaves the key present.
+        // Postcondition: count grows by exactly one on insert, stays flat on overwrite —
+        // an independent derivation of the same "did we insert or overwrite" fact.
+        if (existed_before) {
+            assert(self.data.count() == count_before);
+        } else {
+            assert(self.data.count() == count_before + 1);
+        }
     }
 
     /// Atomically set multiple keys with optional shared expiration
@@ -2355,7 +2404,8 @@ pub const Storage = struct {
         };
 
         // Check expiration
-        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+        const now = getCurrentTimestamp();
+        if (entry.value_ptr.isExpired(now)) {
             // Fire expired event before deletion (if notifications enabled and pubsub available)
             if (self.pubsub_state) |pubsub| {
                 const flags = self.notification_flags.load(.monotonic);
@@ -2385,8 +2435,10 @@ pub const Storage = struct {
             }
             _ = self.keyspace_misses.fetchAdd(1, .monotonic);
             _ = self.expired_keys.fetchAdd(1, .monotonic);
+            assert(!self.data.contains(key)); // Postcondition: expired key is truly gone.
             return null;
         }
+        assert(!entry.value_ptr.isExpired(now)); // Negative space: the branch above was not taken.
 
         // Check type — only strings count as hits for the GET command path
         return switch (entry.value_ptr.*) {
@@ -2433,8 +2485,10 @@ pub const Storage = struct {
                 var value = kv.value;
                 value.deinit(self.allocator);
                 count += 1;
+                assert(count <= keys.len); // Postcondition: never over-count mid-loop.
             }
         }
+        assert(count <= keys.len); // Postcondition: same bound holds on the loop-exit path too.
         if (count > 0) self.incrementDirty(@intCast(count));
         return count;
     }
@@ -2451,7 +2505,8 @@ pub const Storage = struct {
         };
 
         // Check expiration
-        if (entry.value_ptr.isExpired(getCurrentTimestamp())) {
+        const now = getCurrentTimestamp();
+        if (entry.value_ptr.isExpired(now)) {
             // Fire expired event before deletion (if notifications enabled and pubsub available)
             if (self.pubsub_state) |pubsub| {
                 const flags = self.notification_flags.load(.monotonic);
@@ -2474,8 +2529,10 @@ pub const Storage = struct {
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
             _ = self.keyspace_misses.fetchAdd(1, .monotonic);
+            assert(!self.data.contains(key)); // Postcondition: expired key is truly gone.
             return false;
         }
+        assert(!entry.value_ptr.isExpired(now)); // Negative space: the branch above was not taken.
 
         _ = self.keyspace_hits.fetchAdd(1, .monotonic);
         return true;
@@ -3099,7 +3156,7 @@ pub const Storage = struct {
         maxlen: usize,
     ) error{ WrongType, OutOfMemory }![]usize {
         // rank is 1-based; 0 is invalid and must be rejected before calling this function
-        std.debug.assert(rank != 0);
+        assert(rank != 0);
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -6270,6 +6327,7 @@ pub const Storage = struct {
         // Same-key rename is a no-op; skip to avoid use-after-free when fetchRemove
         // removes the entry that src_entry references.
         if (std.mem.eql(u8, key, newkey)) return;
+        assert(!std.mem.eql(u8, key, newkey)); // Negative space: the guard above was not taken.
 
         // Clone the value to move it under the new key
         const src_value = src_entry.value_ptr.*;
@@ -6291,6 +6349,9 @@ pub const Storage = struct {
         self.allocator.free(src_owned_key);
 
         try self.data.put(owned_newkey, src_value);
+
+        assert(!self.data.contains(key)); // Postcondition: the old key no longer exists.
+        assert(self.data.contains(newkey)); // Postcondition: newkey now holds the moved value.
     }
 
     /// Rename key to newkey only if newkey does not already exist.
