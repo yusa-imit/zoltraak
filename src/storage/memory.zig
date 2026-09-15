@@ -1988,6 +1988,8 @@ pub const Storage = struct {
     }
 
     pub fn getType(self: *Storage, key: []const u8) ?ValueType {
+        assert(key.len > 0); // Precondition: callers always pass a real key.
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -2000,10 +2002,15 @@ pub const Storage = struct {
             _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
+            assert(!self.data.contains(key)); // Postcondition: expired key is truly gone.
             return null;
         }
 
-        return std.meta.activeTag(entry.value_ptr.*);
+        const value_type = std.meta.activeTag(entry.value_ptr.*);
+        // Postcondition: a non-null result always names the tag of the live entry —
+        // two independent reads (the switch tag and a fresh lookup) agree.
+        assert(std.meta.activeTag(self.data.get(key).?) == value_type);
+        return value_type;
     }
 
     /// Peek at a string value's encoding category without updating keyspace stats or LRU.
@@ -5992,6 +5999,9 @@ pub const Storage = struct {
     /// options bitmask: 1=NX (only if no expiry), 2=XX (only if has expiry),
     ///                  4=GT (only if new > current), 8=LT (only if new < current)
     pub fn setExpiry(self: *Storage, key: []const u8, expires_at: ?i64, options: u8) bool {
+        assert(key.len > 0); // Precondition: callers always pass a real key.
+        if (expires_at) |exp| assert(exp >= 0); // Precondition: never a negative epoch-ms value.
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -6004,6 +6014,7 @@ pub const Storage = struct {
             _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
+            assert(!self.data.contains(key)); // Postcondition: expired key is truly gone.
             return false;
         }
 
@@ -6028,6 +6039,12 @@ pub const Storage = struct {
             }
         }
 
+        // Types below take no expiry field; setExpiry is a documented no-op for them.
+        const expiry_unsupported = switch (entry.value_ptr.*) {
+            .count_min_sketch, .t_digest, .vector_set => true,
+            else => false,
+        };
+
         // Apply expiry to the value
         switch (entry.value_ptr.*) {
             .string => |*v| v.expires_at = expires_at,
@@ -6046,6 +6063,9 @@ pub const Storage = struct {
             .t_digest => {}, // T-Digest doesn't support expiration yet - no-op
             .vector_set => {}, // Vector sets don't support expiration yet - no-op
         }
+        // Postcondition: for types that support it, the stored expiry now matches the
+        // request exactly — checked via the same accessor lazy-expiry reads use.
+        if (!expiry_unsupported) assert(entry.value_ptr.getExpiration() == expires_at);
         return true;
     }
 
@@ -6054,6 +6074,8 @@ pub const Storage = struct {
     /// Returns -1 if key has no expiry.
     /// Otherwise returns remaining milliseconds.
     pub fn getTtlMs(self: *Storage, key: []const u8) i64 {
+        assert(key.len > 0); // Precondition: callers always pass a real key.
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -6066,11 +6088,17 @@ pub const Storage = struct {
             _ = self.removeKeyCleanup(key);
             self.allocator.free(owned_key);
             value.deinit(self.allocator);
+            assert(!self.data.contains(key)); // Postcondition: expired key is truly gone.
             return -2;
         }
 
         const exp = entry.value_ptr.getExpiration() orelse return -1;
-        return exp - now;
+        const ttl = exp - now;
+        // Postcondition: a key that is not expired always reports a strictly positive
+        // remaining TTL — the two facts (not expired, ttl > 0) are independent derivations
+        // of "exp is still in the future" that must agree.
+        assert(ttl > 0);
+        return ttl;
     }
 
     // ── String counter operations ─────────────────────────────────────────────
@@ -6080,6 +6108,8 @@ pub const Storage = struct {
     /// or error.NotInteger if the value is not a parseable integer,
     /// or error.Overflow if the operation would overflow.
     pub fn incrby(self: *Storage, key: []const u8, delta: i64) !i64 {
+        assert(key.len > 0); // Precondition: callers always pass a real key.
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -6126,12 +6156,19 @@ pub const Storage = struct {
             try self.data.put(owned_key, Value{ .string = .{ .data = owned_str, .expires_at = current_exp } });
         }
 
+        // Postcondition: the stored string now round-trips back to new_val — an
+        // independent derivation (re-parse) from the arithmetic result above.
+        assert(self.data.contains(key));
+        const stored = self.data.get(key).?.string.data;
+        assert((std.fmt.parseInt(i64, stored, 10) catch unreachable) == new_val);
         return new_val;
     }
 
     /// Increment a string value by a float delta. Creates key at "0" if missing.
     /// Returns the new value, or error.WrongType / error.NotFloat.
     pub fn incrbyfloat(self: *Storage, key: []const u8, delta: f64) !f64 {
+        assert(key.len > 0); // Precondition: callers always pass a real key.
+
         // Reject NaN and infinity as delta values immediately
         if (std.math.isNan(delta) or std.math.isInf(delta)) {
             return error.NanOrInfinity;
@@ -6188,6 +6225,11 @@ pub const Storage = struct {
             try self.data.put(owned_key, Value{ .string = .{ .data = owned_str, .expires_at = current_exp } });
         }
 
+        // Postcondition: the stored string now round-trips back to new_val — an
+        // independent derivation (re-parse) from the arithmetic result above.
+        assert(self.data.contains(key));
+        const stored = self.data.get(key).?.string.data;
+        assert((std.fmt.parseFloat(f64, stored) catch unreachable) == new_val);
         return new_val;
     }
 
@@ -12173,6 +12215,125 @@ test "storage - evictExpired removes expired keys" {
     try std.testing.expect(storage.get("key2") != null);
     try std.testing.expect(storage.get("key3") == null);
     try std.testing.expect(storage.get("key4") != null);
+}
+
+test "storage - incrby creates key at delta when missing" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try storage.incrby("counter", 5);
+    try std.testing.expectEqual(@as(i64, 5), result);
+    try std.testing.expectEqualStrings("5", storage.get("counter").?);
+}
+
+test "storage - incrby on existing integer accumulates" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("counter", "10", null);
+    const result = try storage.incrby("counter", -3);
+    try std.testing.expectEqual(@as(i64, 7), result);
+}
+
+test "storage - incrby on non-integer value returns NotInteger" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("counter", "not-a-number", null);
+    try std.testing.expectError(error.NotInteger, storage.incrby("counter", 1));
+}
+
+test "storage - incrby on non-string value returns WrongType" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    _ = try storage.lpush("mylist", &.{"a"}, null);
+    try std.testing.expectError(error.WrongType, storage.incrby("mylist", 1));
+}
+
+test "storage - incrby at i64 boundary returns Overflow" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("counter", "9223372036854775807", null); // i64 max
+    try std.testing.expectError(error.Overflow, storage.incrby("counter", 1));
+}
+
+test "storage - incrbyfloat creates key at delta when missing" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const result = try storage.incrbyfloat("counter", 2.5);
+    try std.testing.expectEqual(@as(f64, 2.5), result);
+    try std.testing.expectEqualStrings("2.5", storage.get("counter").?);
+}
+
+test "storage - incrbyfloat rejects NaN and infinite deltas" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const nan_val = std.math.nan(f64);
+    const inf_val = std.math.inf(f64);
+    try std.testing.expectError(error.NanOrInfinity, storage.incrbyfloat("counter", nan_val));
+    try std.testing.expectError(error.NanOrInfinity, storage.incrbyfloat("counter", inf_val));
+}
+
+test "storage - incrbyfloat on non-float value returns NotFloat" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("counter", "not-a-float", null);
+    try std.testing.expectError(error.NotFloat, storage.incrbyfloat("counter", 1.0));
+}
+
+test "storage - setExpiry NX only sets when no current expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+    const now = Storage.getCurrentTimestamp();
+
+    try std.testing.expect(storage.setExpiry("key1", now + 10000, 1)); // NX succeeds
+    try std.testing.expect(!storage.setExpiry("key1", now + 20000, 1)); // NX fails, has expiry
+}
+
+test "storage - setExpiry XX only sets when current expiry exists" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try storage.set("key1", "value1", null);
+    const now = Storage.getCurrentTimestamp();
+    try std.testing.expect(!storage.setExpiry("key1", now + 10000, 2)); // XX fails, no expiry yet
+}
+
+test "storage - setExpiry on missing key returns false" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    const now = Storage.getCurrentTimestamp();
+    try std.testing.expect(!storage.setExpiry("nosuchkey", now + 1000, 0));
+}
+
+test "storage - getTtlMs returns -2 for missing key and -1 for no expiry" {
+    const allocator = std.testing.allocator;
+    const storage = try Storage.init(allocator, 6379, "127.0.0.1");
+    defer storage.deinit();
+
+    try std.testing.expectEqual(@as(i64, -2), storage.getTtlMs("nosuchkey"));
+
+    try storage.set("key1", "value1", null);
+    try std.testing.expectEqual(@as(i64, -1), storage.getTtlMs("key1"));
 }
 
 test "storage - multiple operations" {
