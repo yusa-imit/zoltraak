@@ -30,8 +30,18 @@ see `git tag -l 'v*'` and the corresponding GitHub releases for that history.
   database-count postconditions, and a case-insensitive PSYNC match proof. New unit tests cover
   the four testable pieces this file previously had none for; `start`/`handleConnection` (the
   socket-bound accept loop) stay covered by the existing shell integration suite, not new unit
-  tests, and were kept at their `tidy-baseline.zon` line-count ceiling. `storage/memory.zig` and
-  `commands/strings.zig` remain for future cycles.
+  tests, and were kept at their `tidy-baseline.zon` line-count ceiling.
+- `src/commands/strings.zig` (plan 001 item 11, assertion baseline continuation): Tiger Style
+  pre/post-condition assertions (0 → 46 asserts) — NX/XX and KEEPTTL/EX mutual exclusion,
+  key-existence postconditions on the SET/INCR/DECR family, i64 negation-overflow proof, NaN/Inf
+  guards on `INCRBYFLOAT`, and paired-arg-count invariants on MSET/HSET-style commands.
+- `src/storage/memory.zig` (plan 001 item 11, assertion baseline — final module): Tiger Style
+  pre/post-condition assertions across `Storage.init`/`deinit`, `set`/`get`/`del`/`exists`,
+  `getType`/`setExpiry`/`getTtlMs`, `incrby`/`incrbyfloat`, `checkMemoryLimitAndEvict`, and
+  `renamekey`, plus 34 new unit tests covering lifecycle/eviction/stats/introspection and the
+  string-counter family. This completes the assertion baseline across all five hot modules
+  named in plan 001 item 11: `protocol/{parser,writer}.zig`, `server.zig`,
+  `commands/strings.zig`, `storage/memory.zig`.
 - `zig build tidy` (gates `zig build test`): Tiger Style mechanical checks over `src/` — line
   length, function length, `std.debug.print`/`std.time.*`/unproven-`catch unreachable`/`usize`-
   in-wire-format ban list, and `//!` module headers — checked against a shrink-only baseline in
