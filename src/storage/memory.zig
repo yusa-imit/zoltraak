@@ -6160,6 +6160,7 @@ pub const Storage = struct {
         // independent derivation (re-parse) from the arithmetic result above.
         assert(self.data.contains(key));
         const stored = self.data.get(key).?.string.data;
+        // stored was formatted from new_val just above, so it always reparses.
         assert((std.fmt.parseInt(i64, stored, 10) catch unreachable) == new_val);
         return new_val;
     }
@@ -6229,6 +6230,7 @@ pub const Storage = struct {
         // independent derivation (re-parse) from the arithmetic result above.
         assert(self.data.contains(key));
         const stored = self.data.get(key).?.string.data;
+        // stored was formatted from new_val just above, so it always reparses.
         assert((std.fmt.parseFloat(f64, stored) catch unreachable) == new_val);
         return new_val;
     }
