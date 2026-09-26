@@ -634,36 +634,3 @@ test "checkOverflow fail" {
     const r2 = checkOverflow(-128, -1, bf_type, .fail);
     try std.testing.expectEqual(true, r2.overflow_occurred);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Keyspace Notification Support (Iteration 255)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// TODO for zig-implementor:
-// 1. Add imports at top of file:
-//    const notifications_mod = @import("../storage/notifications.zig");
-//    const pubsub_mod = @import("../storage/pubsub.zig");
-//    const PubSub = pubsub_mod.PubSub;
-//
-// 2. Add helper function (can reuse from bits.zig):
-//    fn notifyBitmapEvent(allocator, storage, pubsub_state, db_index, key, event_flag, event_name) void {
-//        const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
-//        const config_str = config_value orelse return;
-//        const flags = notifications_mod.parseNotificationFlags(config_str);
-//        if (!notifications_mod.shouldNotify(flags, event_flag)) return;
-//        notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
-//    }
-//
-// 3. Update cmdBitfield signature: add `ps: *PubSub, db_index: u32` parameters
-//    - Track `modified` flag (already exists at line 337)
-//    - After line 369 (after saving modified data), add:
-//      if (modified) {
-//          notifyBitmapEvent(allocator, storage, ps, db_index, key, .string, "setbit");
-//      }
-//    - NOTE: Event name is "setbit" (NOT "bitfield") for Redis compatibility
-//
-// 4. cmdBitfieldRo does NOT need modification (read-only, no notifications)
-//
-// 5. Update command routing in server.zig to pass ps and db_index to cmdBitfield
-//
-// See tests/test_bitmap_notifications.zig for comprehensive notification tests

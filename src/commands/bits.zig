@@ -559,35 +559,3 @@ test "BITPOS command - invalid BYTE|BIT modifier" {
     try cmdBitpos(&storage, &[_][]const u8{ "BITPOS", "mykey", "1", "1", "1", "BYTE" }, writer, testing.allocator);
     try testing.expectEqualStrings(":10\r\n", buf.items);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Keyspace Notification Support (Iteration 255)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// TODO for zig-implementor:
-// 1. Add imports:
-//    const notifications_mod = @import("../storage/notifications.zig");
-//    const pubsub_mod = @import("../storage/pubsub.zig");
-//    const PubSub = pubsub_mod.PubSub;
-//
-// 2. Add helper function:
-//    fn notifyBitmapEvent(allocator, storage, pubsub_state, db_index, key, event_flag, event_name) void {
-//        const config_value = storage.config.getAsString("notify-keyspace-events") catch return;
-//        const config_str = config_value orelse return;
-//        const flags = notifications_mod.parseNotificationFlags(config_str);
-//        if (!notifications_mod.shouldNotify(flags, event_flag)) return;
-//        notifications_mod.publishNotification(allocator, pubsub_state, db_index, key, event_name, flags) catch {};
-//    }
-//
-// 3. Update cmdSetbit signature: add `ps: *PubSub, db_index: u32` parameters
-//    - Call notifyBitmapEvent(..., .string, "setbit") ONLY when bit changes
-//    - Check: if (original_bit != value) { notifyBitmapEvent(...); }
-//
-// 4. Update cmdBitop signature: add `ps: *PubSub, db_index: u32` parameters
-//    - After storage.bitop(), check result_len
-//    - If result_len > 0: notifyBitmapEvent(..., .string, "set")
-//    - Else if destkey existed: notifyBitmapEvent(..., .generic, "del")
-//
-// 5. Update command routing in server.zig to pass ps and db_index
-//
-// See tests/test_bitmap_notifications.zig for comprehensive notification tests
