@@ -1,3 +1,7 @@
+//! `MemoryTracker`: process and dataset memory accounting backing the
+//! MEMORY/INFO commands (startup/peak/current allocated, dataset vs.
+//! overhead, replication backlog, AOF buffer, per-client-class bytes).
+
 const std = @import("std");
 
 /// MemoryTracker - Tracks memory usage statistics for MEMORY commands

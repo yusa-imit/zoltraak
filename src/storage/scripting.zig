@@ -1,3 +1,6 @@
+//! `ScriptStore`: SHA1-keyed Lua script cache backing EVALSHA/SCRIPT LOAD, and
+//! the atomic kill flag SCRIPT KILL sets to interrupt a running script.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

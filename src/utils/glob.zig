@@ -1,3 +1,5 @@
+//! Redis KEYS-pattern glob matching, delegated to `zuda.algorithms.string.globMatch`.
+
 const std = @import("std");
 const zuda = @import("zuda");
 

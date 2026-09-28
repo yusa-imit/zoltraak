@@ -1,3 +1,6 @@
+//! Keyspace notification flags and dispatch for `notify-keyspace-events`,
+//! publishing `__keyspace@<db>__`/`__keyevent@<db>__` messages through pub/sub.
+
 const std = @import("std");
 const pubsub_mod = @import("pubsub.zig");
 const PubSub = pubsub_mod.PubSub;
