@@ -1,11 +1,6 @@
-/// Encoding optimizations configuration
-///
-/// Redis uses different internal encodings to save memory for small values:
-/// - embstr: Embed short strings directly (saves allocation overhead)
-/// - intset: Compact sorted integer arrays for sets
-/// - listpack: Compact encoding for lists/hashes/sorted sets
-///
-/// This module defines thresholds and helpers for automatic encoding transitions.
+//! Thresholds and helpers for Redis-compatible automatic encoding transitions
+//! (embstr/intset/listpack), used to decide when a value promotes to a
+//! larger internal representation.
 
 const std = @import("std");
 

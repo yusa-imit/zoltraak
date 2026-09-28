@@ -1,5 +1,6 @@
-// LuaJIT FFI bindings for Zig
-// Provides Lua 5.1 C API wrapper for scripting support
+//! LuaJIT FFI bindings: a thin `extern` wrapper over the Lua 5.1 C API, used
+//! by the embedded scripting engine to load, call, and marshal values to and
+//! from Lua for EVAL/EVALSHA/FUNCTION.
 
 const std = @import("std");
 
