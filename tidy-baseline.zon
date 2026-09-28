@@ -33,7 +33,7 @@
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
-        .header_missing = true,
+        .header_missing = false,
     },
     .{
         .file = "scripting/redis_api.zig",
@@ -78,7 +78,7 @@
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
-        .header_missing = true,
+        .header_missing = false,
     },
     .{
         .file = "protocol/writer.zig",
@@ -204,7 +204,7 @@
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
-        .header_missing = true,
+        .header_missing = false,
     },
     .{
         .file = "storage/functions.zig",
@@ -249,7 +249,7 @@
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
-        .header_missing = true,
+        .header_missing = false,
     },
     .{
         .file = "storage/eviction.zig",
@@ -276,7 +276,7 @@
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
-        .header_missing = true,
+        .header_missing = false,
     },
     .{
         .file = "storage/timeseries.zig",
@@ -330,7 +330,7 @@
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
-        .header_missing = true,
+        .header_missing = false,
     },
     .{
         .file = "storage/acl.zig",
