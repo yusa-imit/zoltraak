@@ -23,7 +23,6 @@
 /// - 0b11110100 + 8 bytes: 64-bit signed integer
 /// - 0b11110000 + 4 bytes: 32-bit string length + data
 /// - 0b11111111: end marker
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

@@ -878,7 +878,7 @@ pub fn cmdFtProfile(storage: *Storage, allocator: std.mem.Allocator, args: []con
     }
 
     // Build arguments for FT.SEARCH or FT.AGGREGATE (skip "QUERY" keyword)
-    const query_args = args[query_start_idx + 1..];
+    const query_args = args[query_start_idx + 1 ..];
 
     // Time the query execution
     const start_time_ns = std.time.nanoTimestamp();
@@ -1102,7 +1102,8 @@ pub fn cmdFtSpellcheck(storage: *Storage, arena: std.mem.Allocator, args: []cons
                 const next_arg = args[i];
                 if (std.mem.eql(u8, next_arg, "DISTANCE") or
                     std.mem.eql(u8, next_arg, "TERMS") or
-                    std.mem.eql(u8, next_arg, "DIALECT")) {
+                    std.mem.eql(u8, next_arg, "DIALECT"))
+                {
                     break;
                 }
                 // Terms after dict name are currently ignored in stub
@@ -1898,7 +1899,7 @@ pub fn cmdFtTagvals(storage: *Storage, allocator: std.mem.Allocator, args: []con
 
 test "FT.TAGVALS: basic command returns distinct tag values" {
     const allocator = std.testing.allocator;
-    
+
     // Create a storage with search module
     var storage = try Storage.init(allocator);
     defer storage.deinit();
@@ -1920,7 +1921,7 @@ test "FT.TAGVALS: basic command returns distinct tag values" {
     // Call command handler
     const args = [_][]const u8{ "idx", "category" };
     const result = try cmdFtTagvals(&storage, allocator, &args);
-    
+
     // Verify result is array
     try std.testing.expect(result == .array);
     try std.testing.expectEqual(@as(usize, 3), result.array.len);
@@ -1983,7 +1984,7 @@ test "FT.TAGVALS: error on arity mismatch" {
     defer storage.deinit();
 
     // Too few args
-    const args1 = [_][]const u8{ "idx" };
+    const args1 = [_][]const u8{"idx"};
     const result1 = try cmdFtTagvals(&storage, allocator, &args1);
     try std.testing.expect(result1 == .error_string);
 

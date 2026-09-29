@@ -793,7 +793,7 @@ pub fn cmdSintercard(allocator: std.mem.Allocator, storage: *Storage, args: []co
     var keys = try std.ArrayList([]const u8).initCapacity(allocator, numkeys);
     defer keys.deinit(allocator);
 
-    for (args[2..2 + numkeys]) |arg| {
+    for (args[2 .. 2 + numkeys]) |arg| {
         const key = switch (arg) {
             .bulk_string => |s| s,
             else => return w.writeError("ERR invalid key"),

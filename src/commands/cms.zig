@@ -367,7 +367,7 @@ pub fn cmdCmsMerge(
     // Allocate array of source pointers (stack allocation for reasonable sizes)
     // Use dynamic allocation for > 256 sources
     var sources_buf: [256]*const CountMinSketchValue = undefined;
-    var sources_dyn: []* const CountMinSketchValue = undefined;
+    var sources_dyn: []*const CountMinSketchValue = undefined;
     var use_dyn = false;
 
     const sources: []*const CountMinSketchValue = if (num_sources <= 256) blk: {

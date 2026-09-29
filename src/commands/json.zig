@@ -245,7 +245,7 @@ pub fn cmdJsonGet(
     }
 
     // Multiple results - return as array
-    var buf : std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .{};
     errdefer buf.deinit(allocator);
 
     try buf.append(allocator, '[');

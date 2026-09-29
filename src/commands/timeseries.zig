@@ -3071,7 +3071,7 @@ test "TS.QUERYINDEX arity error" {
     defer storage.deinit();
 
     // Query with no filters
-    const query_cmd = [_][]const u8{ "TS.QUERYINDEX" };
+    const query_cmd = [_][]const u8{"TS.QUERYINDEX"};
     const result = try cmdTsQueryindex(&storage, &query_cmd, allocator);
     defer allocator.free(result);
 

@@ -2944,7 +2944,7 @@ test "SearchStore: removeTermsFromDictionary returns 0 for nonexistent dict" {
     var store = SearchStore.init(allocator);
     defer store.deinit();
 
-    var terms = [_][]const u8{ "hello" };
+    var terms = [_][]const u8{"hello"};
     const count = try store.removeTermsFromDictionary("nonexistent", &terms);
 
     try std.testing.expectEqual(@as(u64, 0), count);
