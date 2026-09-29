@@ -25,7 +25,7 @@ pub const JsonPath = struct {
 
     /// Parse JSONPath query string into segments
     pub fn parse(allocator: std.mem.Allocator, query: []const u8) !JsonPath {
-        var segments : std.ArrayList(PathSegment) = .{};
+        var segments: std.ArrayList(PathSegment) = .{};
         errdefer {
             for (segments.items) |*seg| {
                 seg.deinit(allocator);
@@ -118,7 +118,7 @@ pub const JsonPath = struct {
 
     /// Evaluate path against a JSON document, returns all matching nodes
     pub fn evaluate(self: *const JsonPath, root: *const JsonNode, allocator: std.mem.Allocator) !std.ArrayList(*JsonNode) {
-        var results : std.ArrayList(*JsonNode) = .{};
+        var results: std.ArrayList(*JsonNode) = .{};
         errdefer results.deinit(allocator);
 
         // Start with root node
@@ -126,7 +126,7 @@ pub const JsonPath = struct {
 
         // Apply each segment
         for (self.segments.items[1..]) |segment| {
-            var new_results : std.ArrayList(*JsonNode) = .{};
+            var new_results: std.ArrayList(*JsonNode) = .{};
             errdefer new_results.deinit(allocator);
 
             for (results.items) |node| {

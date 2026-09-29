@@ -1870,54 +1870,84 @@ pub fn cmdObject(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         const stream_node_max_entries: usize = blk: {
             var cv = storage.config.get("stream-node-max-entries") catch break :blk 100;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 100 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 100,
+            }));
         };
         const stream_node_max_bytes: usize = blk: {
             var cv = storage.config.get("stream-node-max-bytes") catch break :blk 4096;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 4096 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 4096,
+            }));
         };
         const hash_max_entries: usize = blk: {
             var cv = storage.config.get("hash-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 128,
+            }));
         };
         const hash_max_value: usize = blk: {
             var cv = storage.config.get("hash-max-listpack-value") catch break :blk 64;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 64,
+            }));
         };
         // Raw list-max-listpack-size: positive = entry count limit, negative = byte size limit.
         // -1=4096B, -2=8192B(default), -3=16384B, -4=32768B, -5=65536B.
         const list_size_mode: i64 = blk: {
             var cv = storage.config.get("list-max-listpack-size") catch break :blk @as(i64, -2);
             defer cv.deinit(allocator);
-            break :blk switch (cv) { .int => |i| i, else => -2 };
+            break :blk switch (cv) {
+                .int => |i| i,
+                else => -2,
+            };
         };
         const quicklist_packed_threshold: usize = blk: {
             var cv = storage.config.get("debug-quicklist-packed-threshold") catch break :blk 4096;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 4096 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 4096,
+            }));
         };
         const zset_max_entries: usize = blk: {
             var cv = storage.config.get("zset-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 128,
+            }));
         };
         const zset_max_value: usize = blk: {
             var cv = storage.config.get("zset-max-listpack-value") catch break :blk 64;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 64,
+            }));
         };
         const set_max_listpack: usize = blk: {
             var cv = storage.config.get("set-max-listpack-entries") catch break :blk 128;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 128 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 128,
+            }));
         };
         const set_max_value: usize = blk: {
             var cv = storage.config.get("set-max-listpack-value") catch break :blk 64;
             defer cv.deinit(allocator);
-            break :blk @intCast(@max(0, switch (cv) { .int => |i| i, else => 64 }));
+            break :blk @intCast(@max(0, switch (cv) {
+                .int => |i| i,
+                else => 64,
+            }));
         };
         const encoding: []const u8 = switch (vtype) {
             .string => enc: {
@@ -3363,7 +3393,7 @@ test "COPY - basic same-database copy" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
-    var databases = [_]Storage{storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage};
+    var databases = [_]Storage{ storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage };
     for (&databases[1..]) |*db| {
         db.* = try Storage.init(allocator);
     }
@@ -3393,7 +3423,7 @@ test "COPY - cross-database copy with DB parameter" {
     defer storage0.deinit();
     var storage1 = try Storage.init(allocator);
     defer storage1.deinit();
-    var databases = [_]Storage{storage0, storage1, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined};
+    var databases = [_]Storage{ storage0, storage1, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined };
     for (&databases[2..]) |*db| {
         db.* = try Storage.init(allocator);
     }
@@ -3425,7 +3455,7 @@ test "COPY - cross-database with REPLACE" {
     defer storage0.deinit();
     var storage1 = try Storage.init(allocator);
     defer storage1.deinit();
-    var databases = [_]Storage{storage0, storage1, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined};
+    var databases = [_]Storage{ storage0, storage1, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined };
     for (&databases[2..]) |*db| {
         db.* = try Storage.init(allocator);
     }
@@ -3457,7 +3487,7 @@ test "COPY - fails if destination exists without REPLACE" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
-    var databases = [_]Storage{storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage};
+    var databases = [_]Storage{ storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage, storage };
     for (&databases[1..]) |*db| {
         db.* = try Storage.init(allocator);
     }
@@ -3486,7 +3516,7 @@ test "COPY - invalid DB index returns error" {
     const allocator = std.testing.allocator;
     var storage = try Storage.init(allocator);
     defer storage.deinit();
-    var databases = [_]Storage{storage, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined};
+    var databases = [_]Storage{ storage, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined };
     for (&databases[1..]) |*db| {
         db.* = try Storage.init(allocator);
     }

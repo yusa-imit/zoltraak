@@ -1116,7 +1116,7 @@ test "cmdHincrby - overflow near i64::MAX should error" {
     // Should return an error about overflow
     try std.testing.expect(std.mem.startsWith(u8, response, "-"));
     try std.testing.expect(std.mem.indexOf(u8, response, "overflow") != null or
-                          std.mem.indexOf(u8, response, "out of range") != null);
+        std.mem.indexOf(u8, response, "out of range") != null);
 }
 
 test "cmdHincrby - underflow near i64::MIN should error" {
@@ -1147,7 +1147,7 @@ test "cmdHincrby - underflow near i64::MIN should error" {
     // Should return an error about overflow/underflow
     try std.testing.expect(std.mem.startsWith(u8, response, "-"));
     try std.testing.expect(std.mem.indexOf(u8, response, "overflow") != null or
-                          std.mem.indexOf(u8, response, "out of range") != null);
+        std.mem.indexOf(u8, response, "out of range") != null);
 }
 
 test "cmdHincrbyfloat - increment float field" {
@@ -1512,13 +1512,17 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
         else => return w.writeError("ERR syntax error"),
     };
     if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
-        options = 1; fields_idx = 4;
+        options = 1;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
-        options = 2; fields_idx = 4;
+        options = 2;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
-        options = 4; fields_idx = 4;
+        options = 4;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
-        options = 8; fields_idx = 4;
+        options = 8;
+        fields_idx = 4;
     } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
@@ -1630,13 +1634,17 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         else => return w.writeError("ERR syntax error"),
     };
     if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
-        options = 1; fields_idx = 4;
+        options = 1;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
-        options = 2; fields_idx = 4;
+        options = 2;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
-        options = 4; fields_idx = 4;
+        options = 4;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
-        options = 8; fields_idx = 4;
+        options = 8;
+        fields_idx = 4;
     } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
@@ -1744,13 +1752,17 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
         else => return w.writeError("ERR syntax error"),
     };
     if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
-        options = 1; fields_idx = 4;
+        options = 1;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
-        options = 2; fields_idx = 4;
+        options = 2;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
-        options = 4; fields_idx = 4;
+        options = 4;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
-        options = 8; fields_idx = 4;
+        options = 8;
+        fields_idx = 4;
     } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }
@@ -1855,13 +1867,17 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
         else => return w.writeError("ERR syntax error"),
     };
     if (std.ascii.eqlIgnoreCase(arg3, "NX")) {
-        options = 1; fields_idx = 4;
+        options = 1;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "XX")) {
-        options = 2; fields_idx = 4;
+        options = 2;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "GT")) {
-        options = 4; fields_idx = 4;
+        options = 4;
+        fields_idx = 4;
     } else if (std.ascii.eqlIgnoreCase(arg3, "LT")) {
-        options = 8; fields_idx = 4;
+        options = 8;
+        fields_idx = 4;
     } else if (!std.ascii.eqlIgnoreCase(arg3, "FIELDS")) {
         return w.writeError("ERR syntax error");
     }

@@ -5,43 +5,43 @@ const Config = @import("config.zig").Config;
 /// Implements all 20 TLS configuration parameters from Redis specification
 pub const TlsConfig = struct {
     // Core TLS settings
-    port: u16,                       // tls-port (default: 0 = disabled)
-    cert_file: ?[]const u8,          // tls-cert-file
-    key_file: ?[]const u8,           // tls-key-file
-    key_file_pass: ?[]const u8,      // tls-key-file-pass
-    ca_cert_file: ?[]const u8,       // tls-ca-cert-file
-    ca_cert_dir: ?[]const u8,        // tls-ca-cert-dir
-    auth_clients: AuthClientsMode,   // tls-auth-clients (yes/no/optional)
+    port: u16, // tls-port (default: 0 = disabled)
+    cert_file: ?[]const u8, // tls-cert-file
+    key_file: ?[]const u8, // tls-key-file
+    key_file_pass: ?[]const u8, // tls-key-file-pass
+    ca_cert_file: ?[]const u8, // tls-ca-cert-file
+    ca_cert_dir: ?[]const u8, // tls-ca-cert-dir
+    auth_clients: AuthClientsMode, // tls-auth-clients (yes/no/optional)
 
     // Protocol & Cipher configuration
-    protocols: []const u8,           // tls-protocols (e.g., "TLSv1.2 TLSv1.3")
-    ciphers: ?[]const u8,            // tls-ciphers (TLS 1.2 cipher suites)
-    ciphersuites: ?[]const u8,       // tls-ciphersuites (TLS 1.3 cipher suites)
-    prefer_server_ciphers: bool,     // tls-prefer-server-ciphers
+    protocols: []const u8, // tls-protocols (e.g., "TLSv1.2 TLSv1.3")
+    ciphers: ?[]const u8, // tls-ciphers (TLS 1.2 cipher suites)
+    ciphersuites: ?[]const u8, // tls-ciphersuites (TLS 1.3 cipher suites)
+    prefer_server_ciphers: bool, // tls-prefer-server-ciphers
 
     // Session & Performance
-    session_caching: bool,           // tls-session-caching
-    session_cache_size: u32,         // tls-session-cache-size
-    session_cache_timeout: u32,      // tls-session-cache-timeout (seconds)
+    session_caching: bool, // tls-session-caching
+    session_cache_size: u32, // tls-session-cache-size
+    session_cache_timeout: u32, // tls-session-cache-timeout (seconds)
 
     // Cluster & Replication
-    cluster: bool,                   // tls-cluster
-    replication: bool,               // tls-replication
+    cluster: bool, // tls-cluster
+    replication: bool, // tls-replication
 
     // Client certificate override (for outbound connections)
-    client_cert_file: ?[]const u8,   // tls-client-cert-file
-    client_key_file: ?[]const u8,    // tls-client-key-file
+    client_cert_file: ?[]const u8, // tls-client-cert-file
+    client_key_file: ?[]const u8, // tls-client-key-file
     client_key_file_pass: ?[]const u8, // tls-client-key-file-pass
 
     // Advanced (Redis 7.2+)
-    allowlisted_certs: ?[]const u8,  // tls-allowlisted-certs
+    allowlisted_certs: ?[]const u8, // tls-allowlisted-certs
 
     allocator: std.mem.Allocator,
 
     /// Client authentication mode for TLS
     pub const AuthClientsMode = enum {
-        yes,      // Require client certificate
-        no,       // No client certificate required
+        yes, // Require client certificate
+        no, // No client certificate required
         optional, // Client certificate optional
 
         pub fn fromString(s: []const u8) !AuthClientsMode {

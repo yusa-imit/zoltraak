@@ -225,11 +225,11 @@ pub const FunctionStore = struct {
         errdefer buffer.deinit(allocator);
 
         // Write magic header
-        try buffer.appendSlice(allocator,"ZOLFUNC\x01");
+        try buffer.appendSlice(allocator, "ZOLFUNC\x01");
 
         // Write number of libraries
         const lib_count = @as(u32, @intCast(self.libraries.count()));
-        try buffer.appendSlice(allocator,std.mem.asBytes(&lib_count));
+        try buffer.appendSlice(allocator, std.mem.asBytes(&lib_count));
 
         // Iterate over libraries
         var lib_iter = self.libraries.iterator();
@@ -238,22 +238,22 @@ pub const FunctionStore = struct {
 
             // Write library name
             const name_len = @as(u32, @intCast(lib.name.len));
-            try buffer.appendSlice(allocator,std.mem.asBytes(&name_len));
-            try buffer.appendSlice(allocator,lib.name);
+            try buffer.appendSlice(allocator, std.mem.asBytes(&name_len));
+            try buffer.appendSlice(allocator, lib.name);
 
             // Write engine
             const engine_len = @as(u32, @intCast(lib.engine.len));
-            try buffer.appendSlice(allocator,std.mem.asBytes(&engine_len));
-            try buffer.appendSlice(allocator,lib.engine);
+            try buffer.appendSlice(allocator, std.mem.asBytes(&engine_len));
+            try buffer.appendSlice(allocator, lib.engine);
 
             // Write code
             const code_len = @as(u32, @intCast(lib.code.len));
-            try buffer.appendSlice(allocator,std.mem.asBytes(&code_len));
-            try buffer.appendSlice(allocator,lib.code);
+            try buffer.appendSlice(allocator, std.mem.asBytes(&code_len));
+            try buffer.appendSlice(allocator, lib.code);
 
             // Write number of functions
             const func_count = @as(u32, @intCast(lib.functions.count()));
-            try buffer.appendSlice(allocator,std.mem.asBytes(&func_count));
+            try buffer.appendSlice(allocator, std.mem.asBytes(&func_count));
 
             // Iterate over functions
             var func_iter = lib.functions.iterator();
@@ -262,16 +262,16 @@ pub const FunctionStore = struct {
 
                 // Write function name
                 const func_name_len = @as(u32, @intCast(func.name.len));
-                try buffer.appendSlice(allocator,std.mem.asBytes(&func_name_len));
-                try buffer.appendSlice(allocator,func.name);
+                try buffer.appendSlice(allocator, std.mem.asBytes(&func_name_len));
+                try buffer.appendSlice(allocator, func.name);
 
                 // Write description
                 const desc_len = @as(u32, @intCast(func.description.len));
-                try buffer.appendSlice(allocator,std.mem.asBytes(&desc_len));
-                try buffer.appendSlice(allocator,func.description);
+                try buffer.appendSlice(allocator, std.mem.asBytes(&desc_len));
+                try buffer.appendSlice(allocator, func.description);
 
                 // Write flags
-                try buffer.append(allocator,func.flags);
+                try buffer.append(allocator, func.flags);
             }
         }
 

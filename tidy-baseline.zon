@@ -253,7 +253,7 @@
     },
     .{
         .file = "storage/eviction.zig",
-        .long_lines = 5,
+        .long_lines = 2,
         .debug_print = 0,
         .time_calls = 1,
         .catch_unreachable = 0,
@@ -1100,7 +1100,7 @@
     .{
         .file = "commands/search.zig",
         .name = "cmdFtSpellcheck",
-        .lines = 157,
+        .lines = 158,
     },
     .{
         .file = "commands/search.zig",
@@ -1145,7 +1145,7 @@
     .{
         .file = "commands/keys.zig",
         .name = "cmdObject",
-        .lines = 240,
+        .lines = 270,
     },
     .{
         .file = "commands/tdigest.zig",
@@ -1245,22 +1245,22 @@
     .{
         .file = "commands/hashes.zig",
         .name = "cmdHexpire",
-        .lines = 115,
+        .lines = 119,
     },
     .{
         .file = "commands/hashes.zig",
         .name = "cmdHpexpire",
-        .lines = 111,
+        .lines = 115,
     },
     .{
         .file = "commands/hashes.zig",
         .name = "cmdHexpireat",
-        .lines = 108,
+        .lines = 112,
     },
     .{
         .file = "commands/hashes.zig",
         .name = "cmdHpexpireat",
-        .lines = 106,
+        .lines = 110,
     },
     .{
         .file = "commands/hashes.zig",
