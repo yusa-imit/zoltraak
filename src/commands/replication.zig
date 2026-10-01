@@ -216,13 +216,13 @@ pub fn cmdPsync(
         .{ repl.replid, repl.repl_offset },
     );
     stream.writeAll(header) catch |err| {
-        std.debug.print("Replication: PSYNC header write error: {any}\n", .{err});
+        std.log.warn("Replication: PSYNC header write error: {any}", .{err});
         return error.ReplicationError;
     };
 
     // Send the RDB snapshot
     repl.sendRdb(stream, storage) catch |err| {
-        std.debug.print("Replication: RDB send error: {any}\n", .{err});
+        std.log.warn("Replication: RDB send error: {any}", .{err});
         return error.ReplicationError;
     };
 
@@ -231,7 +231,7 @@ pub fn cmdPsync(
         repl.replicas.items[replica_idx].state = .online;
     }
 
-    std.debug.print("Replication: replica fully synced (index={d})\n", .{replica_idx});
+    std.log.info("Replication: replica fully synced (index={d})", .{replica_idx});
 
     // Return empty string since we already wrote directly to the stream
     var w = Writer.init(allocator);

@@ -141,7 +141,7 @@ pub const Aof = struct {
             if (!ok) break;
 
             executeStorageCommand(storage, args[0..parsed], allocator) catch |err| {
-                std.debug.print("AOF replay warning: command failed: {any}\n", .{err});
+                std.log.warn("AOF replay warning: command failed: {any}", .{err});
             };
             cmd_count += 1;
         }

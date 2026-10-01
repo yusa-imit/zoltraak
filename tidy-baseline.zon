@@ -38,7 +38,7 @@
     .{
         .file = "scripting/redis_api.zig",
         .long_lines = 8,
-        .debug_print = 1,
+        .debug_print = 0,
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
@@ -101,7 +101,7 @@
     .{
         .file = "storage/aof.zig",
         .long_lines = 2,
-        .debug_print = 1,
+        .debug_print = 0,
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 7,
@@ -317,7 +317,7 @@
     .{
         .file = "storage/memory.zig",
         .long_lines = 195,
-        .debug_print = 1,
+        .debug_print = 0,
         .time_calls = 28,
         .catch_unreachable = 4,
         .usize_wire = 0,
@@ -398,7 +398,7 @@
     .{
         .file = "storage/replication.zig",
         .long_lines = 8,
-        .debug_print = 4,
+        .debug_print = 0,
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
@@ -461,7 +461,7 @@
     .{
         .file = "commands/config.zig",
         .long_lines = 2,
-        .debug_print = 1,
+        .debug_print = 0,
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
@@ -731,7 +731,7 @@
     .{
         .file = "commands/replication.zig",
         .long_lines = 16,
-        .debug_print = 3,
+        .debug_print = 0,
         .time_calls = 9,
         .catch_unreachable = 0,
         .usize_wire = 0,
@@ -776,7 +776,7 @@
     .{
         .file = "commands/strings.zig",
         .long_lines = 230,
-        .debug_print = 2,
+        .debug_print = 0,
         .time_calls = 4,
         .catch_unreachable = 0,
         .usize_wire = 0,

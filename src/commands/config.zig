@@ -717,7 +717,7 @@ test "CONFIG REWRITE creates config file" {
 
     // Verify file was created
     const file = std.fs.cwd().openFile("zoltraak.conf", .{}) catch |err| {
-        std.debug.print("Failed to open config file: {}\n", .{err});
+        std.log.warn("Failed to open config file: {}", .{err});
         return err;
     };
     defer {

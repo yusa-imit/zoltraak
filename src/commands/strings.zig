@@ -570,7 +570,7 @@ pub fn executeCommand(
             cmd_args,
         ) catch |err| blk: {
             // Log error but don't fail the command
-            std.debug.print("MONITOR broadcast error: {}\n", .{err});
+            std.log.warn("MONITOR broadcast error: {}", .{err});
             break :blk std.ArrayList(MonitorMessage).empty;
         };
         // Clean up monitor messages
@@ -3299,7 +3299,7 @@ pub fn executeCommand(
             }
             if (valid) {
                 a.appendCommandDb0(aof_args) catch |err| {
-                    std.debug.print("AOF write warning: {any}\n", .{err});
+                    std.log.warn("AOF write warning: {any}", .{err});
                 };
             }
         }
