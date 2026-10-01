@@ -837,7 +837,7 @@ pub const HotkeyTracker = struct {
         // Add key to HeavyKeeper with weight 1 (one access)
         _ = self.heavy_keeper.add(key, 1) catch |err| {
             // Log error but don't crash (monitoring shouldn't break commands)
-            std.debug.print("HeavyKeeper.add error: {}\n", .{err});
+            std.log.warn("HeavyKeeper.add error: {}", .{err});
             return;
         };
 

@@ -325,7 +325,7 @@ export fn redis_log_impl(L: *lua.lua_State) callconv(.c) c_int {
     };
 
     // Write to stderr — best effort, ignore errors
-    std.debug.print("[{s}] (Lua) {s}\n", .{ level_str, msg });
+    std.log.info("[{s}] (Lua) {s}", .{ level_str, msg });
     return 0;
 }
 

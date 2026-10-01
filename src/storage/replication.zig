@@ -217,7 +217,7 @@ pub const ReplicationState = struct {
                 continue;
             }
             replica.stream.writeAll(data) catch |err| {
-                std.debug.print("Replication: write to replica failed (port={d}): {any}\n", .{ replica.port, err });
+                std.log.warn("Replication: write to replica failed (port={d}): {any}", .{ replica.port, err });
                 // Remove dead replica
                 replica.stream.close();
                 _ = self.replicas.swapRemove(i);
@@ -286,7 +286,7 @@ pub const ReplicationState = struct {
         if (pong_len == 0) return error.PrimaryClosedConnection;
         const pong = read_buf[0..pong_len];
         if (!std.mem.startsWith(u8, pong, "+PONG")) {
-            std.debug.print("Replication: expected +PONG from primary, got: {s}\n", .{pong});
+            std.log.warn("Replication: expected +PONG from primary, got: {s}", .{pong});
             return error.HandshakeFailed;
         }
 
@@ -321,7 +321,7 @@ pub const ReplicationState = struct {
         const fr_len = try readLine(stream, &read_buf);
         const fr = read_buf[0..fr_len];
         if (!std.mem.startsWith(u8, fr, "+FULLRESYNC ")) {
-            std.debug.print("Replication: expected +FULLRESYNC, got: {s}\n", .{fr});
+            std.log.warn("Replication: expected +FULLRESYNC, got: {s}", .{fr});
             return error.HandshakeFailed;
         }
         // Parse replid from "+FULLRESYNC <replid> <offset>\r\n"
@@ -356,7 +356,7 @@ pub const ReplicationState = struct {
         self.primary_link_up = true;
         self.repl_offset = 0;
 
-        std.debug.print("Replication: connected to primary {s}:{d}, RDB loaded ({d} bytes)\n", .{
+        std.log.info("Replication: connected to primary {s}:{d}, RDB loaded ({d} bytes)", .{
             host, self.primary_port, rdb_size,
         });
     }
