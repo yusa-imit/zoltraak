@@ -47,7 +47,7 @@
     .{
         .file = "server.zig",
         .long_lines = 11,
-        .debug_print = 26,
+        .debug_print = 0,
         .time_calls = 5,
         .catch_unreachable = 0,
         .usize_wire = 0,

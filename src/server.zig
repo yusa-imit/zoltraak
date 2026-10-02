@@ -403,12 +403,12 @@ pub const Server = struct {
     pub fn start(self: *Server) !void {
         // If we are a replica, connect to the primary first
         if (self.repl.role == .replica) {
-            std.debug.print("Replication: initiating handshake with primary {s}:{d}\n", .{
+            std.log.info("Replication: initiating handshake with primary {s}:{d}", .{
                 self.repl.primary_host orelse "?",
                 self.repl.primary_port,
             });
             self.repl.connectToPrimary(&self.databases[0], self.config.port) catch |err| {
-                std.debug.print("Replication: handshake failed: {any} — continuing as standalone\n", .{err});
+                std.log.warn("Replication: handshake failed: {any} — continuing as standalone", .{err});
                 // Demote to primary on failure so clients can still connect
                 self.repl.role = .primary;
             };
@@ -429,37 +429,25 @@ pub const Server = struct {
         if (self.gossip_task) |*task| {
             if (self.databases.len > 0 and self.databases[0].cluster.enabled) {
                 task.start() catch |err| {
-                    std.debug.print("Warning: Failed to start gossip task: {any}\n", .{err});
+                    std.log.warn("Warning: Failed to start gossip task: {any}", .{err});
                 };
             }
         }
 
-        // Colored startup logs using ANSI escape codes
-        const cyan_bold = "\x1b[1;36m";
-        const green = "\x1b[32m";
-        const magenta = "\x1b[35m";
-        const yellow = "\x1b[33m";
-        const green_bold = "\x1b[1;32m";
-        const reset = "\x1b[0m";
-
-        std.debug.print("{s}Zoltraak{s} server starting...\n", .{ cyan_bold, reset });
-        std.debug.print("Listening on {s}{s}:{d}{s}\n", .{ green, self.config.host, self.config.port, reset });
+        std.log.info("Zoltraak server starting...", .{});
+        std.log.info("Listening on {s}:{d}", .{ self.config.host, self.config.port });
         const role_str: []const u8 = switch (self.repl.role) {
             .primary => "primary",
             .replica => "replica",
         };
-        const role_color = switch (self.repl.role) {
-            .primary => magenta,
-            .replica => yellow,
-        };
-        std.debug.print("Role: {s}{s}{s}\n", .{ role_color, role_str, reset });
+        std.log.info("Role: {s}", .{role_str});
 
         // Show cluster status if enabled
         if (self.databases.len > 0 and self.databases[0].cluster.enabled) {
-            std.debug.print("Cluster: {s}enabled{s} (gossip task running)\n", .{ green, reset });
+            std.log.info("Cluster: enabled (gossip task running)", .{});
         }
 
-        std.debug.print("{s}Ready to accept connections.{s}\n", .{ green_bold, reset });
+        std.log.info("Ready to accept connections.", .{});
 
         // Accept connections (single-threaded)
         while (self.running.load(.monotonic)) {
@@ -472,7 +460,7 @@ pub const Server = struct {
             // Accept connection with timeout to allow checking running flag
             const connection = listener.accept() catch |err| {
                 if (err == error.WouldBlock) continue;
-                std.debug.print("Error accepting connection: {any}\n", .{err});
+                std.log.warn("Error accepting connection: {any}", .{err});
                 continue;
             };
 
@@ -482,7 +470,7 @@ pub const Server = struct {
 
             // Handle connection
             self.handleConnection(connection) catch |err| {
-                std.debug.print("Error handling connection: {any}\n", .{err});
+                std.log.warn("Error handling connection: {any}", .{err});
             };
         }
     }
@@ -492,16 +480,16 @@ pub const Server = struct {
         assert(self.shutdown_state.isRequested());
         const req = self.shutdown_state.getRequest() orelse return;
 
-        std.debug.print("\x1b[1;33mShutdown requested\x1b[0m (save={}, now={}, force={})\n", .{ req.save, req.now, req.force });
+        std.log.info("Shutdown requested (save={}, now={}, force={})", .{ req.save, req.now, req.force });
 
         // Save RDB if requested
         if (req.save) {
-            std.debug.print("Saving RDB snapshot before shutdown...\n", .{});
+            std.log.info("Saving RDB snapshot before shutdown...", .{});
             const persistence = @import("storage/persistence.zig");
             persistence.Persistence.save(self.databases, "dump.rdb", self.allocator) catch |err| {
                 if (!req.force) {
-                    std.debug.print("\x1b[1;31mError saving RDB: {any}\x1b[0m\n", .{err});
-                    std.debug.print("Shutdown aborted (use FORCE to override)\n", .{});
+                    std.log.warn("Error saving RDB: {any}", .{err});
+                    std.log.info("Shutdown aborted (use FORCE to override)", .{});
                     // Clear shutdown request
                     self.shutdown_state.mutex.lock();
                     self.shutdown_state.request = null;
@@ -509,14 +497,14 @@ pub const Server = struct {
                     self.shutdown_state.mutex.unlock();
                     return err;
                 }
-                std.debug.print("\x1b[1;33mWarning: RDB save failed: {any} (continuing due to FORCE)\x1b[0m\n", .{err});
+                std.log.warn("Warning: RDB save failed: {any} (continuing due to FORCE)", .{err});
             };
         }
 
         // Stop accepting new connections
         self.running.store(false, .monotonic);
         assert(!self.running.load(.monotonic));
-        std.debug.print("\x1b[1;32mShutdown complete\x1b[0m\n", .{});
+        std.log.info("Shutdown complete", .{});
     }
 
     /// Stop the server gracefully
@@ -550,7 +538,7 @@ pub const Server = struct {
             break :blk formatted;
         };
 
-        std.debug.print("Client connected from {s}\n", .{addr_str});
+        std.log.info("Client connected from {s}", .{addr_str});
 
         // Build local address string (the server address this client connected to)
         var laddr_buf: [256]u8 = undefined;
@@ -588,7 +576,7 @@ pub const Server = struct {
             // Read data from socket
             const bytes_read = connection.stream.read(&read_buffer) catch |err| {
                 if (err == error.EndOfStream) break;
-                std.debug.print("Read error: {any}\n", .{err});
+                std.log.warn("Read error: {any}", .{err});
                 break;
             };
 
@@ -599,7 +587,7 @@ pub const Server = struct {
             // Parse command
             var parser = Parser.init(arena_allocator);
             const cmd = parser.parse(data) catch |err| {
-                std.debug.print("Parse error: {any}\n", .{err});
+                std.log.warn("Parse error: {any}", .{err});
                 const error_response = "-ERR Protocol error\r\n";
                 _ = connection.stream.write(error_response) catch break;
                 continue;
@@ -611,7 +599,7 @@ pub const Server = struct {
             if (is_psync and this_replica_idx == null) {
                 // Register this connection as a new replica
                 self.repl.addReplica(connection.stream, 0) catch |err| {
-                    std.debug.print("Replication: could not register replica: {any}\n", .{err});
+                    std.log.warn("Replication: could not register replica: {any}", .{err});
                 };
                 this_replica_idx = if (self.repl.replicas.items.len > 0)
                     self.repl.replicas.items.len - 1
@@ -654,7 +642,7 @@ pub const Server = struct {
                 self.databases,
                 self.num_databases,
             ) catch |err| {
-                std.debug.print("Command execution error: {any}\n", .{err});
+                std.log.warn("Command execution error: {any}", .{err});
                 const error_response = "-ERR Internal server error\r\n";
                 _ = connection.stream.write(error_response) catch break;
                 continue;
@@ -709,7 +697,7 @@ pub const Server = struct {
             // already wrote directly to the stream)
             if (response.len > 0) {
                 _ = connection.stream.write(response) catch |err| {
-                    std.debug.print("Write error: {any}\n", .{err});
+                    std.log.warn("Write error: {any}", .{err});
                     break;
                 };
             }
@@ -717,7 +705,7 @@ pub const Server = struct {
             // After PSYNC, a replica connection enters streaming mode.
             // We no longer read commands from it; it is driven by propagation.
             if (is_psync) {
-                std.debug.print("Replication: replica synced, connection will remain for propagation\n", .{});
+                std.log.info("Replication: replica synced, connection will remain for propagation", .{});
                 // Keep the stream alive for propagation; the loop below drains any
                 // messages the replica sends (e.g., REPLCONF ACK).
                 // For Iteration 10, we simply exit the handler; the replica stream
@@ -734,7 +722,7 @@ pub const Server = struct {
                 for (inv_msgs) |msg| {
                     defer self.client_registry.allocator.free(msg);
                     _ = connection.stream.write(msg) catch |err| {
-                        std.debug.print("Invalidation push write error: {any}\n", .{err});
+                        std.log.warn("Invalidation push write error: {any}", .{err});
                     };
                 }
             }
@@ -748,7 +736,7 @@ pub const Server = struct {
                 // Write all pending message frames back-to-back
                 for (pending) |msg_frame| {
                     _ = connection.stream.write(msg_frame) catch |err| {
-                        std.debug.print("Pub/Sub write error: {any}\n", .{err});
+                        std.log.warn("Pub/Sub write error: {any}", .{err});
                         break;
                     };
                 }
@@ -759,7 +747,7 @@ pub const Server = struct {
             _ = arena.reset(.retain_capacity);
         }
 
-        std.debug.print("Client disconnected\n", .{});
+        std.log.info("Client disconnected", .{});
     }
 
     /// Return true if `cmd` is a PSYNC command.
