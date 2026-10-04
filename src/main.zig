@@ -47,18 +47,40 @@ pub const BlockingQueue = blocking.BlockingQueue;
 const Server = server_mod.Server;
 const Config = server_mod.Config;
 
-/// Print usage information
+/// Usage text buffer size; the rendered text is well under 1 KiB for any sane program name.
+const usage_size_max = 1024;
+
+/// Render usage information into `buf`. Returns `error.NoSpaceLeft` when `buf` is too small.
+fn usageText(buf: []u8, program_name: []const u8) std.fmt.BufPrintError![]const u8 {
+    return std.fmt.bufPrint(buf,
+        \\Usage: {[name]s} [OPTIONS]
+        \\
+        \\Options:
+        \\  --host HOST                Bind address (default: 127.0.0.1)
+        \\  -p, --port PORT            Listen port (default: 6379)
+        \\  --replicaof HOST:PORT      Replicate from primary at HOST:PORT
+        \\  -h, --help                 Show this help message
+        \\
+        \\Examples:
+        \\  {[name]s} --host 0.0.0.0 --port 6380
+        \\  {[name]s} --port 6380 --replicaof 127.0.0.1:6379
+        \\
+    , .{ .name = program_name });
+}
+
+/// Print usage information to stderr. Help output is the program's own product, not a
+/// diagnostic, so it bypasses `std.log` (which would prefix every line with a level).
 fn printUsage(program_name: []const u8) void {
-    std.debug.print("Usage: {s} [OPTIONS]\n\n", .{program_name});
-    std.debug.print("Options:\n", .{});
-    std.debug.print("  --host HOST                Bind address (default: 127.0.0.1)\n", .{});
-    std.debug.print("  -p, --port PORT            Listen port (default: 6379)\n", .{});
-    std.debug.print("  --replicaof HOST:PORT      Replicate from primary at HOST:PORT\n", .{});
-    std.debug.print("  -h, --help                 Show this help message\n", .{});
-    std.debug.print("\n", .{});
-    std.debug.print("Examples:\n", .{});
-    std.debug.print("  {s} --host 0.0.0.0 --port 6380\n", .{program_name});
-    std.debug.print("  {s} --port 6380 --replicaof 127.0.0.1:6379\n", .{program_name});
+    var buf: [usage_size_max]u8 = undefined;
+    const text = usageText(&buf, program_name) catch |err| switch (err) {
+        error.NoSpaceLeft => {
+            std.log.err("usage text exceeds {d} bytes", .{usage_size_max});
+            return;
+        },
+    };
+    std.fs.File.stderr().writeAll(text) catch |err| {
+        std.log.err("could not write usage text: {s}", .{@errorName(err)});
+    };
 }
 
 /// Parsed command-line arguments, including owned strings that must be freed.
@@ -104,8 +126,8 @@ fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
     // Parse with sailor
     parser.parse(arg_list.items) catch |err| {
         if (err == error.UnknownFlag) {
-            std.debug.print("Error: unknown option\n", .{});
-            std.debug.print("Use --help for usage information\n", .{});
+            std.log.err("unknown option", .{});
+            std.log.info("use --help for usage information", .{});
             return error.InvalidArgument;
         }
         return err;
@@ -141,7 +163,7 @@ fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
             const port_part = replica_str[colon_pos + 1 ..];
 
             const port = std.fmt.parseInt(u16, port_part, 10) catch {
-                std.debug.print("Error: invalid port in --replicaof '{s}'\n", .{replica_str});
+                std.log.err("invalid port in --replicaof '{s}'", .{replica_str});
                 return error.InvalidArgument;
             };
 
@@ -149,7 +171,7 @@ fn parseArgs(allocator: std.mem.Allocator) !ParsedArgs {
             parsed.config.replicaof_host = parsed.replicaof_host_owned.?;
             parsed.config.replicaof_port = port;
         } else {
-            std.debug.print("Error: --replicaof requires HOST:PORT format (e.g., 127.0.0.1:6379)\n", .{});
+            std.log.err("--replicaof requires HOST:PORT format (e.g., 127.0.0.1:6379)", .{});
             return error.InvalidArgument;
         }
     }
@@ -182,31 +204,31 @@ pub fn main() !void {
     if (config.replicaof_host == null) {
         const Persistence = persistence.Persistence;
         const loaded = Persistence.load(server_instance.databases, "dump.rdb", allocator) catch |err| blk: {
-            std.debug.print("Warning: could not load dump.rdb: {any}\n", .{err});
+            std.log.warn("could not load dump.rdb: {any}", .{err});
             break :blk 0;
         };
         if (loaded > 0) {
-            std.debug.print("Loaded {d} keys from dump.rdb\n", .{loaded});
+            std.log.info("loaded {d} keys from dump.rdb", .{loaded});
         }
 
         // Replay AOF if it exists (applied on top of RDB)
         const Aof = aof.Aof;
         const replayed = Aof.replay(&server_instance.databases[0], "appendonly.aof", allocator) catch |err| blk: {
-            std.debug.print("Warning: could not replay appendonly.aof: {any}\n", .{err});
+            std.log.warn("could not replay appendonly.aof: {any}", .{err});
             break :blk 0;
         };
         if (replayed > 0) {
-            std.debug.print("Replayed {d} commands from appendonly.aof\n", .{replayed});
+            std.log.info("replayed {d} commands from appendonly.aof", .{replayed});
         }
 
         // Open AOF for appending (creates file if not present)
         const Aof2 = aof.Aof;
         server_instance.aof = Aof2.open("appendonly.aof") catch |err| blk: {
-            std.debug.print("Warning: could not open appendonly.aof for writing: {any}\n", .{err});
+            std.log.warn("could not open appendonly.aof for writing: {any}", .{err});
             break :blk null;
         };
     } else {
-        std.debug.print("Replica mode: skipping local RDB/AOF load (will receive from primary)\n", .{});
+        std.log.info("replica mode: skipping local RDB/AOF load (will receive from primary)", .{});
     }
 
     // Set up signal handler for graceful shutdown
@@ -216,7 +238,7 @@ pub fn main() !void {
         fn handle(sig: i32) callconv(.c) void {
             _ = sig;
             if (srv) |s| {
-                std.debug.print("\nReceived interrupt signal, shutting down...\n", .{});
+                std.log.info("received interrupt signal, shutting down", .{});
                 s.stop();
             }
         }
@@ -234,6 +256,22 @@ pub fn main() !void {
 
     // Start server (blocks until shutdown)
     try server_instance.start();
+}
+
+test "usageText - names every option and substitutes the program name" {
+    var buf: [1024]u8 = undefined;
+    const text = try usageText(&buf, "zoltraak-test");
+    try std.testing.expect(std.mem.startsWith(u8, text, "Usage: zoltraak-test [OPTIONS]\n"));
+    for ([_][]const u8{ "--host HOST", "-p, --port PORT", "--replicaof HOST:PORT", "-h, --help" }) |opt| {
+        try std.testing.expect(std.mem.indexOf(u8, text, opt) != null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, text, "{s}") == null);
+    try std.testing.expect(std.mem.endsWith(u8, text, "--replicaof 127.0.0.1:6379\n"));
+}
+
+test "usageText - buffer too small returns NoSpaceLeft" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectError(error.NoSpaceLeft, usageText(&buf, "zoltraak"));
 }
 
 // Minimal test to ensure modules compile
