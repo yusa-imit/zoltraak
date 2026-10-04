@@ -56,7 +56,7 @@
     .{
         .file = "main.zig",
         .long_lines = 7,
-        .debug_print = 21,
+        .debug_print = 0,
         .time_calls = 0,
         .catch_unreachable = 0,
         .usize_wire = 0,
