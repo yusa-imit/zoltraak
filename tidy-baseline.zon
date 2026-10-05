@@ -2,7 +2,7 @@
     .{
         .file = "cli.zig",
         .long_lines = 28,
-        .debug_print = 45,
+        .debug_print = 0,
         .time_calls = 1,
         .catch_unreachable = 0,
         .usize_wire = 0,

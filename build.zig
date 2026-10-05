@@ -61,6 +61,16 @@ pub fn build(b: *std.Build) void {
     });
     cli.root_module.addImport("sailor", sailor_mod);
 
+    const cli_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    cli_tests.root_module.addImport("sailor", sailor_mod);
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+
     // Install both executables
     b.installArtifact(exe);
     b.installArtifact(cli);
@@ -96,6 +106,7 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_cli_tests.step);
 
     // Tidy: Tiger Style mechanical checks (line/function length, ban list, //! headers)
     // gated against a shrink-only baseline. See tools/tidy.zig and tidy-baseline.zon.

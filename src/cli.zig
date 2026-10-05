@@ -78,7 +78,28 @@ pub fn main() !void {
     const stream = try net.tcpConnectToAddress(address);
     defer stream.close();
 
-    std.debug.print("Connected to {s}:{}\n", .{ host, port });
+    // Replies and prompts are the CLI's product, so they go to stdout (pipeable); only
+    // diagnostics use std.log. The buffer is flushed before every blocking read.
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const out = &stdout_writer.interface;
+
+    try out.print("Connected to {s}:{}\n", .{ host, port });
+
+    try run_repl(stream, out, host, port, output_format);
+}
+
+/// Reads commands from stdin until EOF or quit, sending each to `stream` and writing the
+/// formatted reply to `out`. Precondition: `stream` is connected and `out` is stdout-backed.
+fn run_repl(
+    stream: net.Stream,
+    out: *std.Io.Writer,
+    host: []const u8,
+    port: u16,
+    output_format: OutputFormat,
+) !void {
+    std.debug.assert(host.len > 0);
+    std.debug.assert(port > 0);
 
     // Simple REPL loop using stdin
     var read_buffer: [4096]u8 = undefined;
@@ -86,7 +107,8 @@ pub fn main() !void {
 
     while (true) {
         // Print prompt
-        std.debug.print("{s}:{}> ", .{ host, port });
+        try out.print("{s}:{}> ", .{ host, port });
+        try out.flush();
 
         // Read line from stdin manually
         var line_len: usize = 0;
@@ -99,7 +121,8 @@ pub fn main() !void {
             if (n == 0) {
                 if (line_len == 0) {
                     // EOF with no input
-                    std.debug.print("\n", .{});
+                    try out.print("\n", .{});
+                    try out.flush();
                     return;
                 }
                 break;
@@ -127,15 +150,17 @@ pub fn main() !void {
         // Read response
         const response_len = try stream.read(&read_buffer);
         if (response_len == 0) {
-            std.debug.print("Connection closed by server\n", .{});
+            std.log.warn("connection closed by server", .{});
             break;
         }
 
         // Display response
-        try displayResponse(read_buffer[0..response_len], output_format);
+        try displayResponse(out, read_buffer[0..response_len], output_format);
+        try out.flush();
     }
 
-    std.debug.print("Bye!\n", .{});
+    try out.print("Bye!\n", .{});
+    try out.flush();
 }
 
 fn sendCommand(stream: net.Stream, cmd: []const u8) !void {
@@ -167,18 +192,18 @@ fn sendCommand(stream: net.Stream, cmd: []const u8) !void {
     try stream.writeAll(fbs.getWritten());
 }
 
-fn displayResponse(data: []const u8, format: OutputFormat) !void {
+fn displayResponse(w: *std.Io.Writer, data: []const u8, format: OutputFormat) !void {
     switch (format) {
         .raw => {
             // Raw mode: just print the RESP data as-is
-            std.debug.print("{s}", .{data});
+            try w.print("{s}", .{data});
         },
         .normal => {
             // Normal mode: parse and format nicely
             var pos: usize = 0;
             while (pos < data.len) {
                 const result = try parseRespValue(data, pos);
-                try printRespValue(result.value, 0);
+                try printRespValue(w, result.value, 0);
                 pos = result.next_pos;
             }
         },
@@ -187,7 +212,7 @@ fn displayResponse(data: []const u8, format: OutputFormat) !void {
             var pos: usize = 0;
             while (pos < data.len) {
                 const result = try parseRespValue(data, pos);
-                try printRespValueCsv(result.value);
+                try printRespValueCsv(w, result.value);
                 pos = result.next_pos;
             }
         },
@@ -196,8 +221,8 @@ fn displayResponse(data: []const u8, format: OutputFormat) !void {
             var pos: usize = 0;
             while (pos < data.len) {
                 const result = try parseRespValue(data, pos);
-                try printRespValueJson(result.value);
-                std.debug.print("\n", .{});
+                try printRespValueJson(w, result.value);
+                try w.print("\n", .{});
                 pos = result.next_pos;
             }
         },
@@ -310,21 +335,21 @@ fn parseRespValue(data: []const u8, start: usize) !ParseResult {
     }
 }
 
-fn printRespValue(value: RespValue, indent: usize) !void {
+fn printRespValue(w: *std.Io.Writer, value: RespValue, indent: usize) std.Io.Writer.Error!void {
     switch (value) {
-        .simple_string => |s| std.debug.print("{s}\n", .{s}),
-        .error_msg => |e| std.debug.print("(error) {s}\n", .{e}),
-        .integer => |i| std.debug.print("(integer) {d}\n", .{i}),
+        .simple_string => |s| try w.print("{s}\n", .{s}),
+        .error_msg => |e| try w.print("(error) {s}\n", .{e}),
+        .integer => |i| try w.print("(integer) {d}\n", .{i}),
         .bulk_string => |maybe_s| {
             if (maybe_s) |s| {
-                std.debug.print("\"{s}\"\n", .{s});
+                try w.print("\"{s}\"\n", .{s});
             } else {
-                std.debug.print("(nil)\n", .{});
+                try w.print("(nil)\n", .{});
             }
         },
         .array => |arr| {
             if (arr.len == 0) {
-                std.debug.print("(empty array)\n", .{});
+                try w.print("(empty array)\n", .{});
                 return;
             }
 
@@ -332,25 +357,25 @@ fn printRespValue(value: RespValue, indent: usize) !void {
             while (i < arr.len) : (i += 1) {
                 var j: usize = 0;
                 while (j < indent) : (j += 1) {
-                    std.debug.print(" ", .{});
+                    try w.print(" ", .{});
                 }
-                std.debug.print("{d}) ", .{i + 1});
+                try w.print("{d}) ", .{i + 1});
 
                 // For nested values, increase indent
                 switch (arr[i]) {
-                    .array => try printRespValue(arr[i], indent + 3),
-                    else => try printRespValue(arr[i], 0),
+                    .array => try printRespValue(w, arr[i], indent + 3),
+                    else => try printRespValue(w, arr[i], 0),
                 }
             }
         },
     }
 }
 
-fn printRespValueCsv(value: RespValue) !void {
+fn printRespValueCsv(w: *std.Io.Writer, value: RespValue) std.Io.Writer.Error!void {
     switch (value) {
-        .simple_string => |s| std.debug.print("{s}\n", .{s}),
-        .error_msg => |e| std.debug.print("ERROR,\"{s}\"\n", .{e}),
-        .integer => |i| std.debug.print("{d}\n", .{i}),
+        .simple_string => |s| try w.print("{s}\n", .{s}),
+        .error_msg => |e| try w.print("ERROR,\"{s}\"\n", .{e}),
+        .integer => |i| try w.print("{d}\n", .{i}),
         .bulk_string => |maybe_s| {
             if (maybe_s) |s| {
                 // Escape quotes in CSV
@@ -363,76 +388,76 @@ fn printRespValueCsv(value: RespValue) !void {
                 }
 
                 if (needs_quotes) {
-                    std.debug.print("\"", .{});
+                    try w.print("\"", .{});
                     for (s) |ch| {
                         if (ch == '"') {
-                            std.debug.print("\"\"", .{}); // Escape quotes by doubling
+                            try w.print("\"\"", .{}); // Escape quotes by doubling
                         } else {
-                            std.debug.print("{c}", .{ch});
+                            try w.print("{c}", .{ch});
                         }
                     }
-                    std.debug.print("\"\n", .{});
+                    try w.print("\"\n", .{});
                 } else {
-                    std.debug.print("{s}\n", .{s});
+                    try w.print("{s}\n", .{s});
                 }
             } else {
-                std.debug.print("\n", .{});
+                try w.print("\n", .{});
             }
         },
         .array => |arr| {
             var i: usize = 0;
             while (i < arr.len) : (i += 1) {
-                if (i > 0) std.debug.print(",", .{});
+                if (i > 0) try w.print(",", .{});
 
                 switch (arr[i]) {
-                    .simple_string => |s| std.debug.print("{s}", .{s}),
+                    .simple_string => |s| try w.print("{s}", .{s}),
                     .bulk_string => |maybe_s| {
-                        if (maybe_s) |s| std.debug.print("\"{s}\"", .{s});
+                        if (maybe_s) |s| try w.print("\"{s}\"", .{s});
                     },
-                    .integer => |n| std.debug.print("{d}", .{n}),
-                    .error_msg => |e| std.debug.print("\"ERROR:{s}\"", .{e}),
+                    .integer => |n| try w.print("{d}", .{n}),
+                    .error_msg => |e| try w.print("\"ERROR:{s}\"", .{e}),
                     .array => {}, // Skip nested arrays in CSV
                 }
             }
-            std.debug.print("\n", .{});
+            try w.print("\n", .{});
         },
     }
 }
 
-fn printRespValueJson(value: RespValue) error{}!void {
+fn printRespValueJson(w: *std.Io.Writer, value: RespValue) std.Io.Writer.Error!void {
     switch (value) {
-        .simple_string => |s| std.debug.print("\"{s}\"", .{s}),
+        .simple_string => |s| try w.print("\"{s}\"", .{s}),
         .error_msg => |e| {
-            std.debug.print("{{\"error\":\"{s}\"}}", .{e});
+            try w.print("{{\"error\":\"{s}\"}}", .{e});
         },
-        .integer => |i| std.debug.print("{d}", .{i}),
+        .integer => |i| try w.print("{d}", .{i}),
         .bulk_string => |maybe_s| {
             if (maybe_s) |s| {
-                std.debug.print("\"", .{});
+                try w.print("\"", .{});
                 // Escape special characters for JSON
                 for (s) |ch| {
                     switch (ch) {
-                        '"' => std.debug.print("\\\"", .{}),
-                        '\\' => std.debug.print("\\\\", .{}),
-                        '\n' => std.debug.print("\\n", .{}),
-                        '\r' => std.debug.print("\\r", .{}),
-                        '\t' => std.debug.print("\\t", .{}),
-                        else => std.debug.print("{c}", .{ch}),
+                        '"' => try w.print("\\\"", .{}),
+                        '\\' => try w.print("\\\\", .{}),
+                        '\n' => try w.print("\\n", .{}),
+                        '\r' => try w.print("\\r", .{}),
+                        '\t' => try w.print("\\t", .{}),
+                        else => try w.print("{c}", .{ch}),
                     }
                 }
-                std.debug.print("\"", .{});
+                try w.print("\"", .{});
             } else {
-                std.debug.print("null", .{});
+                try w.print("null", .{});
             }
         },
         .array => |arr| {
-            std.debug.print("[", .{});
+            try w.print("[", .{});
             var i: usize = 0;
             while (i < arr.len) : (i += 1) {
-                if (i > 0) std.debug.print(",", .{});
-                try printRespValueJson(arr[i]);
+                if (i > 0) try w.print(",", .{});
+                try printRespValueJson(w, arr[i]);
             }
-            std.debug.print("]", .{});
+            try w.print("]", .{});
         },
     }
 }
@@ -967,4 +992,63 @@ fn runAdvancedTuiMode(allocator: std.mem.Allocator, host: []const u8, port: u16)
         // Small delay for notification timer
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
+}
+
+fn render_for_test(gpa: std.mem.Allocator, data: []const u8, format: OutputFormat) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+
+    try displayResponse(&out.writer, data, format);
+    return out.toOwnedSlice();
+}
+
+test "displayResponse normal renders nested reply to the writer" {
+    const gpa = std.testing.allocator;
+    const text = try render_for_test(gpa, "*2\r\n$3\r\nfoo\r\n:42\r\n", .normal);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings("1) \"foo\"\n2) (integer) 42\n", text);
+}
+
+test "displayResponse normal renders nil and error replies" {
+    const gpa = std.testing.allocator;
+    const nil = try render_for_test(gpa, "$-1\r\n", .normal);
+    defer gpa.free(nil);
+    const err = try render_for_test(gpa, "-ERR bad\r\n", .normal);
+    defer gpa.free(err);
+
+    try std.testing.expectEqualStrings("(nil)\n", nil);
+    try std.testing.expectEqualStrings("(error) ERR bad\n", err);
+}
+
+test "displayResponse csv quotes fields that need it" {
+    const gpa = std.testing.allocator;
+    const text = try render_for_test(gpa, "$4\r\na,\"b\r\n", .csv);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings("\"a,\"\"b\"\n", text);
+}
+
+test "displayResponse json escapes strings and maps nil to null" {
+    const gpa = std.testing.allocator;
+    const text = try render_for_test(gpa, "*2\r\n$3\r\nq\"x\r\n$-1\r\n", .json);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings("[\"q\\\"x\",null]\n", text);
+}
+
+test "displayResponse raw passes the wire bytes through" {
+    const gpa = std.testing.allocator;
+    const text = try render_for_test(gpa, "+OK\r\n", .raw);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings("+OK\r\n", text);
+}
+
+test "displayResponse rejects an unknown RESP type byte" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(
+        error.InvalidFormat,
+        render_for_test(gpa, "?x\r\n", .normal),
+    );
 }
