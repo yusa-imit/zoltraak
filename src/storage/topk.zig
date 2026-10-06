@@ -473,7 +473,8 @@ pub const TopKValue = struct {
         var idx = start_idx;
         const len = self.heap.items.len;
 
-        while (true) {
+        // A sift-down descends one level per step, so it ends within the bit width of an index.
+        for (0..@bitSizeOf(usize)) |_| {
             var smallest = idx;
             const left = 2 * idx + 1;
             const right = 2 * idx + 2;
@@ -494,7 +495,7 @@ pub const TopKValue = struct {
             self.heap.items[idx] = self.heap.items[smallest];
             self.heap.items[smallest] = temp;
             idx = smallest;
-        }
+        } else unreachable; // A heap of `len` items is at most `bitSizeOf(usize)` levels deep.
     }
 
     /// Query if an item is in the Top-K
@@ -772,6 +773,32 @@ test "TopKValue: heap maintains top-k items" {
     try std.testing.expectEqual(@as(usize, 2), topk.heap.items.len);
     try std.testing.expect(topk.query("frequent1"));
     try std.testing.expect(topk.query("frequent2"));
+}
+
+test "TopKValue: heapifyDown restores min-heap order from a large root" {
+    const allocator = std.testing.allocator;
+    var topk = try TopKValue.init(allocator, 16, 8, 7, 0.9);
+    defer topk.deinit();
+
+    const counts = [_]u64{ 100, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    for (counts, 0..) |count, i| {
+        var name_buf: [8]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "item{d}", .{i});
+        try topk.heap.append(allocator, .{
+            .item = try allocator.dupe(u8, name),
+            .count = count,
+            .fingerprint = @intCast(i),
+        });
+    }
+
+    try topk.heapifyDown(0);
+
+    try std.testing.expectEqual(counts.len, topk.heap.items.len);
+    try std.testing.expectEqual(@as(u64, 2), topk.heap.items[0].count);
+    for (1..topk.heap.items.len) |child| {
+        const parent = @divFloor(child - 1, 2);
+        try std.testing.expect(topk.heap.items[parent].count <= topk.heap.items[child].count);
+    }
 }
 
 test "MurmurHash3: consistent hashing" {

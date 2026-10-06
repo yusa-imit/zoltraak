@@ -297,7 +297,8 @@ pub const HeavyKeeper = struct {
         var idx = start_idx;
         const len = self.heap.items.len;
 
-        while (true) {
+        // A sift-down descends one level per step, so it ends within the bit width of an index.
+        for (0..@bitSizeOf(usize)) |_| {
             var smallest = idx;
             const left = 2 * idx + 1;
             const right = 2 * idx + 2;
@@ -318,7 +319,7 @@ pub const HeavyKeeper = struct {
             self.heap.items[idx] = self.heap.items[smallest];
             self.heap.items[smallest] = temp;
             idx = smallest;
-        }
+        } else unreachable; // A heap of `len` items is at most `bitSizeOf(usize)` levels deep.
     }
 
     /// Query the estimated frequency for a key
@@ -400,6 +401,28 @@ pub const HeavyKeeper = struct {
 // ============================================================================
 // Unit Tests
 // ============================================================================
+
+test "HeavyKeeper: heapifyDown restores min-heap order from a large root" {
+    const allocator = std.testing.allocator;
+    var hk = try HeavyKeeper.init(allocator, 16, 8, 7, 0.9);
+    defer hk.deinit();
+
+    const counts = [_]u64{ 100, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    for (counts, 0..) |count, i| {
+        var name_buf: [8]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "key{d}", .{i});
+        try hk.heap.append(allocator, .{ .key = try allocator.dupe(u8, name), .count = count });
+    }
+
+    try hk.heapifyDown(0);
+
+    try std.testing.expectEqual(counts.len, hk.heap.items.len);
+    try std.testing.expectEqual(@as(u64, 2), hk.heap.items[0].count);
+    for (1..hk.heap.items.len) |child| {
+        const parent = @divFloor(child - 1, 2);
+        try std.testing.expect(hk.heap.items[parent].count <= hk.heap.items[child].count);
+    }
+}
 
 test "HeavyKeeper: init with valid parameters" {
     const allocator = std.testing.allocator;
