@@ -274,6 +274,14 @@ test "usageText - buffer too small returns NoSpaceLeft" {
     try std.testing.expectError(error.NoSpaceLeft, usageText(&buf, "zoltraak"));
 }
 
+// Zig only runs `test` blocks of files that something analyzes; these two were imported but
+// their tests never ran, so name them here. Wire further files in one at a time: most other
+// files carry stale tests that do not compile yet.
+test "main - storage modules are reachable from the test root" {
+    _ = @import("storage/topk.zig");
+    _ = @import("storage/heavykeeper.zig");
+}
+
 // Minimal test to ensure modules compile
 test "main - modules import correctly" {
     const allocator = std.testing.allocator;
