@@ -280,6 +280,12 @@ test "usageText - buffer too small returns NoSpaceLeft" {
 test "main - storage modules are reachable from the test root" {
     _ = @import("storage/topk.zig");
     _ = @import("storage/heavykeeper.zig");
+    _ = @import("storage/encodings.zig");
+    _ = @import("storage/listpack.zig");
+    _ = @import("storage/memory_tracker.zig");
+    _ = @import("storage/slowlog.zig");
+    _ = @import("storage/intset.zig");
+    _ = @import("storage/latency.zig");
 }
 
 // Minimal test to ensure modules compile
