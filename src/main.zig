@@ -286,6 +286,11 @@ test "main - storage modules are reachable from the test root" {
     _ = @import("storage/slowlog.zig");
     _ = @import("storage/intset.zig");
     _ = @import("storage/latency.zig");
+    _ = @import("storage/cms.zig");
+    _ = @import("storage/scripting.zig");
+    _ = @import("storage/json_value.zig");
+    _ = @import("storage/vector.zig");
+    _ = @import("storage/defrag.zig");
 }
 
 // Minimal test to ensure modules compile
