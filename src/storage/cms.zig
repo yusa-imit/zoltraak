@@ -156,7 +156,8 @@ pub const CountMinSketchValue = struct {
                 self.counters[i][pos] = overflow_result[0];
             } else {
                 // Handle negative increments (decrement)
-                const unsigned_delta = @as(u64, @intCast(-delta));
+                // @abs is total over i64; plain negation traps on minInt(i64).
+                const unsigned_delta: u64 = @abs(delta);
                 const underflow_result = @subWithOverflow(old_count, unsigned_delta);
                 if (underflow_result[1] != 0) {
                     return error.CounterUnderflow;
@@ -433,12 +434,27 @@ test "CountMinSketch: incrBy detects overflow" {
     var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
     defer cms.deinit();
 
-    // Set counter to near-max
+    // Counters are u64, so two maxInt(i64) increments reach 2^64 - 2 and no further than 2^64 - 1.
     const item = "overflow_test";
     _ = try cms.incrBy(item, std.math.maxInt(i64));
+    _ = try cms.incrBy(item, std.math.maxInt(i64));
+    try std.testing.expectEqual(std.math.maxInt(u64), try cms.incrBy(item, 1));
 
-    // Incrementing again should overflow
+    // One more increment would wrap past the counter maximum.
     try std.testing.expectError(error.CounterOverflow, cms.incrBy(item, 1));
+}
+
+test "CountMinSketch: incrBy with minInt(i64) underflows instead of trapping on negation" {
+    const allocator = std.testing.allocator;
+
+    var cms = try CountMinSketchValue.initByDim(allocator, 100, 5);
+    defer cms.deinit();
+
+    const item = "min_delta_test";
+    _ = try cms.incrBy(item, 5);
+
+    // Boundary: -delta is not representable for minInt(i64); a client can send this value.
+    try std.testing.expectError(error.CounterUnderflow, cms.incrBy(item, std.math.minInt(i64)));
 }
 
 test "CountMinSketch: incrBy detects underflow" {
