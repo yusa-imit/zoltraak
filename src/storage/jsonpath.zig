@@ -23,6 +23,18 @@ pub const JsonPath = struct {
         }
     };
 
+    /// Index where `parse` starts scanning, after the root marker has been recorded. A legacy
+    /// path may name its first key right after the root dot (".a.b", ".*"), so that dot is the
+    /// child separator and scanning starts on it. "$...", ".", "..x" and ".[0]" keep the first
+    /// character as the root marker. Precondition: `query` is non-empty.
+    fn scan_start(query: []const u8) usize {
+        std.debug.assert(query.len > 0);
+        const legacy_key_follows = query[0] == '.' and query.len > 1 and
+            query[1] != '.' and query[1] != '[';
+        std.debug.assert(!legacy_key_follows or query[0] == '.');
+        return if (legacy_key_follows) 0 else 1;
+    }
+
     /// Parse JSONPath query string into segments
     pub fn parse(allocator: std.mem.Allocator, query: []const u8) !JsonPath {
         var segments: std.ArrayList(PathSegment) = .{};
@@ -47,7 +59,7 @@ pub const JsonPath = struct {
         // Add root segment
         try segments.append(allocator, .root);
 
-        var i: usize = 1;
+        var i: usize = scan_start(query);
         while (i < query.len) {
             if (query[i] == '.') {
                 // Check for recursive descent (..)
@@ -420,4 +432,34 @@ test "evaluate recursive descent" {
 
     // Should find 3 matches: top-level "a" object + 2 nested "a" values
     try std.testing.expectEqual(@as(usize, 3), results.items.len);
+}
+
+test "parse legacy wildcard .*" {
+    const allocator = std.testing.allocator;
+
+    var path = try JsonPath.parse(allocator, ".*");
+    defer path.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), path.segments.items.len);
+    try std.testing.expect(path.segments.items[1] == .wildcard);
+}
+
+test "parse legacy index .[0] adds no empty child" {
+    const allocator = std.testing.allocator;
+
+    var path = try JsonPath.parse(allocator, ".[0]");
+    defer path.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), path.segments.items.len);
+    try std.testing.expectEqual(@as(i64, 0), path.segments.items[1].index);
+}
+
+test "parse legacy single key .a" {
+    const allocator = std.testing.allocator;
+
+    var path = try JsonPath.parse(allocator, ".a");
+    defer path.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), path.segments.items.len);
+    try std.testing.expectEqualStrings("a", path.segments.items[1].child);
 }
