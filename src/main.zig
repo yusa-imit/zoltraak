@@ -291,6 +291,7 @@ test "main - storage modules are reachable from the test root" {
     _ = @import("storage/json_value.zig");
     _ = @import("storage/vector.zig");
     _ = @import("storage/defrag.zig");
+    _ = @import("storage/jsonpath.zig");
 }
 
 // Minimal test to ensure modules compile
