@@ -837,6 +837,7 @@ test "BloomFilterValue scanDump/loadChunk round-trip" {
     defer bf2.deinit();
 
     var context = BloomFilterValue.LoadContext{
+        .allocator = std.testing.allocator,
         .buffer = std.ArrayList(u8).empty,
         .expected_iterator = 0,
     };
@@ -875,6 +876,7 @@ test "BloomFilterValue loadChunk invalid iterator" {
     defer bf.deinit();
 
     var context = BloomFilterValue.LoadContext{
+        .allocator = std.testing.allocator,
         .buffer = std.ArrayList(u8).empty,
         .expected_iterator = 0,
     };
@@ -900,6 +902,7 @@ test "BloomFilterValue scanDump preserves nonscaling" {
     defer bf2.deinit();
 
     var context = BloomFilterValue.LoadContext{
+        .allocator = std.testing.allocator,
         .buffer = std.ArrayList(u8).empty,
         .expected_iterator = 0,
     };
