@@ -886,7 +886,7 @@ test "bucket contains checks for fingerprint" {
     var bucket = try Bucket.init(allocator, 4);
     defer bucket.deinit();
 
-    bucket.insert(42);
+    try std.testing.expect(bucket.insert(42));
     try std.testing.expect(bucket.contains(42));
     try std.testing.expect(!bucket.contains(43));
 }
