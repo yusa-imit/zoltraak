@@ -295,6 +295,7 @@ test "main - storage modules are reachable from the test root" {
     _ = @import("storage/bloom.zig");
     _ = @import("storage/functions.zig");
     _ = @import("storage/cuckoo.zig");
+    _ = @import("storage/tdigest.zig");
 }
 
 // Minimal test to ensure modules compile
