@@ -328,20 +328,25 @@ pub const TDigestValue = struct {
         }
 
         // Values above max have CDF = 1
-        if (value >= self.max) {
+        if (value > self.max) {
             return 1.0;
         }
 
-        // Count values <= given value
-        var count: u64 = 0;
+        // Mid-point convention (as Redis): values strictly below count fully,
+        // values equal to the query count half, so a lone value sits at 0.5.
+        var below: u64 = 0;
+        var equal: u64 = 0;
         for (self.centroids.items) |centroid| {
-            if (centroid.mean <= value) {
-                count += centroid.count;
+            if (centroid.mean < value) {
+                below += centroid.count;
+            } else if (centroid.mean == value) {
+                equal += centroid.count;
             }
         }
+        std.debug.assert(below + equal <= self.total_count);
 
-        // Return proportion
-        return @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(self.total_count));
+        const weight = @as(f64, @floatFromInt(below)) + 0.5 * @as(f64, @floatFromInt(equal));
+        return weight / @as(f64, @floatFromInt(self.total_count));
     }
 
     /// Estimate the rank of a given value in the distribution.
@@ -1015,7 +1020,7 @@ test "TDigestValue.merge with infinity values" {
     try std.testing.expectEqual(std.math.inf(f64), dest.max);
 }
 
-test "TDigestValue.merge into non-empty dest with existing data" {
+test "TDigestValue.merge replaces existing dest data" {
     const allocator = std.testing.allocator;
 
     var dest = try TDigestValue.init(allocator, 100);
@@ -1030,9 +1035,10 @@ test "TDigestValue.merge into non-empty dest with existing data" {
     const sources = [_]*TDigestValue{&source};
     try dest.merge(&sources, null);
 
-    // Should combine existing dest data with source data
-    try std.testing.expectEqual(3, dest.total_count);
-    try std.testing.expectEqual(100.0, dest.min);
+    // merge() documents replace semantics: the command layer rejects an existing
+    // dest without OVERRIDE, so storage never combines old dest data with sources.
+    try std.testing.expectEqual(1, dest.total_count);
+    try std.testing.expectEqual(300.0, dest.min);
     try std.testing.expectEqual(300.0, dest.max);
 }
 
@@ -1161,6 +1167,22 @@ test "TDigestValue.cdf with multiple values" {
     // Median value should be around 0.5
     const cdf_mid = try td.cdf(30.0);
     try std.testing.expectApproxEqRel(0.5, cdf_mid, 0.15);
+}
+
+test "TDigestValue.cdf at max and between centroids uses the mid-point convention" {
+    const allocator = std.testing.allocator;
+    var td = try TDigestValue.init(allocator, 100);
+    defer td.deinit();
+
+    for ([_]f64{ 10.0, 20.0, 30.0, 40.0, 50.0 }) |value| try td.add(value);
+
+    // The query equals the max: four values below plus half of the one equal.
+    try std.testing.expectApproxEqAbs(0.9, try td.cdf(50.0), 1e-12);
+    // The query sits between centroids: only the values below it count.
+    try std.testing.expectApproxEqAbs(0.4, try td.cdf(25.0), 1e-12);
+    // Rank stays within [0, total_count - 1] at both ends.
+    try std.testing.expectEqual(4, try td.rank(50.0));
+    try std.testing.expectEqual(0, try td.rank(10.0));
 }
 
 test "TDigestValue.cdf empty sketch returns error" {
