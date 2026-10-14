@@ -392,15 +392,13 @@ pub const SentinelState = struct {
 
             // Check if master name matches glob pattern
             if (zuda.algorithms.string.globMatch(pattern, master_name)) {
-                // Clear all sentinels for this master
-                // Note: HashMap key is the same pointer as sentinel.id, so we only free sentinel.ip
+                // Clear all sentinels for this master. The HashMap key is the same pointer as
+                // sentinel.id and `clearAndFree` releases only the map's own storage, never the
+                // key bytes, so `SentinelInfo.deinit` must free both id and ip first.
                 var sentinel_it = master.sentinels.iterator();
                 while (sentinel_it.next()) |sentinel_entry| {
-                    const sentinel_info = sentinel_entry.value_ptr;
-                    // Only free ip, NOT id (id is owned by HashMap key and will be freed by clearAndFree)
-                    self.allocator.free(sentinel_info.ip);
+                    sentinel_entry.value_ptr.deinit(self.allocator);
                 }
-                // clearAndFree() frees both keys and values (keys are sentinel.id strings)
                 master.sentinels.clearAndFree();
 
                 // Reset timestamps to current time

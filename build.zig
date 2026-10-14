@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     unit_tests.root_module.addImport("sailor", sailor_mod);
+    unit_tests.root_module.addImport("zuda", zuda_mod);
     if (target.result.os.tag == .linux) {
         unit_tests.root_module.unwind_tables = .async;
     }
