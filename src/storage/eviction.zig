@@ -111,11 +111,17 @@ pub const LFUCounter = struct {
     allocator: std.mem.Allocator,
     prng: std.Random.DefaultPrng,
 
+    /// Seeds the PRNG from the wall clock; tests use `initWithSeed` for reproducibility.
     pub fn init(allocator: std.mem.Allocator) LFUCounter {
+        return initWithSeed(allocator, @bitCast(std.time.timestamp()));
+    }
+
+    /// Deterministic variant: the same seed and increment stream give the same counters.
+    pub fn initWithSeed(allocator: std.mem.Allocator, seed: u64) LFUCounter {
         return LFUCounter{
             .counters = std.StringHashMap(u8).init(allocator),
             .allocator = allocator,
-            .prng = std.Random.DefaultPrng.init(@bitCast(std.time.timestamp())),
+            .prng = std.Random.DefaultPrng.init(seed),
         };
     }
 
@@ -316,30 +322,39 @@ test "eviction - touching the same key twice does not leak the first owned copy"
 }
 
 test "eviction - LFU counter basic operations" {
-    var counter = LFUCounter.init(std.testing.allocator);
+    var counter = LFUCounter.initWithSeed(std.testing.allocator, 1);
     defer counter.deinit();
 
     // Initial counter should be 0
     try std.testing.expectEqual(@as(u8, 0), counter.getCounter("key1"));
 
-    // After increment, counter should be > 0 (probabilistic)
-    try counter.increment("key1");
+    // At counter 0 the increment probability is 1.0, so the first increment always lands.
+    try counter.incrementWithLogFactor("key1", 0);
     const count1 = counter.getCounter("key1");
-    try std.testing.expect(count1 <= 1); // First increment usually succeeds
+    try std.testing.expectEqual(@as(u8, 1), count1);
 
-    // Multiple increments
+    // With log-factor 0, p = 1 / (counter + 1): 100 increments reach several steps.
     for (0..100) |_| {
-        try counter.increment("key1");
+        try counter.incrementWithLogFactor("key1", 0);
     }
     const count2 = counter.getCounter("key1");
-    try std.testing.expect(count2 > count1); // Should have increased
+    try std.testing.expect(count2 > count1);
+    try std.testing.expect(count2 < 100);
+}
 
-    // Counter is capped at 255
-    try std.testing.expect(count2 <= 255);
+test "eviction - LFU default log-factor makes the second increment rare" {
+    var counter = LFUCounter.initWithSeed(std.testing.allocator, 1);
+    defer counter.deinit();
+
+    // Default log-factor 10: p(0 -> 1) = 1.0, p(1 -> 2) = 1 / 1025.
+    try counter.increment("key1");
+    try std.testing.expectEqual(@as(u8, 1), counter.getCounter("key1"));
+    for (0..20) |_| try counter.increment("key1");
+    try std.testing.expectEqual(@as(u8, 1), counter.getCounter("key1"));
 }
 
 test "eviction - LFU counter removal" {
-    var counter = LFUCounter.init(std.testing.allocator);
+    var counter = LFUCounter.initWithSeed(std.testing.allocator, 1);
     defer counter.deinit();
 
     try counter.increment("key1");
@@ -351,7 +366,7 @@ test "eviction - LFU counter removal" {
 }
 
 test "eviction - LFU probabilistic increment" {
-    var counter = LFUCounter.init(std.testing.allocator);
+    var counter = LFUCounter.initWithSeed(std.testing.allocator, 1);
     defer counter.deinit();
 
     // Low counter should increment frequently
@@ -376,7 +391,7 @@ test "eviction - LFU probabilistic increment" {
 }
 
 test "eviction - LFU with configurable log-factor (low factor = more frequent increments)" {
-    var counter = LFUCounter.init(std.testing.allocator);
+    var counter = LFUCounter.initWithSeed(std.testing.allocator, 1);
     defer counter.deinit();
 
     // Log factor 0: p = 1.0 / (2^0 * counter + 1) = 1.0 / (counter + 1)
@@ -389,7 +404,7 @@ test "eviction - LFU with configurable log-factor (low factor = more frequent in
 }
 
 test "eviction - LFU with configurable log-factor (high factor = rare increments)" {
-    var counter = LFUCounter.init(std.testing.allocator);
+    var counter = LFUCounter.initWithSeed(std.testing.allocator, 1);
     defer counter.deinit();
 
     // Set counter to 50
