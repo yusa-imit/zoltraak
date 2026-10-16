@@ -298,6 +298,7 @@ test "main - storage modules are reachable from the test root" {
     _ = @import("storage/tdigest.zig");
     _ = @import("storage/sentinel.zig");
     _ = @import("storage/eviction.zig");
+    _ = @import("storage/notifications.zig");
 }
 
 // Minimal test to ensure modules compile
