@@ -143,16 +143,35 @@ test "shouldNotify - individual flags" {
     try std.testing.expect(!shouldNotify(flags, .keyevent));
 }
 
+/// Assert `subscriber_id` holds exactly one pending RESP2 frame for `message` on `channel`.
+fn expect_frame_delivered(
+    gpa: std.mem.Allocator,
+    ps: *PubSub,
+    subscriber_id: u64,
+    channel: []const u8,
+    message: []const u8,
+) !void {
+    const frame = try pubsub_mod.buildMessageFrame(gpa, channel, message, 2);
+    defer gpa.free(frame);
+
+    const pending = ps.pendingMessages(subscriber_id);
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    try std.testing.expectEqualStrings(frame, pending[0]);
+}
+
 test "publishNotification - keyspace only" {
     const allocator = std.testing.allocator;
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    const flags = @intFromEnum(NotificationFlag.keyspace);
-    try publishNotification(allocator, ps, 0, "mykey", "set", flags);
+    _ = try ps.subscribe(1, "__keyspace@0__:mykey");
+    _ = try ps.subscribe(2, "__keyevent@0__:set");
 
-    // Notification should be sent to __keyspace@0__:mykey with message "set"
-    // (We can't easily test pub/sub without subscribers, but this validates no crashes)
+    const flags = @intFromEnum(NotificationFlag.keyspace);
+    try publishNotification(allocator, &ps, 0, "mykey", "set", flags);
+
+    try expect_frame_delivered(allocator, &ps, 1, "__keyspace@0__:mykey", "set");
+    try std.testing.expectEqual(@as(usize, 0), ps.pendingMessages(2).len);
 }
 
 test "publishNotification - keyevent only" {
@@ -160,10 +179,14 @@ test "publishNotification - keyevent only" {
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    const flags = @intFromEnum(NotificationFlag.keyevent);
-    try publishNotification(allocator, ps, 0, "mykey", "set", flags);
+    _ = try ps.subscribe(1, "__keyspace@0__:mykey");
+    _ = try ps.subscribe(2, "__keyevent@0__:set");
 
-    // Notification should be sent to __keyevent@0__:set with message "mykey"
+    const flags = @intFromEnum(NotificationFlag.keyevent);
+    try publishNotification(allocator, &ps, 0, "mykey", "set", flags);
+
+    try std.testing.expectEqual(@as(usize, 0), ps.pendingMessages(1).len);
+    try expect_frame_delivered(allocator, &ps, 2, "__keyevent@0__:set", "mykey");
 }
 
 test "publishNotification - both keyspace and keyevent" {
@@ -171,8 +194,26 @@ test "publishNotification - both keyspace and keyevent" {
     var ps = PubSub.init(allocator);
     defer ps.deinit();
 
-    const flags = @intFromEnum(NotificationFlag.keyspace) | @intFromEnum(NotificationFlag.keyevent);
-    try publishNotification(allocator, ps, 0, "mykey", "del", flags);
+    _ = try ps.subscribe(1, "__keyspace@3__:mykey");
+    _ = try ps.subscribe(2, "__keyevent@3__:del");
 
-    // Should publish to both channels
+    const flags = @intFromEnum(NotificationFlag.keyspace) | @intFromEnum(NotificationFlag.keyevent);
+    try publishNotification(allocator, &ps, 3, "mykey", "del", flags);
+
+    try expect_frame_delivered(allocator, &ps, 1, "__keyspace@3__:mykey", "del");
+    try expect_frame_delivered(allocator, &ps, 2, "__keyevent@3__:del", "mykey");
+}
+
+test "publishNotification - no flags publishes nothing" {
+    const allocator = std.testing.allocator;
+    var ps = PubSub.init(allocator);
+    defer ps.deinit();
+
+    _ = try ps.subscribe(1, "__keyspace@0__:mykey");
+    _ = try ps.subscribe(2, "__keyevent@0__:set");
+
+    try publishNotification(allocator, &ps, 0, "mykey", "set", 0);
+
+    try std.testing.expectEqual(@as(usize, 0), ps.pendingMessages(1).len);
+    try std.testing.expectEqual(@as(usize, 0), ps.pendingMessages(2).len);
 }
