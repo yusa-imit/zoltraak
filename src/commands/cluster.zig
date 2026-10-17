@@ -8,6 +8,7 @@ const ClusterError = cluster_mod.ClusterError;
 const ClusterState = cluster_mod.ClusterState;
 const client_mod = @import("./client.zig");
 const RespProtocol = client_mod.RespProtocol;
+const reply_line = @import("../network/reply_line.zig");
 
 /// Format a slot error message with the first offending slot number
 fn formatSlotError(
@@ -1342,20 +1343,11 @@ fn buildRespCommand(allocator: std.mem.Allocator, parts: []const []const u8) ![]
 
 /// Send `cmd` over `stream` and read back a single reply line (up to and including `\r\n`).
 /// Caller owns the returned buffer. Only simple/error replies (`+`/`-`) are expected from
-/// the destination instance for AUTH/SELECT/RESTORE.
+/// the destination instance for AUTH/SELECT/RESTORE; a longer line than
+/// `reply_line.reply_line_max` bytes fails with `error.ReplyTooLong`.
 fn sendAndReadReply(stream: std.net.Stream, cmd: []const u8, allocator: std.mem.Allocator) ![]u8 {
     try stream.writeAll(cmd);
-
-    var buf = try std.ArrayList(u8).initCapacity(allocator, 64);
-    errdefer buf.deinit(allocator);
-    var byte: [1]u8 = undefined;
-    while (true) {
-        const n = try stream.read(&byte);
-        if (n == 0) return error.EndOfStream;
-        try buf.append(allocator, byte[0]);
-        if (byte[0] == '\n') break;
-    }
-    return buf.toOwnedSlice(allocator);
+    return reply_line.read_reply_line(allocator, stream);
 }
 
 /// Send `cmd` and require a `+OK` simple-string reply.
