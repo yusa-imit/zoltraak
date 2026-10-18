@@ -3,6 +3,7 @@ const writer_mod = @import("../protocol/writer.zig");
 const storage_mod = @import("../storage/memory.zig");
 const repl_mod = @import("../storage/replication.zig");
 const persistence_mod = @import("../storage/persistence.zig");
+const wait_poll = @import("../utils/wait_poll.zig");
 
 const Writer = writer_mod.Writer;
 const Storage = storage_mod.Storage;
@@ -281,14 +282,13 @@ pub fn cmdWait(
     // Get the client's replication offset (offset of the last write by this client)
     const client_offset = client_registry.getClientReplOffset(client_id);
 
-    // Poll until enough replicas are caught up or timeout expires
-    const deadline_ns: u64 = if (timeout_ms > 0)
-        @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000 + timeout_ms * 1_000_000
-    else
-        0;
+    // Poll until enough replicas are caught up or timeout expires. The timeout is client data,
+    // so the deadline saturates and the loop is bounded by `poll_count_max`.
+    const deadline = wait_poll.deadline_ms(std.time.milliTimestamp(), timeout_ms);
 
-    while (true) {
-        var caught_up: u32 = 0;
+    var caught_up: u32 = 0;
+    for (0..wait_poll.poll_count_max) |_| {
+        caught_up = 0;
         for (repl.replicas.items) |r| {
             // Replica has acknowledged this client's writes if its offset >= client's offset
             if (r.state == .online and r.repl_offset >= client_offset) {
@@ -296,22 +296,14 @@ pub fn cmdWait(
             }
         }
 
-        if (caught_up >= num_replicas) {
-            return w.writeInteger(@intCast(caught_up));
-        }
+        if (caught_up >= num_replicas) break;
+        // timeout == 0: return immediately
+        if (timeout_ms == 0) break;
+        if (wait_poll.expired(std.time.milliTimestamp(), deadline)) break;
 
-        if (deadline_ns > 0) {
-            const now_ns = @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000;
-            if (now_ns >= deadline_ns) {
-                return w.writeInteger(@intCast(caught_up));
-            }
-        } else {
-            // timeout == 0: return immediately
-            return w.writeInteger(@intCast(caught_up));
-        }
-
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        std.Thread.sleep(wait_poll.poll_interval_ms * std.time.ns_per_ms);
     }
+    return w.writeInteger(@intCast(caught_up));
 }
 
 // ── WAITAOF ──────────────────────────────────────────────────────────────────
@@ -379,13 +371,11 @@ pub fn cmdWaitaof(
     var replicas_fsynced: u32 = 0;
 
     if (numreplicas > 0) {
-        // Poll until enough replicas are caught up or timeout expires
-        const deadline_ns: u64 = if (timeout_ms > 0)
-            @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000 + timeout_ms * 1_000_000
-        else
-            0;
+        // Poll until enough replicas are caught up or timeout expires; see cmdWait for why the
+        // deadline saturates and the loop is bounded.
+        const deadline = wait_poll.deadline_ms(std.time.milliTimestamp(), timeout_ms);
 
-        while (true) {
+        for (0..wait_poll.poll_count_max) |_| {
             replicas_fsynced = 0;
             for (repl.replicas.items) |r| {
                 if (r.state == .online and r.repl_offset >= repl.repl_offset) {
@@ -393,22 +383,12 @@ pub fn cmdWaitaof(
                 }
             }
 
-            if (replicas_fsynced >= numreplicas) {
-                break;
-            }
+            if (replicas_fsynced >= numreplicas) break;
+            // timeout == 0: for the stub implementation, check once and return.
+            if (timeout_ms == 0) break;
+            if (wait_poll.expired(std.time.milliTimestamp(), deadline)) break;
 
-            if (deadline_ns > 0) {
-                const now_ns = @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000;
-                if (now_ns >= deadline_ns) {
-                    break; // Timeout reached
-                }
-            } else {
-                // timeout == 0: block forever (but with replica checking)
-                // For stub implementation, check once and return
-                break;
-            }
-
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            std.Thread.sleep(wait_poll.poll_interval_ms * std.time.ns_per_ms);
         }
     }
 
@@ -911,6 +891,34 @@ test "replication commands - WAIT with timeout and per-client offset" {
     try std.testing.expectEqualStrings(":0\r\n", result);
     // Should have waited close to timeout (at least 40ms, at most 100ms)
     try std.testing.expect(elapsed_ms >= 40 and elapsed_ms <= 100);
+}
+
+test "replication commands - WAIT with the largest timeout returns once replicas caught up" {
+    const allocator = std.testing.allocator;
+    var repl = try ReplicationState.initPrimary(allocator);
+    defer repl.deinit();
+
+    const ClientRegistry = @import("client.zig").ClientRegistry;
+    var registry = ClientRegistry.init(allocator);
+    defer registry.deinit();
+
+    const client_id = try registry.registerClient("127.0.0.1:12345", 3);
+    registry.updateClientReplOffset(client_id, 500);
+
+    const mock_stream = std.net.Stream{ .handle = 0 };
+    try repl.replicas.append(allocator, .{
+        .stream = mock_stream,
+        .port = 6380,
+        .repl_offset = 500,
+        .state = .online,
+    });
+
+    // 2^64 - 1 ms used to overflow `timeout_ms * 1_000_000` and trap the server.
+    const args = [_][]const u8{ "WAIT", "1", "18446744073709551615" };
+    const result = try cmdWait(allocator, &repl, &registry, client_id, &args);
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings(":1\r\n", result);
 }
 
 test "replication commands - WAIT default offset is 0" {
