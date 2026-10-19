@@ -6,6 +6,7 @@ const notifications_mod = @import("../storage/notifications.zig");
 const pubsub_mod = @import("../storage/pubsub.zig");
 const streams = @import("streams.zig");
 const client_mod = @import("./client.zig");
+const block_poll = @import("../utils/block_poll.zig");
 
 const RespValue = protocol.RespValue;
 const Writer = writer_mod.Writer;
@@ -414,7 +415,6 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     if (!has_data and block_ms != null) {
         const timeout_ms = block_ms.?;
         const start_time = std.time.milliTimestamp();
-        const check_interval_ms = 100; // Check every 100ms
 
         // Resolve "$" IDs to actual start IDs for blocking retries.
         // Key: key string (points into args), Value: next ID to poll from (exclusive start)
@@ -443,16 +443,16 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         }
 
         // Blocking loop
-        while (true) {
+        for (0..block_poll.poll_count_max) |_| {
             // Check timeout
             const elapsed = std.time.milliTimestamp() - start_time;
-            if (timeout_ms > 0 and elapsed >= timeout_ms) {
+            if (block_poll.timed_out(elapsed, timeout_ms)) {
                 // Timeout expired, return null array (Redis returns *-1\r\n for XREAD timeout)
                 return w.writeArray(null);
             }
 
             // Sleep before retrying
-            std.Thread.sleep(check_interval_ms * std.time.ns_per_ms);
+            std.Thread.sleep(block_poll.poll_interval_ms * std.time.ns_per_ms);
 
             // Retry reading from streams
             has_data = false;
@@ -527,7 +527,7 @@ pub fn cmdXread(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             // If we found data, break out of blocking loop
             if (has_data) break;
 
-            // For BLOCK 0 (infinite), keep looping
+            // For BLOCK 0 (infinite), keep looping, bounded by poll_count_max.
             // For BLOCK > 0, timeout check at top of loop will handle it
         }
     }
@@ -729,19 +729,18 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
         if (should_block) {
             const timeout_ms = block_ms.?;
             const start_time = std.time.milliTimestamp();
-            const check_interval_ms = 100; // Check every 100ms
 
             // Blocking loop
-            while (true) {
+            for (0..block_poll.poll_count_max) |_| {
                 // Check timeout
                 const elapsed = std.time.milliTimestamp() - start_time;
-                if (timeout_ms > 0 and elapsed >= timeout_ms) {
+                if (block_poll.timed_out(elapsed, timeout_ms)) {
                     // Timeout expired, return null array (Redis returns *-1\r\n for XREADGROUP timeout)
                     return w.writeArray(null);
                 }
 
                 // Sleep before retrying
-                std.Thread.sleep(check_interval_ms * std.time.ns_per_ms);
+                std.Thread.sleep(block_poll.poll_interval_ms * std.time.ns_per_ms);
 
                 // Retry reading from streams
                 has_data = false;
@@ -786,7 +785,7 @@ pub fn cmdXreadgroup(allocator: std.mem.Allocator, storage: *Storage, args: []co
                 // If we found data, break out of blocking loop
                 if (has_data) break;
 
-                // For BLOCK 0 (infinite), keep looping
+                // For BLOCK 0 (infinite), keep looping, bounded by poll_count_max.
                 // For BLOCK > 0, timeout check at top of loop will handle it
             }
         }

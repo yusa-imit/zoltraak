@@ -301,6 +301,7 @@ test "main - storage modules are reachable from the test root" {
     _ = @import("storage/notifications.zig");
     _ = @import("network/reply_line.zig");
     _ = @import("utils/wait_poll.zig");
+    _ = @import("utils/block_poll.zig");
 }
 
 // Minimal test to ensure modules compile
