@@ -5,6 +5,7 @@ const std = @import("std");
 const lua = @import("lua_ffi.zig");
 const redis_api = @import("redis_api.zig");
 const lua_libraries = @import("lua_libraries.zig");
+const lua_array = @import("lua_array.zig");
 const Storage = @import("../storage/memory.zig").Storage;
 const protocol = @import("../protocol/parser.zig");
 const RespValue = protocol.RespValue;
@@ -297,14 +298,7 @@ pub const LuaEngine = struct {
                 }
 
                 // Array table: count sequential integer keys starting at 1
-                var count: usize = 0;
-                while (true) {
-                    lua.lua_rawgeti(self.L, abs_idx, @intCast(count + 1));
-                    const elem_type = lua.lua_type(self.L, -1);
-                    lua.lua_pop(self.L, 1);
-                    if (elem_type == lua.LUA_TNIL) break;
-                    count += 1;
-                }
+                const count: usize = lua_array.sequence_len(self.L, abs_idx);
                 try std.fmt.format(buf.writer(self.allocator), "*{d}\r\n", .{count});
                 for (0..count) |i| {
                     lua.lua_rawgeti(self.L, abs_idx, @intCast(i + 1));

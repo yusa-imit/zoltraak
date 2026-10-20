@@ -302,6 +302,7 @@ test "main - storage modules are reachable from the test root" {
     _ = @import("network/reply_line.zig");
     _ = @import("utils/wait_poll.zig");
     _ = @import("utils/block_poll.zig");
+    _ = @import("scripting/lua_array.zig");
 }
 
 // Minimal test to ensure modules compile
