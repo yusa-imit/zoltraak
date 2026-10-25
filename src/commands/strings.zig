@@ -3558,8 +3558,8 @@ fn cmdSet(allocator: std.mem.Allocator, storage: *Storage, args: []const RespVal
     }
     // Each branch above rejects the option that would violate these pairs, so both hold
     // no matter which arm of the loop last ran.
-    assert(!(nx and xx));
-    assert(!(keepttl and expires_at != null));
+    if (nx) assert(!xx);
+    if (keepttl) assert(expires_at == null);
 
     // GET option: retrieve old value before applying NX/XX/SET logic.
     // Returns WRONGTYPE if key exists as a non-string type.
@@ -4286,7 +4286,7 @@ fn cmdGetex(allocator: std.mem.Allocator, storage: *Storage, args: []const RespV
     }
     // The else-if chain above lets only one option arm run, so PERSIST and an explicit
     // expiry can never both land here together.
-    assert(!(persist and expires_at != null));
+    if (persist) assert(expires_at == null);
 
     const val = storage.getex(key, expires_at, persist) catch |err| switch (err) {
         error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
@@ -4701,8 +4701,8 @@ fn cmdMsetex(allocator: std.mem.Allocator, storage: *Storage, args: []const Resp
             return w.writeError("ERR syntax error");
         }
     }
-    assert(!(nx_flag and xx_flag));
-    assert(!(keepttl_flag and expires_at != null));
+    if (nx_flag) assert(!xx_flag);
+    if (keepttl_flag) assert(expires_at == null);
 
     // Execute msetex
     const success = try storage.msetex(
