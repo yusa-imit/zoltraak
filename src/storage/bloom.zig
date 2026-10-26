@@ -822,15 +822,23 @@ test "BloomFilterValue scanDump/loadChunk round-trip" {
         chunks.deinit(std.testing.allocator);
     }
 
+    // A 100-item filter dumps a handful of chunks; 64 is far above that.
+    const chunk_count_max: u32 = 64;
     var iter: u64 = 0;
-    while (true) {
+    var finished = false;
+    for (0..chunk_count_max) |_| {
         const result = try bf.scanDump(std.testing.allocator, iter);
         if (result.data) |data| {
             try chunks.append(std.testing.allocator, data);
         }
-        if (result.iterator == 0) break;
+        if (result.iterator == 0) {
+            finished = true;
+            break;
+        }
         iter = result.iterator;
     }
+    try std.testing.expect(finished);
+    try std.testing.expect(chunks.items.len >= 1);
 
     // Create new filter and load chunks
     var bf2 = try BloomFilterValue.init(std.testing.allocator, 0.01, 10, 2, false);
