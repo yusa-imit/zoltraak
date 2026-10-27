@@ -459,8 +459,10 @@ pub const Server = struct {
 
             // Accept connection with timeout to allow checking running flag
             const connection = listener.accept() catch |err| {
-                if (err == error.WouldBlock) continue;
-                std.log.warn("Error accepting connection: {any}", .{err});
+                switch (err) {
+                    error.WouldBlock => {},
+                    else => std.log.warn("Error accepting connection: {any}", .{err}),
+                }
                 continue;
             };
 
@@ -575,7 +577,7 @@ pub const Server = struct {
         while (true) {
             // Read data from socket
             const bytes_read = connection.stream.read(&read_buffer) catch |err| {
-                if (err == error.EndOfStream) break;
+                // A closed peer is reported as a zero-length read, never as an error.
                 std.log.warn("Read error: {any}", .{err});
                 break;
             };
