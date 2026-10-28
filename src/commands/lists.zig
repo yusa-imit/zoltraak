@@ -80,10 +80,10 @@ pub fn cmdLpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     // Execute LPUSH
     const length = storage.lpush(key, elements.items, null) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification
@@ -127,10 +127,10 @@ pub fn cmdRpush(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     // Execute RPUSH
     const length = storage.rpush(key, elements.items, null) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification
@@ -865,10 +865,10 @@ pub fn cmdLindex(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     };
 
     const result = storage.lindex(key, index) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     if (result) |elem| {
@@ -955,10 +955,10 @@ pub fn cmdLtrim(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     };
 
     storage.ltrim(key, start, stop) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification
@@ -1002,10 +1002,10 @@ pub fn cmdLrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     };
 
     const removed = storage.lrem(key, count, element) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if elements were removed
@@ -1048,10 +1048,10 @@ pub fn cmdLpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     const length = storage.lpushx(key, elements.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification only if key existed and was modified
@@ -1090,10 +1090,10 @@ pub fn cmdRpushx(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     const length = storage.rpushx(key, elements.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification only if key existed and was modified
@@ -1143,10 +1143,10 @@ pub fn cmdLinsert(allocator: std.mem.Allocator, storage: *Storage, args: []const
         return w.writeError("ERR syntax error");
 
     const result = storage.linsert(key, before, pivot, element) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification only if element was inserted
@@ -1235,10 +1235,10 @@ pub fn cmdLpos(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     const storage_count: usize = count orelse 1; // default to 1 if no COUNT given
 
     const positions = storage.lpos(allocator, key, element, rank, storage_count, maxlen) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer allocator.free(positions);
 
@@ -1307,10 +1307,10 @@ pub fn cmdLmove(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeError("ERR syntax error");
 
     const moved = storage.lmove(allocator, src, dst, src_left, dst_left) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer if (moved) |m| allocator.free(m);
 
@@ -1360,10 +1360,10 @@ pub fn cmdRpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     // RPOPLPUSH = LMOVE source dest RIGHT LEFT
     const moved = storage.lmove(allocator, src, dst, false, true) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer if (moved) |m| allocator.free(m);
 
@@ -1435,10 +1435,10 @@ pub fn cmdBrpoplpush(allocator: std.mem.Allocator, storage: *Storage, args: []co
     // src_left = false (RIGHT), dst_left = true (LEFT)
     while (elapsed_ms < timeout_ms) {
         const moved = storage.lmove(allocator, src, dst, false, true) catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            switch (err) {
+                error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                else => return err,
             }
-            return err;
         };
         defer if (moved) |m| allocator.free(m);
 
@@ -2196,10 +2196,10 @@ pub fn cmdBlmove(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     while (elapsed_ms < timeout_ms) {
         const moved = storage.lmove(allocator, src, dst, src_left, dst_left) catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            switch (err) {
+                error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+                else => return err,
             }
-            return err;
         };
         defer if (moved) |m| allocator.free(m);
 
