@@ -79,10 +79,10 @@ pub fn cmdSadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute SADD
     const added_count = storage.sadd(key, members.items, null) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if members were added
@@ -128,10 +128,10 @@ pub fn cmdSrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute SREM
     const removed_count = storage.srem(allocator, key, members.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if members were removed
@@ -168,10 +168,10 @@ pub fn cmdSismember(allocator: std.mem.Allocator, storage: *Storage, args: []con
 
     // Execute SISMEMBER
     const is_member = storage.sismember(key, member) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     return w.writeInteger(if (is_member) @as(i64, 1) else @as(i64, 0));
@@ -284,10 +284,10 @@ pub fn cmdSunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     const members = storage.sunion(allocator, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer allocator.free(members);
 
@@ -330,10 +330,10 @@ pub fn cmdSinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     const members = storage.sinter(allocator, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer allocator.free(members);
 
@@ -376,10 +376,10 @@ pub fn cmdSdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     }
 
     const members = storage.sdiff(allocator, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer allocator.free(members);
 
@@ -425,10 +425,10 @@ pub fn cmdSunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const count = storage.sunionstore(allocator, dest, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Notify only on destination key
@@ -467,10 +467,10 @@ pub fn cmdSinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const count = storage.sinterstore(allocator, dest, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Notify only on destination key
@@ -509,10 +509,10 @@ pub fn cmdSdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const count = storage.sdiffstore(allocator, dest, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Notify only on destination key
@@ -562,10 +562,10 @@ pub fn cmdSpop(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     }
 
     const popped = storage.spop(allocator, key, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     if (!has_count) {
@@ -643,10 +643,10 @@ pub fn cmdSrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
     } else 1;
 
     const members = storage.srandmember(allocator, key, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     if (!has_count) {
@@ -704,10 +704,10 @@ pub fn cmdSmove(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     };
 
     const moved = storage.smove(source, destination, member) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Fire notifications in correct order: source removal first, then destination addition
@@ -749,10 +749,10 @@ pub fn cmdSmismember(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const results = storage.smismember(allocator, key, members.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer allocator.free(results);
 
@@ -827,10 +827,10 @@ pub fn cmdSintercard(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const card = storage.sintercard(allocator, keys.items, limit) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     return w.writeInteger(@intCast(card));
