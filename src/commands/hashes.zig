@@ -89,10 +89,10 @@ pub fn cmdHset(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute HSET
     const added_count = storage.hset(key, fields.items, values.items, null) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if fields were added or modified
@@ -144,10 +144,10 @@ pub fn cmdHmset(allocator: std.mem.Allocator, storage: *Storage, args: []const R
 
     // Execute HSET
     _ = storage.hset(key, fields.items, values.items, null) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification (HMSET always modifies)
@@ -218,10 +218,10 @@ pub fn cmdHdel(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute HDEL
     const deleted_count = storage.hdel(key, fields.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if fields were deleted
@@ -403,10 +403,10 @@ pub fn cmdHexists(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
     // Execute HEXISTS
     const exists = storage.hexists(key, field) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     return w.writeInteger(if (exists) 1 else 0);
@@ -1305,10 +1305,10 @@ pub fn cmdHstrlen(allocator: std.mem.Allocator, storage: *Storage, args: []const
     };
 
     const len = storage.hstrlen(key, field) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     return w.writeInteger(@intCast(len));
@@ -1415,10 +1415,10 @@ pub fn cmdHrandfield(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const result = storage.hrandfield(allocator, key, count, with_values) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
     defer {
         if (result) |r| allocator.free(r);
@@ -1571,10 +1571,10 @@ pub fn cmdHexpire(allocator: std.mem.Allocator, storage: *Storage, args: []const
 
     // Execute HEXPIRE
     const updated_count = storage.hexpire(key, fields.items, expires_at_ms, options) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if fields were updated
@@ -1693,10 +1693,10 @@ pub fn cmdHpexpire(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     // Execute HPEXPIRE
     const updated_count = storage.hexpire(key, fields.items, expires_at_ms, options) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if fields were updated
@@ -1808,10 +1808,10 @@ pub fn cmdHexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []con
     const expires_at_ms = unix_time_seconds * 1000;
 
     const updated_count = storage.hexpire(key, fields.items, expires_at_ms, options) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if fields were updated
@@ -1921,10 +1921,10 @@ pub fn cmdHpexpireat(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const updated_count = storage.hexpire(key, fields.items, unix_time_ms, options) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if fields were updated
@@ -2000,10 +2000,10 @@ pub fn cmdHpersist(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
     // Execute HPERSIST
     const removed_count = storage.hpersist(key, fields.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if field expirations were removed
