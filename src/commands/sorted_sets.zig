@@ -13,6 +13,8 @@ const Storage = storage_mod.Storage;
 const RespProtocol = client_mod.RespProtocol;
 const PubSub = pubsub_mod.PubSub;
 
+const wrongtype_message = "WRONGTYPE Operation against a key holding the wrong kind of value";
+
 /// Publish keyspace notification for a sorted set command
 fn notifyZsetEvent(
     allocator: std.mem.Allocator,
@@ -203,10 +205,10 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
         // Pass GT/LT flags but strip NX/XX (already checked above)
         const incr_options = options & ~@as(u8, 1 | 2);
         const result = storage.zadd(key, &new_scores, &new_members, incr_options, null) catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            switch (err) {
+                error.WrongType => return w.writeError(wrongtype_message),
+                else => return err,
             }
-            return err;
         };
 
         if (result.added > 0 or result.changed > 0) {
@@ -232,10 +234,10 @@ pub fn cmdZadd(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
 
     // Execute ZADD
     const result = storage.zadd(key, scores.items, members.items, options, null) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if members were added or changed
@@ -277,10 +279,10 @@ pub fn cmdZrem(allocator: std.mem.Allocator, storage: *Storage, args: []const Re
     }
 
     const removed_count = storage.zrem(key, members.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if members were removed
@@ -574,10 +576,10 @@ fn handleZrangeBylex(
     }
 
     const members = storage.zrangebylex(allocator, key, actual_min, actual_max, limit_offset, limit_count) catch |err| {
-        if (err == error.WrongType or err == error.InvalidLexRange) {
-            return null;
+        switch (err) {
+            error.WrongType, error.InvalidLexRange => return null,
+            else => return err,
         }
-        return err;
     };
 
     if (reverse) {
@@ -968,13 +970,11 @@ pub fn cmdZincrby(allocator: std.mem.Allocator, storage: *Storage, args: []const
     };
 
     const new_score = storage.zincrby(allocator, key, increment, member) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            error.NanResult => return w.writeError("ERR resulting score is not a number (NaN)"),
+            else => return err,
         }
-        if (err == error.NanResult) {
-            return w.writeError("ERR resulting score is not a number (NaN)");
-        }
-        return err;
     };
 
     // Publish notification
@@ -1066,10 +1066,10 @@ pub fn cmdZpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []const
     } else 1;
 
     const popped = storage.zpopmin(allocator, key, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     if (popped) |members| {
@@ -1137,10 +1137,10 @@ pub fn cmdZpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []const
     } else 1;
 
     const popped = storage.zpopmax(allocator, key, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     if (popped) |members| {
@@ -1205,10 +1205,10 @@ pub fn cmdZmscore(allocator: std.mem.Allocator, storage: *Storage, args: []const
     }
 
     const scores = storage.zmscore(allocator, key, members.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
     defer allocator.free(scores);
 
@@ -1303,10 +1303,10 @@ pub fn cmdZrevrange(allocator: std.mem.Allocator, storage: *Storage, args: []con
     }
 
     const members = storage.zrevrange(allocator, key, start, stop) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     if (members) |ms| {
@@ -1431,10 +1431,10 @@ pub fn cmdZrevrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
     }
 
     const members = storage.zrevrangebyscore(allocator, key, max_score, min_score, offset, limit) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     if (members) |ms| {
@@ -1523,10 +1523,10 @@ pub fn cmdZrandmember(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const members = storage.zrandmember(allocator, key, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     if (!has_count) {
@@ -1627,7 +1627,7 @@ pub fn cmdZrangestore(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const count = storage.zrangestore(allocator, dest, source, start, stop, false) catch |err| switch (err) {
-        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.WrongType => return w.writeError(wrongtype_message),
         else => return err,
     };
 
@@ -1700,7 +1700,7 @@ pub fn cmdZintercard(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const count = storage.zintercard(allocator, keys.items, limit) catch |err| switch (err) {
-        error.WrongType => return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+        error.WrongType => return w.writeError(wrongtype_message),
         else => return err,
     };
 
@@ -2646,10 +2646,10 @@ pub fn cmdZmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
             storage.zpopmax(allocator, key, count);
 
         const members = (popped catch |err| {
-            if (err == error.WrongType) {
-                return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+            switch (err) {
+                error.WrongType => return w.writeError(wrongtype_message),
+                else => return err,
             }
-            return err;
         }) orelse continue;
 
         defer {
@@ -2820,10 +2820,10 @@ pub fn cmdBzmpop(allocator: std.mem.Allocator, storage: *Storage, args: []const 
                 storage.zpopmax(allocator, key, count);
 
             const members = (popped catch |err| {
-                if (err == error.WrongType) {
-                    return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+                switch (err) {
+                    error.WrongType => return w.writeError(wrongtype_message),
+                    else => return err,
                 }
-                return err;
             }) orelse continue;
 
             defer {
@@ -2936,10 +2936,10 @@ pub fn cmdBzpopmin(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
             // Try ZPOPMIN from this key
             const popped = storage.zpopmin(allocator, key, 1) catch |err| {
-                if (err == error.WrongType) {
-                    return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+                switch (err) {
+                    error.WrongType => return w.writeError(wrongtype_message),
+                    else => return err,
                 }
-                return err;
             };
 
             if (popped) |members| {
@@ -3035,10 +3035,10 @@ pub fn cmdBzpopmax(allocator: std.mem.Allocator, storage: *Storage, args: []cons
 
             // Try ZPOPMAX from this key
             const popped = storage.zpopmax(allocator, key, 1) catch |err| {
-                if (err == error.WrongType) {
-                    return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+                switch (err) {
+                    error.WrongType => return w.writeError(wrongtype_message),
+                    else => return err,
                 }
-                return err;
             };
 
             if (popped) |members| {
@@ -3576,10 +3576,10 @@ pub fn cmdZunion(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     const members = storage.zunion(allocator, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
     defer {
         for (members) |m| allocator.free(m.member);
@@ -3672,10 +3672,10 @@ pub fn cmdZinter(allocator: std.mem.Allocator, storage: *Storage, args: []const 
     }
 
     const members = storage.zinter(allocator, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
     defer {
         for (members) |m| allocator.free(m.member);
@@ -3768,10 +3768,10 @@ pub fn cmdZdiff(allocator: std.mem.Allocator, storage: *Storage, args: []const R
     }
 
     const members = storage.zdiff(allocator, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
     defer {
         for (members) |m| allocator.free(m.member);
@@ -3855,10 +3855,10 @@ pub fn cmdZunionstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const count = storage.zunionstore(allocator, dest, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification on destination only
@@ -3913,10 +3913,10 @@ pub fn cmdZinterstore(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const count = storage.zinterstore(allocator, dest, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification on destination only
@@ -3971,10 +3971,10 @@ pub fn cmdZdiffstore(allocator: std.mem.Allocator, storage: *Storage, args: []co
     }
 
     const count = storage.zdiffstore(allocator, dest, keys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification on destination only
@@ -4018,10 +4018,10 @@ pub fn cmdZremrangebyrank(allocator: std.mem.Allocator, storage: *Storage, args:
     };
 
     const removed = storage.zremrangebyrank(key, start, stop) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if members were removed
@@ -4075,10 +4075,10 @@ pub fn cmdZremrangebyscore(allocator: std.mem.Allocator, storage: *Storage, args
     };
 
     const removed = storage.zremrangebyscore(key, min, max, min_exclusive, max_exclusive) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            else => return err,
         }
-        return err;
     };
 
     // Publish notification if members were removed
@@ -4118,13 +4118,11 @@ pub fn cmdZremrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: 
     };
 
     const removed = storage.zremrangebylex(key, min, max) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            error.InvalidLexRange => return w.writeError("ERR min or max not valid string range item"),
+            else => return err,
         }
-        if (err == error.InvalidLexRange) {
-            return w.writeError("ERR min or max not valid string range item");
-        }
-        return err;
     };
 
     // Publish notification if members were removed
@@ -4205,13 +4203,11 @@ pub fn cmdZrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: []c
     }
 
     const members = storage.zrangebylex(allocator, key, min, max, offset, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            error.InvalidLexRange => return w.writeError("ERR min or max not valid string range item"),
+            else => return err,
         }
-        if (err == error.InvalidLexRange) {
-            return w.writeError("ERR min or max not valid string range item");
-        }
-        return err;
     };
     defer {
         for (members) |m| allocator.free(m);
@@ -4296,13 +4292,11 @@ pub fn cmdZrevrangebylex(allocator: std.mem.Allocator, storage: *Storage, args: 
     }
 
     const members = storage.zrevrangebylex(allocator, key, max, min, offset, count) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            error.InvalidLexRange => return w.writeError("ERR min or max not valid string range item"),
+            else => return err,
         }
-        if (err == error.InvalidLexRange) {
-            return w.writeError("ERR min or max not valid string range item");
-        }
-        return err;
     };
     defer {
         for (members) |m| allocator.free(m);
@@ -4346,13 +4340,11 @@ pub fn cmdZlexcount(allocator: std.mem.Allocator, storage: *Storage, args: []con
     };
 
     const count = storage.zlexcount(key, min, max) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
+        switch (err) {
+            error.WrongType => return w.writeError(wrongtype_message),
+            error.InvalidLexRange => return w.writeError("ERR min or max not valid string range item"),
+            else => return err,
         }
-        if (err == error.InvalidLexRange) {
-            return w.writeError("ERR min or max not valid string range item");
-        }
-        return err;
     };
 
     return w.writeInteger(@intCast(count));
