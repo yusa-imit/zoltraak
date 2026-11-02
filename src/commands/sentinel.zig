@@ -213,10 +213,10 @@ pub fn cmdSentinelMonitor(
     storage.sentinel.monitorMaster(name, ip, port, quorum) catch |err| {
         var w = Writer.init(allocator);
         defer w.deinit();
-        if (err == error.MasterAlreadyExists) {
-            return try w.writeError("ERR Duplicated master name");
+        switch (err) {
+            error.MasterAlreadyExists => return try w.writeError("ERR Duplicated master name"),
+            else => return try w.writeError("ERR Failed to monitor master"),
         }
-        return try w.writeError("ERR Failed to monitor master");
     };
 
     var w = Writer.init(allocator);
@@ -253,10 +253,9 @@ pub fn cmdSentinelRemove(
     storage.sentinel.removeMaster(name) catch |err| {
         var w = Writer.init(allocator);
         defer w.deinit();
-        if (err == error.MasterNotFound) {
-            return try w.writeError("ERR No such master with that name");
+        switch (err) {
+            error.MasterNotFound => return try w.writeError("ERR No such master with that name"),
         }
-        return try w.writeError("ERR Failed to remove master");
     };
 
     var w = Writer.init(allocator);
@@ -754,10 +753,9 @@ pub fn cmdSentinelFailover(
     storage.sentinel.forceFailover(master_name) catch |err| {
         var w = Writer.init(allocator);
         defer w.deinit();
-        if (err == error.MasterNotFound) {
-            return try w.writeError("ERR No such master with that name");
+        switch (err) {
+            error.MasterNotFound => return try w.writeError("ERR No such master with that name"),
         }
-        return try w.writeError("ERR Failed to force failover");
     };
 
     var w = Writer.init(allocator);
@@ -794,10 +792,9 @@ pub fn cmdSentinelCkquorum(
     const result = storage.sentinel.checkQuorum(master_name) catch |err| {
         var w = Writer.init(allocator);
         defer w.deinit();
-        if (err == error.MasterNotFound) {
-            return try w.writeError("ERR No such master with that name");
+        switch (err) {
+            error.MasterNotFound => return try w.writeError("ERR No such master with that name"),
         }
-        return try w.writeError("ERR Failed to check quorum");
     };
 
     var w = Writer.init(allocator);
@@ -856,10 +853,10 @@ pub fn cmdSentinelFlushconfig(
     storage.sentinel.flushConfig(config_path) catch |err| {
         var w = Writer.init(allocator);
         defer w.deinit();
-        if (err == error.InvalidPath) {
-            return try w.writeError("ERR Invalid configuration path");
+        switch (err) {
+            error.InvalidPath => return try w.writeError("ERR Invalid configuration path"),
+            else => return try w.writeError("ERR Failed to flush configuration"),
         }
-        return try w.writeError("ERR Failed to flush configuration");
     };
 
     var w = Writer.init(allocator);
@@ -898,14 +895,11 @@ pub fn cmdSentinelSet(
     storage.sentinel.setMasterOption(master_name, option, value) catch |err| {
         var w = Writer.init(allocator);
         defer w.deinit();
-        if (err == error.MasterNotFound) {
-            return try w.writeError("ERR No such master with that name");
-        } else if (err == error.InvalidValue) {
-            return try w.writeError("ERR Invalid argument");
-        } else if (err == error.UnsupportedOption) {
-            return try w.writeError("ERR Unsupported option");
+        switch (err) {
+            error.MasterNotFound => return try w.writeError("ERR No such master with that name"),
+            error.InvalidValue => return try w.writeError("ERR Invalid argument"),
+            error.UnsupportedOption => return try w.writeError("ERR Unsupported option"),
         }
-        return try w.writeError("ERR Failed to set option");
     };
 
     var w = Writer.init(allocator);
