@@ -55,6 +55,8 @@ const command_registry = @import("command_registry.zig");
 const cluster_mod = @import("../storage/cluster.zig");
 const notifications_mod = @import("../storage/notifications.zig");
 
+const wrongtype_message = "WRONGTYPE Operation against a key holding the wrong kind of value";
+
 /// Access mode for key-based command permission checking
 pub const AccessMode = enum { read, write };
 pub const TxState = tx_mod.TxState;
@@ -6006,11 +6008,9 @@ pub fn cmdGetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR value is not an integer or out of range");
     };
 
-    const result = storage.getrange(allocator, key, start, end) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const result = storage.getrange(allocator, key, start, end) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
     defer allocator.free(result);
     // A substring can never exceed Redis's own 512MB maximum string size.
@@ -6075,11 +6075,9 @@ pub fn cmdSetrange(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         return w.writeError("ERR string exceeds maximum allowed size (512mb)");
     }
 
-    const new_len = storage.setrange(key, @as(usize, @intCast(offset)), value) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const new_len = storage.setrange(key, @as(usize, @intCast(offset)), value) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
     // Postcondition: the result can never be shorter than offset+value, whether the string
     // was created fresh or an existing longer string was only partially overwritten.
@@ -6147,11 +6145,9 @@ pub fn cmdSetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const 
 
     const value: u1 = @intCast(value_int);
 
-    const original_bit = storage.setbit(key, offset, value) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const original_bit = storage.setbit(key, offset, value) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
 
     // Fire notification only if bit changed
@@ -6183,11 +6179,9 @@ pub fn cmdGetbit(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         return w.writeError("ERR bit offset is not an integer or out of range");
     };
 
-    const bit = storage.getbit(key, offset) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const bit = storage.getbit(key, offset) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
 
     return w.writeInteger(bit);
@@ -6242,11 +6236,9 @@ pub fn cmdBitcount(allocator: std.mem.Allocator, storage: *Storage, args: []cons
         }
     } else .byte;
 
-    const count = storage.bitcount(key, start, end, unit) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const count = storage.bitcount(key, start, end, unit) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
 
     return w.writeInteger(count);
@@ -6298,11 +6290,9 @@ pub fn cmdBitop(allocator: std.mem.Allocator, storage: *Storage, args: []const R
         return w.writeError("ERR BITOP NOT must be called with a single source key");
     }
 
-    const result_len = storage.bitop(operation, destkey, srckeys.items) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const result_len = storage.bitop(operation, destkey, srckeys.items) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
 
     // Fire appropriate notification based on result
@@ -6378,11 +6368,9 @@ pub fn cmdBitpos(allocator: std.mem.Allocator, storage: *Storage, args: []const 
         }
     } else .byte;
 
-    const position = storage.bitpos(key, bit, start, end, unit) catch |err| {
-        if (err == error.WrongType) {
-            return w.writeError("WRONGTYPE Operation against a key holding the wrong kind of value");
-        }
-        return err;
+    const position = storage.bitpos(key, bit, start, end, unit) catch |err| switch (err) {
+        error.WrongType => return w.writeError(wrongtype_message),
+        else => return err,
     };
 
     return w.writeInteger(position);
