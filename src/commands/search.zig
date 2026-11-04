@@ -40,11 +40,9 @@ pub fn cmdFtCreate(storage: *Storage, _: std.mem.Allocator, args: []const []cons
     defer storage.mutex.unlock();
 
     // Create index in search store
-    storage.search.createIndex(index_name, index_on) catch |err| {
-        if (err == error.IndexAlreadyExists) {
-            return RespValue{ .error_string = "ERR Index already exists" };
-        }
-        return err;
+    storage.search.createIndex(index_name, index_on) catch |err| switch (err) {
+        error.IndexAlreadyExists => return RespValue{ .error_string = "ERR Index already exists" },
+        else => return err,
     };
 
     // Get mutable index for further configuration
@@ -223,10 +221,10 @@ pub fn cmdFtDropindex(storage: *Storage, arena: std.mem.Allocator, args: []const
     // Drop index
     storage.search.dropIndex(index_name) catch |err| {
         storage.mutex.unlock();
-        if (err == error.IndexNotFound) {
-            return RespValue{ .error_string = "ERR Unknown index name" };
+        switch (err) {
+            error.IndexNotFound => return RespValue{ .error_string = "ERR Unknown index name" },
+            else => return err,
         }
-        return err;
     };
 
     // Collect keys matching the index's prefix + type filter (same matching
@@ -2033,11 +2031,9 @@ fn cmdFtConfigGet(storage: *Storage, allocator: Allocator, args: []const []const
     }
 
     const option = args[0];
-    const value = storage.search.config.get(allocator, option) catch |err| {
-        if (err == error.UnknownConfigOption) {
-            return RespValue{ .error_string = "ERR Unknown option" };
-        }
-        return err;
+    const value = storage.search.config.get(allocator, option) catch |err| switch (err) {
+        error.UnknownConfigOption => return RespValue{ .error_string = "ERR Unknown option" },
+        else => return err,
     };
     errdefer allocator.free(value);
 
@@ -2062,15 +2058,11 @@ fn cmdFtConfigSet(storage: *Storage, allocator: Allocator, args: []const []const
     const option = args[0];
     const value = args[1];
 
-    storage.search.config.set(option, value) catch |err| {
-        if (err == error.UnknownConfigOption) {
-            return RespValue{ .error_string = "ERR Unknown option" };
-        } else if (err == error.InvalidConfigValue) {
-            return RespValue{ .error_string = "ERR Invalid value" };
-        } else if (err == error.InvalidCharacter) {
-            return RespValue{ .error_string = "ERR Invalid value format" };
-        }
-        return err;
+    storage.search.config.set(option, value) catch |err| switch (err) {
+        error.UnknownConfigOption => return RespValue{ .error_string = "ERR Unknown option" },
+        error.InvalidConfigValue => return RespValue{ .error_string = "ERR Invalid value" },
+        error.InvalidCharacter => return RespValue{ .error_string = "ERR Invalid value format" },
+        else => return err,
     };
 
     return RespValue{ .simple_string = "OK" };
