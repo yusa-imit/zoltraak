@@ -10,6 +10,9 @@ const CompactionRule = timeseries_mod.CompactionRule;
 const PubSub = @import("../storage/pubsub.zig").PubSub;
 const notifications_mod = @import("../storage/notifications.zig");
 
+/// Reply sent when the BLOCK duplicate policy rejects a sample at an existing timestamp.
+const duplicate_blocked_message = "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+
 /// Publish keyspace notification for a time series command
 fn notifyTimeSeriesEvent(
     allocator: std.mem.Allocator,
@@ -394,10 +397,10 @@ pub fn cmdTsAdd(
 
         // Add the sample (with ON_DUPLICATE override if specified)
         ts.add(timestamp, value, on_duplicate_policy) catch |err| {
-            if (err == error.DuplicateTimestamp) {
-                return "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+            switch (err) {
+                error.DuplicateTimestamp => return duplicate_blocked_message,
+                error.OutOfMemory => return "ERR failed to add sample\r\n",
             }
-            return "ERR failed to add sample\r\n";
         };
     } else {
         // Key doesn't exist - create time series with creation params
@@ -484,10 +487,10 @@ pub fn cmdTsMadd(
         // Add sample (no ON_DUPLICATE override for MADD)
         var ts = &val_ptr.timeseries;
         ts.add(timestamp, value, null) catch |err| {
-            if (err == error.DuplicateTimestamp) {
-                return "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+            switch (err) {
+                error.DuplicateTimestamp => return duplicate_blocked_message,
+                error.OutOfMemory => return "ERR failed to add sample\r\n",
             }
-            return "ERR failed to add sample\r\n";
         };
 
         // Fire keyspace notification for each key
@@ -633,10 +636,10 @@ pub fn cmdTsIncrby(
 
         // Increment the sample
         ts.incrementBy(timestamp, delta) catch |err| {
-            if (err == error.DuplicateTimestamp) {
-                return "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+            switch (err) {
+                error.DuplicateTimestamp => return duplicate_blocked_message,
+                error.OutOfMemory => return "ERR failed to increment sample\r\n",
             }
-            return "ERR failed to increment sample\r\n";
         };
     } else {
         // Key doesn't exist - create time series with creation params
@@ -797,10 +800,10 @@ pub fn cmdTsDecrby(
 
         // Decrement the sample (negate delta)
         ts.decrementBy(timestamp, delta) catch |err| {
-            if (err == error.DuplicateTimestamp) {
-                return "ERR DUPLICATE_POLICY is BLOCK and timestamp already exists\r\n";
+            switch (err) {
+                error.DuplicateTimestamp => return duplicate_blocked_message,
+                error.OutOfMemory => return "ERR failed to decrement sample\r\n",
             }
-            return "ERR failed to decrement sample\r\n";
         };
     } else {
         // Key doesn't exist - create time series with creation params
