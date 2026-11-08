@@ -12,6 +12,9 @@ const ReplicationState = @import("../storage/replication.zig").ReplicationState;
 const ClientRegistry = @import("../commands/client.zig").ClientRegistry;
 const RespProtocol = @import("../commands/client.zig").RespProtocol;
 
+const library_exists_message = "ERR library already exists (use REPLACE to overwrite)";
+const function_exists_message = "ERR function name already exists in another library";
+
 /// FUNCTION LOAD [REPLACE] <code>
 /// Register a Lua function library
 pub fn cmdFunctionLoad(
@@ -82,22 +85,20 @@ pub fn cmdFunctionLoad(
 
     // Add or replace library
     if (replace) {
-        storage.functions.replaceLibrary(library) catch |err| {
-            if (err == error.LibraryNotFound) {
-                // Library doesn't exist, just add it
-                try storage.functions.addLibrary(library);
-            } else {
-                return err;
-            }
+        storage.functions.replaceLibrary(library) catch |err| switch (err) {
+            // Library doesn't exist, just add it.
+            error.LibraryNotFound => try storage.functions.addLibrary(library),
+            error.LibraryExists, error.FunctionExists, error.OutOfMemory => return err,
         };
     } else {
-        storage.functions.addLibrary(library) catch |err| {
-            if (err == error.LibraryExists) {
-                return RespValue{ .error_string = try allocator.dupe(u8, "ERR library already exists (use REPLACE to overwrite)") };
-            } else if (err == error.FunctionExists) {
-                return RespValue{ .error_string = try allocator.dupe(u8, "ERR function name already exists in another library") };
-            }
-            return err;
+        storage.functions.addLibrary(library) catch |err| switch (err) {
+            error.LibraryExists => {
+                return RespValue{ .error_string = try allocator.dupe(u8, library_exists_message) };
+            },
+            error.FunctionExists => {
+                return RespValue{ .error_string = try allocator.dupe(u8, function_exists_message) };
+            },
+            error.OutOfMemory => return err,
         };
     }
 
@@ -344,11 +345,10 @@ pub fn cmdFunctionDelete(
     storage.mutex.lock();
     defer storage.mutex.unlock();
 
-    storage.functions.removeLibrary(library_name) catch |err| {
-        if (err == error.LibraryNotFound) {
+    storage.functions.removeLibrary(library_name) catch |err| switch (err) {
+        error.LibraryNotFound => {
             return RespValue{ .error_string = try allocator.dupe(u8, "ERR Library not found") };
-        }
-        return err;
+        },
     };
 
     return RespValue{ .simple_string = try allocator.dupe(u8, "OK") };
