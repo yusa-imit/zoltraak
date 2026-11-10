@@ -1,6 +1,7 @@
 const std = @import("std");
 const memory = @import("memory.zig");
 const Storage = memory.Storage;
+const assert = std.debug.assert;
 
 /// AOF (Append-Only File) persistence.
 ///
@@ -23,10 +24,12 @@ pub const Aof = struct {
         errdefer std.heap.page_allocator.destroy(aof);
 
         const file = std.fs.cwd().openFile(path, .{ .mode = .read_write }) catch |err| blk: {
-            if (err == error.FileNotFound) {
-                break :blk try std.fs.cwd().createFile(path, .{ .read = true });
+            switch (err) {
+                error.FileNotFound => {
+                    break :blk try std.fs.cwd().createFile(path, .{ .read = true });
+                },
+                else => return err,
             }
-            return err;
         };
 
         // Seek to end for appending
@@ -84,8 +87,10 @@ pub const Aof = struct {
     /// Returns the number of commands replayed.
     pub fn replay(storage: *Storage, path: []const u8, allocator: std.mem.Allocator) !usize {
         const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-            if (err == error.FileNotFound) return 0;
-            return err;
+            switch (err) {
+                error.FileNotFound => return 0,
+                else => return err,
+            }
         };
         defer file.close();
 
@@ -443,11 +448,18 @@ fn executeStorageCommand(storage: *Storage, args: [][]u8, allocator: std.mem.All
                 absttl = true;
             }
         }
-        storage.restoreValue(args[1], args[3], ttl_ms, replace, absttl) catch |err| {
-            if (err != error.KeyAlreadyExists) return err;
-        };
+        try replayRestore(storage, args, ttl_ms, replace, absttl);
     }
     // PEXPIRE and read-only commands (GET, EXISTS, etc.) are safely ignored during replay
+}
+
+/// Replay one RESTORE; a key that already exists is not an error because replay is idempotent.
+fn replayRestore(storage: *Storage, args: [][]u8, ttl_ms: i64, replace: bool, absttl: bool) !void {
+    assert(args.len >= 4);
+    storage.restoreValue(args[1], args[3], ttl_ms, replace, absttl) catch |err| switch (err) {
+        error.KeyAlreadyExists => {},
+        else => return err,
+    };
 }
 
 // ============================================================
